@@ -8,20 +8,35 @@
 ## 里程碑总览
 
 ```
-M1  基础骨架         ████████░░░░░░░░░░░░  第 1-2 周
-M2  事件总线         ████████████░░░░░░░░  第 2-4 周
-M3  事件源           ████████████████░░░░  第 4-5 周
-M4  分发 + 管道      ████████████████████  第 5-7 周
-M5  Skill + Tool     ████████████████████  第 7-9 周
-M6  Workflow 状态机  ████████████████████  第 9-11 周
-M7  插件系统         ████████████████████  第 11-13 周
-M8  持久化层         ████████████████████  第 13-15 周
-M9  安全与配置       ████████████████████  第 15-16 周
-M10 运行时 + API     ████████████████████  第 16-18 周
-M11 可观测性         ████████████████████  第 18-19 周
-M12 Tauri 桌面端     ████████████░░░░░░░░  第 19-21 周
-M13 集成与打磨       ████████░░░░░░░░░░░░  第 21-22 周
+M0  设计与规划       ████████████████████  已完成
+M1  基础骨架         ░░░░░░░░░░░░░░░░░░░░  未开始
+M2  事件总线         ░░░░░░░░░░░░░░░░░░░░  未开始
+M3  事件源           ░░░░░░░░░░░░░░░░░░░░  未开始
+M4  分发 + 管道      ░░░░░░░░░░░░░░░░░░░░  未开始
+M5  Skill + Tool     ░░░░░░░░░░░░░░░░░░░░  未开始
+M6  Workflow 状态机  ░░░░░░░░░░░░░░░░░░░░  未开始
+M7  插件系统         ░░░░░░░░░░░░░░░░░░░░  未开始
+M8  持久化层         ░░░░░░░░░░░░░░░░░░░░  未开始
+M9  安全与配置       ░░░░░░░░░░░░░░░░░░░░  未开始
+M10 运行时 + API     ░░░░░░░░░░░░░░░░░░░░  未开始
+M11 可观测性         ░░░░░░░░░░░░░░░░░░░░  未开始
+M12 Tauri 桌面端     ░░░░░░░░░░░░░░░░░░░░  未开始
+M13 集成与打磨       ░░░░░░░░░░░░░░░░░░░░  未开始
 ```
+
+### 当前状态（按仓库现状更新）
+
+- 当前仓库已完成系统设计与 roadmap 编写，可视为 `M0 设计与规划` 完成。
+- 当前仓库中尚未看到 Rust workspace、`Cargo.toml`、`crates/` 目录和可执行实现代码，因此 `M1-M13` 仍应视为未开始。
+- 上方进度条表示**工程实现进度**，不包含设计文档完成度；避免把规划完成误读为功能已落地。
+- 下一步建议聚焦 `M1 基础骨架`，先把 workspace、核心类型和错误体系落地，再推进 `M2/M3`。
+
+### 最近推进建议
+
+- 第一优先级：创建根 `Cargo.toml`、`rust-toolchain.toml`、`.cargo/config.toml`
+- 第二优先级：初始化核心 crate 骨架，优先 `aman-core`、`aman-macros`
+- 第三优先级：冻结核心 schema 命名，避免后续 `M2-M6` 返工
+- 第四优先级：补最小可编译与 clippy 基线，建立后续里程碑验收标准
 
 ---
 
@@ -32,67 +47,102 @@ M13 集成与打磨       ████████░░░░░░░░░░
 **项目介绍**：aman = a man, an agent man. 目标是创建一个以事件响应为核心的拟人 agent 框架。
 
 ### 1.1 Workspace 初始化
-- [ ] 创建根 `Cargo.toml`，定义 `[workspace]` 成员
-- [ ] 初始化 19 个 crate 骨架（见 architect-design.md §2）
-- [ ] 配置 `rust-toolchain.toml`（stable channel）
-- [ ] 配置 `.cargo/config.toml`（编译优化、deny unsafe）
-- [ ] 添加 `Cargo.lock` 到版本控制
+- [x] 创建根 `Cargo.toml`，定义 `[workspace]` 成员
+- [x] 初始化 19 个 crate 骨架（见 architect-design.md §2）
+- [x] 配置 `rust-toolchain.toml`（stable channel）
+- [x] 配置 `.cargo/config.toml`（编译优化、deny unsafe）
+- [x] 添加 `Cargo.lock` 到版本控制
 
 ### 1.2 aman-core: 核心类型 (`crates/aman-core/`)
-- [ ] 统一核心字段命名并冻结 schema（`Event.type` vs `event_type`、`EventMetadata.ttl` vs `ttl_ms`）
-- [ ] 实现 `Event` 结构体（id, source, event_type, timestamp, priority, delivery, dedup_key, payload, metadata）
-- [ ] 实现 `EventMetadata`（trace_id, parent_event_id, retry_count, max_retries, ttl, lifespan_ms, created_at）
-- [ ] 实现 `EventType` 枚举（所有内置事件类型：file_created, cron_tick, message_received 等）
-- [ ] 实现 `Priority` 枚举（High=0, Normal=1, Low=2）
-- [ ] 实现 `DeliveryGuarantee` 枚举（AtMostOnce, AtLeastOnce, ExactlyOnce）
-- [ ] 实现 `DedupKey` 类型（source+type+payload_hash 缺省算法）
-- [ ] 实现 `TraceId` 和 `SourceId` newtype
-- [ ] 实现 `Timestamp` newtype（UTC epoch 毫秒）
-- [ ] 定义 `EventSource` trait（id, source_type, init, shutdown, poll, on_backpressure, health, pause, resume, reconfigure）
-- [ ] 定义 `SourceType` 枚举（Timer, File, Network, Webhook, Data, Platform, Custom）
-- [ ] 定义 `Pipeline` trait（id, concurrency, steps, execute）
-- [ ] 定义 `PipelineStep` 结构体（id, step_type, tool, compensate, retry）
-- [ ] 定义 `StepType` 枚举（Filter, Transform, Action）
-- [ ] 定义 `ConcurrencyModel` 枚举（Serial, Parallel, Limited(N)）
-- [ ] 定义 `Skill` trait（name, version, description, triggers, execute, on_load, on_unload）
-- [ ] 定义 `TriggerCondition` 结构体
-- [ ] 定义 `Tool` trait（name, mode, parameters, returns, execute）
-- [ ] 定义 `ToolMode` 枚举（Local, Remote, Container, Sandbox）
-- [ ] 定义 `Plugin` trait（name, version, dependencies, on_load, on_unload, on_dependency_unloading, event_sources, skills, tools）
-- [ ] 定义 `Hook` trait（name, priority, hook_points, execute）
-- [ ] 定义 `HookPoint` 枚举（全部 25+ 钩子点）
-- [ ] 定义所有 Context 结构体（SkillContext, PipelineContext, ToolContext, HookContext, PluginContext, SourceContext）
+- [x] 统一核心字段命名并冻结 schema（`Event.type` vs `event_type`、`EventMetadata.ttl` vs `ttl_ms`）
+- [x] 实现 `Event` 结构体（id, source, event_type, timestamp, priority, delivery, dedup_key, payload, metadata）
+- [x] 实现 `EventMetadata`（trace_id, parent_event_id, retry_count, max_retries, ttl, lifespan_ms, created_at）
+- [x] 实现 `EventType` 枚举（所有内置事件类型：file_created, cron_tick, message_received 等）
+- [x] 实现 `Priority` 枚举（High=0, Normal=1, Low=2）
+- [x] 实现 `DeliveryGuarantee` 枚举（AtMostOnce, AtLeastOnce, ExactlyOnce）
+- [x] 实现 `DedupKey` 类型（source+type+payload_hash 缺省算法）
+- [x] 实现 `TraceId` 和 `SourceId` newtype
+- [x] 实现 `Timestamp` newtype（UTC epoch 毫秒）
+- [x] 定义 `EventSource` trait（id, source_type, init, shutdown, poll, on_backpressure, health, pause, resume, reconfigure）
+- [x] 定义 `SourceType` 枚举（Timer, File, Network, Webhook, Data, Platform, Custom）
+- [x] 定义 `Pipeline` trait（id, concurrency, steps, execute）
+- [x] 定义 `PipelineStep` 结构体（id, step_type, tool, compensate, retry）
+- [x] 定义 `StepType` 枚举（Filter, Transform, Action）
+- [x] 定义 `ConcurrencyModel` 枚举（Serial, Parallel, Limited(N)）
+- [x] 定义 `Skill` trait（name, version, description, triggers, execute, on_load, on_unload）
+- [x] 定义 `TriggerCondition` 结构体
+- [x] 定义 `Tool` trait（name, mode, parameters, returns, execute）
+- [x] 定义 `ToolMode` 枚举（Local, Remote, Container, Sandbox）
+- [x] 定义 `Plugin` trait（name, version, dependencies, on_load, on_unload, on_dependency_unloading, event_sources, skills, tools）
+- [x] 定义 `Hook` trait（name, priority, hook_points, execute）
+- [x] 定义 `HookPoint` 枚举（全部 25+ 钩子点）
+- [x] 定义所有 Context 结构体（SkillContext, PipelineContext, ToolContext, HookContext, PluginContext, SourceContext）
 
 ### 1.3 aman-core: 错误处理
-- [ ] 定义 `AmanError` 枚举（所有错误变体：BusFull, Timeout, VersionMismatch, CycleDetected, CompensationFailed, Unrecoverable, ConfigInvalid, SecretUnresolved 等）
-- [ ] 定义 `AmanResult<T>` 类型别名
-- [ ] 实现 `Display` + `Error` trait for `AmanError`
-- [ ] 实现 `From` 转换（serde_json::Error, io::Error, 等）
+- [x] 定义 `AmanError` 枚举（所有错误变体：BusFull, Timeout, VersionMismatch, CycleDetected, CompensationFailed, Unrecoverable, ConfigInvalid, SecretUnresolved 等）
+- [x] 定义 `AmanResult<T>` 类型别名
+- [x] 实现 `Display` + `Error` trait for `AmanError`
+- [x] 实现 `From` 转换（serde_json::Error, io::Error, 等）
 
 ### 1.4 aman-core: 共享工具类型
-- [ ] 实现 `JsonSchema` 类型（参数/返回值 schema）
-- [ ] 实现 `RetryPolicy` 结构体（max_attempts, retry_backoff）
-- [ ] 实现 `RetryBackoff` 解析器（支持 exponential / fixed:N / sequence:N,N / immediate 四种格式，见决策 11）
-- [ ] 实现 `BackpressureLevel` 枚举（Normal, L1, L2, L3, L4A, L4B, Critical）
-- [ ] 实现 `HealthStatus` 枚举（Ok, Degraded, Failed）
-- [ ] 实现 `CompensationStrategy` 枚举（reverse_order）
-- [ ] 实现 `CompensationContract` 结构体（idempotent, timeout_sec, retry_count, retry_backoff, on_failure）
+- [x] 实现 `JsonSchema` 类型（参数/返回值 schema）
+- [x] 实现 `RetryPolicy` 结构体（max_attempts, retry_backoff）
+- [x] 实现 `RetryBackoff` 解析器（支持 exponential / fixed:N / sequence:N,N / immediate 四种格式，见决策 11）
+- [x] 实现 `BackpressureLevel` 枚举（Normal, L1, L2, L3, L4A, L4B, Critical）
+- [x] 实现 `HealthStatus` 枚举（Ok, Degraded, Failed）
+- [x] 实现 `CompensationStrategy` 枚举（reverse_order）
+- [x] 实现 `CompensationContract` 结构体（idempotent, timeout_sec, retry_count, retry_backoff, on_failure）
 
 ### 1.5 aman-macros: 过程宏
-- [ ] 实现 `#[aman_skill]` 属性宏
-- [ ] 实现 `#[aman_plugin]` 属性宏
-- [ ] 编写宏的单元测试
+- [x] 实现 `#[aman_skill]` 属性宏
+- [x] 实现 `#[aman_plugin]` 属性宏
+- [x] 编写宏的单元测试
 
 ### 1.6 验证
-- [ ] 所有 crate 可编译 (`cargo build --workspace`)
-- [ ] 无 clippy 警告 (`cargo clippy --workspace -- -D warnings`)
-- [ ] 核心类型单元测试覆盖率 > 80%
+- [x] 所有 crate 可编译 (`cargo build --workspace`)
+- [x] 无 clippy 警告 (`cargo clippy --workspace -- -D warnings`)
+- [x] 核心类型单元测试覆盖率 > 80%
+
+> 当前 `aman-core` 已补充 29 个单元测试，`aman-macros` 已补充 1 组 UI 测试；使用 `cargo llvm-cov -p aman-core --summary-only` 实测 `TOTAL` 区域覆盖率 `88.44%`，行覆盖率 `84.78%`。
 
 ---
 
 ## M2: 事件总线 (Event Bus)
 
 **目标**: 实现内存总线 + 背压系统 + 去重 + 同源保序。
+
+### M2 当前推进策略
+
+- `M2` 先交付一个**可运行的内存事件总线内核**，再逐步补齐背压、去重、保序和待重试队列。
+- 优先顺序应为：`EventBus trait` → `InMemoryBus` → 订阅分发 → 同源保序 → 去重窗口 → 背压控制 → 指标采集。
+- 与持久化强相关的能力只保留接口与扩展点，真正依赖 WAL/overflow 的完整链路放到 `M8` 联调收口。
+- `M2` 完成标志不是“性能极限达标”，而是“内存模式下正确收发事件，并具备可验证的背压/去重/保序行为”。
+
+### M2 最小可交付
+
+- [ ] `aman-event-bus` crate 可独立编译并暴露 `EventBus` trait
+- [ ] `InMemoryBus` 支持 `publish`、`subscribe`、`unsubscribe`
+- [ ] 同一事件可分发到多个订阅者，且过滤条件生效
+- [ ] 同源事件保持 FIFO 顺序，跨源事件允许按优先级竞争
+- [ ] 重复事件在去重窗口内可被识别并丢弃
+- [ ] 背压等级至少能驱动降级、丢弃或暂停信号
+- [ ] 指标可输出当前队列深度、丢弃数、背压等级
+
+### M2 验收标准（可直接打勾）
+
+- [ ] 基础发布订阅流程可通过单元测试验证
+- [ ] 同源保序规则可通过集成测试验证
+- [ ] 去重窗口对重复事件生效，且不误伤不同事件
+- [ ] 背压等级切换可被测试稳定触发，并可恢复
+- [ ] 订阅过滤条件能覆盖 `event_type`、`source`、`priority`
+- [ ] 总线指标与实际运行状态一致
+- [ ] `cargo test -p aman-event-bus` 通过
+
+### M2 范围边界
+
+- `M2` 不要求 WAL、checkpoint、overflow 恢复完整闭环，那部分在 `M8` 收口。
+- `M2` 不要求先实现全部性能优化，可以先保证正确性与接口稳定。
+- `M2` 不要求和所有事件源联调，事件注入可先用测试桩或构造事件完成。
 
 ### 2.1 InMemoryBus (`crates/aman-event-bus/`)
 - [ ] 定义 `EventBus` trait（publish, subscribe, unsubscribe, metrics, backpressure_level）
@@ -152,6 +202,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 ## M3: 事件源 (Event Sources)
 
 **目标**: 实现所有内置事件源类型。
+
+### M3 当前推进策略
+
+- `M3` 先做统一事件源基础设施，再逐个落地内置 Source，避免每种 Source 各自维护生命周期与背压逻辑。
+- 实现顺序建议为：`SourceRegistry` → 生命周期模型 → `TimerSource` → `WebhookSource` → `FileWatchSource` → `CronSource` → `SignalSource` → `SocketSource`。
+- 优先交付最容易形成端到端链路的 Source，先把“事件源产出事件并进入 Event Bus”这条主链打通。
+- `trust_level` 相关字段与上下文透传应在 `M3` 先落接口，真正的 LLM 注入防护逻辑在 `M9` 补齐。
+
+### M3 最小可交付
+
+- [ ] `aman-source` crate 可注册、查找、启动、暂停、恢复、关闭事件源
+- [ ] `TimerSource` 可稳定产生事件，作为最小拉通样例
+- [ ] `WebhookSource` 可接收 HTTP 请求并注入事件总线
+- [ ] `FileWatchSource` 可在稳定确认后发布文件事件
+- [ ] 所有 Source 共享统一生命周期与健康状态接口
+- [ ] Push 类型来源能响应背压暂停信号
+- [ ] `trust_level` 能进入事件上下文或路由上下文
+
+### M3 验收标准（可直接打勾）
+
+- [ ] `SourceRegistry` 能完成注册、重复检查、查找与卸载
+- [ ] 事件源生命周期流转可通过测试验证：`init -> running -> pause/resume -> shutdown`
+- [ ] `TimerSource` 与 `WebhookSource` 能通过集成测试将事件注入 Event Bus
+- [ ] `FileWatchSource` 的 debounce 与 incomplete 行为可被测试覆盖
+- [ ] 背压 Level 3 时，Push 来源能暂停接收或暂停发布
+- [ ] `trust_level` 配置值可从 Source 传到后续处理链路
+- [ ] `cargo test -p aman-source` 通过
+
+### M3 范围边界
+
+- `M3` 不要求所有事件源一次性全部达到生产级，只要基础设施统一且核心来源可用即可。
+- `CronSource` 的审计、持久化 override、leader election 可以先按接口和基础行为实现，不必在本阶段做完整集群语义。
+- `SocketSource` 可以先完成最小监听与事件注入，复杂流控与平台差异优化后置。
 
 ### 3.1 EventSource 基础设施 (`crates/aman-source/`)
 - [ ] 实现 `SourceRegistry` 结构体（注册/查找/管理）
@@ -221,6 +304,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 
 **目标**: 实现事件路由分发和链式处理管道。
 
+### M4 当前推进策略
+
+- `M4` 先打通“事件进入 Dispatcher 后被路由到 Pipeline 并执行完成”的最小闭环，再补转换、补偿、并发和 DLQ。
+- 实现顺序建议为：`RouteRule/MatchCondition` → `Dispatcher` → `PipelineEngine` → `PipelineStep` 执行循环 → 输出事件 → 补偿引擎 → 并发控制 → DLQ。
+- `M4` 的关键不是功能堆砌，而是先稳定事件语义：匹配规则、执行顺序、失败处理、输出事件定义。
+- 与 `Workflow` 的联动只需把 `DispatchTarget::Workflow` 和接口边界预留好，完整状态机逻辑在 `M6` 落地。
+
+### M4 最小可交付
+
+- [ ] `Dispatcher` 能根据 `RouteRule` 将事件路由到指定 `Pipeline`
+- [ ] `MatchCondition` 支持最常用的 `Type`、`Source`、`Priority` 匹配
+- [ ] `PipelineEngine` 能顺序执行 `Filter -> Transform -> Action`
+- [ ] Pipeline 全成功时能产生输出事件并重新发布
+- [ ] Pipeline 失败时能触发补偿链或记录失败结果
+- [ ] 至少一种并发模型可用，建议先落 `Serial`
+- [ ] 失败事件可进入 DLQ 或形成明确失败记录
+
+### M4 验收标准（可直接打勾）
+
+- [ ] 路由规则命中逻辑可通过集成测试验证
+- [ ] Pipeline 三类步骤的执行顺序与中断语义可通过测试验证
+- [ ] 步骤级重试策略能按 `RetryPolicy` 生效
+- [ ] 补偿执行顺序严格为逆序，失败时返回明确结果
+- [ ] `Serial` 与至少一种其他并发模式有可运行测试
+- [ ] 输出事件发布与失败入 DLQ 路径都可被验证
+- [ ] `cargo test -p aman-dispatcher -p aman-pipeline` 通过
+
+### M4 范围边界
+
+- `M4` 不要求先把 Skill、Workflow、Hook 全部接通，只要路由目标抽象稳定即可。
+- `M4` 不要求一开始就支持全部 `MatchCondition` 与复杂 `FanOut` 组合，可先覆盖高频规则。
+- `M4` 不要求并发模型一次做全，先稳定 `Serial`，再扩展 `Parallel` 与 `Limited(N)`。
+
 ### 4.1 Dispatcher (`crates/aman-dispatcher/`)
 - [ ] 实现 `Dispatcher` 结构体
 - [ ] 实现 `RouteRule` 路由规则表
@@ -275,6 +391,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 ## M5: Skill 系统 + Tool Runner
 
 **目标**: 实现技能注册/发现/执行和工具执行框架。
+
+### M5 当前推进策略
+
+- `M5` 应先把 Skill 与 Tool 的运行边界定义清楚，再逐步补检索、热加载、版本管理与沙箱能力。
+- 实现顺序建议为：`SkillRegistry` → `TriggerCondition` 匹配 → Skill 执行 → `ToolRegistry` → `ToolRunner` 主流程 → 内置工具 → 沙箱 → 搜索/热加载/版本管理。
+- 搜索、热加载、版本管理属于“增强可用性”，优先级低于“能注册、能触发、能安全执行工具”。
+- `M5` 的关键交付是运行时能力闭环：事件命中 Skill，Skill 能安全调用 Tool，并返回统一结果。
+
+### M5 最小可交付
+
+- [ ] `SkillRegistry` 支持注册、查询、启用、禁用
+- [ ] `TriggerCondition` 能匹配基础事件并触发 Skill 执行
+- [ ] `ToolRegistry` 支持注册与查找工具
+- [ ] `ToolRunner` 完成参数校验、安全检查、执行、清理的主流程
+- [ ] 至少一个内置工具可用，建议优先 `file` 或 `http`
+- [ ] Tool 执行结果有统一返回结构，错误可观测
+- [ ] Skill 能在执行过程中调用 Tool，并拿到结果
+
+### M5 验收标准（可直接打勾）
+
+- [ ] Skill 注册、启停、触发流程可通过集成测试验证
+- [ ] `TriggerCondition` 至少覆盖常用事件匹配规则
+- [ ] `ToolRunner` 的 6 步流程有明确测试覆盖
+- [ ] 工具超时、参数非法、权限不足时能返回稳定错误
+- [ ] 至少一个内置工具在集成测试中可稳定运行
+- [ ] 技能触发后调用工具的完整链路可跑通
+- [ ] `cargo test -p aman-skill -p aman-tool` 通过
+
+### M5 范围边界
+
+- `M5` 不要求一开始把全文检索、语义匹配、版本 diff 都做到完整体验，可先保留接口与基础实现。
+- `M5` 不要求所有内置工具同批完成，先选择最能支撑主链路的工具类型落地。
+- `M5` 不要求完整容器/WASM 沙箱，只要本地子进程隔离路径可用即可。
 
 ### 5.1 Skill 系统 (`crates/aman-skill/`)
 - [ ] 实现 `SkillRegistry` 结构体（注册/查询/启用/禁用）
@@ -341,6 +490,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 ## M6: Workflow 状态机
 
 **目标**: 实现完整的状态机引擎，支持状态转移、超时、ERROR 恢复。
+
+### M6 当前推进策略
+
+- `M6` 先落“定义 -> 实例 -> 转移 -> 持久化”主链，再补超时、ERROR 恢复和 Pipeline 联动。
+- 实现顺序建议为：`WorkflowDef` → `WorkflowInstance` → `WorkflowEngine.handle_event` → Guard → 超时管理 → ERROR 恢复 → Pipeline 组合。
+- `M6` 的关键是状态语义稳定，包括大小写归一、转移规则、错误出口、重试与恢复策略。
+- 终态回收、长期归档、分级告警等偏运维能力可以后置，只要接口和状态机模型先稳定即可。
+
+### M6 最小可交付
+
+- [ ] 支持定义 Workflow、状态、转移、初始态、终态、错误态
+- [ ] 支持创建 `WorkflowInstance` 并消费事件完成状态迁移
+- [ ] `WorkflowEngine` 能完成一次完整 `handle_event` 流程
+- [ ] Guard 可拦截非法转移并执行 `on_fail`
+- [ ] Action 失败时可进入 `ERROR` 或指定恢复分支
+- [ ] 状态变化可被持久化并发布状态变更事件
+- [ ] 超时机制至少支持基础状态超时转移
+
+### M6 验收标准（可直接打勾）
+
+- [ ] 基础状态流转可通过单元测试验证
+- [ ] 状态名大小写归一逻辑有测试覆盖
+- [ ] Guard 失败与 action 失败路径有测试覆盖
+- [ ] ERROR -> RETRY -> 恢复链路可被测试验证
+- [ ] 至少一个状态超时自动转移案例可稳定通过
+- [ ] Workflow 与 Pipeline 的组合链路至少有一条集成测试
+- [ ] `cargo test -p aman-workflow` 通过
+
+### M6 范围边界
+
+- `M6` 不要求一开始支持全部复杂恢复策略，可以先稳定 `ERROR`、`RETRY`、`CANCEL` 主链。
+- `M6` 不要求先完成高规模实例恢复性能优化，那属于后续持久化与运行时联调议题。
+- `M6` 不要求 UI 可视化或管理界面，重点是状态机内核与事件语义正确。
 
 ### 6.1 Workflow 定义 (`crates/aman-workflow/`)
 - [ ] 实现 `WorkflowDef` 结构体（name, states, initial_state, final_states, error_state, transitions, state_timeouts, error_recovery）
@@ -417,6 +599,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 
 **目标**: 实现插件加载、生命周期管理、依赖解析、隔离策略。
 
+### M7 当前推进策略
+
+- `M7` 先实现插件清单、依赖图、加载顺序与生命周期，再逐步补隔离模式、安装卸载和 SOUL 注入。
+- 实现顺序建议为：`PluginManifest` → 依赖解析/拓扑排序 → `PluginLoader` → 生命周期管理 → 基础隔离模型 → 安装卸载接口 → SOUL 系统。
+- 插件系统最核心的不是“支持多少隔离模式”，而是“加载、卸载、依赖失败、半加载中断时行为明确可控”。
+- `SOUL` 虽然列在 `M7`，但应作为插件/运行时可消费的独立能力建设，避免耦合到插件加载器主链。
+
+### M7 最小可交付
+
+- [ ] `plugin.yaml` 可被解析为 `PluginManifest`
+- [ ] 依赖图可完成拓扑排序与环检测
+- [ ] `PluginLoader` 能按正确顺序加载与卸载插件
+- [ ] 生命周期状态至少支持 `Loaded`、`Enabled`、`Running`、`Shutdown`
+- [ ] 依赖缺失、版本不匹配、环依赖时能稳定失败并给出错误
+- [ ] 至少一种隔离模式可用，建议优先 `InProcess`
+- [ ] SOUL 能被解析并注入运行时上下文，但热更新可后置增强
+
+### M7 验收标准（可直接打勾）
+
+- [ ] 插件清单解析可通过单元测试验证
+- [ ] 拓扑排序、环检测、版本不匹配路径有测试覆盖
+- [ ] 插件加载后可注册 Skills/Tools/EventSources 中至少一种导出
+- [ ] 插件卸载时能按反向拓扑序执行并清理注册信息
+- [ ] 半加载中断场景有可验证的资源回收策略
+- [ ] 至少一种隔离模式有集成测试可运行
+- [ ] `SOUL.md` 解析与注入路径有基础测试
+
+### M7 范围边界
+
+- `M7` 不要求四种隔离模式同时成熟，先把 `InProcess` 打稳，再扩展 `Subprocess`、`Container`、`Wasm`。
+- `M7` 不要求安装卸载 API、桌面端管理界面同步完成，先保证插件内核可用。
+- `M7` 不要求 SOUL 热更新与运行时广播第一阶段就完整落地，可先完成解析和注入接口。
+
 ### 7.1 插件基础设施 (`crates/aman-plugin/`)
 - [ ] 实现 `PluginManifest` 结构体（plugin.yaml 解析）
 - [ ] 实现 `plugin.yaml` 格式定义（name, version, depends_on, lifecycle, exports, config_schema）
@@ -486,6 +701,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 
 **目标**: 实现 WAL、StateStore、DLQ、溢出管理、Checkpoint。
 
+### M8 当前推进策略
+
+- `M8` 先完成“事件可落盘、状态可存储、失败可回收”的持久化基础，再补溢出管理、到期归档与高级一致性策略。
+- 实现顺序建议为：WAL → `PersistentBus` → `StateStore` → DLQ → Overflow → 崩溃恢复联调。
+- `M8` 的关键是崩溃恢复语义明确，尤其是 WAL 重放、checkpoint 推进、DLQ 生命周期和 CAS 冲突行为。
+- 与 `M2`、`M4`、`M6` 的接口要在 `M8` 完成真实收口，因为总线、Pipeline、Workflow 都会依赖这里的持久化语义。
+
+### M8 最小可交付
+
+- [ ] WAL 支持追加写、checkpoint、重放
+- [ ] `PersistentBus` 能完成“先 WAL，后内存投递”的主流程
+- [ ] `StateStore` 至少提供一个可用实现，建议优先 `SledStore`
+- [ ] DLQ 能记录失败事件并支持查询、重试、丢弃
+- [ ] 溢出目录可存放超出内存承载的事件
+- [ ] 崩溃后可从 checkpoint 与 overflow 恢复关键事件流
+- [ ] 至少支持一种写一致性策略，建议先落 `optimistic_lock`
+
+### M8 验收标准（可直接打勾）
+
+- [ ] WAL 重放能在测试中恢复未完成事件
+- [ ] `PersistentBus` 能验证“落盘成功后再投递”的顺序语义
+- [ ] `StateStore` 的 CAS 冲突路径有测试覆盖
+- [ ] DLQ 的入队、查询、重试、丢弃可通过测试验证
+- [ ] overflow 目录写入与重启恢复路径可通过集成测试验证
+- [ ] 持久化层与事件总线/Workflow 至少有一条联合测试链路
+- [ ] `cargo test -p aman-persistence` 通过
+
+### M8 范围边界
+
+- `M8` 不要求一开始支持所有存储后端，先稳定单机嵌入式实现即可。
+- `M8` 不要求全部一致性模式同时成熟，可先以 `optimistic_lock` 作为默认写模型。
+- `M8` 不要求先把冷存储、长期归档、复杂运维告警做全，只要生命周期主链可验证。
+
 ### 8.1 WAL (`crates/aman-persistence/`)
 - [ ] 实现 `WriteAheadLog` 结构体
 - [ ] 实现 `append`（事件 → WAL → fsync → 返回偏移量）
@@ -547,6 +795,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 
 **目标**: 实现 Secret 管理、配置加载/校验、LLM 注入防护。
 
+### M9 当前推进策略
+
+- `M9` 先落配置加载与校验，再接入 Secret 解析，最后补 LLM 注入防护与审计链路。
+- 实现顺序建议为：`AgentConfig` → `ConfigLoader` 多层合并 → `validate` → `SecretResolver` → Secret 缓存/轮换 → `InputSanitizer`。
+- 配置系统是运行时入口，必须优先稳定；Secret 与注入防护都应挂接在统一配置模型之上。
+- `M9` 的目标是“默认安全”，即未额外配置时系统也不应轻易暴露敏感能力。
+
+### M9 最小可交付
+
+- [ ] `AgentConfig` 能表达运行时、总线、插件、Source、Workflow 等核心配置
+- [ ] `ConfigLoader` 支持默认值、文件、环境变量、运行时 override 的层叠加载
+- [ ] `validate` 能拦截明显非法配置
+- [ ] `SecretResolver` 能解析 `${VARIABLE}` 并支持至少一种后端
+- [ ] 敏感操作可通过 `TrustLevel` 或输入消毒链路加以限制
+- [ ] Secret 与配置变更可输出审计信息
+- [ ] 高风险能力可通过配置显式启用或默认关闭
+
+### M9 验收标准（可直接打勾）
+
+- [ ] 配置多层覆盖优先级可通过单元测试验证
+- [ ] 非法配置能在启动前被拦截并返回可读错误
+- [ ] `${VAR}` Secret 注入路径可通过测试验证
+- [ ] 至少一种 Secret 后端在集成测试中可运行
+- [ ] 输入消毒对已知注入模式有可验证拦截效果
+- [ ] 配置变更与 Secret 轮换可留下审计记录
+- [ ] `cargo test -p aman-config -p aman-secret` 通过
+
+### M9 范围边界
+
+- `M9` 不要求所有 Secret 后端同步完成，先稳定 Env 或本地开发路径即可。
+- `M9` 不要求一开始就拥有完整的提示注入检测体系，可先覆盖高风险已知模式。
+- `M9` 不要求配置 UI/可视化编辑器，重点是配置语义、校验与安全默认值。
+
 ### 9.1 Secret 管理 (`crates/aman-secret/`)
 - [ ] 实现 `SecretResolver` 结构体
 - [ ] 实现 ${VARIABLE} 模式扫描（递归遍历配置 JSON）
@@ -598,6 +879,39 @@ M13 集成与打磨       ████████░░░░░░░░░░
 ## M10: 运行时生命周期 + HTTP API + CLI
 
 **目标**: 实现启动/关闭编排、HTTP 控制接口、CLI 命令。
+
+### M10 当前推进策略
+
+- `M10` 先完成运行时编排内核，再补健康检查、控制 API 与 CLI，最后统一安全控制与幂等语义。
+- 实现顺序建议为：`AgentRuntimeBuilder` → 启停阶段编排 → 健康端点 → 核心控制 API → CLI 命令 → 控制接口安全。
+- `M10` 是前面里程碑的组合收口点，关键不是端点数量，而是启动/关闭阶段语义、幂等性和故障边界行为。
+- HTTP API 与 CLI 应共享同一套运行时能力，不要出现两套实现路径。
+
+### M10 最小可交付
+
+- [ ] `AgentRuntime` 能根据配置构建并启动核心子系统
+- [ ] 启动阶段至少能从 Event Bus、Plugin、Source、Workflow 恢复到 ready
+- [ ] 优雅关闭能按阶段停止接收、排水、写 checkpoint、卸载插件
+- [ ] 健康检查端点能区分 `live` 与 `ready`
+- [ ] 至少一组核心控制 API 可用，如启动、关闭、Source pause/resume
+- [ ] CLI 至少支持 `aman run` 与基础健康/控制命令
+- [ ] 关键控制操作具备认证、审计或二次确认中的至少一类保护
+
+### M10 验收标准（可直接打勾）
+
+- [ ] 完整启动序列可通过集成测试验证
+- [ ] 完整关闭序列可通过集成测试验证
+- [ ] 启动中途收到 shutdown 的边界行为可稳定复现并通过测试
+- [ ] `/health/live` 与 `/health/ready` 的阶段差异可被验证
+- [ ] 至少一组 HTTP API 与 CLI 命令指向同一运行时能力并测试通过
+- [ ] 敏感控制操作具备认证或审计覆盖
+- [ ] `cargo test -p aman-runtime -p aman-cli` 通过
+
+### M10 范围边界
+
+- `M10` 不要求所有控制端点一次性全部完成，先覆盖启动、关闭、健康、核心管理操作。
+- `M10` 不要求先把所有可观测性能力接满，那部分在 `M11` 收口。
+- `M10` 不要求桌面端联动完成，Tauri 集成属于 `M12`。
 
 ### 10.1 运行时编排 (`crates/aman-runtime/`)
 - [ ] 实现 `AgentRuntimeBuilder`（构建器模式）
@@ -685,6 +999,38 @@ M13 集成与打磨       ████████░░░░░░░░░░
 
 **目标**: 实现 Tracing、Metrics、审计日志。
 
+### M11 当前推进策略
+
+- `M11` 先打通链路追踪与核心指标，再补审计日志细项与查询接口。
+- 实现顺序建议为：Tracing 基础注入 → Metrics 指标暴露 → AuditLogger → Trace/Metrics/Audit API。
+- 可观测性不应成为独立孤岛，必须复用前面里程碑已经定义好的 `trace_id`、事件元数据、DLQ、配置与插件操作语义。
+- `M11` 的目标不是“监控面板丰富”，而是“关键行为有据可查、故障可定位、状态可量化”。
+
+### M11 最小可交付
+
+- [ ] 事件从进入系统到执行完成有连续 TraceID
+- [ ] 核心运行指标可通过 Prometheus 端点拉取
+- [ ] 关键审计行为可落日志并查询
+- [ ] 失败链路可从 trace 或 audit 中还原原因
+- [ ] `GET /metrics` 与 `GET /events/trace/{trace_id}` 至少有基础实现
+- [ ] 配置变更、DLQ 操作、插件操作等关键管理动作被审计
+- [ ] Tracing、Metrics、Audit 能共享统一上下文标识
+
+### M11 验收标准（可直接打勾）
+
+- [ ] TraceID 在事件生命周期中可贯穿验证
+- [ ] Prometheus 输出格式符合标准并可被抓取
+- [ ] 审计日志至少覆盖配置、Secret、DLQ、插件、注入尝试等关键类型
+- [ ] trace、metrics、audit 至少各有一条集成测试链路
+- [ ] 循环 parent 链路可被检测并安全截断
+- [ ] `cargo test` 覆盖相关可观测性模块并通过
+
+### M11 范围边界
+
+- `M11` 不要求先接入完整外部观测平台，先保证本地导出格式与接口稳定。
+- `M11` 不要求预先设计复杂 dashboard，可先输出标准 tracing/metrics/audit 数据。
+- `M11` 不要求所有低价值事件都审计，重点覆盖安全和运维关键路径。
+
 ### 11.1 OpenTelemetry Tracing
 - [ ] 集成 `tracing` + `opentelemetry` crates
 - [ ] 实现事件处理自动创建 span（event_processing → dispatcher_route → skill/pipeline/workflow_execute → tool_execute）
@@ -731,6 +1077,38 @@ M13 集成与打磨       ████████░░░░░░░░░░
 ## M12: Tauri v2 桌面应用
 
 **目标**: 实现跨平台桌面应用，提供可视化 Dashboard、编辑器。
+
+### M12 当前推进策略
+
+- `M12` 先完成 Tauri 壳层、状态管理与核心 IPC，再逐步补页面、实时事件流与跨平台体验。
+- 实现顺序建议为：Tauri 项目骨架 → `AppState` → 运行时相关 commands → Dashboard/基础页面 → 实时事件流 → 其他管理页面。
+- `M12` 应尽量复用 `M10` 的 HTTP/API/运行时语义，不重新发明桌面端专属业务逻辑。
+- 桌面端的重点是把已有运行时能力可视化，不是另起一套 Agent 内核。
+
+### M12 最小可交付
+
+- [ ] `aman-tauri` 项目可启动并承载前端界面
+- [ ] Tauri 能持有 `AgentRuntime` 或其可控句柄
+- [ ] 至少支持启动、停止、查看指标三类核心 commands
+- [ ] 至少有一个基础 Dashboard 页面展示运行状态
+- [ ] 至少一条实时事件流可从后端推送到前端
+- [ ] SOUL 或 Skill 相关编辑能力至少有一个最小可用页面
+- [ ] 桌面端可驱动运行时完成一次基本管理操作
+
+### M12 验收标准（可直接打勾）
+
+- [ ] Tauri 项目在本地开发环境可稳定启动
+- [ ] 核心 commands 与运行时交互可通过功能测试验证
+- [ ] Dashboard 至少展示健康状态、吞吐或队列深度中的关键信息
+- [ ] 实时事件或指标推送路径可被验证
+- [ ] 至少一个编辑类页面可完成读取、修改、预览或提交动作
+- [ ] 至少完成一次跨平台验证或平台差异记录
+
+### M12 范围边界
+
+- `M12` 不要求第一阶段就把所有页面全部做到完整产品化，先覆盖最重要的运行监控与基本编辑能力。
+- `M12` 不要求桌面端替代 CLI/HTTP API，三者应协同而非重复建设。
+- `M12` 不要求一开始就做复杂视觉打磨，先保证 IPC、状态与运行时交互稳定。
 
 ### 12.1 Tauri 项目初始化 (`crates/aman-tauri/`)
 - [ ] 创建 Tauri v2 项目骨架
@@ -779,6 +1157,38 @@ M13 集成与打磨       ████████░░░░░░░░░░
 ## M13: 集成测试、文档与发布
 
 **目标**: 端到端测试、性能基准、开发者文档、发布准备。
+
+### M13 当前推进策略
+
+- `M13` 是整体收官阶段，应把前面各里程碑的独立能力汇总成可验证、可交付、可发布的产品状态。
+- 实现顺序建议为：端到端场景测试 → 性能基准 → 开发者文档 → SDK → 发布与 CI/CD。
+- `M13` 的价值不在新增功能，而在把已有能力转化成“别人能安装、能理解、能扩展、能信任”的交付物。
+- 性能指标、文档与发布流程必须围绕真实主链路，而不是只做静态说明。
+
+### M13 最小可交付
+
+- [ ] 至少覆盖核心主链路的端到端集成测试
+- [ ] 至少建立事件总线、Pipeline、WAL 等关键性能基准
+- [ ] 提供最小开发者文档集：README、配置、Skill、Plugin、Workflow、API、CLI
+- [ ] `aman-sdk` 至少能为外部开发者提供核心类型与最小依赖
+- [ ] CI 能自动执行测试、静态检查与构建
+- [ ] 版本策略与变更记录机制明确
+- [ ] 项目达到一次可发布状态
+
+### M13 验收标准（可直接打勾）
+
+- [ ] 关键 E2E 场景可在 CI 或本地稳定复现
+- [ ] 性能基准有明确结果输出，并可与目标值比较
+- [ ] 核心开发者文档齐备且与实现一致
+- [ ] `aman-sdk` 能支撑至少一个外部样例 Skill 或 Plugin
+- [ ] `cargo test --workspace`、`cargo clippy --workspace -- -D warnings`、`cargo doc --workspace --no-deps` 通过
+- [ ] 发布流程、版本号策略与 `CHANGELOG.md` 已就绪
+
+### M13 范围边界
+
+- `M13` 不应再引入大规模新能力，重点是稳定性、可用性与可发布性收口。
+- `M13` 不要求一开始就达到所有性能目标，但必须建立可重复基准与差距分析。
+- `M13` 不要求文档面面俱到，先覆盖外部开发者最需要的路径与接口。
 
 ### 13.1 端到端集成测试
 - [ ] 场景 1：文件变更 → Pipeline → 通知（FileWatch → OCR Pipeline → Slack）完整链路

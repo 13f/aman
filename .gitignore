@@ -1,1 +1,8 @@
-docs/.DS_Store
+.DS_Store
+target/
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml

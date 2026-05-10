@@ -11,7 +11,7 @@
 M0  设计与规划       ████████████████████  已完成
 M1  基础骨架         ████████████████████  已完成
 M2  事件总线         ████████████████████  已完成
-M3  事件源           ░░░░░░░░░░░░░░░░░░░░  未开始
+M3  事件源           ████████████████████  已完成
 M4  分发 + 管道      ░░░░░░░░░░░░░░░░░░░░  未开始
 M5  Skill + Tool     ░░░░░░░░░░░░░░░░░░░░  未开始
 M6  Workflow 状态机  ░░░░░░░░░░░░░░░░░░░░  未开始
@@ -29,16 +29,16 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 - 当前仓库已完成系统设计与 roadmap 编写，可视为 `M0 设计与规划` 完成。
 - 当前仓库已具备 Rust workspace、核心 crate 骨架与 `kernel`/`macros` 的基础实现，因此 `M1` 可视为完成。
 - 当前 `event-bus` 已完成 M2 全部核心功能：5 级背压（L1-Critical）、overflow 磁盘溢出与恢复、BloomFilter+LRU 去重、同源保序、待重试队列，36 项测试全部通过。`M2` 可视为已完成。
-- 下一步建议聚焦 `M3 事件源`，优先打通 `SourceRegistry` → `TimerSource` → Event Bus 注入的最小闭环。
+- 当前 `source` 已完成 M3 全部任务：`SourceRegistry`、`Timer/Cron/FileWatch/Webhook/Signal/Socket` 事件源、运行时管理与持久化、关键集成测试均已落地。
 - 上方进度条表示**工程实现进度**，不包含设计文档完成度；避免把规划完成误读为功能已落地。
-- 下一步建议聚焦 `M2 事件总线` 的剩余缺口，优先补齐更完整的背压分级、去重实现细化与待重试队列接口，再推进 `M3`。
+- 当前 `M4` 已完成最小闭环与并发/补偿收尾；下一步建议转入 `M5`（Skill/Tool 运行边界与执行主链）。
 
 ### 最近推进建议
 
-- 第一优先级：推进 `M3 事件源`，实现 `SourceRegistry` + `TimerSource` 最小闭环
-- 第二优先级：把 `DedupWindow` 的 AT_MOST_ONCE 跳过 hash 优化补齐
-- 第三优先级：补 `RetryQueue` 队列满阻塞 WAL checkpoint 的三级联锁（M8 联调收口）
-- 第四优先级：压力测试 10K events/s 吞吐验证
+- 第一优先级：启动 `M5`，先落 `SkillRegistry` 与 `TriggerCondition` 最小可用实现
+- 第二优先级：实现 `ToolRegistry + ToolRunner` 主流程（参数校验、安全检查、执行、清理）
+- 第三优先级：补 `Skill -> Tool` 集成测试主链（触发、执行、错误语义）
+- 第四优先级：补一轮端到端冒烟（事件触发 Skill 并调用 Tool 返回结果）
 
 ***
 
@@ -228,23 +228,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M3 最小可交付
 
-- [ ] `source` crate 可注册、查找、启动、暂停、恢复、关闭事件源
-- [ ] `TimerSource` 可稳定产生事件，作为最小拉通样例
-- [ ] `WebhookSource` 可接收 HTTP 请求并注入事件总线
-- [ ] `FileWatchSource` 可在稳定确认后发布文件事件
-- [ ] 所有 Source 共享统一生命周期与健康状态接口
-- [ ] Push 类型来源能响应背压暂停信号
-- [ ] `trust_level` 能进入事件上下文或路由上下文
+- [x] `source` crate 可注册、查找、启动、暂停、恢复、关闭事件源
+- [x] `TimerSource` 可稳定产生事件，作为最小拉通样例
+- [x] `WebhookSource` 可接收 HTTP 请求并注入事件总线
+- [x] `FileWatchSource` 可在稳定确认后发布文件事件
+- [x] 所有 Source 共享统一生命周期与健康状态接口
+- [x] Push 类型来源能响应背压暂停信号
+- [x] `trust_level` 能进入事件上下文或路由上下文
 
 ### M3 验收标准（可直接打勾）
 
-- [ ] `SourceRegistry` 能完成注册、重复检查、查找与卸载
-- [ ] 事件源生命周期流转可通过测试验证：`init -> running -> pause/resume -> shutdown`
-- [ ] `TimerSource` 与 `WebhookSource` 能通过集成测试将事件注入 Event Bus
-- [ ] `FileWatchSource` 的 debounce 与 incomplete 行为可被测试覆盖
-- [ ] 背压 Level 3 时，Push 来源能暂停接收或暂停发布
-- [ ] `trust_level` 配置值可从 Source 传到后续处理链路
-- [ ] `cargo test -p source` 通过
+- [x] `SourceRegistry` 能完成注册、重复检查、查找与卸载
+- [x] 事件源生命周期流转可通过测试验证：`init -> running -> pause/resume -> shutdown`
+- [x] `TimerSource` 与 `WebhookSource` 能通过集成测试将事件注入 Event Bus
+- [x] `FileWatchSource` 的 debounce 与 incomplete 行为可被测试覆盖
+- [x] 背压 Level 3 时，Push 来源能暂停接收或暂停发布
+- [x] `trust_level` 配置值可从 Source 传到后续处理链路
+- [x] `cargo test -p source` 通过
 
 ### M3 范围边界
 
@@ -254,73 +254,73 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 3.1 EventSource 基础设施 (`crates/source/`)
 
-- [ ] 实现 `SourceRegistry` 结构体（注册/查找/管理）
-- [ ] 实现 `SourceMode` 标记（Pull vs Push）
-- [ ] 实现统一的事件源生命周期管理（init → running → pause/resume → shutdown）
-- [ ] 实现统一 `trust_level` 配置（trusted | untrusted | sandboxed，默认 `untrusted`）
-- [ ] 实现 `trust_level` 向 Dispatcher / LLM 防护链路传递（路由阶段自动附加安全约束）
+- [x] 实现 `SourceRegistry` 结构体（注册/查找/管理）
+- [x] 实现 `SourceMode` 标记（Pull vs Push）
+- [x] 实现统一的事件源生命周期管理（init → running → pause/resume → shutdown）
+- [x] 实现统一 `trust_level` 配置（trusted | untrusted | sandboxed，默认 `untrusted`）
+- [x] 实现 `trust_level` 向 Dispatcher / LLM 防护链路传递（路由阶段自动附加安全约束）
 
 ### 3.2 TimerSource (`timer.rs`)
 
-- [ ] 实现固定间隔定时器（tokio::time::interval）
-- [ ] 实现 `heartbeat: true` 心跳模式（产出 heartbeat 事件）
-- [ ] 实现 `catch_up: skip`（默认，跳过错过的）
-- [ ] 实现 `reconfigure`（动态调整间隔）
-- [ ] 测试：间隔精度验证
+- [x] 实现固定间隔定时器（tokio::time::interval）
+- [x] 实现 `heartbeat: true` 心跳模式（产出 heartbeat 事件）
+- [x] 实现 `catch_up: skip`（默认，跳过错过的）
+- [x] 实现 `reconfigure`（动态调整间隔）
+- [x] 测试：间隔精度验证
 
 ### 3.3 CronSource (`cron.rs`)
 
-- [ ] 集成 `cron` crate 解析 cron 表达式
-- [ ] 支持 5 字段（标准）和 6 字段（秒级）
-- [ ] 实现时区支持（`timezone` 配置，默认 UTC）
-- [ ] 实现夏令时策略（skip | repeat\_once | wall\_clock）
-- [ ] 实现 `catch_up` 策略（skip | latest | all）
-- [ ] 实现 `rate_limit` 安全守卫（最小间隔 1s，每秒最多 100 个 CRON\_TICK）
-- [ ] 实现 `rate_limit_overflow: delay`（超额延迟而非丢弃）
-- [ ] 实现 `leader_election` 支持（可选，主备模式防重复）
-- [ ] 实现运行时管理接口（CronManager: add/remove/update/pause/resume/list/get\_next\_run）
-- [ ] 实现 `cron_override.yaml` 持久化（见 §6.4.1 合并语义）
-- [ ] 实现审计日志（每次 cron 变更记录 old\_interval, new\_interval, caller, timestamp）
-- [ ] 测试：时区转换正确性
-- [ ] 测试：夏令时边界行为
-- [ ] 测试：catch\_up 恢复事件注入限速
+- [x] 集成 `cron` crate 解析 cron 表达式
+- [x] 支持 5 字段（标准）和 6 字段（秒级）
+- [x] 实现时区支持（`timezone` 配置，默认 UTC）
+- [x] 实现夏令时策略（skip | repeat\_once | wall\_clock）
+- [x] 实现 `catch_up` 策略（skip | latest | all）
+- [x] 实现 `rate_limit` 安全守卫（最小间隔 1s，每秒最多 100 个 CRON\_TICK）
+- [x] 实现 `rate_limit_overflow: delay`（超额延迟而非丢弃）
+- [x] 实现 `leader_election` 支持（可选，主备模式防重复）
+- [x] 实现运行时管理接口（CronManager: add/remove/update/pause/resume/list/get\_next\_run）
+- [x] 实现 `cron_override.yaml` 持久化（见 §6.4.1 合并语义）
+- [x] 实现审计日志（每次 cron 变更记录 old\_interval, new\_interval, caller, timestamp）
+- [x] 测试：时区转换正确性
+- [x] 测试：夏令时边界行为
+- [x] 测试：catch\_up 恢复事件注入限速
 
 ### 3.4 FileWatchSource (`file_watch.rs`)
 
-- [ ] 集成 `notify` crate 实现跨平台文件监控
-- [ ] 实现"稳定确认"机制（debounce 500ms + 文件锁检测）
-- [ ] 实现 `check_open_files` 三值模式（auto | true | false）
-- [ ] 实现 `force_publish_on_timeout` 枚举（mark\_incomplete | publish\_anyway | none）
-- [ ] 实现远程文件系统检测（auto 模式自动跳过锁检测）
-- [ ] 测试：debounce 正确（快速连续写入只触发一次）
-- [ ] 测试：incomplete 标记（文件超 max\_stable\_wait 仍未关闭）
+- [x] 集成 `notify` crate 实现跨平台文件监控
+- [x] 实现"稳定确认"机制（debounce 500ms + 文件锁检测）
+- [x] 实现 `check_open_files` 三值模式（auto | true | false）
+- [x] 实现 `force_publish_on_timeout` 枚举（mark\_incomplete | publish\_anyway | none）
+- [x] 实现远程文件系统检测（auto 模式自动跳过锁检测）
+- [x] 测试：debounce 正确（快速连续写入只触发一次）
+- [x] 测试：incomplete 标记（文件超 max\_stable\_wait 仍未关闭）
 
 ### 3.5 WebhookSource (`webhook.rs`)
 
-- [ ] 实现 HTTP 服务器监听（axum）
-- [ ] 实现 `path` 配置（回调 URL 路径）
-- [ ] 实现 `port` 配置
-- [ ] 实现背压时返回 HTTP 503
-- [ ] 实现 `trust_level` 配置（trusted | untrusted | sandboxed）
-- [ ] 测试：Webhook 事件正确注入 Event Bus
+- [x] 实现 HTTP 服务器监听（axum）
+- [x] 实现 `path` 配置（回调 URL 路径）
+- [x] 实现 `port` 配置
+- [x] 实现背压时返回 HTTP 503
+- [x] 实现 `trust_level` 配置（trusted | untrusted | sandboxed）
+- [x] 测试：Webhook 事件正确注入 Event Bus
 
 ### 3.6 SignalSource (`signal.rs`)
 
-- [ ] 监听 OS 信号（SIGTERM, SIGINT, SIGHUP, SIGUSR1）
-- [ ] 信号到达 → 产出 `SYSTEM_SIGNAL` 事件
-- [ ] 测试：SIGTERM 事件产出的 pipeline 响应
+- [x] 监听 OS 信号（SIGTERM, SIGINT, SIGHUP, SIGUSR1）
+- [x] 信号到达 → 产出 `SYSTEM_SIGNAL` 事件
+- [x] 测试：SIGTERM 事件产出的 pipeline 响应
 
 ### 3.7 SocketSource (`socket.rs`)
 
-- [ ] 实现 TCP/UDP/Unix Domain Socket 监听
-- [ ] 实现 Push 模式（接收数据 → publish）
-- [ ] 实现背压时暂停接收（TcpUserTimeout）
+- [x] 实现 TCP/UDP/Unix Domain Socket 监听
+- [x] 实现 Push 模式（接收数据 → publish）
+- [x] 实现背压时暂停接收（TcpUserTimeout）
 
 ### 3.8 验证
 
-- [ ] 集成测试：所有事件源注册 → 启动 → 产事件 → Event Bus 接收
-- [ ] 集成测试：事件源 pause/resume
-- [ ] 集成测试：背压 Level 3 时 Push 来源暂停 + Webhook 返回 503
+- [x] 集成测试：所有事件源注册 → 启动 → 产事件 → Event Bus 接收
+- [x] 集成测试：事件源 pause/resume
+- [x] 集成测试：背压 Level 3 时 Push 来源暂停 + Webhook 返回 503
 
 ***
 
@@ -337,23 +337,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M4 最小可交付
 
-- [ ] `Dispatcher` 能根据 `RouteRule` 将事件路由到指定 `Pipeline`
-- [ ] `MatchCondition` 支持最常用的 `Type`、`Source`、`Priority` 匹配
-- [ ] `PipelineEngine` 能顺序执行 `Filter -> Transform -> Action`
-- [ ] Pipeline 全成功时能产生输出事件并重新发布
-- [ ] Pipeline 失败时能触发补偿链或记录失败结果
-- [ ] 至少一种并发模型可用，建议先落 `Serial`
-- [ ] 失败事件可进入 DLQ 或形成明确失败记录
+- [x] `Dispatcher` 能根据 `RouteRule` 将事件路由到指定 `Pipeline`
+- [x] `MatchCondition` 支持最常用的 `Type`、`Source`、`Priority` 匹配
+- [x] `PipelineEngine` 能顺序执行 `Filter -> Transform -> Action`
+- [x] Pipeline 全成功时能产生输出事件并重新发布
+- [x] Pipeline 失败时能触发补偿链或记录失败结果
+- [x] 至少一种并发模型可用，建议先落 `Serial`
+- [x] 失败事件可进入 DLQ 或形成明确失败记录
 
 ### M4 验收标准（可直接打勾）
 
-- [ ] 路由规则命中逻辑可通过集成测试验证
-- [ ] Pipeline 三类步骤的执行顺序与中断语义可通过测试验证
-- [ ] 步骤级重试策略能按 `RetryPolicy` 生效
-- [ ] 补偿执行顺序严格为逆序，失败时返回明确结果
-- [ ] `Serial` 与至少一种其他并发模式有可运行测试
-- [ ] 输出事件发布与失败入 DLQ 路径都可被验证
-- [ ] `cargo test -p dispatcher -p pipeline` 通过
+- [x] 路由规则命中逻辑可通过集成测试验证
+- [x] Pipeline 三类步骤的执行顺序与中断语义可通过测试验证
+- [x] 步骤级重试策略能按 `RetryPolicy` 生效
+- [x] 补偿执行顺序严格为逆序，失败时返回明确结果
+- [x] `Serial` 与至少一种其他并发模式有可运行测试
+- [x] 输出事件发布与失败入 DLQ 路径都可被验证
+- [x] `cargo test -p dispatcher -p pipeline` 通过
 
 ### M4 范围边界
 
@@ -363,41 +363,41 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 4.1 Dispatcher (`crates/dispatcher/`)
 
-- [ ] 实现 `Dispatcher` 结构体
-- [ ] 实现 `RouteRule` 路由规则表
-- [ ] 实现 `MatchCondition` 匹配引擎（Type, Source, TypeAndSource, Priority, PayloadMatch, All, Any, Custom）
-- [ ] 实现 `DispatchTarget` 枚举（Pipeline, Skill, Workflow, Hook, FanOut）
-- [ ] 实现 `TransformRule` 转换引擎（Event → Vec<Event>）
-- [ ] 实现 `FilterRule` 过滤规则（rate\_limit 防抖）
-- [ ] 实现路由优先级（同事件命中多条规则时按 priority 字段排序）
-- [ ] 实现 `rebuild_routes` 动态重建路由表（插件/Skill 变更时）
-- [ ] 实现 `SubscriptionFilter` → `MatchCondition` 转换
+- [x] 实现 `Dispatcher` 结构体
+- [x] 实现 `RouteRule` 路由规则表
+- [x] 实现 `MatchCondition` 匹配引擎（已支持 Type, Source, TypeAndSource, Priority, All, Any）
+- [x] 实现 `DispatchTarget` 枚举（Pipeline, Skill, Workflow, Hook, FanOut）
+- [x] 实现 `TransformRule` 转换引擎（Event → Vec<Event>）
+- [x] 实现 `FilterRule` 过滤规则（rate\_limit 防抖）
+- [x] 实现路由优先级（同事件命中多条规则时按 priority 字段排序）
+- [x] 实现 `rebuild_routes` 动态重建路由表（插件/Skill 变更时）
+- [x] 实现 `SubscriptionFilter` → `MatchCondition` 转换
 
 ### 4.2 Pipeline 引擎 (`crates/pipeline/`)
 
-- [ ] 实现 `PipelineEngine` 执行引擎
-- [ ] 实现 `PipelineInstance` 运行时（id, compensation\_stack, temp\_dir）
-- [ ] 实现步骤执行循环：Filter → Transform → Action
-- [ ] 实现步骤级别重试（RetryPolicy: max\_attempts + retry\_backoff）
-- [ ] 实现输出事件产出（全部成功 → publish Output Event）
+- [x] 实现 `PipelineEngine` 执行引擎
+- [x] 实现 `PipelineInstance` 运行时（id, compensation\_stack, temp\_dir）
+- [x] 实现步骤执行循环：Filter → Transform → Action
+- [x] 实现步骤级别重试（RetryPolicy: max_attempts + retry_backoff）
+- [x] 实现输出事件产出（全部成功 → publish Output Event）
 
 ### 4.3 补偿引擎 (`compensation.rs`)
 
-- [ ] 实现 `CompensationEngine` 结构体
-- [ ] 实现 `reverse_order` 补偿（C\_N → C\_(N-1) → ... → C\_1）
-- [ ] 实现补偿操作的独立重试（compensation\_contract.retry\_count）
-- [ ] 实现补偿超时保护（compensation\_contract.timeout\_sec: 30）
-- [ ] 实现 `CompensationResult`（FullyCompensated | PartiallyCompensated）
-- [ ] 实现 COMPENSATION\_FAILED 中间态 + 告警
-- [ ] 实现补偿状态日志（记录哪些步骤已补偿、哪些失败）
+- [x] 实现 `CompensationEngine` 结构体
+- [x] 实现 `reverse_order` 补偿（C\_N → C\_(N-1) → ... → C\_1）
+- [x] 实现补偿操作的独立重试（compensation\_contract.retry\_count）
+- [x] 实现补偿超时保护（compensation\_contract.timeout\_sec: 30）
+- [x] 实现 `CompensationResult`（FullyCompensated | PartiallyCompensated）
+- [x] 实现 COMPENSATION\_FAILED 中间态 + 告警
+- [x] 实现补偿状态日志（记录哪些步骤已补偿、哪些失败）
 
 ### 4.4 并发控制 (`concurrency.rs`)
 
-- [ ] 实现 `ConcurrencyController` 结构体
-- [ ] 实现 Serial 模式（单实例队列）
-- [ ] 实现 Parallel 模式（强制 optimistic\_lock + 独立 temp\_dir）
-- [ ] 实现 Limited(N) 模式（AsyncSemaphore）
-- [ ] 实现 parallel 模式的安全条件校验：
+- [x] 实现 `ConcurrencyController` 结构体
+- [x] 实现 Serial 模式（单实例队列）
+- [x] 实现 Parallel 模式（强制 optimistic\_lock + 独立 temp\_dir）
+- [x] 实现 Limited(N) 模式（最小可运行实现）
+- [x] 实现 parallel 模式的安全条件校验：
   - StateStore 使用 optimistic\_lock
   - 每个实例独立临时目录
   - 补偿操作按实例 scope 隔离
@@ -405,16 +405,16 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 4.5 Dead Letter Channel
 
-- [ ] 实现 Pipeline 失败 → 事件入 DLQ
-- [ ] 记录 DLQ 原因（PipelineFailed, CompensationFailed）
+- [x] 实现 Pipeline 失败 → 事件入 DLQ
+- [x] 记录 DLQ 原因（PipelineFailed, CompensationFailed）
 
 ### 4.6 验证
 
-- [ ] 集成测试：Dispatcher 路由分发（event → pipeline/skill/workflow）
-- [ ] 集成测试：Pipeline 正常执行（3 步全成功 → 产出输出事件）
-- [ ] 集成测试：Pipeline 失败 + 补偿全部成功
-- [ ] 集成测试：Pipeline 失败 + 补偿部分失败 → COMPENSATION\_FAILED
-- [ ] 集成测试：Serial / Parallel / Limited(N) 并发模型
+- [x] 集成测试：Dispatcher 路由分发（event → pipeline）
+- [x] 集成测试：Pipeline 正常执行（3 步全成功 → 产出输出事件）
+- [x] 集成测试：Pipeline 失败 + 补偿全部成功
+- [x] 集成测试：Pipeline 失败 + 补偿部分失败 → COMPENSATION\_FAILED
+- [x] 集成测试：Serial / Parallel / Limited(N) 并发模型
 
 ***
 
@@ -1363,4 +1363,3 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 | `grace_period_sec` (secret rotation) | 60                  | §9.2   |
 | `timeout_defer_ms` (workflow)        | 5000                | §3.7   |
 | `retry_cancel_conflict_defer_ms`     | 5000                | §3.7   |
-

@@ -25,15 +25,15 @@
 aman/
 ├── Cargo.toml                    # [workspace] 根
 ├── crates/
-│   ├── aman-core/                # 核心类型 + 共享 Trait
+│   ├── core/                # 核心类型 + 共享 Trait
 │   │   ├── src/
 │   │   │   ├── event.rs          # Event, EventMetadata, Priority, Delivery
-│   │   │   ├── error.rs          # AmanError, AmanResult<T>
+│   │   │   ├── error.rs          # Error, Result<T>
 │   │   │   ├── types.rs          # Timestamp, TraceId, SourceId, 共享 newtype
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-event-bus/           # Event Bus (中枢)
+│   ├── event-bus/           # Event Bus (中枢)
 │   │   ├── src/
 │   │   │   ├── bus.rs            # EventBus trait + InMemoryBus + PersistentBus
 │   │   │   ├── backpressure.rs   # 5级分层背压引擎
@@ -42,7 +42,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-dispatcher/          # 事件分发器
+│   ├── dispatcher/          # 事件分发器
 │   │   ├── src/
 │   │   │   ├── dispatcher.rs     # Dispatcher: Router + Transformer + Filter
 │   │   │   ├── route.rs          # RouteRule: match → target(s)
@@ -50,7 +50,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-pipeline/            # Pipeline 链式处理
+│   ├── pipeline/            # Pipeline 链式处理
 │   │   ├── src/
 │   │   │   ├── pipeline.rs       # Pipeline 定义 + 执行引擎
 │   │   │   ├── step.rs           # PipelineStep: Filter/Transform/Action
@@ -59,7 +59,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-skill/               # Skill 系统 (独立能力单元)
+│   ├── skill/               # Skill 系统 (独立能力单元)
 │   │   ├── src/
 │   │   │   ├── skill.rs          # Skill trait + 执行上下文
 │   │   │   ├── registry.rs       # SkillRegistry: 注册/查询/热加载
@@ -70,7 +70,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-workflow/            # Workflow 状态机
+│   ├── workflow/            # Workflow 状态机
 │   │   ├── src/
 │   │   │   ├── workflow.rs       # Workflow 定义 (states/transitions/guards)
 │   │   │   ├── instance.rs       # WorkflowInstance 运行时
@@ -79,7 +79,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-tool/                # Tool Runner (执行单元)
+│   ├── tool/                # Tool Runner (执行单元)
 │   │   ├── src/
 │   │   │   ├── tool.rs           # Tool trait + 参数/返回 Schema
 │   │   │   ├── runner.rs         # ToolRunner: 6步执行流程
@@ -91,7 +91,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-source/              # Event Source (事件源)
+│   ├── source/              # Event Source (事件源)
 │   │   ├── src/
 │   │   │   ├── source.rs         # EventSource trait (Pull + Push)
 │   │   │   ├── source_registry.rs
@@ -104,7 +104,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-plugin/              # 插件系统
+│   ├── plugin/              # 插件系统
 │   │   ├── src/
 │   │   │   ├── plugin.rs         # Plugin trait
 │   │   │   ├── manifest.rs       # plugin.yaml 解析
@@ -114,14 +114,14 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-hook/                # Hook 系统
+│   ├── hook/                # Hook 系统
 │   │   ├── src/
 │   │   │   ├── hook.rs           # Hook trait + HookPoint 枚举
 │   │   │   ├── registry.rs       # HookRegistry: 注册/优先级/链式调用
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-soul/                # SOUL 系统 (Agent 身份/行为)
+│   ├── soul/                # SOUL 系统 (Agent 身份/行为)
 │   │   ├── src/
 │   │   │   ├── soul.rs           # Soul 定义: CoreTruths/DomainExpertise/Boundaries
 │   │   │   ├── parser.rs         # SOUL.md 解析器
@@ -129,7 +129,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-persistence/         # 持久化层
+│   ├── persistence/         # 持久化层
 │   │   ├── src/
 │   │   │   ├── wal.rs            # 预写日志 (Write-Ahead Log)
 │   │   │   ├── checkpoint.rs     # Checkpoint 管理
@@ -139,7 +139,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-secret/              # 密钥管理
+│   ├── secret/              # 密钥管理
 │   │   ├── src/
 │   │   │   ├── secret.rs         # SecretResolver: ${VAR} 模式解析
 │   │   │   ├── vault.rs          # 外部 Secret Store 适配 (Vault/AWS/1Password)
@@ -147,7 +147,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-config/              # 配置系统
+│   ├── config/              # 配置系统
 │   │   ├── src/
 │   │   │   ├── config.rs         # AgentConfig: 完整配置结构
 │   │   │   ├── loader.rs         # 多层配置加载 (默认→文件→环境→运行时override)
@@ -155,14 +155,14 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-runtime/             # 运行时 (启动/关闭编排)
+│   ├── runtime/             # 运行时 (启动/关闭编排)
 │   │   ├── src/
 │   │   │   ├── runtime.rs        # AgentRuntime: Phase 0→5 启动 + Phase 5→0 关闭
 │   │   │   ├── health.rs         # /health/live + /health/ready
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-cli/                 # CLI 二进制
+│   ├── cli/                 # CLI 二进制
 │   │   ├── src/
 │   │   │   ├── main.rs           # clap 命令入口
 │   │   │   ├── cmd/              # 子命令
@@ -175,7 +175,7 @@ aman/
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
 │   │
-│   ├── aman-tauri/               # Tauri v2 桌面应用
+│   ├── tauri/               # Tauri v2 桌面应用
 │   │   ├── src-tauri/
 │   │   │   ├── Cargo.toml
 │   │   │   ├── tauri.conf.json
@@ -198,42 +198,42 @@ aman/
 │   │   │   └── index.html
 │   │   └── package.json
 │   │
-│   ├── aman-sdk/                 # SDK (供外部 Skill/Plugin 开发者)
+│   ├── sdk/                 # SDK (供外部 Skill/Plugin 开发者)
 │   │   ├── Cargo.toml
 │   │   └── src/
 │   │       ├── prelude.rs
 │   │       └── lib.rs
 │   │
-│   └── aman-macros/              # 过程宏
+│   └── macros/              # 过程宏
 │       ├── Cargo.toml
 │       └── src/
-│           ├── skill.rs          # #[aman_skill] 属性宏
-│           ├── plugin.rs         # #[aman_plugin] 属性宏
+│           ├── skill.rs          # #[skill] 属性宏
+│           ├── plugin.rs         # #[plugin] 属性宏
 │           └── lib.rs
 ```
 
 ---
 
-## 3. 核心类型系统 (`aman-core`)
+## 3. 核心类型系统 (`kernel`)
 
 ### 3.1 依赖关系
 
 ```
-aman-core (零内部依赖，仅 serde/uuid/chrono)
+core (零内部依赖，仅 serde/uuid/chrono)
     ↑
-    ├── aman-event-bus  ← aman-persistence
-    ├── aman-source     ← aman-config
-    ├── aman-dispatcher ← aman-skill, aman-pipeline, aman-workflow, aman-hook
-    ├── aman-tool       ← aman-secret
-    ├── aman-plugin     ← aman-core (循环打破: Plugin 不依赖 core，core 定义 Plugin trait)
-    ├── aman-soul       ← aman-core
-    └── aman-runtime    ← 所有 crate 的组合根
+    ├── event-bus  ← persistence
+    ├── source     ← config
+    ├── dispatcher ← skill, pipeline, workflow, hook
+    ├── tool       ← secret
+    ├── plugin     ← core (循环打破: Plugin 不依赖 core，core 定义 Plugin trait)
+    ├── soul       ← core
+    └── runtime    ← 所有 crate 的组合根
 ```
 
 ### 3.2 核心 Trait 设计
 
 ```rust
-// === Event (crateroot: aman-core::event) ===
+// === Event (crateroot: core::event) ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
@@ -261,17 +261,17 @@ pub struct EventMetadata {
 pub enum Priority { High = 0, Normal = 1, Low = 2 }
 pub enum DeliveryGuarantee { AtMostOnce, AtLeastOnce, ExactlyOnce }
 
-// === EventSource trait (aman-core::source) ===
+// === EventSource trait (core::source) ===
 
 #[async_trait]
 pub trait EventSource: Send + Sync {
     fn id(&self) -> &str;
     fn source_type(&self) -> SourceType;
-    async fn init(&mut self, ctx: SourceContext) -> AmanResult<()>;
-    async fn shutdown(&mut self) -> AmanResult<()>;
+    async fn init(&mut self, ctx: SourceContext) -> Result<()>;
+    async fn shutdown(&mut self) -> Result<()>;
 
     // Pull 模式
-    async fn poll(&self) -> AmanResult<Vec<Event>> { Ok(vec![]) }
+    async fn poll(&self) -> Result<Vec<Event>> { Ok(vec![]) }
 
     // Push 模式: 事件源内部调用 ctx.bus.publish()
     // 背压信号: 暂停 Push
@@ -283,7 +283,7 @@ pub trait EventSource: Send + Sync {
     async fn reconfigure(&mut self, config: serde_json::Value);
 }
 
-// === Pipeline trait (aman-core::pipeline) ===
+// === Pipeline trait (core::pipeline) ===
 
 #[async_trait]
 pub trait Pipeline: Send + Sync {
@@ -303,7 +303,7 @@ pub struct PipelineStep {
     pub retry: RetryPolicy,
 }
 
-// === Skill trait (aman-core::skill) ===
+// === Skill trait (core::skill) ===
 
 #[async_trait]
 pub trait Skill: Send + Sync {
@@ -312,13 +312,13 @@ pub trait Skill: Send + Sync {
     fn description(&self) -> &str;
     fn triggers(&self) -> &[TriggerCondition];
 
-    async fn execute(&self, event: Event, ctx: SkillContext) -> AmanResult<()>;
+    async fn execute(&self, event: Event, ctx: SkillContext) -> Result<()>;
 
-    async fn on_load(&mut self) -> AmanResult<()> { Ok(()) }
-    async fn on_unload(&mut self) -> AmanResult<()> { Ok(()) }
+    async fn on_load(&mut self) -> Result<()> { Ok(()) }
+    async fn on_unload(&mut self) -> Result<()> { Ok(()) }
 }
 
-// === Tool trait (aman-core::tool) ===
+// === Tool trait (core::tool) ===
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -330,7 +330,7 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, params: serde_json::Value, ctx: ToolContext) -> ToolResult;
 }
 
-// === Plugin trait (aman-core::plugin) ===
+// === Plugin trait (core::plugin) ===
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -338,16 +338,16 @@ pub trait Plugin: Send + Sync {
     fn version(&self) -> &semver::Version;
     fn dependencies(&self) -> &[PluginDependency];
 
-    async fn on_load(&mut self, ctx: PluginContext) -> AmanResult<()>;
-    async fn on_unload(&mut self) -> AmanResult<()>;
-    async fn on_dependency_unloading(&self, dep_name: &str) -> AmanResult<()>;
+    async fn on_load(&mut self, ctx: PluginContext) -> Result<()>;
+    async fn on_unload(&mut self) -> Result<()>;
+    async fn on_dependency_unloading(&self, dep_name: &str) -> Result<()>;
 
     fn event_sources(&self) -> Vec<Arc<dyn EventSource>>;
     fn skills(&self) -> Vec<Arc<dyn Skill>>;
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 }
 
-// === Hook trait (aman-core::hook) ===
+// === Hook trait (core::hook) ===
 
 #[async_trait]
 pub trait Hook: Send + Sync {
@@ -355,7 +355,7 @@ pub trait Hook: Send + Sync {
     fn priority(&self) -> i32;             // 越小越先执行
     fn hook_points(&self) -> &[HookPoint];
 
-    async fn execute(&self, point: HookPoint, ctx: HookContext) -> AmanResult<()>;
+    async fn execute(&self, point: HookPoint, ctx: HookContext) -> Result<()>;
 }
 
 pub enum HookPoint {
@@ -369,14 +369,14 @@ pub enum HookPoint {
     EventPublished(Event),
     EventDispatched(TraceId),
     EventProcessed(TraceId),
-    EventFailed(TraceId, AmanError),
+    EventFailed(TraceId, Error),
     EventEnqueuedToDlq(TraceId),
 
     // Pipeline
     PipelineStarted(String),
     PipelineStepCompleted(String, String),
     PipelineCompleted(String),
-    PipelineFailed(String, AmanError),
+    PipelineFailed(String, Error),
     PipelineCompensationStarted(String),
     PipelineCompensationCompleted(String),
 
@@ -388,7 +388,7 @@ pub enum HookPoint {
     // Workflow
     WorkflowStateEntered(String, String),
     WorkflowStateLeft(String, String),
-    WorkflowTransitionFailed(String, AmanError),
+    WorkflowTransitionFailed(String, Error),
 
     // Plugin
     PluginLoaded(String),
@@ -454,7 +454,7 @@ pub struct HookContext {
 
 ---
 
-## 4. Event Bus (`aman-event-bus`)
+## 4. Event Bus (`event-bus`)
 
 ### 4.1 架构
 
@@ -486,12 +486,12 @@ pub struct HookContext {
 ```rust
 #[async_trait]
 pub trait EventBus: Send + Sync {
-    async fn publish(&self, event: Event) -> AmanResult<()>;
+    async fn publish(&self, event: Event) -> Result<()>;
     async fn subscribe(
         &self,
         filter: SubscriptionFilter,
         handler: Box<dyn EventHandler>,
-    ) -> AmanResult<SubscriptionId>;
+    ) -> Result<SubscriptionId>;
     async fn unsubscribe(&self, id: SubscriptionId);
 
     fn metrics(&self) -> BusMetrics;
@@ -589,7 +589,7 @@ impl DedupWindow {
 
 ---
 
-## 5. Dispatcher (`aman-dispatcher`)
+## 5. Dispatcher (`dispatcher`)
 
 ### 5.1 架构
 
@@ -650,7 +650,7 @@ pub struct TransformRule {
 
 ---
 
-## 6. Pipeline 引擎 (`aman-pipeline`)
+## 6. Pipeline 引擎 (`pipeline`)
 
 ### 6.1 执行模型
 
@@ -739,7 +739,7 @@ impl ConcurrencyController {
 
 ---
 
-## 7. Skill 系统 (`aman-skill`)
+## 7. Skill 系统 (`skill`)
 
 ### 7.1 检索查询
 
@@ -758,10 +758,10 @@ pub struct SkillSearch {
 }
 
 impl SkillSearch {
-    pub fn new(index_path: &Path) -> AmanResult<Self>;
-    pub fn index_skill(&self, skill: &dyn Skill, content: &str) -> AmanResult<()>;
-    pub fn search(&self, query: &str, limit: usize) -> AmanResult<Vec<SkillMatch>>;
-    pub fn remove_skill(&self, skill_name: &str) -> AmanResult<()>;
+    pub fn new(index_path: &Path) -> Result<Self>;
+    pub fn index_skill(&self, skill: &dyn Skill, content: &str) -> Result<()>;
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SkillMatch>>;
+    pub fn remove_skill(&self, skill_name: &str) -> Result<()>;
 }
 
 pub struct SkillMatch {
@@ -783,7 +783,7 @@ pub struct HotReloadManager {
 }
 
 impl HotReloadManager {
-    pub fn watch(&mut self, skills_dir: &Path) -> AmanResult<()> {
+    pub fn watch(&mut self, skills_dir: &Path) -> Result<()> {
         // 1. 用 notify crate 监控 skills/ 目录
         // 2. 文件变更 → debounce 500ms → 检查文件完整性 (lock检测)
         // 3. 解析 SKILL.md → 构建新 Skill 实例
@@ -825,14 +825,14 @@ pub struct SkillVersion {
 
 impl SkillVersionManager {
     // 回滚到指定版本
-    pub fn rollback(&mut self, name: &str, version: &semver::Version) -> AmanResult<()>;
+    pub fn rollback(&mut self, name: &str, version: &semver::Version) -> Result<()>;
 
     // 查看历史
     pub fn history(&self, name: &str) -> Vec<&SkillVersion>;
 
     // 比较版本差异
     pub fn diff(&self, name: &str, v1: &semver::Version, v2: &semver::Version)
-        -> AmanResult<String>;
+        -> Result<String>;
 }
 ```
 
@@ -854,7 +854,7 @@ Skill 目录结构:
 
 ---
 
-## 8. Workflow 状态机 (`aman-workflow`)
+## 8. Workflow 状态机 (`workflow`)
 
 ### 8.1 核心类型
 
@@ -905,7 +905,7 @@ pub struct WorkflowEngine {
 }
 
 impl WorkflowEngine {
-    pub async fn handle_event(&self, event: Event) -> AmanResult<()> {
+    pub async fn handle_event(&self, event: Event) -> Result<()> {
         // 1. 从 event.payload 中提取 workflow_instance_id
         // 2. 加载 WorkflowInstance (可能从 StateStore)
         // 3. 匹配 Transition:
@@ -943,7 +943,7 @@ impl TimeoutManager {
 
 ---
 
-## 9. Hook 系统 (`aman-hook`)
+## 9. Hook 系统 (`hook`)
 
 ### 9.1 注册与执行
 
@@ -1019,7 +1019,7 @@ hooks:
 
 ---
 
-## 10. SOUL 系统 (`aman-soul`)
+## 10. SOUL 系统 (`soul`)
 
 ### 10.1 SOUL 概念
 
@@ -1069,7 +1069,7 @@ pub struct Soul {
 
 impl Soul {
     // 从 SOUL.md 文件解析
-    pub fn from_file(path: &Path) -> AmanResult<Self>;
+    pub fn from_file(path: &Path) -> Result<Self>;
 
     // 构建 LLM System Prompt
     pub fn to_system_prompt(&self) -> String;
@@ -1091,7 +1091,7 @@ impl Soul {
 
 ---
 
-## 11. 持久化层 (`aman-persistence`)
+## 11. 持久化层 (`persistence`)
 
 ### 11.1 WAL (Write-Ahead Log)
 
@@ -1112,15 +1112,15 @@ pub struct WalConfig {
 
 impl WriteAheadLog {
     // 写入事件到 WAL → fsync → 返回偏移量
-    pub async fn append(&self, event: &Event) -> AmanResult<WalOffset>;
+    pub async fn append(&self, event: &Event) -> Result<WalOffset>;
 
     // 记录 checkpoint: "已处理到偏移量 X"
-    pub async fn checkpoint(&self, offset: WalOffset) -> AmanResult<()>;
+    pub async fn checkpoint(&self, offset: WalOffset) -> Result<()>;
 
     // 崩溃恢复: 从 checkpoint 偏移量重放
     pub async fn replay_from_checkpoint(
         &self,
-    ) -> AmanResult<(WalOffset, Vec<Event>)>;
+    ) -> Result<(WalOffset, Vec<Event>)>;
 
     // 检查待重试事件
     pub fn pending_retry_events(&self) -> Vec<Event>;
@@ -1132,12 +1132,12 @@ impl WriteAheadLog {
 ```rust
 #[async_trait]
 pub trait StateStore: Send + Sync {
-    async fn get(&self, key: &str) -> AmanResult<Option<Vec<u8>>>;
-    async fn put(&self, key: &str, value: Vec<u8>) -> AmanResult<()>;
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    async fn put(&self, key: &str, value: Vec<u8>) -> Result<()>;
     async fn put_cas(&self, key: &str, value: Vec<u8>, expected_version: u64)
-        -> AmanResult<bool>;  // CAS 乐观锁
-    async fn delete(&self, key: &str) -> AmanResult<()>;
-    async fn scan(&self, prefix: &str) -> AmanResult<Vec<(String, Vec<u8>)>>;
+        -> Result<bool>;  // CAS 乐观锁
+    async fn delete(&self, key: &str) -> Result<()>;
+    async fn scan(&self, prefix: &str) -> Result<Vec<(String, Vec<u8>)>>;
 
     fn isolation_mode(&self) -> IsolationMode;  // Namespace | Physical
     fn write_consistency(&self) -> WriteConsistency;
@@ -1160,17 +1160,17 @@ pub struct DeadLetterQueue {
 }
 
 impl DeadLetterQueue {
-    pub async fn enqueue(&self, event: Event, reason: DlqReason) -> AmanResult<()>;
-    pub async fn list(&self, filter: DlqFilter) -> AmanResult<Vec<DlqEntry>>;
-    pub async fn retry(&self, id: &str, operator: &str) -> AmanResult<()>;
-    pub async fn discard(&self, id: &str, operator: &str) -> AmanResult<()>;
-    pub async fn run_expiry(&self) -> AmanResult<Vec<ExpiredEvent>>;
+    pub async fn enqueue(&self, event: Event, reason: DlqReason) -> Result<()>;
+    pub async fn list(&self, filter: DlqFilter) -> Result<Vec<DlqEntry>>;
+    pub async fn retry(&self, id: &str, operator: &str) -> Result<()>;
+    pub async fn discard(&self, id: &str, operator: &str) -> Result<()>;
+    pub async fn run_expiry(&self) -> Result<Vec<ExpiredEvent>>;
 }
 ```
 
 ---
 
-## 12. Event Source (`aman-source`)
+## 12. Event Source (`source`)
 
 ### 12.1 事件源注册
 
@@ -1230,7 +1230,7 @@ pub struct FileWatchSource {
 
 ---
 
-## 13. CLI 接口 (`aman-cli`)
+## 13. CLI 接口 (`cli`)
 
 ### 13.1 命令树
 
@@ -1287,7 +1287,7 @@ aman
 
 ```rust
 #[tokio::main]
-async fn main() -> AmanResult<()> {
+async fn main() -> Result<()> {
     let cli = AmanCli::parse();
 
     match cli.command {
@@ -1320,7 +1320,7 @@ async fn main() -> AmanResult<()> {
 
 ---
 
-## 14. Tauri v2 桌面应用 (`aman-tauri`)
+## 14. Tauri v2 桌面应用 (`tauri`)
 
 ### 14.1 架构
 
@@ -1485,7 +1485,7 @@ AgentRuntime → Event Bus → Hook "EventProcessed"
 ```rust
 // MetricsCollector Hook 内部:
 impl Hook for MetricsCollector {
-    async fn execute(&self, point: HookPoint, ctx: HookContext) -> AmanResult<()> {
+    async fn execute(&self, point: HookPoint, ctx: HookContext) -> Result<()> {
         if matches!(point, HookPoint::EventProcessed(_)) {
             // 更新指标存储
             self.store.record_event_processed();
@@ -1502,7 +1502,7 @@ impl Hook for MetricsCollector {
 
 ---
 
-## 15. 插件隔离 (`aman-plugin`)
+## 15. 插件隔离 (`plugin`)
 
 ### 15.1 四种隔离模式
 
@@ -1526,13 +1526,13 @@ pub struct WasmPlugin {
     store: wasmtime::Store<WasmState>,
     instance: wasmtime::Instance,
     // 导出的函数:
-    //   - aman_skill_execute(event_ptr: i32, event_len: i32) -> i32
-    //   - aman_skill_on_load() -> i32
-    //   - aman_skill_on_unload() -> i32
+    //   - skill_execute(event_ptr: i32, event_len: i32) -> i32
+    //   - skill_on_load() -> i32
+    //   - skill_on_unload() -> i32
 }
 
 impl WasmPlugin {
-    pub fn load(wasm_path: &Path) -> AmanResult<Self> {
+    pub fn load(wasm_path: &Path) -> Result<Self> {
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::from_file(&engine, wasm_path)?;
         let mut store = wasmtime::Store::new(&engine, WasmState::default());
@@ -1559,7 +1559,7 @@ pub struct PluginLoader {
 }
 
 impl PluginLoader {
-    pub fn load_all(&mut self) -> AmanResult<Vec<Arc<dyn Plugin>>> {
+    pub fn load_all(&mut self) -> Result<Vec<Arc<dyn Plugin>>> {
         // 1. 构建依赖图 DAG
         let graph = DependencyGraph::from_manifests(&self.manifests);
 
@@ -1574,7 +1574,7 @@ impl PluginLoader {
             for dep in &manifest.depends_on {
                 let loaded_ver = self.loaded.get(&dep.name).unwrap().version();
                 if !dep.version_range.matches(loaded_ver) {
-                    return Err(AmanError::VersionMismatch { .. });
+                    return Err(Error::VersionMismatch { .. });
                 }
             }
 
@@ -1590,7 +1590,7 @@ impl PluginLoader {
 
 ---
 
-## 16. 配置系统 (`aman-config`)
+## 16. 配置系统 (`config`)
 
 ### 16.1 配置加载层级 (优先级从高到低)
 
@@ -1598,7 +1598,7 @@ impl PluginLoader {
 pub struct ConfigLoader;
 
 impl ConfigLoader {
-    pub fn load(path: Option<PathBuf>) -> AmanResult<AgentConfig> {
+    pub fn load(path: Option<PathBuf>) -> Result<AgentConfig> {
         // Layer 1: 框架默认值 (硬编码)
         let mut config = AgentConfig::default();
 
@@ -1626,7 +1626,7 @@ impl ConfigLoader {
 
 ```rust
 impl AgentConfig {
-    pub fn validate(&self) -> AmanResult<()> {
+    pub fn validate(&self) -> Result<()> {
         // 1. 总线模式绑定: in_memory 下不允许 persistence.* 字段
         // 2. 超时合理性: drain_timeout < 某些 Tool timeout 检查
         // 3. 循环检测: Plugin 依赖不能有环
@@ -1642,7 +1642,7 @@ impl AgentConfig {
 
 ## 17. 安全性设计
 
-### 17.1 Secret 管理 (`aman-secret`)
+### 17.1 Secret 管理 (`secret`)
 
 ```rust
 pub struct SecretResolver {
@@ -1652,16 +1652,16 @@ pub struct SecretResolver {
 
 #[async_trait]
 pub trait SecretBackend: Send + Sync {
-    async fn get(&self, key: &str) -> AmanResult<Secret>;
+    async fn get(&self, key: &str) -> Result<Secret>;
     fn priority(&self) -> u32;              // 优先级
 }
 
 impl SecretResolver {
     // 扫描配置中所有 ${VAR} 模式 → 解析
-    pub async fn resolve_all(&self, config: &mut serde_json::Value) -> AmanResult<()>;
+    pub async fn resolve_all(&self, config: &mut serde_json::Value) -> Result<()>;
 
     // Secret 热更新 (带宽限期)
-    pub async fn rotate(&self, keys: &[String]) -> AmanResult<RotationResult>;
+    pub async fn rotate(&self, keys: &[String]) -> Result<RotationResult>;
 }
 ```
 
@@ -1675,8 +1675,8 @@ pub struct EncryptedMemory<T: Serialize> {
 }
 
 impl<T: Serialize + DeserializeOwned> EncryptedMemory<T> {
-    pub fn seal(value: &T, key: &[u8; 32]) -> AmanResult<Self>;
-    pub fn open(&self) -> AmanResult<T>;
+    pub fn seal(value: &T, key: &[u8; 32]) -> Result<Self>;
+    pub fn open(&self) -> Result<T>;
     // 使用后立即 drop，不保留明文副本
 }
 ```
@@ -1730,15 +1730,15 @@ impl TracingLayer {
 
 ```rust
 // 暴露指标:
-//   aman_event_bus_queue_depth{priority="high|normal|low"}
-//   aman_event_throughput_total
-//   aman_backpressure_level
-//   aman_events_discarded_total{reason="backpressure_l2"}
-//   aman_retry_queue_depth
-//   aman_inflight_pipelines
-//   aman_inflight_skills
-//   aman_plugin_health{plugin="...", status="ok|degraded|failed"}
-//   aman_dlq_depth
+//   event_bus_queue_depth{priority="high|normal|low"}
+//   event_throughput_total
+//   backpressure_level
+//   events_discarded_total{reason="backpressure_l2"}
+//   retry_queue_depth
+//   inflight_pipelines
+//   inflight_skills
+//   plugin_health{plugin="...", status="ok|degraded|failed"}
+//   dlq_depth
 
 pub struct MetricsEndpoint {
     registry: prometheus::Registry,
@@ -1773,7 +1773,7 @@ impl AuditLogger {
 
 ---
 
-## 19. 运行时启动/关闭编排 (`aman-runtime`)
+## 19. 运行时启动/关闭编排 (`runtime`)
 
 ### 19.1 AgentRuntime 构建器
 
@@ -1787,14 +1787,14 @@ pub struct AgentRuntimeBuilder {
 impl AgentRuntimeBuilder {
     pub fn new(config: AgentConfig) -> Self { .. }
 
-    pub fn with_soul(mut self, soul_path: Option<PathBuf>) -> AmanResult<Self> {
+    pub fn with_soul(mut self, soul_path: Option<PathBuf>) -> Result<Self> {
         if let Some(path) = soul_path {
             self.soul = Some(Soul::from_file(&path)?);
         }
         Ok(self)
     }
 
-    pub async fn build(self) -> AmanResult<AgentRuntime> {
+    pub async fn build(self) -> Result<AgentRuntime> {
         // 按 Phase 顺序构建各组件
         // Phase 0: Event Bus
         // Phase 0.5: Secret Resolver
@@ -1812,7 +1812,7 @@ impl AgentRuntimeBuilder {
 
 ```rust
 impl AgentRuntime {
-    pub async fn start(self) -> AmanResult<AgentRuntimeHandle> {
+    pub async fn start(self) -> Result<AgentRuntimeHandle> {
         // Phase 0: 初始化 Event Bus (+ 背压系统)
         self.event_bus.init().await?;
         tracing::info!("Phase 0: Event Bus initialized");
@@ -1872,7 +1872,7 @@ impl AgentRuntime {
 
 ```rust
 impl AgentRuntimeHandle {
-    pub async fn shutdown(self) -> AmanResult<()> {
+    pub async fn shutdown(self) -> Result<()> {
         // Phase 5: 停止接收 (health → 503)
         self.health.set_not_ready();
         tracing::info!("Phase 5: Draining requests");

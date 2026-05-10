@@ -1,0 +1,21 @@
+[package]
+name = "event-bus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+kernel = { path = "../core" }
+async-trait.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true

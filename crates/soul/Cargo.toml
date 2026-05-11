@@ -8,3 +8,12 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+kernel = { path = "../core" }
+notify = "8.2.0"
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true

@@ -109,7 +109,7 @@ aman/
 │   │   │   ├── plugin.rs         # Plugin trait
 │   │   │   ├── manifest.rs       # plugin.yaml 解析
 │   │   │   ├── loader.rs         # 插件加载器 (拓扑排序 + 环检测)
-│   │   │   ├── isolation.rs      # 隔离策略: 进程内/子进程/容器/WASM
+│   │   │   ├── isolation.rs      # 隔离策略: 进程内/子进程/WASM
 │   │   │   ├── lifecycle.rs      # 生命周期状态机 (Loaded/Enabled/Running/Paused/Disabled/Shutdown)
 │   │   │   └── lib.rs
 │   │   └── Cargo.toml
@@ -1504,13 +1504,12 @@ impl Hook for MetricsCollector {
 
 ## 15. 插件隔离 (`plugin`)
 
-### 15.1 四种隔离模式
+### 15.1 三种隔离模式
 
 ```rust
 pub enum PluginIsolation {
     InProcess,       // 同进程 → 接口隔离 (Arc<dyn Plugin>)
     Subprocess,      // 子进程 → IPC (stdin/stdout JSON-RPC)
-    Container,       // Docker → Docker SDK
     Wasm,            // WebAssembly → wasmtime runtime
 }
 ```

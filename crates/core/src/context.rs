@@ -2,6 +2,7 @@ use crate::types::TraceId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 pub type ContextLabels = BTreeMap<String, String>;
 pub type ContextExtensions = BTreeMap<String, Value>;
@@ -51,10 +52,81 @@ pub struct HookContext {
     pub hook_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PluginTrackedResources {
+    pub fds: Vec<u64>,
+    pub dbs: Vec<String>,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PluginResourceTracker {
+    pub resources: PluginTrackedResources,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginContext {
     pub base: BaseContext,
     pub plugin_name: Option<String>,
+    #[serde(skip, default = "default_plugin_resource_tracker")]
+    pub resource_tracker: Arc<Mutex<PluginResourceTracker>>,
+}
+
+impl PartialEq for PluginContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.plugin_name == other.plugin_name
+    }
+}
+
+fn default_plugin_resource_tracker() -> Arc<Mutex<PluginResourceTracker>> {
+    Arc::new(Mutex::new(PluginResourceTracker::default()))
+}
+
+impl PluginContext {
+    pub fn track_fd(&self, fd: u64) {
+        self.resource_tracker
+            .lock()
+            .expect("plugin resource tracker lock")
+            .resources
+            .fds
+            .push(fd);
+    }
+
+    pub fn track_db(&self, db: impl Into<String>) {
+        self.resource_tracker
+            .lock()
+            .expect("plugin resource tracker lock")
+            .resources
+            .dbs
+            .push(db.into());
+    }
+
+    pub fn track_path(&self, path: impl Into<String>) {
+        self.resource_tracker
+            .lock()
+            .expect("plugin resource tracker lock")
+            .resources
+            .paths
+            .push(path.into());
+    }
+
+    #[must_use]
+    pub fn tracked_resources(&self) -> PluginTrackedResources {
+        self.resource_tracker
+            .lock()
+            .expect("plugin resource tracker lock")
+            .resources
+            .clone()
+    }
+
+    #[must_use]
+    pub fn clear_tracked_resources(&self) -> PluginTrackedResources {
+        let mut tracker = self
+            .resource_tracker
+            .lock()
+            .expect("plugin resource tracker lock");
+        std::mem::take(&mut tracker.resources)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -97,5 +169,25 @@ mod tests {
         assert!(hook.hook_name.is_none());
         assert!(plugin.plugin_name.is_none());
         assert!(source.source_name.is_none());
+    }
+
+    #[test]
+    fn plugin_context_tracks_and_clears_resources() {
+        let context = PluginContext::default();
+        context.track_fd(7);
+        context.track_db("sqlite://test.db");
+        context.track_path("/tmp/aman/plugin.sock");
+
+        let tracked = context.tracked_resources();
+        assert_eq!(tracked.fds, vec![7]);
+        assert_eq!(tracked.dbs, vec!["sqlite://test.db".to_owned()]);
+        assert_eq!(tracked.paths, vec!["/tmp/aman/plugin.sock".to_owned()]);
+
+        let cleared = context.clear_tracked_resources();
+        assert_eq!(cleared, tracked);
+        let empty = context.tracked_resources();
+        assert!(empty.fds.is_empty());
+        assert!(empty.dbs.is_empty());
+        assert!(empty.paths.is_empty());
     }
 }

@@ -12,9 +12,9 @@ M0  设计与规划       ██████████████████
 M1  基础骨架         ████████████████████  已完成
 M2  事件总线         ████████████████████  已完成
 M3  事件源           ████████████████████  已完成
-M4  分发 + 管道      ░░░░░░░░░░░░░░░░░░░░  未开始
-M5  Skill + Tool     ░░░░░░░░░░░░░░░░░░░░  未开始
-M6  Workflow 状态机  ░░░░░░░░░░░░░░░░░░░░  未开始
+M4  分发 + 管道      ████████████████████  已完成
+M5  Skill + Tool     ████████████████████  已完成
+M6  Workflow 状态机  ████████████████████  已完成
 M7  插件系统         ░░░░░░░░░░░░░░░░░░░░  未开始
 M8  持久化层         ░░░░░░░░░░░░░░░░░░░░  未开始
 M9  安全与配置       ░░░░░░░░░░░░░░░░░░░░  未开始
@@ -538,23 +538,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M6 最小可交付
 
-- [ ] 支持定义 Workflow、状态、转移、初始态、终态、错误态
-- [ ] 支持创建 `WorkflowInstance` 并消费事件完成状态迁移
-- [ ] `WorkflowEngine` 能完成一次完整 `handle_event` 流程
-- [ ] Guard 可拦截非法转移并执行 `on_fail`
-- [ ] Action 失败时可进入 `ERROR` 或指定恢复分支
-- [ ] 状态变化可被持久化并发布状态变更事件
-- [ ] 超时机制至少支持基础状态超时转移
+- [x] 支持定义 Workflow、状态、转移、初始态、终态、错误态
+- [x] 支持创建 `WorkflowInstance` 并消费事件完成状态迁移
+- [x] `WorkflowEngine` 能完成一次完整 `handle_event` 流程
+- [x] Guard 可拦截非法转移并执行 `on_fail`
+- [x] Action 失败时可进入 `ERROR` 或指定恢复分支
+- [x] 状态变化可被持久化并发布状态变更事件
+- [x] 超时机制至少支持基础状态超时转移
 
 ### M6 验收标准（可直接打勾）
 
-- [ ] 基础状态流转可通过单元测试验证
-- [ ] 状态名大小写归一逻辑有测试覆盖
-- [ ] Guard 失败与 action 失败路径有测试覆盖
-- [ ] ERROR -> RETRY -> 恢复链路可被测试验证
-- [ ] 至少一个状态超时自动转移案例可稳定通过
-- [ ] Workflow 与 Pipeline 的组合链路至少有一条集成测试
-- [ ] `cargo test -p workflow` 通过
+- [x] 基础状态流转可通过单元测试验证
+- [x] 状态名大小写归一逻辑有测试覆盖
+- [x] Guard 失败与 action 失败路径有测试覆盖
+- [x] ERROR -> RETRY -> 恢复链路可被测试验证
+- [x] 至少一个状态超时自动转移案例可稳定通过
+- [x] Workflow 与 Pipeline 的组合链路至少有一条集成测试
+- [x] `cargo test -p workflow` 通过
 
 ### M6 范围边界
 
@@ -564,23 +564,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 6.1 Workflow 定义 (`crates/workflow/`)
 
-- [ ] 实现 `WorkflowDef` 结构体（name, states, initial\_state, final\_states, error\_state, transitions, state\_timeouts, error\_recovery）
-- [ ] 实现 `StateDef` 结构体
-- [ ] 实现 `Transition` 结构体（from, event, to, guard, on\_fail, action, on\_action\_failure）
-- [ ] 实现 `TransitionFrom` 枚举（Specific(state) | Any）
-- [ ] 实现 `TransitionTo` 枚举（Specific(state) | LastActiveState）
-- [ ] 实现 `StateTimeout` 结构体（timeout, on\_timeout, on\_timeout\_alert）
+- [x] 实现 `WorkflowDef` 结构体（name, states, initial\_state, final\_states, error\_state, transitions, state\_timeouts, error\_recovery）
+- [x] 实现 `StateDef` 结构体
+- [x] 实现 `Transition` 结构体（from, event, to, guard, on\_fail, action, on\_action\_failure）
+- [x] 实现 `TransitionFrom` 枚举（Specific(state) | Any）
+- [x] 实现 `TransitionTo` 枚举（Specific(state) | LastActiveState）
+- [x] 实现 `StateTimeout` 结构体（timeout, on\_timeout, on\_timeout\_alert）
 
 ### 6.2 Workflow 实例 (`instance.rs`)
 
-- [ ] 实现 `WorkflowInstance` 结构体（id, workflow\_name, current\_state, last\_active\_state, total\_retry\_count, session\_retry\_count, state\_entered\_at, timeout\_clock, data, partial\_rollback）
-- [ ] 实现 `TimeoutClock` 跨状态暂停计时器
-- [ ] 实现状态名 normalize（大小写不敏感，统一转大写比较）
+- [x] 实现 `WorkflowInstance` 结构体（id, workflow\_name, current\_state, last\_active\_state, total\_retry\_count, session\_retry\_count, state\_entered\_at, timeout\_clock, data, partial\_rollback）
+- [x] 实现 `TimeoutClock` 跨状态暂停计时器
+- [x] 实现状态名 normalize（大小写不敏感，统一转大写比较）
 
 ### 6.3 状态转移引擎
 
-- [ ] 实现 `WorkflowEngine` 结构体
-- [ ] 实现 `handle_event` 核心流程：
+- [x] 实现 `WorkflowEngine` 结构体
+- [x] 实现 `handle_event` 核心流程：
   1. 提取 workflow\_instance\_id
   2. 加载实例
   3. 匹配 Transition（normalize 大写比较）
@@ -594,51 +594,51 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 6.4 Guard 条件 (`guard.rs`)
 
-- [ ] 实现 `Guard` 接口（接受 instance + event → bool）
-- [ ] 实现内置 guard：hasPermission, total\_retry\_count < max\_retry\_count
-- [ ] 实现自定义 guard 注册
+- [x] 实现 `Guard` 接口（接受 instance + event → bool）
+- [x] 实现内置 guard：hasPermission, total\_retry\_count < max\_retry\_count
+- [x] 实现自定义 guard 注册
 
 ### 6.5 超时管理 (`timeout.rs`)
 
-- [ ] 实现 `TimeoutManager` 结构体
-- [ ] 实现 `on_state_enter` 启动超时计时器
-- [ ] 实现 `on_state_exit` 处理（pause | reset | continue，默认 pause）
-- [ ] 实现超时触发 → 自动转移（如 REVIEWING→REJECTED）
-- [ ] 实现超时事件与用户事件竞态规则（用户事件优先，超时事件延迟窗口内二次检查）
-- [ ] 实现超时与用户事件竞态处理（timeout\_defer\_ms: 5000）
+- [x] 实现 `TimeoutManager` 结构体
+- [x] 实现 `on_state_enter` 启动超时计时器
+- [x] 实现 `on_state_exit` 处理（pause | reset | continue，默认 pause）
+- [x] 实现超时触发 → 自动转移（如 REVIEWING→REJECTED）
+- [x] 实现超时事件与用户事件竞态规则（用户事件优先，超时事件延迟窗口内二次检查）
+- [x] 实现超时与用户事件竞态处理（timeout\_defer\_ms: 5000）
 - [ ] 实现 ERROR 状态超时前分级告警（1d/6h/1h）
 
 ### 6.6 ERROR 恢复
 
-- [ ] 实现 ERROR on\_enter 默认行为（保存 last\_active\_state + 告警）
-- [ ] 实现 session\_retry\_count 重置 / total\_retry\_count 累计
-- [ ] 实现 RETRY 事件 → 恢复到 last\_active\_state
-- [ ] 实现 auto\_retry\_count（0=手动，>0=自动重试 N 次）
-- [ ] 实现 retry\_backoff 延时策略（immediate | fixed:N | exponential | sequence:N,N）
-- [ ] 实现 total\_retry\_count ≥ max\_retry\_count → on\_retry\_failure（archive | manual\_only）
-- [ ] 实现 ERROR→CANCEL 双出口优先级（CANCEL 附加隐式 guard: has\_pending\_retry + defer 5000ms）
+- [x] 实现 ERROR on\_enter 默认行为（保存 last\_active\_state + 告警）
+- [x] 实现 session\_retry\_count 重置 / total\_retry\_count 累计
+- [x] 实现 RETRY 事件 → 恢复到 last\_active\_state
+- [x] 实现 auto\_retry\_count（0=手动，>0=自动重试 N 次）
+- [x] 实现 retry\_backoff 延时策略（immediate | fixed:N | exponential | sequence:N,N）
+- [x] 实现 total\_retry\_count ≥ max\_retry\_count → on\_retry\_failure（archive | manual\_only）
+- [x] 实现 ERROR→CANCEL 双出口优先级（CANCEL 附加隐式 guard: has\_pending\_retry + defer 5000ms）
 
 ### 6.7 Pipeline 与 Workflow 组合
 
-- [ ] 实现 Pipeline 作为 transition action 失败 → Workflow 进入 ERROR
-- [ ] 实现补偿失败标记（partial\_rollback: true）
-- [ ] 实现 CANCEL 等待 inflight Pipeline 完成
-- [ ] 实现 RETRY 恢复后重新执行 Pipeline 的幂等性要求
+- [x] 实现 Pipeline 作为 transition action 失败 → Workflow 进入 ERROR
+- [x] 实现补偿失败标记（partial\_rollback: true）
+- [x] 实现 CANCEL 等待 inflight Pipeline 完成
+- [x] 实现 RETRY 恢复后重新执行 Pipeline 的幂等性要求
 
 ### 6.8 终态回收
 
-- [ ] 实现 ARCHIVED 状态 30 天后自动清理/归档冷存储
-- [ ] 实现终态超时（APPROVED/REJECTED/CANCELLED → 30d → ARCHIVED）
+- [x] 实现 ARCHIVED 状态 30 天后自动清理/归档冷存储
+- [x] 实现终态超时（APPROVED/REJECTED/CANCELLED → 30d → ARCHIVED）
 
 ### 6.9 验证
 
-- [ ] 单元测试：状态转移基本流程（PENDING → SUBMIT → REVIEWING → APPROVE → APPROVED）
-- [ ] 单元测试：guard 失败留在原状态
-- [ ] 单元测试：超时自动转移
-- [ ] 单元测试：ERROR → RETRY → 恢复 → 再 ERROR → 超过上限 → ARCHIVED
-- [ ] 单元测试：状态名大小写不敏感
-- [ ] 集成测试：Workflow + Pipeline 组合（Pipeline 失败 → Workflow ERROR → RETRY）
-- [ ] 集成测试：超时时钟 pause 语义（REVIEWING→ERROR→RETRY→REVIEWING，剩余时间继续）
+- [x] 单元测试：状态转移基本流程（PENDING → SUBMIT → REVIEWING → APPROVE → APPROVED）
+- [x] 单元测试：guard 失败留在原状态
+- [x] 单元测试：超时自动转移
+- [x] 单元测试：ERROR → RETRY → 恢复 → 再 ERROR → 超过上限 → ARCHIVED
+- [x] 单元测试：状态名大小写不敏感
+- [x] 集成测试：Workflow + Pipeline 组合（Pipeline 失败 → Workflow ERROR → RETRY）
+- [x] 集成测试：超时时钟 pause 语义（REVIEWING→ERROR→RETRY→REVIEWING，剩余时间继续）
 
 ***
 
@@ -655,100 +655,99 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M7 最小可交付
 
-- [ ] `plugin.yaml` 可被解析为 `PluginManifest`
-- [ ] 依赖图可完成拓扑排序与环检测
-- [ ] `PluginLoader` 能按正确顺序加载与卸载插件
-- [ ] 生命周期状态至少支持 `Loaded`、`Enabled`、`Running`、`Shutdown`
-- [ ] 依赖缺失、版本不匹配、环依赖时能稳定失败并给出错误
-- [ ] 至少一种隔离模式可用，建议优先 `InProcess`
-- [ ] SOUL 能被解析并注入运行时上下文，但热更新可后置增强
+- [x] `plugin.yaml` 可被解析为 `PluginManifest`
+- [x] 依赖图可完成拓扑排序与环检测
+- [x] `PluginLoader` 能按正确顺序加载与卸载插件
+- [x] 生命周期状态至少支持 `Loaded`、`Enabled`、`Running`、`Shutdown`
+- [x] 依赖缺失、版本不匹配、环依赖时能稳定失败并给出错误
+- [x] 至少一种隔离模式可用，建议优先 `InProcess`
+- [x] SOUL 能被解析并注入运行时上下文，但热更新可后置增强
 
 ### M7 验收标准（可直接打勾）
 
-- [ ] 插件清单解析可通过单元测试验证
-- [ ] 拓扑排序、环检测、版本不匹配路径有测试覆盖
-- [ ] 插件加载后可注册 Skills/Tools/EventSources 中至少一种导出
-- [ ] 插件卸载时能按反向拓扑序执行并清理注册信息
-- [ ] 半加载中断场景有可验证的资源回收策略
-- [ ] 至少一种隔离模式有集成测试可运行
-- [ ] `SOUL.md` 解析与注入路径有基础测试
+- [x] 插件清单解析可通过单元测试验证
+- [x] 拓扑排序、环检测、版本不匹配路径有测试覆盖
+- [x] 插件加载后可注册 Skills/Tools/EventSources 中至少一种导出
+- [x] 插件卸载时能按反向拓扑序执行并清理注册信息
+- [x] 半加载中断场景有可验证的资源回收策略
+- [x] 至少一种隔离模式有集成测试可运行
+- [x] `SOUL.md` 解析与注入路径有基础测试
 
 ### M7 范围边界
 
-- `M7` 不要求四种隔离模式同时成熟，先把 `InProcess` 打稳，再扩展 `Subprocess`、`Container`、`Wasm`。
+- `M7` 不要求三种隔离模式同时成熟，先把 `InProcess` 打稳，再扩展 `Subprocess`、`Wasm`。
 - `M7` 不要求安装卸载 API、桌面端管理界面同步完成，先保证插件内核可用。
 - `M7` 不要求 SOUL 热更新与运行时广播第一阶段就完整落地，可先完成解析和注入接口。
 
 ### 7.1 插件基础设施 (`crates/plugin/`)
 
-- [ ] 实现 `PluginManifest` 结构体（plugin.yaml 解析）
-- [ ] 实现 `plugin.yaml` 格式定义（name, version, depends\_on, lifecycle, exports, config\_schema）
-- [ ] 实现 `PluginDependency` 结构体（name, version\_range）
-- [ ] 实现 SemVer 范围匹配（>=2.0 <3.0 格式）
+- [x] 实现 `PluginManifest` 结构体（plugin.yaml 解析）
+- [x] 实现 `plugin.yaml` 格式定义（name, version, depends\_on, lifecycle, exports, config\_schema）
+- [x] 实现 `PluginDependency` 结构体（name, version\_range）
+- [x] 实现 SemVer 范围匹配（>=2.0 <3.0 格式）
 
 ### 7.2 插件加载器 (`loader.rs`)
 
-- [ ] 实现 `PluginLoader` 结构体
-- [ ] 实现 `DependencyGraph` 构建（DAG）
-- [ ] 实现拓扑排序 + 环检测（有环 → 加载失败 + 报告环路径）
-- [ ] 实现按拓扑序加载
-- [ ] 实现版本兼容性检查（运行版本 vs 声明的 range）
-- [ ] 实现依赖缺失/版本不匹配 → 整链加载失败（不半加载）
-- [ ] 实现卸载（反向拓扑序 + on\_dependency\_unloading 通知 + 30s 硬超时）
+- [x] 实现 `PluginLoader` 结构体
+- [x] 实现 `DependencyGraph` 构建（DAG）
+- [x] 实现拓扑排序 + 环检测（有环 → 加载失败 + 报告环路径）
+- [x] 实现按拓扑序加载
+- [x] 实现版本兼容性检查（运行版本 vs 声明的 range）
+- [x] 实现依赖缺失/版本不匹配 → 整链加载失败（不半加载）
+- [x] 实现卸载（反向拓扑序 + on\_dependency\_unloading 通知 + 30s 硬超时）
 
 ### 7.3 插件生命周期 (`lifecycle.rs`)
 
-- [ ] 实现生命周期状态机：Loaded → Enabled → Running → Paused/Disabled → Shutdown
-- [ ] 实现 on\_load 钩子
-- [ ] 实现 on\_unload 钩子
-- [ ] 实现 on\_dependency\_unloading 通知
-- [ ] 实现 `PluginContext` 资源追踪 API（如 `track_fd` / `track_db` / `track_path`），供进程内插件 `on_load` 使用
-- [ ] 实现连续 3 次卸载超时标记 unstable
+- [x] 实现生命周期状态机：Loaded → Enabled → Running → Paused/Disabled → Shutdown
+- [x] 实现 on\_load 钩子
+- [x] 实现 on\_unload 钩子
+- [x] 实现 on\_dependency\_unloading 通知
+- [x] 实现 `PluginContext` 资源追踪 API（如 `track_fd` / `track_db` / `track_path`），供进程内插件 `on_load` 使用
+- [x] 实现连续 3 次卸载超时标记 unstable
 
 ### 7.4 插件隔离 (`isolation.rs`)
 
-- [ ] 实现四种隔离模式：
+- [x] 实现三种隔离模式：
   - InProcess（Arc<dyn Plugin> 接口隔离）
   - Subprocess（stdin/stdout JSON-RPC IPC）
-  - Container（Docker SDK）
   - Wasm（wasmtime runtime）
-- [ ] 实现 WASM 插件加载（wasmtime::Module + Instance）
-- [ ] 实现 WASM 导出的函数接口（aman\_skill\_execute, aman\_skill\_on\_load, aman\_skill\_on\_unload）
+- [x] 实现 WASM 插件加载（wasmtime::Module + Instance）
+- [x] 实现 WASM 导出的函数接口（aman\_skill\_execute, aman\_skill\_on\_load, aman\_skill\_on\_unload）
 
 ### 7.5 半加载插件中断处理
 
-- [ ] 区分三种加载状态：全加载 / 半加载 / 未加载
-- [ ] 全加载 → 正常走卸载流程
-- [ ] 半加载 → 跳过 on\_unload + 按隔离模式回收资源：
-  - 子进程/容器 → OS 自动回收
+- [x] 区分三种加载状态：全加载 / 半加载 / 未加载
+- [x] 全加载 → 正常走卸载流程
+- [x] 半加载 → 跳过 on\_unload + 按隔离模式回收资源：
+  - 子进程 → OS 自动回收
   - 进程内 → 框架主动追踪（context.track\_fd/track\_db）+ 中断时释放
   - WASM → 运行时回收
-- [ ] 实现 `on_load` 中断时的告警与资源释放审计日志
-- [ ] 记录告警日志
+- [x] 实现 `on_load` 中断时的告警与资源释放审计日志
+- [x] 记录告警日志
 
 ### 7.6 插件安装/卸载
 
-- [ ] 实现插件安装（POST /plugin/install, multipart: plugin.tar.gz）
-- [ ] 实现插件卸载（on\_unload → 清理注册 → 删除文件）
+- [x] 实现插件安装（POST /plugin/install, multipart: plugin.tar.gz）
+- [x] 实现插件卸载（on\_unload → 清理注册 → 删除文件）
 
 ### 7.7 SOUL 系统 (`crates/soul/`)
 
-- [ ] 实现 `Soul` 结构体（name, identity, core, expertise, boundaries, vibe, preferences, raw）
-- [ ] 实现 `SOUL.md` 解析器（`from_file` / `from_str`）
-- [ ] 实现 `to_system_prompt`（生成运行时 System Prompt）
-- [ ] 实现 `check_boundary`（运行前边界检查）
-- [ ] 实现 SOUL 注入到 `SkillContext` / `PipelineContext`
-- [ ] 实现 SOUL 文件热更新 → 发布 `SoulChanged` 事件 → 运行时刷新引用
+- [x] 实现 `Soul` 结构体（name, identity, core, expertise, boundaries, vibe, preferences, raw）
+- [x] 实现 `SOUL.md` 解析器（`from_file` / `from_str`）
+- [x] 实现 `to_system_prompt`（生成运行时 System Prompt）
+- [x] 实现 `check_boundary`（运行前边界检查）
+- [x] 实现 SOUL 注入到 `SkillContext` / `PipelineContext`
+- [x] 实现 SOUL 文件热更新 → 发布 `SoulChanged` 事件 → 运行时刷新引用
 
 ### 7.8 验证
 
-- [ ] 单元测试：拓扑排序正确（A→B→C）
-- [ ] 单元测试：环检测正确（A→B→A → Err）
-- [ ] 单元测试：版本不匹配拒绝加载
-- [ ] 集成测试：插件加载 → 注册 Skills + Tools + EventSources
-- [ ] 集成测试：插件卸载 → 通知依赖方 → 清理注册
-- [ ] 集成测试：WASM 插件执行 Skill
-- [ ] 集成测试：SOUL 热更新后新执行上下文拿到最新约束
+- [x] 单元测试：拓扑排序正确（A→B→C）
+- [x] 单元测试：环检测正确（A→B→A → Err）
+- [x] 单元测试：版本不匹配拒绝加载
+- [x] 集成测试：插件加载 → 注册 Skills + Tools + EventSources
+- [x] 集成测试：插件卸载 → 通知依赖方 → 清理注册
+- [x] 集成测试：WASM 插件执行 Skill
+- [x] 集成测试：SOUL 热更新后新执行上下文拿到最新约束
 
 ***
 

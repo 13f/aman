@@ -19,6 +19,9 @@ pub enum EventType {
     WorkflowStateChanged,
     SkillLoaded,
     SkillReloaded,
+    ConfigChanged,
+    SecretRotated,
+    InjectionDetected,
     Custom(String),
 }
 
@@ -38,6 +41,9 @@ impl EventType {
             Self::WorkflowStateChanged => "workflow_state_changed",
             Self::SkillLoaded => "skill_loaded",
             Self::SkillReloaded => "skill_reloaded",
+            Self::ConfigChanged => "config_changed",
+            Self::SecretRotated => "secret_rotated",
+            Self::InjectionDetected => "injection_detected",
             Self::Custom(value) => value.as_str(),
         }
     }
@@ -58,6 +64,9 @@ impl From<String> for EventType {
             "workflow_state_changed" => Self::WorkflowStateChanged,
             "skill_loaded" => Self::SkillLoaded,
             "skill_reloaded" => Self::SkillReloaded,
+            "config_changed" => Self::ConfigChanged,
+            "secret_rotated" => Self::SecretRotated,
+            "injection_detected" => Self::InjectionDetected,
             _ => Self::Custom(value),
         }
     }

@@ -53,7 +53,7 @@ default-members = [
 ]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "MIT"
 version = "0.1.0"
 repository = "https://github.com/jerin/aman"

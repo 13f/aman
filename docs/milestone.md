@@ -17,7 +17,7 @@ M5  Skill + Tool     ███████████████████�
 M6  Workflow 状态机  ████████████████████  已完成
 M7  插件系统         ███████████████████  已完成
 M8  持久化层         ████████████████████  已完成
-M9  安全与配置       ░░░░░░░░░░░░░░░░░░░░  未开始
+M9  安全与配置       ████████████████████  已完成
 M10 运行时 + API     ░░░░░░░░░░░░░░░░░░░░  未开始
 M11 可观测性         ░░░░░░░░░░░░░░░░░░░░  未开始
 M12 Tauri 桌面端     ░░░░░░░░░░░░░░░░░░░░  未开始
@@ -864,23 +864,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M9 最小可交付
 
-- [ ] `AgentConfig` 能表达运行时、总线、插件、Source、Workflow 等核心配置
-- [ ] `ConfigLoader` 支持默认值、文件、环境变量、运行时 override 的层叠加载
-- [ ] `validate` 能拦截明显非法配置
-- [ ] `SecretResolver` 能解析 `${VARIABLE}` 并支持至少一种后端
-- [ ] 敏感操作可通过 `TrustLevel` 或输入消毒链路加以限制
-- [ ] Secret 与配置变更可输出审计信息
-- [ ] 高风险能力可通过配置显式启用或默认关闭
+- [x] `AgentConfig` 能表达运行时、总线、插件、Source、Workflow 等核心配置
+- [x] `ConfigLoader` 支持默认值、文件、环境变量、运行时 override 的层叠加载
+- [x] `validate` 能拦截明显非法配置
+- [x] `SecretResolver` 能解析 `${VARIABLE}` 并支持至少一种后端
+- [x] 敏感操作可通过 `TrustLevel` 或输入消毒链路加以限制
+- [x] Secret 与配置变更可输出审计信息
+- [x] 高风险能力可通过配置显式启用或默认关闭
 
 ### M9 验收标准（可直接打勾）
 
-- [ ] 配置多层覆盖优先级可通过单元测试验证
-- [ ] 非法配置能在启动前被拦截并返回可读错误
-- [ ] `${VAR}` Secret 注入路径可通过测试验证
-- [ ] 至少一种 Secret 后端在集成测试中可运行
-- [ ] 输入消毒对已知注入模式有可验证拦截效果
-- [ ] 配置变更与 Secret 轮换可留下审计记录
-- [ ] `cargo test -p config -p secret` 通过
+- [x] 配置多层覆盖优先级可通过单元测试验证
+- [x] 非法配置能在启动前被拦截并返回可读错误
+- [x] `${VAR}` Secret 注入路径可通过测试验证
+- [x] 至少一种 Secret 后端在集成测试中可运行
+- [x] 输入消毒对已知注入模式有可验证拦截效果
+- [x] 配置变更与 Secret 轮换可留下审计记录
+- [x] `cargo test -p config -p secret` 通过
 
 ### M9 范围边界
 
@@ -890,53 +890,53 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 9.1 Secret 管理 (`crates/secret/`)
 
-- [ ] 实现 `SecretResolver` 结构体
-- [ ] 实现 ${VARIABLE} 模式扫描（递归遍历配置 JSON）
-- [ ] 实现多后端支持（Vault / AWS Secrets Manager / 1Password CLI / Env）
-- [ ] 实现 `SecretBackend` trait（get, priority）
-- [ ] 实现 `SecretCache` 内存加密缓存（AES-256-GCM）
-- [ ] 实现 `EncryptedMemory<T>`（seal / open，使用后立即 drop）
-- [ ] 实现 Secret 热更新（带宽限期 grace\_period\_sec: 60）
-- [ ] 实现两步提交策略（高影响 Secret：预告 → 等待确认 → 切换）
-- [ ] 实现连接池滚动更新（数据库连接串变更时避免风暴）
-- [ ] 实现审计日志（affected\_keys, old/new fingerprint\_created timestamp, trigger\_source）
-- [ ] 实现 Secret Store 不可用时的重试（secret\_retry\_count + 退避 + 本地缓存降级）
-- [ ] 实现 `secret_cache_fallback` 安全约束（AES-256-GCM 加密 + 600 权限 + TTL 300s）
+- [x] 实现 `SecretResolver` 结构体
+- [x] 实现 ${VARIABLE} 模式扫描（递归遍历配置 JSON）
+- [x] 实现多后端支持（Vault / AWS Secrets Manager / 1Password CLI / Env）
+- [x] 实现 `SecretBackend` trait（get, priority）
+- [x] 实现 `SecretCache` 内存加密缓存（AES-256-GCM）
+- [x] 实现 `EncryptedMemory<T>`（seal / open，使用后立即 drop）
+- [x] 实现 Secret 热更新（带宽限期 grace\_period\_sec: 60）
+- [x] 实现两步提交策略（高影响 Secret：预告 → 等待确认 → 切换）
+- [x] 实现连接池滚动更新（数据库连接串变更时避免风暴）
+- [x] 实现审计日志（affected\_keys, old/new fingerprint\_created timestamp, trigger\_source）
+- [x] 实现 Secret Store 不可用时的重试（secret\_retry\_count + 退避 + 本地缓存降级）
+- [x] 实现 `secret_cache_fallback` 安全约束（AES-256-GCM 加密 + 600 权限 + TTL 300s）
 
 ### 9.2 配置系统 (`crates/config/`)
 
-- [ ] 实现 `AgentConfig` 完整配置结构体
-- [ ] 实现 `ConfigLoader` 多层加载：
+- [x] 实现 `AgentConfig` 完整配置结构体
+- [x] 实现 `ConfigLoader` 多层加载：
   - Layer 1: 框架默认值（硬编码）
   - Layer 2: 配置文件（aman.yaml）
   - Layer 3: 环境变量覆盖（AMAN\_\*）
   - Layer 4: 运行时 override（cron\_override.yaml）
-- [ ] 实现 `validate` 配置校验：
+- [x] 实现 `validate` 配置校验：
   - 总线模式绑定（in\_memory 不允许 persistence.\* 字段）
   - 超时合理性（drain\_timeout < Tool timeout 检查）
   - Plugin 依赖环检测
   - Workflow initial\_state 必须在 states 中
   - 状态名大小写不一致警告
   - 互斥字段检查（notify\_on\_complete vs watch\_patterns）
-- [ ] 实现配置热更新（ConfigChanged 事件）
+- [x] 实现配置热更新（ConfigChanged 事件）
 
 ### 9.3 LLM 注入防护
 
-- [ ] 实现 `InputSanitizer` 结构体
-- [ ] 实现 `TrustLevel` 分类（Trusted | Untrusted | Sandboxed）
-- [ ] 实现已知注入模式匹配（Regex 规则集）
-- [ ] 实现 System Prompt 加固接口
-- [ ] 实现输出校验接口
-- [ ] 实现敏感操作隔离（LLM 不直接执行，通过 Tool 沙箱）
-- [ ] 实现注入检测审计日志
+- [x] 实现 `InputSanitizer` 结构体
+- [x] 实现 `TrustLevel` 分类（Trusted | Untrusted | Sandboxed）
+- [x] 实现已知注入模式匹配（Regex 规则集）
+- [x] 实现 System Prompt 加固接口
+- [x] 实现输出校验接口
+- [x] 实现敏感操作隔离（LLM 不直接执行，通过 Tool 沙箱）
+- [x] 实现注入检测审计日志
 
 ### 9.4 验证
 
-- [ ] 单元测试：Secret 解析（${VAR} → 实际值）
-- [ ] 单元测试：配置多层覆盖优先级
-- [ ] 单元测试：配置校验拒绝非法配置
-- [ ] 单元测试：输入消毒（已知注入模式检测）
-- [ ] 集成测试：Secret 热更新 + 宽限期
+- [x] 单元测试：Secret 解析（${VAR} → 实际值）
+- [x] 单元测试：配置多层覆盖优先级
+- [x] 单元测试：配置校验拒绝非法配置
+- [x] 单元测试：输入消毒（已知注入模式检测）
+- [x] 集成测试：Secret 热更新 + 宽限期
 
 ***
 

@@ -431,23 +431,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M5 最小可交付
 
-- [ ] `SkillRegistry` 支持注册、查询、启用、禁用
-- [ ] `TriggerCondition` 能匹配基础事件并触发 Skill 执行
-- [ ] `ToolRegistry` 支持注册与查找工具
-- [ ] `ToolRunner` 完成参数校验、安全检查、执行、清理的主流程
-- [ ] 至少一个内置工具可用，建议优先 `file` 或 `http`
-- [ ] Tool 执行结果有统一返回结构，错误可观测
-- [ ] Skill 能在执行过程中调用 Tool，并拿到结果
+- [x] `SkillRegistry` 支持注册、查询、启用、禁用
+- [x] `TriggerCondition` 能匹配基础事件并触发 Skill 执行
+- [x] `ToolRegistry` 支持注册与查找工具
+- [x] `ToolRunner` 完成参数校验、安全检查、执行、清理的主流程
+- [x] 至少一个内置工具可用，建议优先 `file` 或 `http`
+- [x] Tool 执行结果有统一返回结构，错误可观测
+- [x] Skill 能在执行过程中调用 Tool，并拿到结果
 
 ### M5 验收标准（可直接打勾）
 
-- [ ] Skill 注册、启停、触发流程可通过集成测试验证
-- [ ] `TriggerCondition` 至少覆盖常用事件匹配规则
-- [ ] `ToolRunner` 的 6 步流程有明确测试覆盖
-- [ ] 工具超时、参数非法、权限不足时能返回稳定错误
-- [ ] 至少一个内置工具在集成测试中可稳定运行
-- [ ] 技能触发后调用工具的完整链路可跑通
-- [ ] `cargo test -p skill -p tool` 通过
+- [x] Skill 注册、启停、触发流程可通过集成测试验证
+- [x] `TriggerCondition` 至少覆盖常用事件匹配规则
+- [x] `ToolRunner` 的 6 步流程有明确测试覆盖
+- [x] 工具超时、参数非法、权限不足时能返回稳定错误
+- [x] 至少一个内置工具在集成测试中可稳定运行
+- [x] 技能触发后调用工具的完整链路可跑通
+- [x] `cargo test -p skill -p tool` 通过
 
 ### M5 范围边界
 
@@ -457,43 +457,43 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 5.1 Skill 系统 (`crates/skill/`)
 
-- [ ] 实现 `SkillRegistry` 结构体（注册/查询/启用/禁用）
-- [ ] 实现声明式 Skill 加载（YAML → Skill 实例）
-- [ ] 实现发现式 Skill 加载（扫描 `~/.aman/skills/` 目录）
-- [ ] 实现 SKILL.md 格式解析器
-- [ ] 实现 `TriggerCondition` 匹配引擎
-- [ ] 实现 Skill 并发模型（serial / parallel / limited(N)）
+- [x] 实现 `SkillRegistry` 结构体（注册/查询/启用/禁用）
+- [x] 实现声明式 Skill 加载（YAML → Skill 实例）
+- [x] 实现发现式 Skill 加载（扫描 `~/.aman/skills/` 目录）
+- [x] 实现 SKILL.md 格式解析器
+- [x] 实现 `TriggerCondition` 匹配引擎
+- [x] 实现 Skill 并发模型（serial / parallel / limited(N)）
 
 ### 5.2 Skill 检索 (`search.rs`)
 
-- [ ] 集成 `tantivy` 全文检索引擎
-- [ ] 实现 `SkillSearch` 结构体
-- [ ] 实现 `index_skill`（索引 Skill 元信息）
-- [ ] 实现 `search`（关键词/字段/语义标签/模糊匹配）
-- [ ] 实现 `remove_skill`
-- [ ] 实现 `SkillMatch` 结果（name, version, score, snippet, matched\_field）
+- [x] 集成 `tantivy` 全文检索引擎
+- [x] 实现 `SkillSearch` 结构体
+- [x] 实现 `index_skill`（索引 Skill 元信息）
+- [x] 实现 `search`（关键词/字段/语义标签/模糊匹配）
+- [x] 实现 `remove_skill`
+- [x] 实现 `SkillMatch` 结果（name, version, score, snippet, matched\_field）
 
 ### 5.3 热加载 (`hot_reload.rs`)
 
-- [ ] 实现 `HotReloadManager` 结构体
-- [ ] 集成 `notify` 监控 skills/ 目录
-- [ ] 实现 debounce 500ms → 完整性检查 → 解析
-- [ ] 实现版本比较（同版本 Arc::swap / 新版本注册 + 旧版 drain）
-- [ ] 实现 Search Index 更新
-- [ ] 实现 Dispatcher 路由刷新通知
+- [x] 实现 `HotReloadManager` 结构体
+- [x] 集成 `notify` 监控 skills/ 目录
+- [x] 实现 debounce 500ms → 完整性检查 → 解析
+- [x] 实现版本比较（同版本 Arc::swap / 新版本注册 + 旧版 drain）
+- [x] 实现 Search Index 更新
+- [x] 实现 Dispatcher 路由刷新通知
 
 ### 5.4 版本管理 (`version.rs`)
 
-- [ ] 实现 `SkillVersionManager` 结构体
-- [ ] 实现版本历史存储（`~/.aman/skills/history/`）
-- [ ] 实现 `rollback` 回滚到指定版本
-- [ ] 实现 `history` 查看历史
-- [ ] 实现 `diff` 比较版本差异
+- [x] 实现 `SkillVersionManager` 结构体
+- [x] 实现版本历史存储（`~/.aman/skills/history/`）
+- [x] 实现 `rollback` 回滚到指定版本
+- [x] 实现 `history` 查看历史
+- [x] 实现 `diff` 比较版本差异
 
 ### 5.5 Tool Runner (`crates/tool/`)
 
-- [ ] 实现 `ToolRegistry` 结构体（注册/查找）
-- [ ] 实现 `ToolRunner` 6 步执行流程：
+- [x] 实现 `ToolRegistry` 结构体（注册/查找）
+- [x] 实现 `ToolRunner` 6 步执行流程：
   1. 参数校验
   2. 安全检查（白名单路径/网络/命令）
   3. 资源分配（超时/内存/临时目录）
@@ -503,25 +503,25 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 5.6 内置工具 (`builtin/`)
 
-- [ ] 实现 `file` 工具（文件读写/删除/移动）
-- [ ] 实现 `http` 工具（HTTP 请求，支持 REST/GraphQL）
-- [ ] 实现 `exec` 工具（执行外部命令，安全约束：超时 + 资源限制 + 白名单命令）
-- [ ] 实现 `db` 工具（数据库查询，SQL 参数化防注入）
+- [x] 实现 `file` 工具（文件读写/删除/移动）
+- [x] 实现 `http` 工具（HTTP 请求，支持 REST/GraphQL）
+- [x] 实现 `exec` 工具（执行外部命令，安全约束：超时 + 资源限制 + 白名单命令）
+- [x] 实现 `db` 工具（数据库查询，SQL 参数化防注入）
 
 ### 5.7 沙箱 (`sandbox.rs`)
 
-- [ ] 实现 `SandboxConfig`（allowed\_paths, network\_allowed, max\_memory）
-- [ ] 实现子进程隔离（std::process::Command + 超时 kill）
-- [ ] 实现容器工具接口（Docker SDK 预留）
-- [ ] 实现 WASM 工具接口（wasmtime 预留）
+- [x] 实现 `SandboxConfig`（allowed\_paths, network\_allowed, max\_memory）
+- [x] 实现子进程隔离（std::process::Command + 超时 kill）
+- [x] 实现容器工具接口（Docker SDK 预留）
+- [x] 实现 WASM 工具接口（wasmtime 预留）
 
 ### 5.8 验证
 
-- [ ] 单元测试：Skill 触发条件匹配
-- [ ] 集成测试：Skill 加载 → 事件触发 → execute
-- [ ] 集成测试：Skill 热加载（修改 SKILL.md → 自动重载）
-- [ ] 集成测试：Tool 6 步执行 + 安全约束验证
-- [ ] 集成测试：Tool 执行超时 → 资源清理
+- [x] 单元测试：Skill 触发条件匹配
+- [x] 集成测试：Skill 加载 → 事件触发 → execute
+- [x] 集成测试：Skill 热加载（修改 SKILL.md → 自动重载）
+- [x] 集成测试：Tool 6 步执行 + 安全约束验证
+- [x] 集成测试：Tool 执行超时 → 资源清理
 
 ***
 

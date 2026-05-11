@@ -15,8 +15,8 @@ M3  事件源           ██████████████████�
 M4  分发 + 管道      ████████████████████  已完成
 M5  Skill + Tool     ████████████████████  已完成
 M6  Workflow 状态机  ████████████████████  已完成
-M7  插件系统         ░░░░░░░░░░░░░░░░░░░░  未开始
-M8  持久化层         ░░░░░░░░░░░░░░░░░░░░  未开始
+M7  插件系统         ███████████████████  已完成
+M8  持久化层         ████████████████████  已完成
 M9  安全与配置       ░░░░░░░░░░░░░░░░░░░░  未开始
 M10 运行时 + API     ░░░░░░░░░░░░░░░░░░░░  未开始
 M11 可观测性         ░░░░░░░░░░░░░░░░░░░░  未开始
@@ -764,23 +764,23 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M8 最小可交付
 
-- [ ] WAL 支持追加写、checkpoint、重放
-- [ ] `PersistentBus` 能完成“先 WAL，后内存投递”的主流程
-- [ ] `StateStore` 至少提供一个可用实现，建议优先 `SledStore`
-- [ ] DLQ 能记录失败事件并支持查询、重试、丢弃
-- [ ] 溢出目录可存放超出内存承载的事件
-- [ ] 崩溃后可从 checkpoint 与 overflow 恢复关键事件流
-- [ ] 至少支持一种写一致性策略，建议先落 `optimistic_lock`
+- [x] WAL 支持追加写、checkpoint、重放
+- [x] `PersistentBus` 能完成“先 WAL，后内存投递”的主流程
+- [x] `StateStore` 至少提供一个可用实现，建议优先 `SledStore`
+- [x] DLQ 能记录失败事件并支持查询、重试、丢弃
+- [x] 溢出目录可存放超出内存承载的事件
+- [x] 崩溃后可从 checkpoint 与 overflow 恢复关键事件流
+- [x] 至少支持一种写一致性策略，建议先落 `optimistic_lock`
 
 ### M8 验收标准（可直接打勾）
 
-- [ ] WAL 重放能在测试中恢复未完成事件
-- [ ] `PersistentBus` 能验证“落盘成功后再投递”的顺序语义
-- [ ] `StateStore` 的 CAS 冲突路径有测试覆盖
-- [ ] DLQ 的入队、查询、重试、丢弃可通过测试验证
-- [ ] overflow 目录写入与重启恢复路径可通过集成测试验证
-- [ ] 持久化层与事件总线/Workflow 至少有一条联合测试链路
-- [ ] `cargo test -p persistence` 通过
+- [x] WAL 重放能在测试中恢复未完成事件
+- [x] `PersistentBus` 能验证“落盘成功后再投递”的顺序语义
+- [x] `StateStore` 的 CAS 冲突路径有测试覆盖
+- [x] DLQ 的入队、查询、重试、丢弃可通过测试验证
+- [x] overflow 目录写入与重启恢复路径可通过集成测试验证
+- [x] 持久化层与事件总线/Workflow 至少有一条联合测试链路
+- [x] `cargo test -p persistence` 通过
 
 ### M8 范围边界
 
@@ -790,64 +790,64 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 8.1 WAL (`crates/persistence/`)
 
-- [ ] 实现 `WriteAheadLog` 结构体
-- [ ] 实现 `append`（事件 → WAL → fsync → 返回偏移量）
-- [ ] 实现 `checkpoint`（记录已处理偏移量）
-- [ ] 实现 `replay_from_checkpoint`（崩溃恢复：从 checkpoint 偏移量重放）
-- [ ] 实现 `final_checkpoint`（关闭前最终写入）
-- [ ] 实现 WAL 段轮转（rotate\_bytes: 1GB）
-- [ ] 实现 `wal_sync` 模式（Fsync | Batch）
-- [ ] 实现 `replay_checkpoint` 文件（断点持久化，见 §2.5.1）
-- [ ] 实现 `wal_replay_buffer_max: 5000` 缓冲区上限
-- [ ] 实现 `wal_retry_backoff` 配置（WAL→内存投递失败重试）
-- [ ] 测试：崩溃恢复正确性（模拟杀进程 → 重启 → WAL 重放）
+- [x] 实现 `WriteAheadLog` 结构体
+- [x] 实现 `append`（事件 → WAL → fsync → 返回偏移量）
+- [x] 实现 `checkpoint`（记录已处理偏移量）
+- [x] 实现 `replay_from_checkpoint`（崩溃恢复：从 checkpoint 偏移量重放）
+- [x] 实现 `final_checkpoint`（关闭前最终写入）
+- [x] 实现 WAL 段轮转（rotate\_bytes: 1GB）
+- [x] 实现 `wal_sync` 模式（Fsync | Batch）
+- [x] 实现 `replay_checkpoint` 文件（断点持久化，见 §2.5.1）
+- [x] 实现 `wal_replay_buffer_max: 5000` 缓冲区上限
+- [x] 实现 `wal_retry_backoff` 配置（WAL→内存投递失败重试）
+- [x] 测试：崩溃恢复正确性（模拟杀进程 → 重启 → WAL 重放）
 
 ### 8.2 PersistentBus
 
-- [ ] 实现 `PersistentBus` 结构体（包装 InMemoryBus + WAL + RetryQueue + Overflow）
-- [ ] 实现事件到达 → WAL 写入 → 确认 → 内存投递 完整流程
-- [ ] 实现 WAL 确认后投递失败 → 入待重试队列
+- [x] 实现 `PersistentBus` 结构体（包装 InMemoryBus + WAL + RetryQueue + Overflow）
+- [x] 实现事件到达 → WAL 写入 → 确认 → 内存投递 完整流程
+- [x] 实现 WAL 确认后投递失败 → 入待重试队列
 
 ### 8.3 StateStore (`state_store.rs`)
 
-- [ ] 定义 `StateStore` trait（get, put, put\_cas, delete, scan, isolation\_mode, write\_consistency）
-- [ ] 实现 `SledStore`（默认嵌入式实现）
-- [ ] 实现 namespace 隔离模式（key 前缀 + scan 权限约束）
-- [ ] 实现 physical 隔离模式（独立文件/表/桶）
-- [ ] 实现 `cleanup_policy`（retain | delete\_on\_disable | delete\_on\_uninstall）
-- [ ] 实现乐观锁（CAS：put\_cas with expected\_version）
-- [ ] 实现悲观锁接口（lock → put → unlock）
-- [ ] 实现写一致性（last\_write\_wins | optimistic\_lock | pessimistic\_lock）
-- [ ] 实现读已提交（read\_committed）
-- [ ] 实现跨 Skill 共享（shared 声明 + 访问权限）
+- [x] 定义 `StateStore` trait（get, put, put\_cas, delete, scan, isolation\_mode, write\_consistency）
+- [x] 实现 `SledStore`（默认嵌入式实现）
+- [x] 实现 namespace 隔离模式（key 前缀 + scan 权限约束）
+- [x] 实现 physical 隔离模式（独立文件/表/桶）
+- [x] 实现 `cleanup_policy`（retain | delete\_on\_disable | delete\_on\_uninstall）
+- [x] 实现乐观锁（CAS：put\_cas with expected\_version）
+- [x] 实现悲观锁接口（lock → put → unlock）
+- [x] 实现写一致性（last\_write\_wins | optimistic\_lock | pessimistic\_lock）
+- [x] 实现读已提交（read\_committed）
+- [x] 实现跨 Skill 共享（shared 声明 + 访问权限）
 
 ### 8.4 Dead Letter Queue (`dlq.rs`)
 
-- [ ] 实现 `DeadLetterQueue` 结构体
-- [ ] 实现 `enqueue`（事件入 DLQ + 记录 reason）
-- [ ] 实现 `list`（支持 DlqFilter 筛选）
-- [ ] 实现 `retry`（手动重试，重置 retry\_count + 保留 original\_retry\_count 审计字段）
-- [ ] 实现 `discard`（确认丢弃）
-- [ ] 实现 `run_expiry`（TTL 到期处理：归档冷存储而非直接删除）
-- [ ] 实现到期前分级告警（7d/3d/1d）
-- [ ] 实现 `max_manual_retries: 5` 全局上限
-- [ ] 实现手动 retry 操作历史（operator, timestamp, reason）
+- [x] 实现 `DeadLetterQueue` 结构体
+- [x] 实现 `enqueue`（事件入 DLQ + 记录 reason）
+- [x] 实现 `list`（支持 DlqFilter 筛选）
+- [x] 实现 `retry`（手动重试，重置 retry\_count + 保留 original\_retry\_count 审计字段）
+- [x] 实现 `discard`（确认丢弃）
+- [x] 实现 `run_expiry`（TTL 到期处理：归档冷存储而非直接删除）
+- [x] 实现到期前分级告警（7d/3d/1d）
+- [x] 实现 `max_manual_retries: 5` 全局上限
+- [x] 实现手动 retry 操作历史（operator, timestamp, reason）
 
 ### 8.5 溢出管理 (`overflow.rs`)
 
-- [ ] 实现 `OverflowDir` 管理
-- [ ] 实现溢出写入（AT\_LEAST\_ONCE 事件 → 磁盘文件）
-- [ ] 实现 `overflow_max_bytes` 硬上限
-- [ ] 实现溢出目录使用率监控
-- [ ] 实现重启恢复（扫描 overflow/ → 排序注入 → 去重）
+- [x] 实现 `OverflowDir` 管理
+- [x] 实现溢出写入（AT\_LEAST\_ONCE 事件 → 磁盘文件）
+- [x] 实现 `overflow_max_bytes` 硬上限
+- [x] 实现溢出目录使用率监控
+- [x] 实现重启恢复（扫描 overflow/ → 排序注入 → 去重）
 
 ### 8.6 验证
 
-- [ ] 集成测试：PersistentBus 崩溃恢复（事件不丢）
-- [ ] 集成测试：WAL 段轮转
-- [ ] 集成测试：StateStore CAS 乐观锁竞争
-- [ ] 集成测试：DLQ 生命周期（入队 → 到期 → 归档）
-- [ ] 集成测试：溢出磁盘 → 重启恢复
+- [x] 集成测试：PersistentBus 崩溃恢复（事件不丢）
+- [x] 集成测试：WAL 段轮转
+- [x] 集成测试：StateStore CAS 乐观锁竞争
+- [x] 集成测试：DLQ 生命周期（入队 → 到期 → 归档）
+- [x] 集成测试：溢出磁盘 → 重启恢复
 
 ***
 

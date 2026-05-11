@@ -1,8 +1,19 @@
 #![forbid(unsafe_code)]
-#![doc = "Placeholder crate for the Aman agent framework."]
+#![doc = "Persistence layer primitives for the Aman agent framework."]
 
-/// Returns the crate name for smoke tests and early integration wiring.
-#[must_use]
-pub fn crate_name() -> &'static str {
-    env!("CARGO_PKG_NAME")
-}
+mod dlq;
+mod overflow;
+mod persistent_bus;
+mod state_store;
+mod wal;
+
+pub use dlq::{
+    DeadLetterEntry, DeadLetterQueue, DlqExpiryAlert, DlqFilter, DlqRetryRecord,
+    InMemoryDeadLetterQueue,
+};
+pub use overflow::OverflowDir;
+pub use persistent_bus::{PersistentBus, PersistentBusConfig};
+pub use state_store::{
+    CleanupPolicy, IsolationMode, SledStore, StateRecord, StateStore, WriteConsistency,
+};
+pub use wal::{WalSync, WriteAheadLog};

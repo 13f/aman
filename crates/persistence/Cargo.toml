@@ -8,3 +8,14 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+kernel = { path = "../core" }
+event-bus = { path = "../event-bus" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true

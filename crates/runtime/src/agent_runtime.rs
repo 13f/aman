@@ -431,6 +431,17 @@ impl AgentRuntime {
         &self.metrics
     }
 
+    /// Update the SOUL file content and trigger a hot reload.
+    pub async fn update_soul(&self, content: &str) -> AmanResult<()> {
+        let mut slot = self.soul_manager.lock().await;
+        let manager = slot.as_mut().ok_or_else(|| Error::ConfigInvalid {
+            message: "no SOUL configured".to_owned(),
+        })?;
+        std::fs::write(manager.soul_file(), content)?;
+        let _ = manager.reload_now()?;
+        Ok(())
+    }
+
     pub fn enqueue_dlq(
         &self,
         event: kernel::event::Event,

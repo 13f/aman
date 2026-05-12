@@ -74,5 +74,18 @@ impl EventStore {
             .filter_map(|id| inner.by_id.get(id).cloned())
             .collect()
     }
+
+    /// Returns the most recent events, up to `count`.
+    #[must_use]
+    pub fn recent(&self, count: usize) -> Vec<Event> {
+        let inner = self.inner.lock().expect("event store mutex");
+        inner
+            .order
+            .iter()
+            .rev()
+            .take(count)
+            .filter_map(|id| inner.by_id.get(id).cloned())
+            .collect()
+    }
 }
 

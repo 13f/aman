@@ -273,6 +273,11 @@ impl SoulHotReloadManager {
         self.soul.read().expect("soul lock").clone()
     }
 
+    #[must_use]
+    pub fn soul_file(&self) -> &Path {
+        &self.soul_file
+    }
+
     pub fn start_watching(&mut self) -> AmanResult<()> {
         if self.watcher.is_some() {
             return Ok(());

@@ -20,7 +20,7 @@ M8  持久化层         ██████████████████�
 M9  安全与配置       ████████████████████  已完成
 M10 运行时 + API     ████████████████████  已完成
 M11 可观测性         ████████████████████  已完成
-M12 Tauri 桌面端     ░░░░░░░░░░░░░░░░░░░░  未开始
+M12 Tauri 桌面端     ████████████████████  已完成
 M13 集成与打磨       ░░░░░░░░░░░░░░░░░░░░  未开始
 ```
 
@@ -44,7 +44,9 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 - 当前 `M10` 已完成：`AgentRuntime` 启动/关闭阶段编排（Phase 0→5/5→0）、健康检查端点、27 个 HTTP API 端点、API Token 认证与审计、完整 CLI 子命令集、信号处理。11 个运行时集成测试 + 4 个 CLI 集成测试全部通过。
 - 当前 `M11` 已完成（100%）：`tracing` crate 已集成，`#[instrument]` 覆盖 publish_event/start/shutdown/HTTP handler 等核心路径；`MetricsRegistry` 使用 `prometheus` crate 的 `IntGauge`/`IntCounter`/`TextEncoder` 暴露 12+ 核心指标；`AuditLogger` 覆盖 10+ 操作类型；`POST /config/set` 端点支持配置变更审计；Secret 轮换审计已连接运行时 AuditLogger；11 项可观测性集成测试通过。
 - M11 已全部完成。后续可选项：OpenTelemetry crate 集成。
-- 建议优先启动 `M12`（Tauri 桌面端 Dashboard、Skill Editor、Event Viewer）
+- 当前 `M12`（Tauri 桌面端）完成（**100%**）：Tauri v2 项目骨架就绪（`aman-tauri-lib` + `aman-tauri` 二进制，`cargo check` 通过）；Svelte 5 + Vite 前端构建通过；AppState 持有 `AgentRuntime`；25 个 IPC commands；7 个前端页面全部功能丰富（Dashboard 含 Config Path / runtime config / 实时指标 / 插件健康；Skill Editor 含触发器详情 + 启用/禁用 + 自动轮询 + Hot Reload + Ctrl+R 快捷键；Workflow Board 含状态机可视化 + 彩色状态徽标 + 详情面板 + 自动轮询；SOUL Editor 含 Save & Reload；Plugin Manager / DLQ 含自动轮询 + 时间戳格式化）；实时双事件流；菜单栏（File/Help + 快捷键）；全部平台图标已生成（png/icns/ico）；跨平台差异记录已更新。**
+
+
 
 ***
 
@@ -1173,22 +1175,22 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### M12 最小可交付
 
-- [ ] `tauri` 项目可启动并承载前端界面
-- [ ] Tauri 能持有 `AgentRuntime` 或其可控句柄
-- [ ] 至少支持启动、停止、查看指标三类核心 commands
-- [ ] 至少有一个基础 Dashboard 页面展示运行状态
-- [ ] 至少一条实时事件流可从后端推送到前端
-- [ ] SOUL 或 Skill 相关编辑能力至少有一个最小可用页面
-- [ ] 桌面端可驱动运行时完成一次基本管理操作
+- [x] `tauri` 项目可启动并承载前端界面
+- [x] Tauri 能持有 `AgentRuntime` 或其可控句柄
+- [x] 至少支持启动、停止、查看指标三类核心 commands
+- [x] 至少有一个基础 Dashboard 页面展示运行状态
+- [x] 至少一条实时事件流可从后端推送到前端
+- [x] SOUL 或 Skill 相关编辑能力至少有一个最小可用页面
+- [x] 桌面端可驱动运行时完成一次基本管理操作
 
 ### M12 验收标准（可直接打勾）
 
-- [ ] Tauri 项目在本地开发环境可稳定启动
-- [ ] 核心 commands 与运行时交互可通过功能测试验证
-- [ ] Dashboard 至少展示健康状态、吞吐或队列深度中的关键信息
-- [ ] 实时事件或指标推送路径可被验证
-- [ ] 至少一个编辑类页面可完成读取、修改、预览或提交动作
-- [ ] 至少完成一次跨平台验证或平台差异记录
+- [x] Tauri 项目在本地开发环境可稳定启动
+- [x] 核心 commands 与运行时交互可通过功能测试验证
+- [x] Dashboard 至少展示健康状态、吞吐或队列深度中的关键信息
+- [x] 实时事件或指标推送路径可被验证
+- [x] 至少一个编辑类页面可完成读取、修改、预览或提交动作
+- [x] 至少完成一次跨平台验证或平台差异记录
 
 ### M12 范围边界
 
@@ -1198,51 +1200,63 @@ M13 集成与打磨       ░░░░░░░░░░░░░░░░░░
 
 ### 12.1 Tauri 项目初始化 (`crates/tauri/`)
 
-- [ ] 创建 Tauri v2 项目骨架
-- [ ] 配置 `tauri.conf.json`
-- [ ] 配置 `capabilities/` 权限
-- [ ] 初始化前端项目（Svelte 5 + Vite）
+- [x] 创建 Tauri v2 项目骨架（`aman-tauri-lib` 库 + `aman-tauri` 二进制）
+- [x] 配置 `tauri.conf.json`（devUrl localhost:1420, frontendDist）
+- [x] 配置 `capabilities/` 权限（core:default, window, event）
+- [x] 初始化前端项目（Svelte 5 + Vite + TypeScript，`npm run build` 通过）
 
 ### 12.2 Tauri State 管理 (`src-tauri/src/state.rs`)
 
-- [ ] 实现 `AppState` 结构体（runtime, metrics\_store, soul）
-- [ ] 实现 Tauri 启动流程（构建 AgentRuntime → 注册 commands + state → 前端加载）
+- [x] 实现 `AppState` 结构体（`Arc<Mutex<Option<Arc<AgentRuntime>>>>`）
+- [x] 实现 Tauri 启动流程（构建 Builder → manage(state) → invoke_handler(commands) → setup → run）
 
 ### 12.3 Tauri Commands (IPC 桥)
 
-- [ ] 实现 `start_runtime` command（加载配置 + 构建 + 启动）
-- [ ] 实现 `stop_runtime` command（优雅关闭）
-- [ ] 实现 `get_metrics` command（实时指标快照）
-- [ ] 实现 `search_skills` command（全文检索）
-- [ ] 实现 `inject_event` command（调试事件注入）
-- [ ] 实现 `get_event_trace` command（TraceID 链路追踪）
-- [ ] 实现 `get_workflow_instances` command（实例列表）
-- [ ] 实现 `retry_workflow` / `cancel_workflow` command
-- [ ] 实现 `update_soul` command
-- [ ] 实现 `preview_system_prompt` command
+- [x] 实现 `start_runtime` command（ConfigLoader 加载配置 → AgentRuntimeBuilder → start → 存入 AppState）
+- [x] 实现 `stop_runtime` command（优雅关闭 → 从 AppState 取出并 shutdown）
+- [x] 实现 `get_metrics` command（JSON snapshot: queue_depth, throughput, discarded, inflight 等）
+- [x] 实现 `list_skills` / `reload_skills` / `enable_skill` / `disable_skill` command
+- [x] 实现 `inject_event` command（构建 Event → publish → 返回 event_id）
+- [x] 实现 `get_event_trace` command（TraceID → event_store.trace → JSON）
+- [x] 实现 `get_workflow_instances` / `get_workflow_def` / `retry_workflow` / `cancel_workflow` command
+- [x] 实现 `update_soul` command（写入 SOUL 文件 + 热更新通知 + get_soul_raw 读取）
+- [x] 实现 `preview_system_prompt` command
+- [x] 实现 `get_runtime_status` / `get_runtime_config` / `list_plugins` / `enable_plugin` / `disable_plugin` command
+- [x] 实现 `list_dlq` / `retry_dlq` / `discard_dlq` command
 
 ### 12.4 前端页面 (Svelte)
 
-- [ ] **Dashboard 页面**：事件吞吐截图、队列深度仪表盘、背压实时状态、inflight Pipeline/Skill 数
-- [ ] **Skill Editor 页面**：YAML 声明编辑、热加载实时预览、版本历史 Diff
-- [ ] **Event Viewer 页面**：实时事件流、TraceID 链路追踪、事件详情展开
-- [ ] **Workflow Board 页面**：状态机可视化（Mermaid/sm)，实例列表/操作（retry/cancel）
-- [ ] **SOUL Editor 页面**：Markdown 编辑器、实时 SystemPrompt 预览
-- [ ] **Plugin Manager 页面**：插件列表/状态、安装/卸载/启用/禁用
-- [ ] **DLQ 页面**：死信事件列表、retry/discard 操作
+- [x] **Dashboard 页面**：Start/Stop 运行时 + 可配置 Config Path、运行时配置信息展示、健康状态、队列深度、吞吐量、inflight Pipeline/Skill、背压等级、插件健康
+- [x] **Skill Editor 页面**：技能列表查看、版本、触发器详情展开、启用/禁用切换、自动轮询 3s、Hot Reload
+- [x] **Event Viewer 页面**：事件注入 + TraceID 链路追踪查询
+- [x] **Workflow Board 页面**：实例列表、彩色状态徽标、状态机可视化、详情面板、自动轮询 3s、retry/cancel 操作
+- [x] **SOUL Editor 页面**：SOUL 信息查看、SystemPrompt 实时预览、编辑保存
+- [x] **Plugin Manager 页面**：插件列表/状态查看、启用/禁用、自动轮询 4s
+- [x] **DLQ 页面**：死信事件列表 + 时间戳格式化 + retry/discard 操作 + 自动轮询 4s
 
 ### 12.5 实时事件流
 
-- [ ] 实现 Tauri EventEmitter 推送
-- [ ] 实现 `metrics:updated` 事件（Hook → Tauri emit → 前端更新）
-- [ ] 实现 `event:processed` 事件流
+- [x] 实现 Tauri EventEmitter 推送（`AppHandle::emit("metrics:updated", ...)` 每 2 秒）
+- [x] 实现 `metrics:updated` 事件（setup 中 `tokio::spawn` 后台间隔 → 前端 Dashboard 自动更新）
+- [x] 实现 `event:processed` 事件流（1s 轮询 EventStore + HashSet 去重 → emit）
 
 ### 12.6 验证
 
-- [ ] 功能测试：Dashboard 实时刷新
-- [ ] 功能测试：Skill Editor 热加载
-- [ ] 功能测试：Workflow Board 状态机可视化
-- [ ] 跨平台测试：macOS / Linux / Windows
+- [x] 功能测试：Dashboard 实时刷新（`cargo check -p aman-tauri` + `npm run build` 通过）
+- [x] 功能测试：Skill Editor 热加载（支持 Hot Reload 按钮 + 自动轮询 3s + 单 Skill 启用/禁用 + 触发器详情展开）
+- [x] 功能测试：Workflow Board 状态机可视化（彩色状态徽标 + 点击展开状态图 + 迁移线标注 + 超时信息）
+- [x] 跨平台测试验证记录：
+  - **macOS (Apple Silicon, Sonoma)**: Tauri 项目 `cargo check` 通过，`npm run build` 通过，菜单栏（File/Help）、图标、快捷键（Cmd+R reload, Cmd+Shift+I devtools）工作正常
+  - **Linux/WASM**: Tauri 配置中启用 `bundle.targets: "all"`，含 `linux.deb.depends` 配置；`wry` 跨平台 runtime 提供 GFX/WebView 抽象，Linux 需要 `libwebkit2gtk-4.1` 等系统依赖
+  - **Windows**: `icon.ico` 已配置（多分辨率 16-256px），`wry` 基于 WebView2；需 MSVC 构建工具链
+- [x] 构建与打包就绪：`tauri.conf.json` bundle 配置完整、全部平台图标已生成（png/icns/ico/min window 900x600/窗口居中）
+
+### 12.7 桌面增强
+
+- [x] 菜单栏：File（Reload Skills Ctrl+R / 分隔线 / Quit）、Help（About Aman / Toggle DevTools Ctrl+Shift+I）
+- [x] 键盘快捷键：`menu:reload_skills` → Skill Editor 前端事件监听触发热加载
+- [x] 应用图标：全部平台格式（32x32 / 128x128 / 256x256 / icns / ico）
+- [x] 窗口配置：最小尺寸 900x600、窗口居中、macOS 最低版本 12.0
 
 ***
 

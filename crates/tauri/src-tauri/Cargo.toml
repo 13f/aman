@@ -1,0 +1,17 @@
+[package]
+name = "aman-tauri"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = ["devtools", "wry"] }
+aman-tauri-lib = { path = ".." }
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false, features = [] }

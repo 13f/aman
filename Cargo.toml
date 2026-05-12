@@ -29,6 +29,7 @@ members = [
   "crates/cli",
   "crates/sdk",
   "crates/tauri",
+  "crates/tauri/src-tauri",
 ]
 default-members = [
   "crates/core",

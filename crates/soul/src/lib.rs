@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![doc = "SOUL model, parser, boundary checks, and hot reload for Aman."]
 
-use kernel::context::{PipelineContext, SkillContext};
+use kernel::context::{BaseContext, PipelineContext, SkillContext, ToolContext};
 use kernel::event::{Event, EventType};
 use kernel::{AmanResult, Error};
 use notify::Watcher;
@@ -104,35 +104,46 @@ impl Soul {
     }
 
     #[must_use]
-    pub fn inject_skill_context(&self, mut context: SkillContext) -> SkillContext {
-        context.soul_name = Some(self.name.clone());
-        context.base.extensions.insert(
+    pub fn inject_base_context(&self, mut base: BaseContext) -> BaseContext {
+        base.extensions.insert(
+            "soul.name".to_owned(),
+            Value::String(self.name.clone()),
+        );
+        base.extensions.insert(
             "soul.system_prompt".to_owned(),
             Value::String(self.to_system_prompt()),
         );
-        context.base.extensions.insert(
-            "soul.boundaries".to_owned(),
-            Value::Array(
-                self.boundaries
-                    .iter()
-                    .cloned()
-                    .map(Value::String)
-                    .collect::<Vec<_>>(),
-            ),
-        );
+        if !self.boundaries.is_empty() {
+            base.extensions.insert(
+                "soul.boundaries".to_owned(),
+                Value::Array(
+                    self.boundaries
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+        base
+    }
+
+    #[must_use]
+    pub fn inject_skill_context(&self, mut context: SkillContext) -> SkillContext {
+        context.base = self.inject_base_context(context.base);
+        context.soul_name = Some(self.name.clone());
         context
     }
 
     #[must_use]
     pub fn inject_pipeline_context(&self, mut context: PipelineContext) -> PipelineContext {
-        context.base.extensions.insert(
-            "soul.name".to_owned(),
-            Value::String(self.name.clone()),
-        );
-        context.base.extensions.insert(
-            "soul.system_prompt".to_owned(),
-            Value::String(self.to_system_prompt()),
-        );
+        context.base = self.inject_base_context(context.base);
+        context
+    }
+
+    #[must_use]
+    pub fn inject_tool_context(&self, mut context: ToolContext) -> ToolContext {
+        context.base = self.inject_base_context(context.base);
         context
     }
 }

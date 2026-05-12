@@ -39,6 +39,16 @@ impl ToolRegistry {
         Ok(())
     }
 
+    pub fn unregister(&self, name: &str) -> AmanResult<()> {
+        let mut tools = self.tools.write().expect("tool registry write lock");
+        if tools.remove(name).is_none() {
+            return Err(Error::NotFound {
+                name: format!("tool:{name}"),
+            });
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools

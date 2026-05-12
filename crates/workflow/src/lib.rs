@@ -541,6 +541,41 @@ impl WorkflowEngine {
         Ok(())
     }
 
+    #[must_use]
+    pub fn list_workflows(&self) -> Vec<String> {
+        let mut names = self
+            .workflows
+            .lock()
+            .expect("workflows lock")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    #[must_use]
+    pub fn get_workflow(&self, name: &str) -> Option<WorkflowDef> {
+        self.workflows
+            .lock()
+            .expect("workflows lock")
+            .get(name)
+            .cloned()
+    }
+
+    #[must_use]
+    pub fn list_instances(&self) -> Vec<WorkflowInstance> {
+        let mut items = self
+            .instances
+            .lock()
+            .expect("instances lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(|a, b| a.id.cmp(&b.id));
+        items
+    }
+
     pub fn register_guard(&self, guard: Arc<dyn Guard>) {
         self.guards
             .lock()

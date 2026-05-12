@@ -7,6 +7,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct TriggerCondition {
     pub event_types: Vec<EventType>,
     pub sources: Vec<SourceId>,

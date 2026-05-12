@@ -267,11 +267,18 @@ impl Dispatcher {
             DispatchTarget::Pipeline(pipeline_id) => match self.pipelines.get(pipeline_id) {
                 Some(pipeline) => match self.pipeline_engine.execute(pipeline, event.clone()).await {
                     Ok(output_events) => {
-                        result.output_events.extend(output_events.iter().cloned());
+                        let linked: Vec<Event> = output_events
+                            .into_iter()
+                            .map(|mut e| {
+                                e.metadata.parent_event_id = Some(event.id);
+                                e
+                            })
+                            .collect();
+                        result.output_events.extend(linked.clone());
                         result.pipeline_runs.push(DispatchedPipelineRun {
                             rule_id: rule.id.clone(),
                             pipeline_id: pipeline_id.clone(),
-                            output_events,
+                            output_events: linked,
                         });
                     }
                     Err(error) => result.failures.push(DispatchFailure {

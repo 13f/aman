@@ -1,0 +1,37 @@
+use config::AgentConfig;
+use runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use std::process::Command;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aman_health_ready_hits_runtime_endpoint() {
+    let config = AgentConfig::default();
+    let runtime = AgentRuntimeBuilder::new(config)
+        .with_bind_addr("127.0.0.1:0".parse().expect("addr"))
+        .build()
+        .expect("build runtime");
+    let server = serve(
+        runtime.clone(),
+        HttpServerConfig {
+            bind: runtime.bind_addr(),
+        },
+    )
+    .await
+    .expect("serve");
+    let addr = server.local_addr();
+
+    runtime.start().await.expect("start runtime");
+
+    let bin = env!("CARGO_BIN_EXE_aman");
+    let addr_arg = addr.to_string();
+    let status = tokio::task::spawn_blocking(move || {
+        Command::new(bin)
+            .args(["health", "ready", "--addr", &addr_arg])
+            .status()
+    })
+    .await
+    .expect("join cli")
+    .expect("run cli");
+    assert!(status.success());
+
+    server.shutdown();
+}

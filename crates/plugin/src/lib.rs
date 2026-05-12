@@ -42,6 +42,12 @@ pub struct PluginManifest {
     #[serde(default)]
     pub exports: PluginExports,
     pub config_schema: Option<Value>,
+    #[serde(default)]
+    pub isolation: Option<PluginIsolationMode>,
+    #[serde(default)]
+    pub subprocess: Option<SubprocessPluginConfig>,
+    #[serde(default)]
+    pub wasm_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1685,6 +1691,9 @@ mod tests {
                     event_sources: sources.iter().map(|item| item.id().to_owned()).collect(),
                 },
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -1720,6 +1729,9 @@ mod tests {
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -1777,6 +1789,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -1788,6 +1803,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -1799,6 +1817,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
         ])
         .expect("graph creates");
@@ -1816,6 +1837,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -1827,6 +1851,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
         ])
         .expect("graph creates");
@@ -1848,6 +1875,9 @@ config_schema:
             lifecycle: super::PluginLifecycleConfig::default(),
             exports: super::PluginExports::default(),
             config_schema: None,
+            isolation: None,
+            subprocess: None,
+            wasm_path: None,
         }])
         .expect("graph creates");
         let missing_error = missing
@@ -1863,6 +1893,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -1874,6 +1907,9 @@ config_schema:
                 lifecycle: super::PluginLifecycleConfig::default(),
                 exports: super::PluginExports::default(),
                 config_schema: None,
+                isolation: None,
+                subprocess: None,
+                wasm_path: None,
             },
         ])
         .expect("graph creates");

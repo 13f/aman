@@ -296,12 +296,19 @@ pub struct PipelineEngine {
     compensation_alerts: Arc<Mutex<VecDeque<String>>>,
     compensation_engine: CompensationEngine,
     concurrency_controller: ConcurrencyController,
+    inflight_pipelines: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl PipelineEngine {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Number of pipelines currently being executed.
+    #[must_use]
+    pub fn inflight_count(&self) -> usize {
+        self.inflight_pipelines.load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[must_use]
@@ -335,6 +342,17 @@ impl PipelineEngine {
     }
 
     pub async fn execute(
+        &self,
+        pipeline: &PipelineDefinition,
+        event: Event,
+    ) -> AmanResult<Vec<Event>> {
+        self.inflight_pipelines.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let result = self.execute_inner(pipeline, event).await;
+        self.inflight_pipelines.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        result
+    }
+
+    async fn execute_inner(
         &self,
         pipeline: &PipelineDefinition,
         event: Event,

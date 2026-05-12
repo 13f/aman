@@ -46,6 +46,17 @@ pub struct SkillRegistry {
     skills: RwLock<HashMap<String, SkillRegistration>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillSnapshot {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub enabled: bool,
+    pub concurrency: SkillConcurrencyModel,
+    #[serde(default)]
+    pub triggers: Vec<TriggerCondition>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkillUpsertOutcome {
     Inserted,
@@ -166,6 +177,42 @@ impl SkillRegistry {
             });
         }
         Ok(())
+    }
+
+    #[must_use]
+    pub fn snapshot(&self, name: &str) -> Option<SkillSnapshot> {
+        self.skills
+            .read()
+            .expect("skill registry read lock")
+            .get(name)
+            .map(|entry| SkillSnapshot {
+                name: entry.skill.name().to_owned(),
+                version: entry.skill.version().to_string(),
+                description: entry.skill.description().to_owned(),
+                enabled: entry.enabled,
+                concurrency: entry.concurrency,
+                triggers: entry.skill.triggers().to_vec(),
+            })
+    }
+
+    #[must_use]
+    pub fn list(&self) -> Vec<SkillSnapshot> {
+        let mut items = self
+            .skills
+            .read()
+            .expect("skill registry read lock")
+            .values()
+            .map(|entry| SkillSnapshot {
+                name: entry.skill.name().to_owned(),
+                version: entry.skill.version().to_string(),
+                description: entry.skill.description().to_owned(),
+                enabled: entry.enabled,
+                concurrency: entry.concurrency,
+                triggers: entry.skill.triggers().to_vec(),
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items
     }
 
     #[must_use]
@@ -331,6 +378,7 @@ impl Drop for SkillConcurrencyGuard {
 pub struct SkillExecutor {
     registry: Arc<SkillRegistry>,
     concurrency: SkillConcurrencyController,
+    inflight_skills: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl SkillExecutor {
@@ -339,10 +387,24 @@ impl SkillExecutor {
         Self {
             registry,
             concurrency: SkillConcurrencyController::default(),
+            inflight_skills: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
+    /// Number of skills currently being executed.
+    #[must_use]
+    pub fn inflight_count(&self) -> usize {
+        self.inflight_skills.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub async fn execute_matching(&self, event: Event, ctx: SkillContext) -> SkillDispatchResult {
+        self.inflight_skills.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let result = self.execute_matching_inner(event, ctx).await;
+        self.inflight_skills.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        result
+    }
+
+    async fn execute_matching_inner(&self, event: Event, ctx: SkillContext) -> SkillDispatchResult {
         let entries = self.registry.enabled_entries();
         let mut result = SkillDispatchResult::default();
         for entry in entries {
@@ -856,6 +918,7 @@ pub struct HotReloadManager {
     skills_dir: PathBuf,
     registry: Arc<SkillRegistry>,
     search: Arc<SkillSearch>,
+    version_manager: Option<Arc<SkillVersionManager>>,
     debounce_ms: u64,
     notifier: Option<Arc<dyn RouteRefreshNotifier>>,
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
@@ -871,6 +934,7 @@ impl HotReloadManager {
             skills_dir,
             registry,
             search,
+            version_manager: None,
             debounce_ms: 500,
             notifier: None,
             watcher: Mutex::new(None),
@@ -889,6 +953,12 @@ impl HotReloadManager {
     #[must_use]
     pub fn with_route_notifier(mut self, notifier: Arc<dyn RouteRefreshNotifier>) -> Self {
         self.notifier = Some(notifier);
+        self
+    }
+
+    #[must_use]
+    pub fn with_version_manager(mut self, version_manager: Arc<SkillVersionManager>) -> Self {
+        self.version_manager = Some(version_manager);
         self
     }
 
@@ -955,6 +1025,7 @@ impl HotReloadManager {
             .expect("hot reload loaded_files lock");
 
         for file in files {
+            let content = std::fs::read_to_string(&file).ok();
             let loaded = match SkillLoader::load_from_path(&file) {
                 Ok(loaded) => loaded,
                 Err(_) => {
@@ -963,6 +1034,16 @@ impl HotReloadManager {
                 }
             };
             let name = loaded.skill.name().to_owned();
+            if let (Some(version_manager), Some(content)) = (&self.version_manager, content) {
+                let version = loaded.skill.version().to_string();
+                if version_manager
+                    .history(&name)
+                    .ok()
+                    .is_none_or(|records| !records.iter().any(|record| record.version == version))
+                {
+                    let _ = version_manager.save_version(&name, &version, &content);
+                }
+            }
             loaded_names.insert(name.clone());
             let outcome = self.registry.upsert_loaded(loaded);
             let skill = self.registry.get(&name).ok_or_else(|| Error::NotFound {

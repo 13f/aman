@@ -80,6 +80,14 @@ impl InMemoryDeadLetterQueue {
     }
 
     #[must_use]
+    pub fn depth(&self) -> usize {
+        self.entries
+            .lock()
+            .expect("dlq entries mutex should not be poisoned")
+            .len()
+    }
+
+    #[must_use]
     pub fn archived_entries(&self) -> Vec<DeadLetterEntry> {
         self.archived
             .lock()

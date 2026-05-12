@@ -10,9 +10,31 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+axum = { version = "0.8.6", features = ["multipart"] }
+async-trait.workspace = true
+config = { path = "../config" }
+event-bus = { path = "../event-bus" }
 kernel = { path = "../core" }
+persistence = { path = "../persistence" }
+plugin = { path = "../plugin" }
+prometheus.workspace = true
+secret = { path = "../secret" }
 soul = { path = "../soul" }
+source = { path = "../source" }
+skill = { path = "../skill" }
+tool = { path = "../tool" }
+workflow = { path = "../workflow" }
+serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9.34"
+tokio = { version = "1.48.0", features = ["net", "rt", "signal", "sync", "time"] }
+tower = { version = "0.5.2", features = ["util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+semver.workspace = true
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "time"] }

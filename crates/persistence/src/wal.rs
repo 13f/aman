@@ -112,6 +112,15 @@ impl WriteAheadLog {
     }
 
     #[must_use]
+    pub fn last_offset_written(&self) -> Option<u64> {
+        if self.state.next_offset == 0 {
+            None
+        } else {
+            Some(self.state.next_offset.saturating_sub(1))
+        }
+    }
+
+    #[must_use]
     pub fn checkpoint_offset(&self) -> u64 {
         self.read_checkpoint_offset()
             .ok()

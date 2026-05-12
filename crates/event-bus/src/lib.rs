@@ -9,6 +9,8 @@ mod retry_queue;
 
 use async_trait::async_trait;
 use backpressure::{BackpressureController, BackpressureEventLog, BackpressureSignal};
+use tracing::instrument;
+use tracing::Instrument;
 pub use backpressure::{BackpressureEventKind, BackpressureEventRecord};
 use dedup::{DedupOutcome, DedupWindow};
 use kernel::event::{Event, EventType};
@@ -23,8 +25,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+/// Type of callback invoked when the bus discards an event due to backpressure.
+pub type DiscardHook = Arc<dyn Fn(&Event, BackpressureLevel, &str) + Send + Sync>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SubscriptionId(u64);
@@ -352,6 +358,7 @@ pub struct InMemoryBus {
     state: Mutex<BusState>,
     draining: AtomicBool,
     overflow_dir: Option<OverflowDir>,
+    discard_hook: Option<DiscardHook>,
 }
 
 impl Default for InMemoryBus {
@@ -381,7 +388,13 @@ impl InMemoryBus {
             backpressure,
             draining: AtomicBool::new(false),
             overflow_dir,
+            discard_hook: None,
         }
+    }
+
+    /// Register a callback invoked when the bus drops an event due to backpressure.
+    pub fn set_discard_hook(&mut self, hook: DiscardHook) {
+        self.discard_hook = Some(hook);
     }
 
     #[must_use]
@@ -429,12 +442,19 @@ impl InMemoryBus {
         if backpressure::should_stop_low_priority(&event, state.signal.level) {
             state.discarded_count += 1;
             state.record_stopped_low_priority(&event, state.signal.level, state.queue.len());
+            if let Some(ref hook) = self.discard_hook {
+                hook(&event, state.signal.level, "critical_low_priority");
+            }
             return Ok(PublishAdmission::Drop);
         }
 
         if self.backpressure.should_drop(&event, state.signal.level) {
             state.discarded_count += 1;
             state.record_drop(&event, state.signal.level, state.queue.len());
+            if let Some(ref hook) = self.discard_hook {
+                let reason = if state.signal.level == BackpressureLevel::L4B { "backpressure_l4b" } else { "backpressure" };
+                hook(&event, state.signal.level, reason);
+            }
             return Ok(PublishAdmission::Drop);
         }
 
@@ -541,7 +561,10 @@ impl InMemoryBus {
             };
 
             for handler in handlers {
-                handler.handle(event.clone()).await?;
+                handler
+                    .handle(event.clone())
+                    .instrument(tracing::trace_span!("dispatch_event"))
+                    .await?;
             }
 
             let mut state = self.lock_state();
@@ -553,6 +576,7 @@ impl InMemoryBus {
 
 #[async_trait]
 impl EventBus for InMemoryBus {
+    #[instrument(skip(self), fields(event_id = %event.id, source = %event.source))]
     async fn publish(&self, event: Event) -> AmanResult<()> {
         {
             let mut state = self.lock_state();

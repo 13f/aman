@@ -128,11 +128,11 @@ impl MetricsRegistry {
             .with_label_values(&["low"])
             .set(bus.queue_depth.low as i64);
         self.throughput.reset();
-        self.throughput.inc_by(bus.throughput as u64);
+        self.throughput.inc_by(bus.throughput);
         self.discarded.reset();
-        self.discarded.inc_by(bus.discarded_count as u64);
+        self.discarded.inc_by(bus.discarded_count);
         self.duplicate.reset();
-        self.duplicate.inc_by(bus.duplicate_count as u64);
+        self.duplicate.inc_by(bus.duplicate_count);
         self.subscription_count.set(bus.subscription_count as i64);
         self.retry_queue_depth.set(bus.retry_queue_depth as i64);
         self.dlq_depth.set(dlq_depth_val as i64);

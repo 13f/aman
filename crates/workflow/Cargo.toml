@@ -11,11 +11,16 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-kernel = { path = "../core" }
+kernel = { path = "../core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-pipeline = { path = "../pipeline" }
+criterion.workspace = true
+pipeline = { path = "../pipeline", version = "0.1.0" }
 pollster.workspace = true
+
+[[bench]]
+name = "recovery"
+harness = false

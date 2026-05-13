@@ -15,8 +15,8 @@ axum = "0.8.6"
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 chrono-tz = "0.10.4"
 cron = "0.15.0"
-event-bus = { path = "../event-bus" }
-kernel = { path = "../core" }
+event-bus = { path = "../event-bus", version = "0.1.0" }
+kernel = { path = "../core", version = "0.1.0" }
 notify = "8.2.0"
 serde.workspace = true
 serde_json.workspace = true

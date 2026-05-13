@@ -12,16 +12,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BusMode {
+    #[default]
     InMemory,
     Persistent,
 }
 
-impl Default for BusMode {
-    fn default() -> Self {
-        Self::InMemory
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeConfig {
@@ -84,19 +81,12 @@ impl Default for PluginConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SourceConfig {
     pub notify_on_complete: bool,
     pub watch_patterns: Vec<String>,
 }
 
-impl Default for SourceConfig {
-    fn default() -> Self {
-        Self {
-            notify_on_complete: false,
-            watch_patterns: Vec::new(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowDefinition {
@@ -111,17 +101,11 @@ pub struct WorkflowConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SecurityConfig {
     pub risky_capabilities_enabled: bool,
 }
 
-impl Default for SecurityConfig {
-    fn default() -> Self {
-        Self {
-            risky_capabilities_enabled: false,
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {

@@ -609,7 +609,16 @@ impl SkillSearch {
             }),
         }
     }
+}
 
+impl Default for SkillSearch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SkillSearch {
+    /// Index a skill for search.
     pub fn index_skill(&self, skill: IndexedSkill) {
         let mut state = self.state.lock().expect("skill search state lock");
         state.writer.delete_term(Term::from_field_text(
@@ -799,7 +808,15 @@ impl SkillVersionManager {
     pub fn from_root(path: PathBuf) -> Self {
         Self { history_root: path }
     }
+}
 
+impl Default for SkillVersionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SkillVersionManager {
     pub fn save_version(&self, name: &str, version: &str, content: &str) -> AmanResult<PathBuf> {
         let created_at_ms = now_millis();
         let skill_dir = self.history_root.join(sanitize_name(name));

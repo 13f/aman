@@ -520,7 +520,7 @@ pub async fn list_dlq(state: State<'_, AppState>) -> Result<Vec<DlqEntry>, Strin
             event_type: format!("{:?}", e.event.event_type),
             reason: e.reason,
             retry_count: e.retry_count,
-            enqueued_at_ms: e.enqueued_at.as_millis() as i64,
+            enqueued_at_ms: e.enqueued_at.as_millis(),
         })
         .collect())
 }

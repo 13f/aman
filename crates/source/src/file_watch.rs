@@ -133,13 +133,12 @@ impl FileWatchSource {
                 out.insert(path.to_path_buf(), Self::snapshot_for(path));
                 return;
             }
-            if meta.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(path) {
+            if meta.is_dir()
+                && let Ok(entries) = std::fs::read_dir(path) {
                     for entry in entries.flatten() {
                         Self::walk_path(entry.path().as_path(), out);
                     }
                 }
-            }
         }
     }
 
@@ -304,10 +303,8 @@ impl EventSource for FileWatchSource {
             }
             drained
         };
-        for next in drained_notify_events {
-            if let Ok(event) = next {
-                self.queue_notify_event(event);
-            }
+        for event in drained_notify_events.into_iter().flatten() {
+            self.queue_notify_event(event);
         }
 
         let current_files = Self::scan_files(&self.watch_paths);

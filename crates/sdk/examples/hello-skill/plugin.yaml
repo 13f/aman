@@ -1,0 +1,15 @@
+name: hello-plugin
+version: "1.0.0"
+description: A minimal Aman plugin example
+author: Aman SDK
+depends_on:
+  - name: core
+    version_range: ">=0.1.0"
+exports:
+  skills:
+    - echo-skill
+  tools:
+    - echo
+lifecycle:
+  on_load: init_logger
+  on_unload: cleanup

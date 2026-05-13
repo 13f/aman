@@ -66,7 +66,7 @@ pub struct PluginExports {
 }
 
 impl PluginManifest {
-    pub fn from_str(content: &str) -> AmanResult<Self> {
+    pub fn parse(content: &str) -> AmanResult<Self> {
         serde_yaml::from_str::<Self>(content).map_err(|error| Error::ConfigInvalid {
             message: format!("invalid plugin manifest yaml: {error}"),
         })
@@ -74,7 +74,15 @@ impl PluginManifest {
 
     pub fn from_file(path: &Path) -> AmanResult<Self> {
         let content = fs::read_to_string(path)?;
-        Self::from_str(&content)
+        Self::parse(&content)
+    }
+}
+
+impl std::str::FromStr for PluginManifest {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -527,11 +535,10 @@ impl PluginInstaller {
         loader: Option<&mut PluginLoader>,
         plugin_name: &str,
     ) -> AmanResult<()> {
-        if let Some(loader) = loader {
-            if loader.state_of(plugin_name).is_some() {
+        if let Some(loader) = loader
+            && loader.state_of(plugin_name).is_some() {
                 loader.unload_plugin(plugin_name).await?;
             }
-        }
         self.remove_plugin_files(plugin_name)
     }
 
@@ -564,7 +571,6 @@ struct ApiErrorResponse {
     error: String,
 }
 
-#[must_use]
 pub fn plugin_management_router(installer: Arc<PluginInstaller>) -> Router {
     Router::new()
         .route("/plugin/install", post(install_plugin_handler))
@@ -1092,11 +1098,10 @@ impl PluginLoader {
             .collect::<Vec<String>>();
         let mut first_error = None;
         for name in names {
-            if let Err(error) = self.unload_plugin(&name).await {
-                if first_error.is_none() {
+            if let Err(error) = self.unload_plugin(&name).await
+                && first_error.is_none() {
                     first_error = Some(error);
                 }
-            }
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -1174,11 +1179,10 @@ impl PluginLoader {
             format!("rolling back {} plugins", loaded_now.len()),
         );
         for plugin_name in loaded_now.iter().rev() {
-            if let Err(error) = self.unload_plugin(plugin_name).await {
-                if first_error.is_none() {
+            if let Err(error) = self.unload_plugin(plugin_name).await
+                && first_error.is_none() {
                     first_error = Some(error);
                 }
-            }
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -1216,25 +1220,22 @@ impl PluginLoader {
     fn unregister_exports(&self, exports: &RegisteredExports, plugin_name: &str) -> AmanResult<()> {
         let mut first_error = None;
         for source_id in &exports.event_sources {
-            if let Err(error) = self.registrar.unregister_event_source(source_id) {
-                if first_error.is_none() {
+            if let Err(error) = self.registrar.unregister_event_source(source_id)
+                && first_error.is_none() {
                     first_error = Some(error);
                 }
-            }
         }
         for tool_name in &exports.tools {
-            if let Err(error) = self.registrar.unregister_tool(tool_name) {
-                if first_error.is_none() {
+            if let Err(error) = self.registrar.unregister_tool(tool_name)
+                && first_error.is_none() {
                     first_error = Some(error);
                 }
-            }
         }
         for skill_name in &exports.skills {
-            if let Err(error) = self.registrar.unregister_skill(skill_name) {
-                if first_error.is_none() {
+            if let Err(error) = self.registrar.unregister_skill(skill_name)
+                && first_error.is_none() {
                     first_error = Some(error);
                 }
-            }
         }
         if let Some(error) = first_error {
             return Err(error);
@@ -1772,7 +1773,7 @@ config_schema:
     enabled:
       type: boolean
 "#;
-        let manifest = PluginManifest::from_str(yaml).expect("manifest parses");
+        let manifest = PluginManifest::parse(yaml).expect("manifest parses");
         assert_eq!(manifest.name, "invoice-plugin");
         assert_eq!(manifest.version, Version::new(1, 2, 0));
         assert_eq!(manifest.depends_on.len(), 1);

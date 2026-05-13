@@ -260,7 +260,7 @@ impl EventSource for CronSource {
             return Ok(Vec::new());
         }
 
-        let limit = self.rate_limit_per_sec.max(1).min(100) as usize;
+        let limit = self.rate_limit_per_sec.clamp(1, 100) as usize;
         let (to_emit, overflow) = if queue.len() > limit && self.rate_limit_overflow_delay {
             (queue[..limit].to_vec(), queue[limit..].to_vec())
         } else {
@@ -594,6 +594,12 @@ impl CronManager {
     #[must_use]
     pub fn audit_logs(&self) -> &[CronAuditLog] {
         &self.audit_logs
+    }
+}
+
+impl Default for CronManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

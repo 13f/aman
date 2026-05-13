@@ -11,14 +11,14 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-kernel = { path = "../core" }
+kernel = { path = "../core", version = "0.1.0" }
 notify = "8.2.0"
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9.34"
 tantivy = "0.22.0"
-tool = { path = "../tool" }
+tool = { path = "../tool", version = "0.1.0" }
 
 [dev-dependencies]
 pollster.workspace = true

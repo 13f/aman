@@ -5,9 +5,21 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+description = "Aman Agent Framework SDK — single-dependency entry point for external Skill and Plugin developers"
 
 [lints]
 workspace = true
 
 [dependencies]
-kernel = { path = "../core" }
+config = { path = "../config", version = "0.1.0" }
+event-bus = { path = "../event-bus", version = "0.1.0" }
+kernel = { path = "../core", version = "0.1.0" }
+persistence = { path = "../persistence", version = "0.1.0" }
+plugin = { path = "../plugin", version = "0.1.0" }
+runtime = { path = "../runtime", version = "0.1.0" }
+secret = { path = "../secret", version = "0.1.0" }
+skill = { path = "../skill", version = "0.1.0" }
+soul = { path = "../soul", version = "0.1.0" }
+source = { path = "../source", version = "0.1.0" }
+tool = { path = "../tool", version = "0.1.0" }
+workflow = { path = "../workflow", version = "0.1.0" }

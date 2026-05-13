@@ -922,14 +922,13 @@ impl WorkflowEngine {
         instance.total_retry_count = instance.total_retry_count.saturating_add(1);
         instance.session_retry_count = instance.session_retry_count.saturating_add(1);
         instance.has_pending_retry = false;
-        if instance.partial_rollback {
-            if let Some(object) = instance.data.as_object_mut() {
+        if instance.partial_rollback
+            && let Some(object) = instance.data.as_object_mut() {
                 object.insert(
                     "retry_pipeline_idempotency_required".to_owned(),
                     Value::Bool(true),
                 );
             }
-        }
         self.apply_transition(
             workflow.clone(),
             instance,
@@ -1121,6 +1120,12 @@ impl WorkflowEngine {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+}
+
+impl Default for WorkflowEngine {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

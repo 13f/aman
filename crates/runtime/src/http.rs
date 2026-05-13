@@ -1123,7 +1123,7 @@ async fn dlq_list(
             Json(DlqListResponse {
                 items: items
                     .into_iter()
-                    .map(|item| DlqEntryResponse::from(item))
+                    .map(DlqEntryResponse::from)
                     .collect::<Vec<_>>(),
             }),
         )

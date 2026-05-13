@@ -172,13 +172,12 @@ impl ToolRunner {
         check_allowed_path(&self.security.allowed_paths, params.get("cwd"))?;
         check_allowed_path(&self.security.allowed_paths, params.get("db_path"))?;
 
-        if let Some(url) = params.get("url").and_then(Value::as_str) {
-            if !self.security.network_allowed {
+        if let Some(url) = params.get("url").and_then(Value::as_str)
+            && !self.security.network_allowed {
                 return Err(Error::PermissionDenied {
                     message: format!("network access is disabled: {url}"),
                 });
             }
-        }
 
         if let Some(command) = params.get("command").and_then(Value::as_str) {
             let executable = command.split_whitespace().next().unwrap_or_default();
@@ -326,11 +325,10 @@ fn path_within(candidate: &Path, base: &Path) -> bool {
         return candidate.starts_with(&base);
     }
 
-    if let Some(parent) = candidate.parent() {
-        if let Ok(parent) = parent.canonicalize() {
+    if let Some(parent) = candidate.parent()
+        && let Ok(parent) = parent.canonicalize() {
             return parent.starts_with(&base);
         }
-    }
 
     false
 }

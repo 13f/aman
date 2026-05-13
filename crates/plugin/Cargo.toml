@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 axum = { version = "0.8.6", features = ["multipart"] }
-kernel = { path = "../core" }
+kernel = { path = "../core", version = "0.1.0" }
 async-trait.workspace = true
 flate2 = "1.1.5"
 futures = "0.3.31"

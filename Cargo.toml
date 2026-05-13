@@ -28,6 +28,7 @@ members = [
   "crates/runtime",
   "crates/cli",
   "crates/sdk",
+  "crates/sdk/examples/hello-skill",
   "crates/tauri",
   "crates/tauri/src-tauri",
 ]
@@ -50,6 +51,7 @@ default-members = [
   "crates/runtime",
   "crates/cli",
   "crates/sdk",
+  "crates/sdk/examples/hello-skill",
   "crates/tauri",
   "crates/tauri/src-tauri",
 ]
@@ -65,6 +67,7 @@ rust-version = "1.88"
 unsafe_code = "forbid"
 
 [workspace.dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 async-trait = "0.1.89"
 blake3 = "1.8.2"
 humantime = "2.3.0"

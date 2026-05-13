@@ -16,11 +16,10 @@ pub struct OverflowDir {
 }
 
 impl OverflowDir {
-    #[must_use]
     pub fn new(dir: impl AsRef<Path>, max_bytes: u64) -> AmanResult<Self> {
         let dir = dir.as_ref().to_path_buf();
         if !dir.exists() {
-            fs::create_dir_all(&dir).map_err(|e| Error::Io(e))?;
+            fs::create_dir_all(&dir).map_err(Error::Io)?;
         }
         Ok(Self { dir, max_bytes })
     }
@@ -40,18 +39,17 @@ impl OverflowDir {
 
         // Atomic write via temp file + rename
         {
-            let mut file = fs::File::create(&tmp_path).map_err(|e| Error::Io(e))?;
-            file.write_all(json.as_bytes()).map_err(|e| Error::Io(e))?;
-            file.sync_all().map_err(|e| Error::Io(e))?;
+            let mut file = fs::File::create(&tmp_path).map_err(Error::Io)?;
+            file.write_all(json.as_bytes()).map_err(Error::Io)?;
+            file.sync_all().map_err(Error::Io)?;
         }
-        fs::rename(&tmp_path, &path).map_err(|e| Error::Io(e))?;
+        fs::rename(&tmp_path, &path).map_err(Error::Io)?;
 
         Ok(())
     }
 
     /// Scan all events in the overflow directory and return them sorted
     /// by timestamp for ordered replay after crash recovery.
-    #[must_use]
     pub fn scan(&self) -> AmanResult<Vec<Event>> {
         let mut events = Vec::new();
 
@@ -59,8 +57,8 @@ impl OverflowDir {
             return Ok(events);
         }
 
-        for entry in fs::read_dir(&self.dir).map_err(|e| Error::Io(e))? {
-            let entry = entry.map_err(|e| Error::Io(e))?;
+        for entry in fs::read_dir(&self.dir).map_err(Error::Io)? {
+            let entry = entry.map_err(Error::Io)?;
             let path = entry.path();
 
             if path
@@ -68,7 +66,7 @@ impl OverflowDir {
                 .and_then(|e| e.to_str())
                 .is_some_and(|ext| ext == "json")
             {
-                let content = fs::read_to_string(&path).map_err(|e| Error::Io(e))?;
+                let content = fs::read_to_string(&path).map_err(Error::Io)?;
                 let event: Event = serde_json::from_str(&content).map_err(Error::SerdeJson)?;
                 events.push(event);
             }
@@ -85,21 +83,20 @@ impl OverflowDir {
         let filename = format!("{}.json", event_id);
         let path = self.dir.join(filename);
         if path.exists() {
-            fs::remove_file(&path).map_err(|e| Error::Io(e))?;
+            fs::remove_file(&path).map_err(Error::Io)?;
         }
         Ok(())
     }
 
     /// Calculate the current total size of the overflow directory in bytes.
-    #[must_use]
     pub fn current_size(&self) -> AmanResult<u64> {
         let mut total = 0u64;
         if !self.dir.exists() {
             return Ok(0);
         }
-        for entry in fs::read_dir(&self.dir).map_err(|e| Error::Io(e))? {
-            let entry = entry.map_err(|e| Error::Io(e))?;
-            let meta = entry.metadata().map_err(|e| Error::Io(e))?;
+        for entry in fs::read_dir(&self.dir).map_err(Error::Io)? {
+            let entry = entry.map_err(Error::Io)?;
+            let meta = entry.metadata().map_err(Error::Io)?;
             if meta.is_file() {
                 total += meta.len();
             }
@@ -108,7 +105,6 @@ impl OverflowDir {
     }
 
     /// Returns the current overflow usage as a ratio [0.0, 1.0].
-    #[must_use]
     pub fn usage_ratio(&self) -> AmanResult<f32> {
         let size = self.current_size()?;
         if self.max_bytes == 0 {
@@ -127,11 +123,11 @@ impl OverflowDir {
     /// Clear all events from the overflow directory.
     pub fn clear(&self) -> AmanResult<()> {
         if self.dir.exists() {
-            for entry in fs::read_dir(&self.dir).map_err(|e| Error::Io(e))? {
-                let entry = entry.map_err(|e| Error::Io(e))?;
+            for entry in fs::read_dir(&self.dir).map_err(Error::Io)? {
+                let entry = entry.map_err(Error::Io)?;
                 let path = entry.path();
                 if path.is_file() {
-                    fs::remove_file(&path).map_err(|e| Error::Io(e))?;
+                    fs::remove_file(&path).map_err(Error::Io)?;
                 }
             }
         }

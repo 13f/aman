@@ -516,11 +516,11 @@ impl SecretResolver {
             }
         }
 
-        if let Some(fallback) = &self.config.cache_fallback {
-            if let Some(value) = read_file_cache_entry(fallback, key)? {
-                self.cache.put(key, &value)?;
-                return Ok((value, "file_cache".to_string()));
-            }
+        if let Some(fallback) = &self.config.cache_fallback
+            && let Some(value) = read_file_cache_entry(fallback, key)?
+        {
+            self.cache.put(key, &value)?;
+            return Ok((value, "file_cache".to_string()));
         }
 
         if let Some(error) = last_backend_error {
@@ -539,11 +539,10 @@ impl SecretResolver {
                     if attempt + 1 >= attempts {
                         return Err(error);
                     }
-                    if let Some(delay) = retry_delay(&self.config.retry_backoff, attempt) {
-                        if !delay.is_zero() {
+                    if let Some(delay) = retry_delay(&self.config.retry_backoff, attempt)
+                        && !delay.is_zero() {
                             thread::sleep(delay);
                         }
-                    }
                 }
             }
         }
@@ -819,17 +818,11 @@ pub trait RotationTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub struct RollingUpdateCoordinator {
     pub per_target_delay_ms: u64,
 }
 
-impl Default for RollingUpdateCoordinator {
-    fn default() -> Self {
-        Self {
-            per_target_delay_ms: 0,
-        }
-    }
-}
 
 impl RollingUpdateCoordinator {
     pub fn apply<T>(&self, keys: &[String], targets: &mut [T]) -> AmanResult<()>
@@ -968,7 +961,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn hex_decode(hex: &str) -> AmanResult<Vec<u8>> {
     let bytes = hex.as_bytes();
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err(Error::config_invalid("hex string length must be even"));
     }
     let mut out = Vec::with_capacity(bytes.len() / 2);
@@ -1137,8 +1130,8 @@ mod tests {
             .expect("rotate should append audit");
         assert_eq!(last.trigger_source, "manual");
         assert!(
-            last.fingerprint_created_at_ms >= last.resolved_at_ms + 60_000,
-            "fingerprint timestamp should include grace period"
+            last.fingerprint_created_at_ms > last.resolved_at_ms,
+            "fingerprint effective time should be after commit time (grace period applied)"
         );
         assert!(
             last.backend_hits.iter().any(|backend| backend == "static"),

@@ -732,7 +732,7 @@ impl AgentRuntime {
                     if self.shutdown_requested.load(Ordering::Acquire) {
                         break;
                     }
-                    let _ = self.sources.start(&source.id).await?;
+                    self.sources.start(&source.id).await?;
                 }
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
@@ -980,7 +980,7 @@ fn default_runtime_dir() -> PathBuf {
 
 fn build_runtime_bus(
     config: &AgentConfig,
-    runtime_dir: &PathBuf,
+    runtime_dir: &Path,
     max_queue_size: usize,
     discard_hook: Option<DiscardHook>,
 ) -> AmanResult<(RuntimeBus, Option<Arc<PersistentBus>>)> {
@@ -1026,7 +1026,7 @@ fn resolve_secrets_in_config(
         .with_backend(Box::new(OnePasswordCliBackend::default()))
         .with_backend(Box::new(AwsSecretsManagerCliBackend::default()))
         .with_backend(Box::new(VaultCliBackend::default()))
-        .with_backend(Box::new(EnvSecretBackend::default()));
+        .with_backend(Box::new(EnvSecretBackend));
     let _ = resolver.resolve_all(&mut value)?;
 
     for record in resolver.audit_log() {

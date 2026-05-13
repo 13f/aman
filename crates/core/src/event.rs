@@ -201,10 +201,10 @@ impl Event {
             .as_millis()
             .saturating_sub(self.metadata.created_at.as_millis()) as u64;
 
-        if let Some(ttl_ms) = self.metadata.ttl_ms {
-            if age_ms > ttl_ms {
-                return true;
-            }
+        if let Some(ttl_ms) = self.metadata.ttl_ms
+            && age_ms > ttl_ms
+        {
+            return true;
         }
 
         if let Some(lifespan_ms) = self.metadata.lifespan_ms {

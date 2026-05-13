@@ -14,15 +14,15 @@ tauri = { version = "2", default-features = false, features = ["devtools", "wry"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
-config = { path = "../config" }
-runtime = { path = "../runtime" }
-kernel = { path = "../core" }
-event-bus = { path = "../event-bus" }
-persistence = { path = "../persistence" }
-skill = { path = "../skill" }
-workflow = { path = "../workflow" }
-soul = { path = "../soul" }
-plugin = { path = "../plugin" }
+config = { path = "../config", version = "0.1.0" }
+runtime = { path = "../runtime", version = "0.1.0" }
+kernel = { path = "../core", version = "0.1.0" }
+event-bus = { path = "../event-bus", version = "0.1.0" }
+persistence = { path = "../persistence", version = "0.1.0" }
+skill = { path = "../skill", version = "0.1.0" }
+workflow = { path = "../workflow", version = "0.1.0" }
+soul = { path = "../soul", version = "0.1.0" }
+plugin = { path = "../plugin", version = "0.1.0" }
 
 [build-dependencies]
 tauri-build = { version = "2", default-features = false, features = [] }

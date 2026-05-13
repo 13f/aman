@@ -11,10 +11,15 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-kernel = { path = "../core" }
+kernel = { path = "../core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 pollster.workspace = true
+
+[[bench]]
+name = "latency"
+harness = false

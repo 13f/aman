@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
-kernel = { path = "../core" }
+kernel = { path = "../core", version = "0.1.0" }
 reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde.workspace = true

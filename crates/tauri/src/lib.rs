@@ -38,7 +38,7 @@ pub fn run() {
                 }
                 "devtools" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.open_devtools();
+                        window.open_devtools();
                     }
                 }
                 _ => {}

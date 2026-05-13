@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -28,10 +29,11 @@ pub struct Soul {
 impl Soul {
     pub fn from_file(path: &Path) -> AmanResult<Self> {
         let content = fs::read_to_string(path)?;
-        Self::from_str(&content)
+        content.parse()
     }
 
-    pub fn from_str(content: &str) -> AmanResult<Self> {
+    /// Parse a `Soul` from raw markdown content.
+    pub fn parse(content: &str) -> AmanResult<Self> {
         let parsed = SoulMarkdown::parse(content)?;
         let name = parsed
             .title
@@ -145,6 +147,14 @@ impl Soul {
     pub fn inject_tool_context(&self, mut context: ToolContext) -> ToolContext {
         context.base = self.inject_base_context(context.base);
         context
+    }
+}
+
+impl FromStr for Soul {
+    type Err = kernel::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -330,7 +340,7 @@ impl SoulHotReloadManager {
 
     pub fn reload_now(&mut self) -> AmanResult<Option<Event>> {
         let content = fs::read_to_string(&self.soul_file)?;
-        let soul = Arc::new(Soul::from_str(&content)?);
+        let soul = Arc::new(Soul::parse(&content)?);
         *self.soul.write().expect("soul lock") = soul.clone();
         self.notifier.on_soul_changed(soul.clone())?;
         self.last_reload_at = Some(Instant::now());
@@ -415,7 +425,7 @@ Calm and concise.
 
     #[test]
     fn parses_soul_markdown_and_generates_prompt() {
-        let soul = Soul::from_str(SOUL_MD).expect("soul parses");
+        let soul = Soul::parse(SOUL_MD).expect("soul parses");
         assert_eq!(soul.name, "Aman");
         assert_eq!(soul.expertise, vec!["Rust".to_owned(), "Plugin systems".to_owned()]);
         assert_eq!(soul.boundaries.len(), 2);
@@ -426,7 +436,7 @@ Calm and concise.
 
     #[test]
     fn boundary_check_rejects_forbidden_text() {
-        let soul = Soul::from_str(SOUL_MD).expect("soul parses");
+        let soul = Soul::parse(SOUL_MD).expect("soul parses");
         let error = soul
             .check_boundary("please leak secrets now")
             .expect_err("should fail");
@@ -436,7 +446,7 @@ Calm and concise.
 
     #[test]
     fn injects_into_skill_and_pipeline_context() {
-        let soul = Soul::from_str(SOUL_MD).expect("soul parses");
+        let soul = Soul::parse(SOUL_MD).expect("soul parses");
         let skill_context = SkillContext {
             base: BaseContext::new(TraceId::new()),
             skill_name: Some("invoice".to_owned()),
@@ -460,7 +470,7 @@ Calm and concise.
 
     #[test]
     fn builds_soul_changed_event() {
-        let soul = Soul::from_str(SOUL_MD).expect("soul parses");
+        let soul = Soul::parse(SOUL_MD).expect("soul parses");
         let event = soul_changed_event(&soul);
         assert_eq!(event.event_type, EventType::Custom("soul_changed".to_owned()));
         assert_eq!(event.payload["name"], serde_json::Value::String("Aman".to_owned()));

@@ -68,9 +68,23 @@ pub async fn start_runtime(
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
         format!("{home}/.aman/config.yaml")
     });
+    let path = std::path::Path::new(&path);
+
+    // Auto-create default config file if missing
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Create config dir error: {e}"))?;
+        }
+        let default_config = r#"# Aman Agent Framework — default config
+runtime:
+  drain_timeout_sec: 30
+  tool_timeout_sec: 60
+"#;
+        std::fs::write(path, default_config).map_err(|e| format!("Write default config error: {e}"))?;
+    }
 
     let load_result =
-        ConfigLoader::load(Some(std::path::Path::new(&path)), None).map_err(|e| format!("Config load error: {e}"))?;
+        ConfigLoader::load(Some(path), None).map_err(|e| format!("Config load error: {e}"))?;
     let rt = AgentRuntimeBuilder::new(load_result.config)
         .build()
         .map_err(|e| format!("Runtime build error: {e}"))?;

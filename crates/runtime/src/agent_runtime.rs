@@ -78,7 +78,7 @@ impl AgentRuntimeBuilder {
         Self {
             config,
             runtime_dir: default_runtime_dir(),
-            bind_addr: "127.0.0.1:0".parse().expect("socket addr parse"),
+            bind_addr: "127.0.0.1:9999".parse().expect("socket addr parse"),
             api_token: None,
             startup_pause: Duration::from_millis(0),
             soul_file: None,

@@ -6,7 +6,6 @@ pub mod models;
 pub mod state;
 
 use state::AppState;
-use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -17,7 +16,19 @@ use tokio::time::{interval, Duration};
 /// Called from the binary entry point (`src-tauri/main.rs`).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app_state = Arc::new(AppState::new());
+    let app_state = AppState::new();
+
+    // Clone the inner runtime handle for background tasks before moving
+    // app_state into Tauri's managed state.
+    let rt_state_for_metrics = app_state.runtime.clone();
+    let rt_state_for_events = app_state.runtime.clone();
+
+    // Create a Tokio runtime for background tasks. Must be created before
+    // Tauri's event loop since `setup()` runs on the main thread which has
+    // no Tokio context. Box::leak gives us a &'static Runtime so it survives
+    // the setup closure returning.
+    let rt = Box::new(tokio::runtime::Runtime::new().expect("create tokio runtime"));
+    let rt: &'static tokio::runtime::Runtime = Box::leak(rt);
 
     tauri::Builder::default()
         .on_menu_event(|app, event| {
@@ -33,7 +44,7 @@ pub fn run() {
                 _ => {}
             }
         })
-        .manage(app_state.clone())
+        .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_status,
             commands::get_runtime_config,
@@ -76,15 +87,13 @@ pub fn run() {
 
             let handle1 = app.handle().clone();
             let handle2 = app.handle().clone();
-            let state_for_metrics = app_state.clone();
-            let state_for_events = app_state.clone();
 
             // Background task: emit `metrics:updated` every 2 s.
-            tokio::spawn(async move {
+            rt.spawn(async move {
                 let mut tick = interval(Duration::from_secs(2));
                 loop {
                     tick.tick().await;
-                    let guard = state_for_metrics.runtime.lock().await;
+                    let guard = rt_state_for_metrics.lock().await;
                     let snapshot = match guard.as_ref() {
                         Some(rt) => {
                             let bus = rt.bus_metrics();
@@ -130,12 +139,12 @@ pub fn run() {
             });
 
             // Background task: emit `event:processed` every 1 s (poll EventStore).
-            tokio::spawn(async move {
+            rt.spawn(async move {
                 let mut tick = interval(Duration::from_secs(1));
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 loop {
                     tick.tick().await;
-                    let guard = state_for_events.runtime.lock().await;
+                    let guard = rt_state_for_events.lock().await;
                     if let Some(rt) = guard.as_ref() {
                         let events = rt.event_store().recent(20);
                         drop(guard);

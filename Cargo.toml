@@ -51,6 +51,7 @@ default-members = [
   "crates/cli",
   "crates/sdk",
   "crates/tauri",
+  "crates/tauri/src-tauri",
 ]
 
 [workspace.package]

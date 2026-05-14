@@ -4,6 +4,8 @@
 pub mod context;
 pub mod error;
 pub mod event;
+pub mod sanitizer;
+pub mod validator;
 pub mod hook;
 pub mod pipeline;
 pub mod plugin;

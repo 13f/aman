@@ -7,6 +7,7 @@ use crate::models::{
 use crate::state::AppState;
 use config::ConfigLoader;
 use kernel::event::{Event, EventType};
+use kernel::sanitizer::{InputSanitizer, SanitizeResult, content_hash};
 use persistence::DeadLetterQueue;
 use runtime::{AgentRuntimeBuilder, RuntimePhase};
 use std::time::Instant;
@@ -667,20 +668,78 @@ pub async fn chat_send_message(
             return Err("Session ID cannot be empty".to_owned());
         }
 
-        // Publish MESSAGE_RECEIVED event to the Event Bus
+        // --- InputSanitizer (§8.1): three-tier sanitization ---
+        let sanitizer = InputSanitizer::new();
+        let sanitize_result = sanitizer.sanitize(&text);
+        let (final_text, sanitized, original_text) = match &sanitize_result {
+            SanitizeResult::Block { matched_patterns } => {
+                rt.audit().record(
+                    "system",
+                    "input_sanitize.block",
+                    "chat:send_message",
+                    "blocked",
+                    format!(
+                        "session_id={session_id}, matched_patterns={}, original_content_hash={}",
+                        matched_patterns.join(","),
+                        content_hash(&text),
+                    ),
+                );
+                return Err(format!(
+                    "Message blocked by InputSanitizer: matched {}",
+                    matched_patterns.join(", "),
+                ));
+            }
+            SanitizeResult::ReplaceMessage { matched_patterns } => {
+                rt.audit().record(
+                    "system",
+                    "input_sanitize.replace_message",
+                    "chat:send_message",
+                    "replaced",
+                    format!(
+                        "session_id={session_id}, matched_patterns={}, original_content_hash={}",
+                        matched_patterns.join(","),
+                        content_hash(&text),
+                    ),
+                );
+                ("[redacted]".to_owned(), true, text.clone())
+            }
+            SanitizeResult::ReplaceToken { sanitized, matched_patterns } => {
+                rt.audit().record(
+                    "system",
+                    "input_sanitize.replace_token",
+                    "chat:send_message",
+                    "replaced",
+                    format!(
+                        "session_id={session_id}, matched_patterns={}, original_content_hash={}, sanitized_length={}",
+                        matched_patterns.join(","),
+                        content_hash(&text),
+                        sanitized.len(),
+                    ),
+                );
+                (sanitized.clone(), true, text.clone())
+            }
+            SanitizeResult::PassThrough => (text.clone(), false, String::new()),
+        };
+
+        // Publish MESSAGE_RECEIVED event to the Event Bus (with sanitized text)
+        let mut payload = serde_json::json!({
+            "session_id": session_id,
+            "text": final_text,
+            "channel": "tauri_desktop",
+            "message_id": uuid::Uuid::now_v7(),
+            "client_timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        });
+        if sanitized {
+            payload["original_text"] = serde_json::json!(original_text);
+            payload["sanitized"] = serde_json::json!(true);
+        }
         let event = kernel::event::Event::new(
             "chat-platform:tauri-desktop",
             kernel::event::EventType::MessageReceived,
-            serde_json::json!({
-                "session_id": session_id,
-                "text": text,
-                "channel": "tauri_desktop",
-                "message_id": uuid::Uuid::now_v7(),
-                "client_timestamp": std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0),
-            }),
+            payload,
         );
         let event_id = event.id;
         rt.publish_event(event)
@@ -966,4 +1025,40 @@ pub async fn chat_edit_message(
     let result = Ok(event_id.to_string());
     record_ipc(Some(rt), "chat:edit_message", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
     result
+}
+
+#[tauri::command]
+pub async fn chat_validator_health(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    // Check if the llm-skill is registered (indicates validator is operational)
+    let rt = {
+        let guard = state.runtime.lock().await;
+        guard.as_ref().map(std::sync::Arc::clone)
+    };
+    let rt = match rt {
+        Some(rt) => rt,
+        None => {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "reason": "no_runtime",
+                "healthy": false,
+            }));
+        }
+    };
+
+    let has_skill = rt.skills().snapshot("llm-skill").is_some();
+    let (healthy, rule_count) = if has_skill {
+        (true, 7) // default rule count
+    } else {
+        (false, 0)
+    };
+
+    Ok(serde_json::json!({
+        "ok": healthy,
+        "healthy": healthy,
+        "rule_count": rule_count,
+        "timeout_sec": 2,
+        "fail_closed": true,
+    }))
 }

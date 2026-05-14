@@ -6,6 +6,7 @@ use event_bus::EventBus;
 use kernel::context::SkillContext;
 use kernel::event::{Event, EventType};
 use kernel::skill::{Skill, TriggerCondition};
+use kernel::validator::{OutputValidator, ValidationOutcome};
 use kernel::{AmanResult, Error};
 use semver::Version;
 use serde_json::json;
@@ -35,6 +36,8 @@ pub struct LlmSkill {
     max_queue: usize,
     /// Set of event UUIDs already processed (for WAL replay dedup, §9.2).
     processed_events: Arc<Mutex<HashSet<String>>>,
+    /// OutputValidator for LLM reply security checks (§8.2).
+    validator: OutputValidator,
 }
 
 impl LlmSkill {
@@ -59,6 +62,7 @@ impl LlmSkill {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             max_queue: max_queue_per_session.max(1),
             processed_events: Arc::new(Mutex::new(HashSet::new())),
+            validator: OutputValidator::new(),
         }
     }
 
@@ -142,7 +146,7 @@ impl Skill for LlmSkill {
                     if entry.get().is_closed() {
                         // Session processor ended; replace with new channel.
                         let (tx, rx) = mpsc::channel(self.max_queue);
-                        spawn_session_processor(rx, self.bus.clone(), session_id.clone());
+                        spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone());
                         entry.insert(tx.clone());
                         tx
                     } else {
@@ -151,7 +155,7 @@ impl Skill for LlmSkill {
                 }
                 Entry::Vacant(entry) => {
                     let (tx, rx) = mpsc::channel(self.max_queue);
-                    spawn_session_processor(rx, self.bus.clone(), session_id.clone());
+                    spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone());
                     entry.insert(tx.clone());
                     tx
                 }
@@ -203,6 +207,7 @@ async fn process_session(
     mut rx: mpsc::Receiver<Event>,
     bus: Arc<dyn EventBus>,
     session_id: String,
+    validator: OutputValidator,
 ) {
     while let Some(msg) = rx.recv().await {
         // Simulate LLM processing delay.
@@ -221,19 +226,56 @@ async fn process_session(
             .and_then(|v| v.as_str())
             .unwrap_or("assistant");
 
-        let reply = Event::new(
-            "skill:llm",
-            EventType::Custom("llm_reply_ready".to_owned()),
-            json!({
-                "session_id": session_id,
-                "original_message_id": msg.id.to_string(),
-                "reply": format!("Echo: {text}"),
-                "soul_name": soul_name,
-            }),
-        );
+        let reply_text = format!("Echo: {text}");
 
-        if let Err(e) = bus.publish(reply).await {
-            tracing::warn!(%session_id, error = %e, "llm-skill: failed to publish reply");
+        // OutputValidator check (§8.2): validate complete reply before publishing.
+        let outcome = validator.validate(&reply_text);
+        match outcome {
+            ValidationOutcome::Pass => {
+                let reply = Event::new(
+                    "skill:llm",
+                    EventType::Custom("llm_reply_ready".to_owned()),
+                    json!({
+                        "session_id": session_id,
+                        "original_message_id": msg.id.to_string(),
+                        "reply": reply_text,
+                        "soul_name": soul_name,
+                    }),
+                );
+                if let Err(e) = bus.publish(reply).await {
+                    tracing::warn!(%session_id, error = %e, "llm-skill: failed to publish reply");
+                }
+            }
+            ValidationOutcome::Fail { matched_rules, reason } => {
+                tracing::warn!(%session_id, matched = ?matched_rules, "llm-skill: output validation failed");
+                let blocked = Event::new(
+                    "skill:llm",
+                    EventType::Custom("output_blocked".to_owned()),
+                    json!({
+                        "session_id": session_id,
+                        "original_message_id": msg.id.to_string(),
+                        "reason": reason,
+                        "matched_rules": matched_rules,
+                        "soul_name": soul_name,
+                    }),
+                );
+                let _ = bus.publish(blocked).await;
+            }
+            ValidationOutcome::Error { message } => {
+                tracing::warn!(%session_id, error = %message, "llm-skill: validator error (fail_closed)");
+                let blocked = Event::new(
+                    "skill:llm",
+                    EventType::Custom("output_blocked".to_owned()),
+                    json!({
+                        "session_id": session_id,
+                        "original_message_id": msg.id.to_string(),
+                        "reason": format!("validator_error: {message}"),
+                        "fail_closed": true,
+                        "soul_name": soul_name,
+                    }),
+                );
+                let _ = bus.publish(blocked).await;
+            }
         }
     }
 }
@@ -242,9 +284,10 @@ fn spawn_session_processor(
     rx: mpsc::Receiver<Event>,
     bus: Arc<dyn EventBus>,
     session_id: String,
+    validator: OutputValidator,
 ) {
     tokio::spawn(async move {
-        process_session(rx, bus, session_id).await;
+        process_session(rx, bus, session_id, validator).await;
     });
 }
 

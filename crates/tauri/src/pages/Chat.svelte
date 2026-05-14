@@ -237,7 +237,29 @@
       case "llm_tool_result":
         handleLlmToolResult(data);
         break;
+      case "output_blocked":
+        handleOutputBlocked(data);
+        break;
     }
+  }
+
+  function handleOutputBlocked(data: any) {
+    const sid: string = data.session_id;
+    const reason: string = data.reason ?? "unknown";
+    const matchedRules: string[] = data.matched_rules ?? [];
+    const isFailClosed: boolean = data.fail_closed === true;
+    isLoading = false;
+    updateSessionStatus(sid, "idle");
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event",
+      content: isFailClosed
+        ? "OUTPUT_BLOCKED: Safety check failed — reply blocked. Please try again or contact admin."
+        : `OUTPUT_BLOCKED: ${reason}`,
+      timestamp: new Date().toISOString(),
+      sessionId: sid,
+      status: "error" as MessageStatus,
+    }];
   }
 
   let activeStreamingMessageId: string | null = null;

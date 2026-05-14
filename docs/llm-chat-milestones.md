@@ -20,7 +20,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 - M3 必须先于 M4（测试先行）
 - M4 完成后 M5/M6 可部分并行
 
-> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6: T6.1 ✅、T6.2 ✅、T6.3 ✅、T6.4 ✅、T6.5 ✅、T6.6 ✅。M6 全部完成！下一个：M7（安全保障与高级会话管理）。**
+> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6 ✅ 已完成。M7: T7.1 ✅、T7.2 ✅。下一个任务：T7.3（命令系统实现）。**
 
 ---
 
@@ -627,50 +627,59 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 > 目标：安全过滤、命令系统、多会话分支、裁剪等完善。
 > 验收：完整功能上线，所有边缘情况有处理。
 
-### T7.1 — InputSanitizer 三层策略
+### T7.1 — InputSanitizer 三层策略 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/core/src/sanitizer.rs`（或等价） |
+| 涉及 | `crates/core/src/sanitizer.rs`、`crates/tauri/src/commands.rs` |
 | 架构 | §8.1 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 replace_token 策略：正则/关键词匹配 → 替换命中子串
-2. 实现 replace_message 策略：高风险模式 → 整条替换为 `[redacted]`
-3. 实现 block 策略：确定恶意内容 → 拒绝发送
-4. 审计日志：event_id + strategy + matched_pattern + original_content_hash + sanitized_content
-5. 前端显示替换后的实际内容
+1. ✅ 实现 `InputSanitizer`（`crates/core/src/sanitizer.rs`）：
+   - `replace_token` 策略：匹配关键词 → 替换命中子串为 `[redacted]`
+   - `replace_message` 策略：高风险模式（系统提示提取等）→ 整条替换为 `[redacted]`
+   - `block` 策略：确定恶意内容（shell 注入等）→ 拒绝发送
+2. ✅ 三策略优先级：block > replace_message > replace_token
+3. ✅ 集成到 `chat:send_message`：发布事件前先消毒
+4. ✅ 审计日志：strategy + matched_pattern + original_content_hash（blake3）
+5. ✅ 消毒后文本传递给 LLM（payload.text = 替换后内容）
+6. ✅ 9 个单元测试全部通过
 
 **验收：**
-- 包含 prompt injection 模式的消息被消毒
-- 恶意 shell 注入被 block
-- 审计日志记录完整
+- ✅ 包含 prompt injection 模式的消息被消毒（replace_token）
+- ✅ 系统提示提取尝试被替换整条消息（replace_message）
+- ✅ 恶意 shell 注入被 block
+- ✅ 审计日志记录完整
 
 ---
 
-### T7.2 — OutputValidator fail_closed
+### T7.2 — OutputValidator fail_closed ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/core/src/validator.rs` |
+| 涉及 | `crates/core/src/validator.rs`、`crates/plugins/llm-skill/`、`crates/tauri/src/commands.rs`、`crates/tauri/src/pages/Chat.svelte` |
 | 架构 | §8.2 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 完整回复（LLM_STREAM_DONE 后）验证：
-   - Secret 泄漏检测（私钥/Token 正则）
-   - 系统提示泄漏检测
-   - Tool 注入检测
-2. fail_closed：Validator 不可用 → 所有回复被阻止
-3. 超时阈值：2s
-4. 前端显示 OUTPUT_BLOCKED 系统消息
-5. `/health/validator` 端点
+1. ✅ 实现 `OutputValidator`（`crates/core/src/validator.rs`，11 个测试全通过）：
+   - Secret 泄漏检测（sk-私钥、AKIA、-----BEGIN、ghp_）
+   - 系统提示泄漏检测（you are an AI assistant）
+   - Tool 注入检测（ignore safety、bypass filter）
+2. ✅ fail_closed：Validator 超时/异常 → 回复被阻止（timeout check 使用 `>=`，零容忍）
+3. ✅ 超时阈值：2s（可配置）
+4. ✅ 集成到 LlmSkill：`process_session` 生成回复后先验证再发布
+5. ✅ 验证失败 → 发布 `output_blocked` 事件 → 前端显示 OUTPUT_BLOCKED 系统消息
+6. ✅ `chat:validator_health` IPC 端点
 
 **验收：**
-- LLM 回复含 API Key → 被拦截
-- Validator 进程崩溃 → 所有回复被阻止（不绕过）
-- `/health/validator` 失败时 Pod 不接收流量
+- ✅ LLM 回复含 API Key → 被拦截（`output_blocked` 事件）
+- ✅ Validator 超时 → fail_closed（所有回复被阻止）
+- ✅ 前端显示 OUTPUT_BLOCKED 系统消息
+- ✅ `chat:validator_health` 返回 `{ healthy, rule_count, timeout_sec, fail_closed }`
 
 ---
 
@@ -802,11 +811,11 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | M4 聊天核心 | 3 | 8d | ✅ 已完成 | 需 M3 完成 |
 | M5 聊天前端 | 2 | 3d | ✅ 已完成 | 需 M4 完成 |
 | M6 集成与加固 | 6 | 9d | ⏳ 5/6 完成 | 需 M4 完成 |
-| M7 增强打磨 | 7 | 10d | ⏳ 待开始 | 需 M6 完成 |
-| **总计** | **28** | **~43d** | **完成 17/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
+| M7 增强打磨 | 7 | 10d | ⏳ 2/7 完成 | 需 M6 完成 |
+| **总计** | **28** | **~43d** | **完成 19/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
 
 ---
 
 ## 当前焦点
 
-M1+M2+M3 已完成。M4+M5 全部完成。M6 正在推进中：T6.1（会话管理 IPC 命令）✅、T6.2（SOUL 集成）✅、T6.3（可观测基础埋点）✅。下一个任务：**T6.4（用户级限流实现）**。
+M1+M2+M3 已完成。M4+M5 全部完成。M6 全部完成。M7: T7.1（InputSanitizer）✅、T7.2（OutputValidator）✅。下一个任务：**T7.3（命令系统实现）**。

@@ -82,6 +82,7 @@ pub fn run() {
             commands::chat_session_state,
             commands::chat_retry_last,
             commands::chat_edit_message,
+            commands::chat_validator_health,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar

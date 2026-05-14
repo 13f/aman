@@ -477,6 +477,28 @@ pub async fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginEntry>
 }
 
 #[tauri::command]
+pub async fn get_capabilities(state: State<'_, AppState>) -> Result<Vec<crate::models::CapabilityEntry>, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+    let entries = rt.get_capability_entries().await;
+    let mut result: Vec<crate::models::CapabilityEntry> = entries
+        .into_values()
+        .flat_map(|entries| {
+            entries.into_iter().map(|e| crate::models::CapabilityEntry {
+                capability: e.capability,
+                plugin: e.plugin,
+                version: e.version,
+                status: format!("{:?}", e.status),
+            })
+        })
+        .collect();
+    result.sort_by(|a, b| a.capability.cmp(&b.capability));
+    Ok(result)
+}
+
+#[tauri::command]
 pub async fn enable_plugin(state: State<'_, AppState>, name: String) -> Result<String, String> {
     let guard = state.runtime.lock().await;
     let rt = guard

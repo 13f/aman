@@ -14,7 +14,7 @@ use secret::{
     SecretResolver, SecretResolverConfig, VaultCliBackend,
 };
 use source::{CronManager, CronSource, SourceRegistry};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -26,7 +26,33 @@ use crate::{AuditLogger, EventStore};
 use crate::SoulRuntime;
 use soul::SoulHotReloadManager;
 use tracing::instrument;
-use workflow::WorkflowEngine;
+use workflow::{
+    ErrorRecovery, StateDef, StateTimeout, Transition, TransitionFrom, TransitionTo, WorkflowDef,
+    WorkflowEngine,
+};
+
+// ---------------------------------------------------------------------------
+// Capability registry types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityStatus {
+    Healthy,
+    Degraded,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityEntry {
+    pub capability: String,
+    pub plugin: String,
+    pub version: String,
+    pub status: CapabilityStatus,
+}
+
+// ---------------------------------------------------------------------------
+// Runtime lifecycle
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimePhase {
@@ -157,6 +183,164 @@ impl AgentRuntimeBuilder {
         let workflows_dir = self.runtime_dir.join("workflows");
         let _ = std::fs::create_dir_all(&workflows_dir);
         let workflow_engine = Arc::new(WorkflowEngine::new());
+        // --- chat-session workflow definition ---
+        let _ = workflow_engine.register_workflow(WorkflowDef {
+            name: "chat-session".to_owned(),
+            states: vec![
+                StateDef { name: "ACTIVE".to_owned() },
+                StateDef { name: "PROCESSING".to_owned() },
+                StateDef { name: "IDLE".to_owned() },
+                StateDef { name: "ERROR".to_owned() },
+                StateDef { name: "RETRYING".to_owned() },
+                StateDef { name: "TIMEOUT".to_owned() },
+                StateDef { name: "CLOSED".to_owned() },
+            ],
+            initial_state: "ACTIVE".to_owned(),
+            final_states: vec!["CLOSED".to_owned()],
+            error_state: "ERROR".to_owned(),
+            transitions: vec![
+                Transition {
+                    from: TransitionFrom::Specific("ACTIVE".to_owned()),
+                    event: "MESSAGE_RECEIVED".to_owned(),
+                    to: TransitionTo::Specific("PROCESSING".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("ACTIVE".to_owned()),
+                    event: "SESSION_TIMEOUT".to_owned(),
+                    to: TransitionTo::Specific("TIMEOUT".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
+                    event: "LLM_REPLY_READY".to_owned(),
+                    to: TransitionTo::Specific("IDLE".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
+                    event: "LLM_STREAM_DONE".to_owned(),
+                    to: TransitionTo::Specific("IDLE".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
+                    event: "LLM_ERROR".to_owned(),
+                    to: TransitionTo::Specific("ERROR".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
+                    event: "STREAM_TIMEOUT".to_owned(),
+                    to: TransitionTo::Specific("TIMEOUT".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
+                    event: "SESSION_CLOSE_CMD".to_owned(),
+                    to: TransitionTo::Specific("CLOSED".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("IDLE".to_owned()),
+                    event: "MESSAGE_RECEIVED".to_owned(),
+                    to: TransitionTo::Specific("PROCESSING".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("IDLE".to_owned()),
+                    event: "SESSION_TIMEOUT".to_owned(),
+                    to: TransitionTo::Specific("TIMEOUT".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("IDLE".to_owned()),
+                    event: "SESSION_END".to_owned(),
+                    to: TransitionTo::Specific("CLOSED".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("ERROR".to_owned()),
+                    event: "RETRY_CMD".to_owned(),
+                    to: TransitionTo::Specific("RETRYING".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("ERROR".to_owned()),
+                    event: "SESSION_END".to_owned(),
+                    to: TransitionTo::Specific("IDLE".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("ERROR".to_owned()),
+                    event: "ABANDON_TIMEOUT".to_owned(),
+                    to: TransitionTo::Specific("CLOSED".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("RETRYING".to_owned()),
+                    event: "RETRY_STARTED".to_owned(),
+                    to: TransitionTo::Specific("PROCESSING".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("RETRYING".to_owned()),
+                    event: "RETRY_FAILED".to_owned(),
+                    to: TransitionTo::Specific("ERROR".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("TIMEOUT".to_owned()),
+                    event: "SESSION_END".to_owned(),
+                    to: TransitionTo::Specific("CLOSED".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+                Transition {
+                    from: TransitionFrom::Specific("TIMEOUT".to_owned()),
+                    event: "MESSAGE_RECEIVED".to_owned(),
+                    to: TransitionTo::Specific("IDLE".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
+            ],
+            state_timeouts: vec![
+                StateTimeout {
+                    state: "ACTIVE".to_owned(),
+                    timeout_ms: 300_000,
+                    on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
+                    on_timeout_alert: None,
+                },
+                StateTimeout {
+                    state: "PROCESSING".to_owned(),
+                    timeout_ms: 120_000,
+                    on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
+                    on_timeout_alert: None,
+                },
+                StateTimeout {
+                    state: "IDLE".to_owned(),
+                    timeout_ms: 600_000,
+                    on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
+                    on_timeout_alert: None,
+                },
+                StateTimeout {
+                    state: "ERROR".to_owned(),
+                    timeout_ms: 120_000,
+                    on_timeout: TransitionTo::Specific("CLOSED".to_owned()),
+                    on_timeout_alert: None,
+                },
+                StateTimeout {
+                    state: "TIMEOUT".to_owned(),
+                    timeout_ms: 120_000,
+                    on_timeout: TransitionTo::Specific("CLOSED".to_owned()),
+                    on_timeout_alert: None,
+                },
+            ],
+            error_recovery: ErrorRecovery {
+                auto_retry_count: 0,
+                max_retry_count: 5,
+                on_retry_failure: workflow::RetryFailurePolicy::ManualOnly,
+                retry_backoff: Default::default(),
+            },
+        });
         let plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
@@ -212,6 +396,7 @@ impl AgentRuntimeBuilder {
             inflight_pipelines,
             inflight_skills,
             metrics,
+            capability_registry: Default::default(),
         }))
     }
 }
@@ -254,6 +439,7 @@ pub struct AgentRuntime {
     inflight_pipelines: Arc<AtomicUsize>,
     inflight_skills: Arc<AtomicUsize>,
     metrics: crate::metrics::MetricsRegistry,
+    capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
 }
 
 impl AgentRuntime {
@@ -429,6 +615,112 @@ impl AgentRuntime {
     #[must_use]
     pub fn metrics(&self) -> &crate::metrics::MetricsRegistry {
         &self.metrics
+    }
+
+    // ---------------------------------------------------------------------------
+    // Capability registry
+    // ---------------------------------------------------------------------------
+
+    /// Returns the list of currently available capability names.
+    /// Before Phase 2, returns an empty array.
+    #[must_use]
+    pub async fn get_capabilities(&self) -> Vec<String> {
+        self.capability_registry
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Returns detailed capability entries.
+    #[must_use]
+    pub async fn get_capability_entries(&self) -> HashMap<String, Vec<CapabilityEntry>> {
+        self.capability_registry.read().await.clone()
+    }
+
+    /// Check if a specific capability is available.
+    pub async fn has_capability(&self, capability: &str) -> bool {
+        self.capability_registry
+            .read()
+            .await
+            .contains_key(capability)
+    }
+
+    /// Scans all loaded plugins and refreshes the capability registry.
+    /// Called from Phase 2 and on plugin hot-load/unload.
+    pub async fn refresh_capabilities(&self) -> AmanResult<()> {
+        let mut registry = self.capability_registry.write().await;
+        let old_caps: Vec<String> = registry.keys().cloned().collect();
+
+        let mut new_registry: HashMap<String, Vec<CapabilityEntry>> = HashMap::new();
+        let loader = self.plugin_loader.lock().await;
+        let raw_caps = loader.collect_capabilities();
+        for (capability, plugins) in &raw_caps {
+            let entries: Vec<CapabilityEntry> = plugins
+                .iter()
+                .map(|(plugin, version)| CapabilityEntry {
+                    capability: capability.clone(),
+                    plugin: plugin.clone(),
+                    version: version.clone(),
+                    status: CapabilityStatus::Healthy,
+                })
+                .collect();
+            new_registry.insert(capability.clone(), entries);
+        }
+        drop(loader);
+        *registry = new_registry;
+
+        let new_caps: Vec<String> = registry.keys().cloned().collect();
+        drop(registry);
+
+        // Publish change events for newly added capabilities
+        for cap in &new_caps {
+            if !old_caps.contains(cap) {
+                self.publish_capability_event("capability_available", cap, None)
+                    .await;
+            }
+        }
+        // Publish removal events for capabilities that disappeared
+        for cap in &old_caps {
+            if !new_caps.contains(cap) {
+                self.publish_capability_event("capability_removed", cap, None)
+                    .await;
+            }
+        }
+        // Publish full registry update event (does not enter WAL)
+        let event = Event::new(
+            "runtime:capability_registry",
+            EventType::Custom("capability_registry_updated".to_owned()),
+            json!({
+                "available": new_caps,
+                "added": new_caps.iter().filter(|c| !old_caps.contains(c)).cloned().collect::<Vec<_>>(),
+                "removed": old_caps.iter().filter(|c| !new_caps.contains(c)).cloned().collect::<Vec<_>>(),
+            }),
+        );
+        let _ = self.bus.publish(event).await;
+        Ok(())
+    }
+
+    /// Publish a capability-related event to the event bus.
+    async fn publish_capability_event(
+        &self,
+        event_type: &str,
+        capability: &str,
+        reason: Option<&str>,
+    ) {
+        let mut payload = json!({
+            "capability": capability,
+        });
+        if let Some(reason) = reason {
+            payload["reason"] = json!(reason);
+        }
+        let event = Event::new(
+            "runtime:capability",
+            EventType::Custom(event_type.to_owned()),
+            payload,
+        );
+        let _ = self.bus.publish(event).await;
     }
 
     /// Update the SOUL file content and trigger a hot reload.
@@ -719,7 +1011,10 @@ impl AgentRuntime {
             }
             RuntimePhase::Phase2 => {
                 let _ = self.skill_hot_reload.reload_once()?;
-                let _loader = self.plugin_loader.lock().await;
+                {
+                    let _loader = self.plugin_loader.lock().await;
+                }
+                let _ = self.refresh_capabilities().await;
                 self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);
             }
             RuntimePhase::Phase3 => {

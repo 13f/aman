@@ -115,6 +115,14 @@ pub struct StateTimeoutInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct CapabilityEntry {
+    pub capability: String,
+    pub plugin: String,
+    pub version: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RuntimeConfigInfo {
     pub runtime_dir: Option<String>,
     pub bind_addr: Option<String>,

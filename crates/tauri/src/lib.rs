@@ -71,6 +71,7 @@ pub fn run() {
             commands::list_dlq,
             commands::retry_dlq,
             commands::discard_dlq,
+            commands::get_capabilities,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar

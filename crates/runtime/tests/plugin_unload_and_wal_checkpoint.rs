@@ -85,6 +85,8 @@ async fn shutdown_unloads_loaded_plugins() {
             isolation: None,
             subprocess: None,
             wasm_path: None,
+            capabilities: vec![],
+            ui: None,
         },
         plugin: Box::new(DummyPlugin {
             name: plugin_name.clone(),

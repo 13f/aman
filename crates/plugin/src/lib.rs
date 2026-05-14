@@ -48,6 +48,23 @@ pub struct PluginManifest {
     pub subprocess: Option<SubprocessPluginConfig>,
     #[serde(default)]
     pub wasm_path: Option<String>,
+    /// Optional list of capabilities this plugin provides (e.g., "chat", "session_management").
+    /// Added for LLM Chat capability framework. §2 Decision 2.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Optional UI declaration for pages and events this plugin contributes.
+    #[serde(default)]
+    pub ui: Option<UiDeclaration>,
+}
+
+/// Declares UI pages and events contributed by a plugin.
+/// Added for LLM Chat capability framework. §2 Decision 2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiDeclaration {
+    #[serde(default)]
+    pub pages: Vec<String>,
+    #[serde(default)]
+    pub events: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -858,6 +875,23 @@ impl PluginLoader {
     #[must_use]
     pub fn health_of(&self, plugin_name: &str) -> Option<PluginHealth> {
         self.health.get(plugin_name).copied()
+    }
+
+    /// Collect all capabilities declared by running plugins.
+    /// Returns a map of capability name → list of plugin entries providing it.
+    pub fn collect_capabilities(&self) -> HashMap<String, Vec<(String, String)>> {
+        let mut caps: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for (name, loaded) in &self.loaded {
+            if loaded.state == PluginLifecycleState::Running {
+                for capability in &loaded.manifest.capabilities {
+                    let version = loaded.manifest.version.to_string();
+                    caps.entry(capability.clone())
+                        .or_default()
+                        .push((name.clone(), version));
+                }
+            }
+        }
+        caps
     }
 
     #[must_use]
@@ -1695,6 +1729,8 @@ mod tests {
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+                capabilities: vec![],
+                ui: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -1733,6 +1769,8 @@ mod tests {
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+                capabilities: vec![],
+                ui: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -1793,6 +1831,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+                capabilities: vec![],
+                ui: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -1807,6 +1847,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+            capabilities: vec![],
+            ui: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -1821,6 +1863,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+            capabilities: vec![],
+            ui: None,
             },
         ])
         .expect("graph creates");
@@ -1841,6 +1885,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+            capabilities: vec![],
+            ui: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -1855,6 +1901,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+            capabilities: vec![],
+            ui: None,
             },
         ])
         .expect("graph creates");
@@ -1879,6 +1927,8 @@ config_schema:
             isolation: None,
             subprocess: None,
             wasm_path: None,
+            capabilities: vec![],
+            ui: None,
         }])
         .expect("graph creates");
         let missing_error = missing
@@ -1897,6 +1947,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+                capabilities: vec![],
+                ui: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -1911,6 +1963,8 @@ config_schema:
                 isolation: None,
                 subprocess: None,
                 wasm_path: None,
+            capabilities: vec![],
+            ui: None,
             },
         ])
         .expect("graph creates");

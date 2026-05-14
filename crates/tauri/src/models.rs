@@ -130,3 +130,33 @@ pub struct RuntimeConfigInfo {
     pub risky_enabled: bool,
     pub skills_dir: Option<String>,
 }
+
+// ---------------------------------------------------------------------------
+// Chat session models
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatSessionInfo {
+    pub id: String,
+    pub state: String,
+    pub message_count: usize,
+    pub created_at: i64,
+    pub last_active_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessageEntry {
+    pub id: String,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub timestamp: i64,
+    pub trace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatSessionState {
+    pub session_id: String,
+    pub state: String,
+    pub retry_count: u32,
+    pub messages: Vec<ChatMessageEntry>,
+}

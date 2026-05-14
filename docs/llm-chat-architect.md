@@ -1756,16 +1756,16 @@ GET /session/{id}/state 可选字段 (trim_info):
 # 核心组件（3-4 人并行）
 8.  ✅ 测试基础设施搭建（MockLLMProvider + FakeEventBus + 状态机 proptest）（3d）
     已完成为 M4 第 10, 12 项的前置依赖
-9.  chat-source 插件实现 ChatPlatformSource（3d）
+9.  ✅ chat-source 插件实现 ChatPlatformSource（3d）
 10. ✅ llm-skill 插件实现 LLM Skill（含会话级等待队列 §4）（3d）
 11. ✅ llm-provider-openai Tool 实现（2d）
 
 # 前端
-12. 前端消息流式渲染（LLM_STREAM_CHUNK → 实时更新）（2d）
-13. 前端工具调用卡片（可折叠/展开）（1d）
+12. ✅ 前端消息流式渲染（LLM_STREAM_CHUNK → 实时更新）（2d）
+13. ✅ 前端工具调用卡片（可折叠/展开）（1d）
 
 # 集成
-14. 会话管理 IPC 命令（create/list/close/history/state）（2d）
+14. ✅ 会话管理 IPC 命令（create/list/close/history/state）（2d）
 15. SOUL 集成（system prompt 注入 + 热更新快照边界）（1d）
 
 # 可观测

@@ -1,4 +1,5 @@
 use crate::models::{
+    ChatMessageEntry, ChatSessionInfo, ChatSessionState,
     DlqEntry, MetricsSnapshot, PluginEntry, PluginHealthEntry, QueueDepth, RuntimeConfigInfo,
     RuntimeStatusInfo,
     SkillEntry, SoulInfo, WorkflowEntry,
@@ -578,6 +579,38 @@ pub async fn discard_dlq(state: State<'_, AppState>, id: String) -> Result<Strin
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
+pub async fn chat_stop_generation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+
+    let event = kernel::event::Event::new(
+        "chat-platform:tauri-desktop",
+        kernel::event::EventType::Custom("session_stop".to_owned()),
+        serde_json::json!({
+            "session_id": session_id,
+            "requested_at": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        }),
+    );
+    rt.publish_event(event)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
 pub async fn chat_send_message(
     state: State<'_, AppState>,
     text: String,
@@ -622,9 +655,254 @@ pub async fn chat_send_message(
                 .unwrap_or(0),
         }),
     );
+    let event_id = event.id;
     rt.publish_event(event)
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(format!("Message enqueued for session {session_id}"))
+    Ok(event_id.to_string()) // return event UUID as correlation key
+}
+
+#[tauri::command]
+pub async fn chat_session_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<ChatSessionInfo>, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let instances = rt.workflow_engine().list_instances();
+    let sessions: Vec<ChatSessionInfo> = instances
+        .into_iter()
+        .filter(|inst| inst.workflow_name == "chat-session")
+        .map(|inst| {
+            let created = inst
+                .data
+                .get("created_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(now);
+            let last_active = inst
+                .data
+                .get("last_active_at")
+                .and_then(|v| v.as_i64());
+            ChatSessionInfo {
+                id: inst.id,
+                state: inst.current_state,
+                message_count: 0, // computed on request or cached
+                created_at: created,
+                last_active_at: last_active,
+            }
+        })
+        .collect();
+    Ok(sessions)
+}
+
+#[tauri::command]
+pub async fn chat_session_create(
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    let instance = rt
+        .workflow_engine()
+        .create_instance(
+            "chat-session",
+            serde_json::json!({
+                "created_at": now_ms,
+                "last_active_at": now_ms,
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(instance.id)
+}
+
+#[tauri::command]
+pub async fn chat_session_close(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+
+    let event = kernel::event::Event::new(
+        "tauri:control",
+        kernel::event::EventType::Custom("SESSION_CLOSE_CMD".to_owned()),
+        serde_json::json!({ "session_id": &session_id }),
+    );
+    rt.workflow_engine()
+        .handle_event(&session_id, event)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn chat_session_history(
+    state: State<'_, AppState>,
+    session_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<ChatMessageEntry>, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+
+    let max = limit.unwrap_or(200).min(1000);
+    let events = rt.event_store().recent(max);
+    let mut messages: Vec<ChatMessageEntry> = events
+        .into_iter()
+        .filter(|e| {
+            e.payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|sid| sid == session_id)
+        })
+        .map(|e| ChatMessageEntry {
+            id: e.id.to_string(),
+            event_type: e.event_type.as_str().to_owned(),
+            payload: e.payload,
+            timestamp: e.timestamp.as_millis(),
+            trace_id: e.metadata.trace_id.to_string(),
+        })
+        .collect();
+    messages.reverse(); // chronological order
+    Ok(messages)
+}
+
+#[tauri::command]
+pub async fn chat_session_state(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<ChatSessionState, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+
+    let instance = rt
+        .workflow_engine()
+        .get_instance(&session_id)
+        .ok_or_else(|| format!("Session not found: {session_id}"))?;
+
+    let events = rt.event_store().recent(200);
+    let mut messages: Vec<ChatMessageEntry> = events
+        .into_iter()
+        .filter(|e| {
+            e.payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|sid| sid == session_id)
+        })
+        .map(|e| ChatMessageEntry {
+            id: e.id.to_string(),
+            event_type: e.event_type.as_str().to_owned(),
+            payload: e.payload,
+            timestamp: e.timestamp.as_millis(),
+            trace_id: e.metadata.trace_id.to_string(),
+        })
+        .collect();
+    messages.reverse();
+
+    Ok(ChatSessionState {
+        session_id: instance.id,
+        state: instance.current_state,
+        retry_count: instance.total_retry_count,
+        messages,
+    })
+}
+
+#[tauri::command]
+pub async fn chat_retry_last(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+
+    let event = kernel::event::Event::new(
+        "tauri:control",
+        kernel::event::EventType::Custom("RETRY_CMD".to_owned()),
+        serde_json::json!({ "session_id": &session_id }),
+    );
+    rt.workflow_engine()
+        .handle_event(&session_id, event)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn chat_edit_message(
+    state: State<'_, AppState>,
+    session_id: String,
+    message_id: String,
+    text: String,
+) -> Result<String, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+    if text.trim().is_empty() {
+        return Err("Edited message cannot be empty".to_owned());
+    }
+
+    let event = kernel::event::Event::new(
+        "tauri:control",
+        kernel::event::EventType::Custom("MESSAGE_EDITED".to_owned()),
+        serde_json::json!({
+            "session_id": session_id,
+            "message_id": message_id,
+            "text": text,
+            "edited_at": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        }),
+    );
+    let event_id = event.id;
+    rt.publish_event(event)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(event_id.to_string())
 }

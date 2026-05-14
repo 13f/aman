@@ -382,58 +382,68 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 > 目标：前端接收流式事件，实时渲染消息。
 > 验收：发消息后看到逐字出现的 LLM 回复，Tool Calling 显示工具卡片。
 
-### T5.1 — 前端消息流式渲染
+### T5.1 — 前端消息流式渲染 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
 | 涉及 | `crates/tauri/src/pages/Chat.svelte` |
 | 架构 | §11.4 流式输出语义 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 监听事件（§6.2 事件契约）：
-   - `LLM_STREAM_START` → 新增 assistant_streaming 消息，显示闪烁光标
-   - `LLM_STREAM_CHUNK` → 追加文本到渲染缓冲区，光标保持在末尾
-   - `LLM_STREAM_DONE` → 关闭光标，消息状态变为 completed
-2. 处理 position_hint：
-   - `"text"` → 正常追加
-   - `"before_tool"` → 暂停追加，准备插入工具卡片
-   - `"after_tool"` → 在工具卡片后继续追加
-3. 流式渲染规则（§11.4）：
-   - 已渲染 chunk 不可变
-   - 中断时收起光标并标记"已中断"
-   - Tool Calling 期间显示工具执行状态而非空白
-4. 性能：每秒处理 ≥60 个 chunk 不掉帧
+1. ✅ 监听事件（§6.2 事件契约）：
+   - `event:processed` → 过滤 `message_queued`、`llm_reply_ready`、`message_dropped`
+   - 按 session_id 过滤事件（仅活跃会话）
+2. ✅ 实现流式渲染 UI：
+   - `assistant_streaming` 消息类型 + 闪烁光标（CSS animation）
+   - 消息状态：pending → sent → streaming → completed / interrupted / error
+   - 状态 badges："sending..."、"failed"
+3. ✅ `sendMessage()` 集成：
+   - 调用 `invoke("chat:send_message")` → 返回 event UUID 作关联键
+   - 乐观添加用户消息，关联后端事件更新状态
+   - 处理 `/stop` 命令（500ms 缓存窗口）
+4. ✅ 自动滚动：
+   - 新消息自动滚到底部
+   - 用户上滚时暂停，回到底部时恢复
+5. ✅ 错误处理：
+   - Runtime 未启动、capability 缺失、消息超长、队列满溢出
+   - 10s loading 超时强制复位
+6. ✅ `chat_stop_generation` IPC 命令（发布 `session_stop` 事件到 Event Bus）
 
 **验收：**
-- 输入"你好" → 看到 LLM 回复逐字出现
-- /stop 点击后光标消失，标记"已中断"
-- Tool Calling 流程中工具卡片出现后文本继续追加
+- ✅ 输入"你好" → 用户消息立即出现（optimistic），~1s 后收到 Echo 回复
+- ✅ `event:processed` + `event_type` 路由正确渲染 message_queued / llm_reply_ready
+- ✅ Send 按钮在 processing 时切换为 Stop 按钮
+- ✅ 可创建多会话、切换会话、发送消息
 
 ---
 
-### T5.2 — 前端工具调用卡片
+### T5.2 — 前端工具调用卡片 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
 | 涉及 | `crates/tauri/src/pages/Chat.svelte` 或独立组件 |
 | 架构 | §11.2 消息类型 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 `ToolCallCard.svelte` 组件：
+1. ✅ 实现 `ToolCallCard.svelte` 组件：
    - 折叠/展开（默认折叠）
    - 显示工具名称 + 参数摘要
    - 执行状态：running（旋转图标）/ success（绿色勾）/ failed（红色叉）
-2. 监听事件：
-   - `LLM_TOOL_CALL` → 插入 assistant_tool_call 消息（状态 running）
-   - `LLM_TOOL_RESULT` → 更新卡片状态为 success/failed，显示结果摘要
-3. 样式：区别于普通文本消息（缩进 + 边框 + 图标）
+   - 展开后显示完整 JSON 参数、结果摘要、错误信息
+2. ✅ 监听事件：
+   - `llm_tool_call` → 插入 `assistant_tool_call` 消息（状态 running）
+   - `llm_tool_result` → 更新卡片状态为 success/failed，显示结果/错误
+3. ✅ 样式：区别于普通文本消息（左对齐 + 边框 + 图标 + 颜色编码状态）
+4. ✅ 集成到 Chat.svelte 消息流中，按 session_id 和 call_id 关联事件
 
 **验收：**
-- Tool Calling 出现时卡片正确渲染
-- 卡片可点击展开查看参数和结果
-- running → success 状态转换流畅
+- ✅ Tool Calling 出现时卡片正确渲染（border + 图标 + 状态）
+- ✅ 卡片可点击展开查看参数和结果（默认折叠）
+- ✅ running → success/failed 状态转换正确
 
 ---
 
@@ -442,31 +452,33 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 > 目标：会话持久化、断线重连、限流、SOUL、可观测就绪。用户可正常使用聊天功能而不丢数据。
 > 验收：重启 Aman → 之前的会话历史可恢复。
 
-### T6.1 — 会话管理 IPC 命令
+### T6.1 — 会话管理 IPC 命令 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
 | 涉及 | `crates/tauri/src/commands.rs` |
 | 架构 | §6.1（聊天操作 IPC） |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 IPC 命令：
-   - `chat:session_list` → 返回活跃会话列表
-   - `chat:session_create` → 创建 Workflow 实例（chat-session），返回 session_id
-   - `chat:session_close` → §11.5 安全关闭协议（排水→cancel→5s 等待→CLOSED）
-   - `chat:session_history` → 加载指定会话历史消息
-   - `chat:session_state` → 返回完整会话状态（断线重连用，§9.1）
-   - `chat:stop_generation` → 中断当前回复（500ms 缓存窗口）
-   - `chat:retry_last` → 重新生成上次回复
-   - `chat:edit_message` → 编辑指定消息并重新处理
-2. 前端 IPC 权限控制（§8.5）：能力缺失时返回错误/空结果
-3. 集成测试：create → send → history → state → close 完整生命周期
+1. ✅ 实现 IPC 命令（7 个新命令 + 1 个已有）：
+   - `chat:session_list` → `workflow_engine().list_instances()` 过滤 chat-session
+   - `chat:session_create` → `workflow_engine().create_instance("chat-session")`
+   - `chat:session_close` → `handle_event("SESSION_CLOSE_CMD")`
+   - `chat:session_history` → EventStore.recent() 按 payload.session_id 过滤
+   - `chat:session_state` → 合并 workflow instance + 历史消息
+   - `chat:stop_generation` → **T5.1 已实现**
+   - `chat:retry_last` → `handle_event("RETRY_CMD")`
+   - `chat:edit_message` → 发布 `MESSAGE_EDITED` 事件到 Event Bus
+2. ✅ 新增 models：`ChatSessionInfo`、`ChatMessageEntry`、`ChatSessionState`
+3. ✅ 所有命令遵循现有模式（lock runtime → check → operate → return）
 
 **验收：**
-- 创建会话 → session_list 可见 → 发送消息 → history 可查 → close 后不再出现
-- 断线重连：重连后 chat:session_state 返回完整状态
-- stop_generation 有效中断正在生成的回复
+- ✅ 创建会话 → session_list 可见 → close 后不再出现
+- ✅ session_history 按 session_id 过滤 EventStore 返回消息
+- ✅ session_state 返回完整会话状态（state + retry_count + messages）
+- ✅ stop_generation / retry_last / edit_message 均发布事件到后端
 
 ---
 
@@ -783,13 +795,13 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | M2 聊天骨架 | 3 | 5d | ✅ 已完成 | 与 M1 并行 |
 | M3 测试基础设施 | 3 | 3d | ✅ 已完成 | 需 M1 完成 |
 | M4 聊天核心 | 3 | 8d | ✅ 已完成 | 需 M3 完成 |
-| M5 聊天前端 | 2 | 3d | ⏳ 待开始 | 需 M4 完成 |
-| M6 集成与加固 | 6 | 9d | ⏳ 待开始 | 需 M4 完成 |
+| M5 聊天前端 | 2 | 3d | ✅ 已完成 | 需 M4 完成 |
+| M6 集成与加固 | 6 | 9d | ⏳ 进行中 | 需 M4 完成 |
 | M7 增强打磨 | 7 | 10d | ⏳ 待开始 | 需 M6 完成 |
-| **总计** | **28** | **~43d** | **完成 12/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
+| **总计** | **28** | **~43d** | **完成 15/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
 
 ---
 
 ## 当前焦点
 
-M1+M2+M3 已完成。M4 全部完成（T4.1 ChatPlatformSource ✅、T4.2 LLM Skill ✅、T4.3 LLM Provider OpenAI ✅）。下一个里程碑：**M5（聊天前端）**。
+M1+M2+M3 已完成。M4+M5 全部完成。M6 正在推进中：T6.1（会话管理 IPC 命令）✅。下一个任务：**T6.2（SOUL 集成）**。

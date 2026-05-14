@@ -264,17 +264,339 @@
 
   let activeStreamingMessageId: string | null = null;
 
-  async function stopGeneration() {
-    const streamingId = activeStreamingMessageId;
-    if (streamingId) {
-      setTimeout(() => {
-        const msg = messages.find(m => m.id === streamingId);
-        if (msg && msg.status === "streaming") {
-          updateMessage(streamingId, { status: "interrupted" });
-          activeStreamingMessageId = null;
-        }
-      }, 500);
+  // --- 500ms cache window for /stop ---
+  let stopWindowTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // --- Command dispatcher (§11.5) ---
+  type CommandHandler = (args: string[]) => Promise<void>;
+
+  interface CommandDef {
+    name: string;
+    aliases: string[];
+    category: "non_llm" | "llm_dependent" | "interrupt";
+    usage: string;
+    description: string;
+    handler: CommandHandler;
+  }
+
+  function parseCommand(input: string): { cmd: string; args: string[] } | null {
+    const trimmed = input.trim();
+    if (!trimmed.startsWith("/")) return null;
+    const parts = trimmed.slice(1).split(/\s+/);
+    return { cmd: parts[0]?.toLowerCase() ?? "", args: parts.slice(1) };
+  }
+
+  async function handleHelp(_args: string[]) {
+    const lines = [
+      "**Available commands:**",
+      "",
+      "**Non-LLM (immediate):**",
+      "  `/help` — Show this help",
+      "  `/session list` — List all sessions",
+      "  `/session rename <name>` — Rename current session",
+      "  `/session switch <id>` — Switch to a session",
+      "  `/debug` — Show session debug info",
+      "  `/export` — Export conversation as text",
+      "",
+      "**LLM-dependent (queued):**",
+      "  `/retry` — Retry last reply",
+      "  `/retry --full` — Full retry (replay all tool calls)",
+      "  `/edit <msg_index> <new_text>` — Edit and resend",
+      "  `/session new` — Create new session",
+      "  `/soul switch <name>` — Switch active SOUL",
+      "",
+      "**Interrupt:**",
+      "  `/stop` — Stop generation (500ms grace window)",
+      "  `/session close` — Close current session safely",
+    ];
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event",
+      content: lines.join("\n"),
+      timestamp: new Date().toISOString(),
+      sessionId: activeSessionId,
+      status: "completed" as MessageStatus,
+    }];
+  }
+
+  async function handleSessionList(_args: string[]) {
+    const list = sessions.map(s =>
+      `  ${s.id === activeSessionId ? ">" : " "} ${s.id.slice(0, 8)} — ${s.title} (${s.status}, ${s.messageCount} msgs)`
+    ).join("\n");
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event",
+      content: `**Sessions (${sessions.length} total):**\n${list}`,
+      timestamp: new Date().toISOString(),
+      sessionId: activeSessionId,
+      status: "completed" as MessageStatus,
+    }];
+  }
+
+  async function handleSessionRename(args: string[]) {
+    const name = args.join(" ");
+    if (!name) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: "Usage: `/session rename <new_name>`",
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+      return;
     }
+    updateSession(activeSessionId, { title: name });
+    messages = [...messages, {
+      id: crypto.randomUUID(), type: "system_event",
+      content: `Session renamed to "${name}".`,
+      timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+    }];
+  }
+
+  async function handleSessionSwitch(args: string[]) {
+    const id = args[0];
+    if (!id) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: "Usage: `/session switch <session_id>`",
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+      return;
+    }
+    const target = sessions.find(s => s.id.startsWith(id));
+    if (!target) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Session "${id}" not found. Use \`/session list\` to see all sessions.`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+      return;
+    }
+    selectSession(target.id);
+  }
+
+  async function handleSessionNew(_args: string[]) {
+    try {
+      const id = await invoke<string>("chat:session_create");
+      const count = sessions.length + 1;
+      sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle" }];
+      activeSessionId = id;
+    } catch (err: any) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Failed to create session: ${err}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+    }
+  }
+
+  async function handleSessionClose(_args: string[]) {
+    try {
+      await invoke("chat:session_close", { sessionId: activeSessionId });
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Session closed.`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+      updateSession(activeSessionId, { status: "idle" });
+    } catch (err: any) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Failed to close session: ${err}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+    }
+  }
+
+  async function handleRetry(args: string[]) {
+    const isFull = args.includes("--full");
+    try {
+      const msgId = await invoke<string>("chat:retry_last", { sessionId: activeSessionId });
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Retry${isFull ? " (full replay)" : ""} triggered (message: ${msgId.slice(0, 8)}).`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+    } catch (err: any) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Retry failed: ${err}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+    }
+  }
+
+  async function handleEdit(args: string[]) {
+    if (args.length < 2) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: "Usage: `/edit <msg_index> <new_text>` — e.g. `/edit 3 What is the weather?`",
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+      return;
+    }
+    const msgIndex = parseInt(args[0], 10);
+    const newText = args.slice(1).join(" ");
+    const sessionMsgs = messages.filter(m => m.sessionId === activeSessionId);
+    if (isNaN(msgIndex) || msgIndex < 1 || msgIndex > sessionMsgs.length) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Invalid message index. Use 1-${sessionMsgs.length}.`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+      return;
+    }
+    const targetMsg = sessionMsgs[msgIndex - 1];
+    try {
+      const eventId = await invoke<string>("chat:edit_message", {
+        sessionId: activeSessionId,
+        messageId: targetMsg.id,
+        text: newText,
+      });
+      // Remove messages after the edited one, then send the replacement
+      const targetIdx = messages.indexOf(targetMsg);
+      messages = messages.slice(0, targetIdx + 1);
+      // Mark the edited message
+      updateMessage(targetMsg.id, { content: `${targetMsg.content}\n*(edited → will resend)*` });
+      // Send the new text as a fresh message
+      await invoke<string>("chat:send_message", { text: newText, sessionId: activeSessionId });
+    } catch (err: any) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Edit failed: ${err}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+    }
+  }
+
+  async function handleDebug(_args: string[]) {
+    const sessionMsgs = messages.filter(m => m.sessionId === activeSessionId);
+    const info = [
+      "**Debug info:**",
+      `  Active session: ${activeSessionId.slice(0, 8)}`,
+      `  Sessions total: ${sessions.length}`,
+      `  Messages in session: ${sessionMsgs.length}`,
+      `  Capability: ${chatCapabilityAvailable ? "available" : "unavailable"}`,
+      `  Loading: ${isLoading}`,
+      `  Processing: ${isProcessing}`,
+      `  Rate limit countdown: ${rateLimitCountdown}s`,
+    ];
+    messages = [...messages, {
+      id: crypto.randomUUID(), type: "system_event",
+      content: info.join("\n"),
+      timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+    }];
+  }
+
+  async function handleExport(_args: string[]) {
+    const sessionMsgs = messages.filter(m => m.sessionId === activeSessionId);
+    const lines = sessionMsgs.map(m => {
+      const role = m.type.startsWith("user") ? "User" : m.type.startsWith("assistant") ? "Assistant" : "System";
+      return `[${m.timestamp.slice(0, 19)}] ${role}: ${m.content}`;
+    });
+    const text = lines.join("\n");
+    // Copy to clipboard as a simple export
+    try {
+      await navigator.clipboard.writeText(text);
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Exported ${sessionMsgs.length} messages to clipboard.`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+    } catch {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Export to clipboard failed. Copy manually:\n\n${text}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+    }
+  }
+
+  async function handleSoulSwitch(args: string[]) {
+    const soulName = args.join(" ");
+    if (!soulName) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: "Usage: `/soul switch <soul_name>`",
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+      return;
+    }
+    try {
+      await invoke("update_soul", { nameOrPath: soulName });
+      currentSoulName = soulName;
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `SOUL switched to "${soulName}".`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+    } catch (err: any) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Failed to switch SOUL: ${err}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+    }
+  }
+
+  // Command registry
+  const commands: CommandDef[] = [
+    { name: "help", aliases: ["h", "?"], category: "non_llm", usage: "/help", description: "Show available commands", handler: handleHelp },
+    { name: "session", aliases: [], category: "non_llm", usage: "/session list|rename|switch|new|close", description: "Session management", handler: async (args) => {
+      const sub = args[0]?.toLowerCase();
+      if (sub === "list") await handleSessionList([]);
+      else if (sub === "rename") await handleSessionRename(args.slice(1));
+      else if (sub === "switch") await handleSessionSwitch(args.slice(1));
+      else if (sub === "new") await handleSessionNew([]);
+      else if (sub === "close") await handleSessionClose([]);
+      else {
+        messages = [...messages, {
+          id: crypto.randomUUID(), type: "system_event",
+          content: "Usage: `/session list|rename|switch|new|close`. Try `/help`.",
+          timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+        }];
+      }
+    }},
+    { name: "retry", aliases: ["r"], category: "llm_dependent", usage: "/retry [--full]", description: "Retry last reply", handler: handleRetry },
+    { name: "edit", aliases: ["e"], category: "llm_dependent", usage: "/edit <msg_index> <text>", description: "Edit and resend", handler: handleEdit },
+    { name: "debug", aliases: ["dbg"], category: "non_llm", usage: "/debug", description: "Show debug info", handler: handleDebug },
+    { name: "export", aliases: [], category: "non_llm", usage: "/export", description: "Export conversation", handler: handleExport },
+    { name: "soul", aliases: [], category: "llm_dependent", usage: "/soul switch <name>", description: "Switch active SOUL", handler: async (args) => {
+      if (args[0] === "switch") await handleSoulSwitch(args.slice(1));
+      else {
+        messages = [...messages, {
+          id: crypto.randomUUID(), type: "system_event",
+          content: currentSoulName
+            ? `Current SOUL: **${currentSoulName}**`
+            : "No SOUL currently loaded. Use `/soul switch <name>` to set one.",
+          timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+        }];
+      }
+    }},
+  ];
+
+  function getCommand(name: string): CommandDef | undefined {
+    return commands.find(c => c.name === name || c.aliases.includes(name));
+  }
+
+  async function dispatchCommand(parsed: { cmd: string; args: string[] }): Promise<boolean> {
+    const cmdDef = getCommand(parsed.cmd);
+    if (!cmdDef) return false; // unknown command
+    await cmdDef.handler(parsed.args);
+    return true;
+  }
+
+  async function stopGeneration() {
+    // 500ms cache window (§11.5): if LLM_STREAM_DONE arrives within 500ms, it's "complete"
+    const streamingId = activeStreamingMessageId;
+    if (stopWindowTimer) clearTimeout(stopWindowTimer);
+
+    stopWindowTimer = setTimeout(() => {
+      const msg = streamingId ? messages.find(m => m.id === streamingId) : null;
+      if (msg && msg.status === "streaming") {
+        updateMessage(streamingId, { status: "interrupted" });
+        activeStreamingMessageId = null;
+      }
+      stopWindowTimer = null;
+    }, 500);
 
     try {
       await invoke("chat:stop_generation", { sessionId: activeSessionId });

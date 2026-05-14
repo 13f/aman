@@ -524,8 +524,15 @@
 
   async function handleRetry(args: string[]) {
     const isFull = args.includes("--full");
+    // Find the last assistant message's trace_id to set as trace_prev
+    const lastAssistantMsg = [...messages].reverse().find(m =>
+      m.sessionId === activeSessionId && m.type.startsWith("assistant") && m.traceId
+    );
     try {
-      const msgId = await invoke<string>("chat:retry_last", { sessionId: activeSessionId });
+      const msgId = await invoke<string>("chat:retry_last", {
+        sessionId: activeSessionId,
+        expectedVersion: null,
+      });
       messages = [...messages, {
         id: crypto.randomUUID(), type: "system_event",
         content: `Retry${isFull ? " (full replay)" : ""} triggered (message: ${msgId.slice(0, 8)}).`,
@@ -572,8 +579,12 @@
       messages = messages.slice(0, targetIdx + 1);
       // Mark the edited message
       updateMessage(targetMsg.id, { content: `${targetMsg.content}\n*(edited → will resend)*` });
-      // Send the new text as a fresh message
-      await invoke<string>("chat:send_message", { text: newText, sessionId: activeSessionId });
+      // Send the new text as a fresh message with trace_prev pointing to the original
+      await invoke<string>("chat:send_message", {
+        text: newText,
+        sessionId: activeSessionId,
+        tracePrev: targetMsg.traceId ?? null,
+      });
     } catch (err: any) {
       messages = [...messages, {
         id: crypto.randomUUID(), type: "system_event",
@@ -612,6 +623,50 @@
       content: info.join("\n"),
       timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
     }];
+  }
+
+  async function handleTraceQuery(args: string[]) {
+    const traceId = args[0];
+    if (!traceId) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: "Usage: `/trace <trace_id>` — query trace chain. Use message trace IDs shown in the UI.",
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+      return;
+    }
+    try {
+      const chain = await invoke<Array<{ event_id: string; event_type: string; trace_id: string; timestamp_ms: number; session_id: string }>>("chat:trace_chain", { traceId });
+      if (chain.length === 0) {
+        messages = [...messages, {
+          id: crypto.randomUUID(), type: "system_event",
+          content: `No events found for trace ID: ${traceId.slice(0, 12)}...`,
+          timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+        }];
+        return;
+      }
+      const lines = [
+        `**Trace Chain: ${traceId.slice(0, 12)}...**`,
+        `Events in chain: ${chain.length}`,
+        "",
+        ...chain.map((e, i) => {
+          const ts = new Date(e.timestamp_ms).toISOString().slice(11, 19);
+          const shortTrace = e.trace_id.slice(0, 12);
+          return `  ${i+1}. [${ts}] ${e.event_type} (trace: ${shortTrace})`;
+        }),
+      ];
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: lines.join("\n"),
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+    } catch (err: any) {
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Trace query failed: ${err}`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+      }];
+    }
   }
 
   async function handleExport(_args: string[]) {
@@ -687,6 +742,7 @@
     { name: "edit", aliases: ["e"], category: "llm_dependent", usage: "/edit <msg_index> <text>", description: "Edit and resend", handler: handleEdit },
     { name: "debug", aliases: ["dbg"], category: "non_llm", usage: "/debug [panel|toggle]", description: "Show debug info or toggle panel", handler: handleDebug },
     { name: "export", aliases: [], category: "non_llm", usage: "/export", description: "Export conversation", handler: handleExport },
+    { name: "trace", aliases: ["tc"], category: "non_llm", usage: "/trace <trace_id>", description: "Query trace chain", handler: handleTraceQuery },
     { name: "soul", aliases: [], category: "llm_dependent", usage: "/soul switch|info <name>", description: "Switch SOUL or show info", handler: async (args) => {
       if (args[0] === "switch") await handleSoulSwitch(args.slice(1));
       else if (args[0] === "info") {
@@ -936,6 +992,9 @@
                 <span class="msg-status pending">sending...</span>
               {:else if msg.status === "error"}
                 <span class="msg-status error">failed</span>
+              {/if}
+              {#if msg.traceId}
+                <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
               {/if}
             </span>
           </div>
@@ -1402,6 +1461,17 @@
     background: var(--warning-light, #fef3c7);
     color: var(--warning, #b45309);
     font-weight: 500;
+  }
+
+  .trace-tag {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--surface-secondary, #e8e8e8);
+    color: var(--text-secondary, #777);
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 9px;
+    cursor: help;
   }
 
   .toast-container {

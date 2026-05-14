@@ -20,7 +20,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 - M3 必须先于 M4（测试先行）
 - M4 完成后 M5/M6 可部分并行
 
-> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6 ✅ 已完成。M7: T7.1 ✅、T7.2 ✅、T7.3 ✅、T7.4 ✅、T7.5 ✅、T7.6 ✅。下一个任务：T7.7（交互单元 trace 链 + 审计日志扩展）。**
+> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6 ✅ 已完成。M7: T7.1 ✅、T7.2 ✅、T7.3 ✅、T7.4 ✅、T7.5 ✅、T7.6 ✅、T7.7 ✅。M7 全部完成！下一步：汇总发布。**
 
 ---
 
@@ -788,24 +788,25 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 
 ---
 
-### T7.7 — 交互单元 trace 链 + 审计日志扩展
+### T7.7 — 交互单元 trace 链 + 审计日志扩展 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
 | 涉及 | `crates/plugins/llm-skill/`、审计日志系统 |
 | 架构 | §11.6 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 trace_chain 追踪：trace_id → trace_prev → trace_branch_from 递归展开
-2. 审计日志支持 trace_chain 查询
-3. Token 用量按 trace_chain 聚合
-4. 每条 trace 记录：trace_id、trace_prev、trace_branch_from（不可 null 的 trace_id）
+1. ✅ 实现 trace_chain 追踪：trace_id → trace_prev → trace_branch_from 递归展开
+2. ✅ 审计日志支持 trace_chain 查询
+3. ✅ Token 用量按 trace_chain 聚合
+4. ✅ 每条 trace 记录：trace_id、trace_prev、trace_branch_from（不可 null 的 trace_id）
 
 **验收：**
-- /edit 后新 trace 的 trace_prev 指向被替换的 trace
-- 审计日志可按 trace_chain 展开完整编辑/重试历史
-- Token 用量报表按 trace_chain 聚合正确
+- /edit 后新 trace 的 trace_prev 指向被替换的 trace ✅
+- 审计日志可按 trace_chain 展开完整编辑/重试历史 ✅
+- Token 用量报表按 trace_chain 聚合正确 ✅
 
 ---
 
@@ -819,11 +820,11 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | M4 聊天核心 | 3 | 8d | ✅ 已完成 | 需 M3 完成 |
 | M5 聊天前端 | 2 | 3d | ✅ 已完成 | 需 M4 完成 |
 | M6 集成与加固 | 6 | 9d | ⏳ 5/6 完成 | 需 M4 完成 |
-| M7 增强打磨 | 7 | 10d | ⏳ 6/7 完成 | 需 M6 完成 |
-| **总计** | **28** | **~43d** | **完成 22/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
+| M7 增强打磨 | 7 | 10d | ✅ 已完成 | 需 M6 完成 |
+| **总计** | **28** | **~43d** | **✅ 全部完成** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
 
 ---
 
 ## 当前焦点
 
-M1+M2+M3 已完成。M4+M5 全部完成。M6 全部完成。M7: T7.1（InputSanitizer）✅、T7.2（OutputValidator）✅、T7.3（命令系统）✅、T7.4（历史裁剪）✅、T7.5（会话分支与共享会话）✅、T7.6（多渠道消息聚合 + 调试面板 + SOUL 感知 + 热加载响应）✅。下一个任务：**T7.7（交互单元 trace 链 + 审计日志扩展）**。
+**全部 28 个任务已完成。M1-M7 全部交付。**

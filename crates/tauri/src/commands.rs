@@ -629,6 +629,7 @@ pub async fn chat_send_message(
     text: String,
     session_id: String,
     expected_version: Option<u64>,
+    trace_prev: Option<String>,
 ) -> Result<String, String> {
     let _start = Instant::now();
 
@@ -741,6 +742,9 @@ pub async fn chat_send_message(
                 .map(|d| d.as_millis())
                 .unwrap_or(0),
         });
+        if let Some(prev_trace) = &trace_prev {
+            payload["trace_prev"] = serde_json::json!(prev_trace);
+        }
         if sanitized {
             payload["original_text"] = serde_json::json!(original_text);
             payload["sanitized"] = serde_json::json!(true);
@@ -1122,18 +1126,42 @@ pub async fn chat_retry_last(
     }
 
     // Optimistic lock version check (§11.3)
+    let prev_trace_id: Option<String>;
     {
         let instance = rt
             .workflow_engine()
             .get_instance(&session_id)
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         check_session_version(&instance, expected_version)?;
+
+        // Find the last llm_reply_ready event for this session to get its trace_id.
+        let recent = rt.event_store().recent(200);
+        prev_trace_id = recent.iter()
+            .filter(|e| {
+                e.event_type.as_str() == "llm_reply_ready"
+                    && e.payload.get("session_id")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|sid| sid == session_id)
+            })
+            .last()
+            .map(|e| e.metadata.trace_id.to_string());
     }
 
     let event = kernel::event::Event::new(
         "tauri:control",
         kernel::event::EventType::Custom("RETRY_CMD".to_owned()),
-        serde_json::json!({ "session_id": &session_id }),
+        serde_json::json!({
+            "session_id": &session_id,
+            "trace_prev": prev_trace_id,
+        }),
+    );
+    // Record audit log with trace chain info.
+    rt.audit().record(
+        "user",
+        "chat:retry",
+        &session_id,
+        "ok",
+        format!("trace_prev={:?}", prev_trace_id),
     );
     rt.workflow_engine()
         .handle_event(&session_id, event)
@@ -1169,12 +1197,17 @@ pub async fn chat_edit_message(
     }
 
     // Optimistic lock version check (§11.3)
+    let original_trace_id: Option<String>;
     {
         let instance = rt
             .workflow_engine()
             .get_instance(&session_id)
             .ok_or_else(|| format!("Session not found: {session_id}"))?;
         check_session_version(&instance, expected_version)?;
+
+        // Look up the original message event to get its trace_id for trace_chain.
+        original_trace_id = rt.event_store().get(&message_id)
+            .map(|e| e.metadata.trace_id.to_string());
     }
 
     let event = kernel::event::Event::new(
@@ -1184,6 +1217,7 @@ pub async fn chat_edit_message(
             "session_id": session_id,
             "message_id": message_id,
             "text": text,
+            "trace_prev": original_trace_id,
             "edited_at": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -1191,6 +1225,14 @@ pub async fn chat_edit_message(
         }),
     );
     let event_id = event.id;
+    // Record audit log with trace chain info.
+    rt.audit().record(
+        "user",
+        "chat:edit",
+        &message_id,
+        "ok",
+        format!("session_id={}, trace_prev={:?}", session_id, original_trace_id),
+    );
     rt.publish_event(event)
         .await
         .map_err(|e| e.to_string())?;
@@ -1236,4 +1278,48 @@ pub async fn chat_validator_health(
         "timeout_sec": 2,
         "fail_closed": true,
     }))
+}
+
+/// A single event in a trace chain response (§11.6).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TraceChainEntry {
+    pub event_id: String,
+    pub event_type: String,
+    pub trace_id: String,
+    pub timestamp_ms: i64,
+    pub session_id: String,
+}
+
+#[tauri::command]
+pub async fn chat_trace_chain(
+    state: State<'_, AppState>,
+    trace_id: String,
+) -> Result<Vec<TraceChainEntry>, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if trace_id.trim().is_empty() {
+        return Err("Trace ID cannot be empty".to_owned());
+    }
+
+    let events = rt.event_store().trace_chain(&trace_id);
+    let entries: Vec<TraceChainEntry> = events
+        .into_iter()
+        .map(|e| TraceChainEntry {
+            event_id: e.id.to_string(),
+            event_type: e.event_type.as_str().to_owned(),
+            trace_id: e.metadata.trace_id.to_string(),
+            timestamp_ms: e.timestamp.as_millis(),
+            session_id: e
+                .payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(),
+        })
+        .collect();
+
+    Ok(entries)
 }

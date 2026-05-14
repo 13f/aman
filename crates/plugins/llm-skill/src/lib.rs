@@ -389,6 +389,9 @@ async fn process_session(
             }
         }
 
+        // Propagate trace_prev from incoming event to reply (T7.7, §11.6).
+        let trace_prev = msg.payload.get("trace_prev").and_then(|v| v.as_str()).map(|s| s.to_owned());
+
         // Simulate LLM processing delay.
         sleep(Duration::from_millis(SIMULATED_LLM_DELAY_MS)).await;
 
@@ -401,15 +404,20 @@ async fn process_session(
         let outcome = validator.validate(&reply_text);
         match outcome {
             ValidationOutcome::Pass => {
+                let mut reply_payload = json!({
+                    "session_id": session_id,
+                    "original_message_id": msg.id.to_string(),
+                    "reply": reply_text,
+                    "soul_name": soul_name,
+                });
+                if let Some(ref prev) = trace_prev {
+                    reply_payload["trace_prev"] = json!(prev);
+                    reply_payload["trace_id"] = json!(msg.metadata.trace_id.to_string());
+                }
                 let reply = Event::new(
                     "skill:llm",
                     EventType::Custom("llm_reply_ready".to_owned()),
-                    json!({
-                        "session_id": session_id,
-                        "original_message_id": msg.id.to_string(),
-                        "reply": reply_text,
-                        "soul_name": soul_name,
-                    }),
+                    reply_payload,
                 );
                 if let Err(e) = bus.publish(reply).await {
                     tracing::warn!(%session_id, error = %e, "llm-skill: failed to publish reply");
@@ -417,31 +425,39 @@ async fn process_session(
             }
             ValidationOutcome::Fail { matched_rules, reason } => {
                 tracing::warn!(%session_id, matched = ?matched_rules, "llm-skill: output validation failed");
+                let mut blocked_payload = json!({
+                    "session_id": session_id,
+                    "original_message_id": msg.id.to_string(),
+                    "reason": reason,
+                    "matched_rules": matched_rules,
+                    "soul_name": soul_name,
+                });
+                if let Some(ref prev) = trace_prev {
+                    blocked_payload["trace_prev"] = json!(prev);
+                }
                 let blocked = Event::new(
                     "skill:llm",
                     EventType::Custom("output_blocked".to_owned()),
-                    json!({
-                        "session_id": session_id,
-                        "original_message_id": msg.id.to_string(),
-                        "reason": reason,
-                        "matched_rules": matched_rules,
-                        "soul_name": soul_name,
-                    }),
+                    blocked_payload,
                 );
                 let _ = bus.publish(blocked).await;
             }
             ValidationOutcome::Error { message } => {
                 tracing::warn!(%session_id, error = %message, "llm-skill: validator error (fail_closed)");
+                let mut blocked_payload = json!({
+                    "session_id": session_id,
+                    "original_message_id": msg.id.to_string(),
+                    "reason": format!("validator_error: {message}"),
+                    "fail_closed": true,
+                    "soul_name": soul_name,
+                });
+                if let Some(ref prev) = trace_prev {
+                    blocked_payload["trace_prev"] = json!(prev);
+                }
                 let blocked = Event::new(
                     "skill:llm",
                     EventType::Custom("output_blocked".to_owned()),
-                    json!({
-                        "session_id": session_id,
-                        "original_message_id": msg.id.to_string(),
-                        "reason": format!("validator_error: {message}"),
-                        "fail_closed": true,
-                        "soul_name": soul_name,
-                    }),
+                    blocked_payload,
                 );
                 let _ = bus.publish(blocked).await;
             }

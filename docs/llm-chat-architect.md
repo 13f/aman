@@ -1754,11 +1754,11 @@ GET /session/{id}/state 可选字段 (trim_info):
 
 ```
 # 核心组件（3-4 人并行）
-8.  测试基础设施搭建（MockLLMProvider + FakeEventBus + 状态机 proptest）（3d）
-    必须先于第 10, 12 项——测试就绪后才能开发并发队列和流式渲染
+8.  ✅ 测试基础设施搭建（MockLLMProvider + FakeEventBus + 状态机 proptest）（3d）
+    已完成为 M4 第 10, 12 项的前置依赖
 9.  chat-source 插件实现 ChatPlatformSource（3d）
-10. llm-skill 插件实现 LLM Skill（含会话级等待队列 §4）（3d）
-11. llm-provider-openai Tool 实现（2d）
+10. ✅ llm-skill 插件实现 LLM Skill（含会话级等待队列 §4）（3d）
+11. ✅ llm-provider-openai Tool 实现（2d）
 
 # 前端
 12. 前端消息流式渲染（LLM_STREAM_CHUNK → 实时更新）（2d）

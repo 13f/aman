@@ -1,0 +1,27 @@
+[package]
+name = "llm-skill"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "LLM Skill plugin — consumes MESSAGE_RECEIVED events with per-session serial processing"
+
+[lints]
+workspace = true
+
+[dependencies]
+kernel = { path = "../../core", version = "0.1.0" }
+event-bus = { path = "../../event-bus", version = "0.1.0" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+test-utils = { path = "../../test-utils", version = "0.1.0" }
+pollster.workspace = true
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }

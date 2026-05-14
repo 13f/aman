@@ -572,3 +572,59 @@ pub async fn discard_dlq(state: State<'_, AppState>, id: String) -> Result<Strin
     rt.dlq().discard(&id).map_err(|e| e.to_string())?;
     Ok("DLQ entry discarded".to_owned())
 }
+
+// ---------------------------------------------------------------------------
+// Chat commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn chat_send_message(
+    state: State<'_, AppState>,
+    text: String,
+    session_id: String,
+) -> Result<String, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    // Check chat capability
+    if !rt.has_capability("chat").await {
+        return Err("Chat capability not available".to_owned());
+    }
+
+    // Validate message length (chat-source default max is 4096 chars)
+    let len = text.chars().count();
+    if len > 4096 {
+        return Err(format!(
+            "Message exceeds maximum length of 4096 characters (got {len})"
+        ));
+    }
+    if text.trim().is_empty() {
+        return Err("Message cannot be empty".to_owned());
+    }
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+
+    // Publish MESSAGE_RECEIVED event to the Event Bus
+    let event = kernel::event::Event::new(
+        "chat-platform:tauri-desktop",
+        kernel::event::EventType::MessageReceived,
+        serde_json::json!({
+            "session_id": session_id,
+            "text": text,
+            "channel": "tauri_desktop",
+            "message_id": uuid::Uuid::now_v7(),
+            "client_timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0),
+        }),
+    );
+    rt.publish_event(event)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!("Message enqueued for session {session_id}"))
+}

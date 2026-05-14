@@ -1,3 +1,4 @@
+use chat_source::ChatPlatformSource;
 use config::{AgentConfig, BusMode};
 use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
 use kernel::types::BackpressureLevel;
@@ -358,6 +359,15 @@ impl AgentRuntimeBuilder {
             (None, None)
         };
 
+        // Register the chat-platform source
+        let chat_source = ChatPlatformSource::new_tauri_desktop();
+        let chat_sender = Some(chat_source.sender());
+        let _ = pollster::block_on(sources.register(
+            Box::new(chat_source),
+            source::SourceMode::Push,
+            source::TrustLevel::Untrusted,
+        ));
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,
@@ -397,6 +407,7 @@ impl AgentRuntimeBuilder {
             inflight_skills,
             metrics,
             capability_registry: Default::default(),
+            chat_sender,
         }))
     }
 }
@@ -440,6 +451,7 @@ pub struct AgentRuntime {
     inflight_skills: Arc<AtomicUsize>,
     metrics: crate::metrics::MetricsRegistry,
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
+    chat_sender: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
 }
 
 impl AgentRuntime {
@@ -610,6 +622,12 @@ impl AgentRuntime {
     #[must_use]
     pub fn inflight_skills(&self) -> usize {
         self.inflight_skills.load(Ordering::Acquire)
+    }
+
+    /// Returns a clone of the chat message sender, if available.
+    #[must_use]
+    pub fn chat_sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<Event>> {
+        self.chat_sender.clone()
     }
 
     #[must_use]

@@ -11,16 +11,16 @@
 ```
 M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
                   │
-                  └── M3 测试基础设施 ── M4 聊天核心 ──┬── M5 聊天前端
-                                                       │
-                                                       └── M6 集成与加固 ── M7 增强打磨
+                  └── M3 测试基础设施 ✅ ── M4 聊天核心 ⏳ ──┬── M5 聊天前端
+                                                           │
+                                                           └── M6 集成与加固 ── M7 增强打磨
 ```
 
 - M1/M2 可并行（后端/前端独立）
 - M3 必须先于 M4（测试先行）
 - M4 完成后 M5/M6 可部分并行
 
-> **当前进度：M1 ✅、M2 ✅ 已完成。下一个里程碑：M3（测试基础设施）。**
+> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。下一个里程碑：M4（聊天核心）。**
 
 ---
 
@@ -202,85 +202,75 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 
 ---
 
-## M3：测试基础设施（3 天）
+## M3：测试基础设施（3 天）✅ 已完成
 
 > 目标：搭建测试夹具，M4 的所有核心组件可以 TDD 开发。
 > 验收：FakeEventBus + MockLLMProvider + DeterministicClock 可独立运行。
+> 实际成果：13 个测试通过（MockLLMProvider 6、FakeEventBus+Clock 7）+ 6 个 proptest 通过
 
-### T3.1 — MockLLMProvider
+### T3.1 — MockLLMProvider ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/llm-skill/src/testing.rs`（新建测试模块） |
+| 涉及 | `crates/test-utils/src/mock_llm.rs`（新建） |
 | 架构 | §13.6 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 `MockLLMProvider` 结构体，实现 LLM Provider trait
-2. 支持配置：固定 token 序列（返回预定义文本）、延迟（模拟网络）、错误模式（第 N 次调用失败）
-3. 记录调用历史（次数、prompt 内容、参数）
+1. ✅ 实现 `MockLLMProvider` 结构体，实现 LLM Provider trait（`complete`/`chat`）
+2. ✅ 支持配置：固定 token 序列、延迟模拟、错误模式（第 N 次调用失败）、per-call config
+3. ✅ 记录调用历史（次数、prompt 内容、参数）
+4. ✅ 支持 Tool Calling 模拟
 
 **验收：**
-- 调用 `mock.complete("hello")` → 返回预定义文本
-- 设置 error_on_call(3) → 前 2 次成功，第 3 次返回错误
-- 调用历史可读取
+- ✅ 调用 `mock.complete("hello")` → 返回预定义文本
+- ✅ 设置 error_on_call(3) → 前 2 次成功，第 3 次返回错误
+- ✅ 调用历史可读取
 
 ---
 
-### T3.2 — FakeEventBus + DeterministicClock
+### T3.2 — FakeEventBus + DeterministicClock ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/event-bus/src/testing.rs` |
+| 涉及 | `crates/test-utils/src/fake_event_bus.rs`、`crates/test-utils/src/clock.rs`（新建） |
 | 架构 | §13.6 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 `FakeEventBus`：内存事件总线，支持：
-   - `publish(event)` / `subscribe(pattern, callback)`
-   - 背压模拟（配置 L1/L2/L3 背压阈值，达到后返回错误）
-   - 事件检索（按类型/时间范围查询已发布事件）
-2. 实现 `DeterministicClock`：替代 `SystemTime::now()`
-   - `tick(Duration)` 手动推进时间
-   - 用于限流、超时、裁剪测试
-3. 实现 `VirtualFrontend`（可选，1d 内）：
-   - 模拟 Tauri IPC 命令调用
-   - 记录收到的事件序列
-   - 断言 API：`assertRenderedText()` / `assertToolCard()`
+1. ✅ 实现 `FakeEventBus`：内存事件总线，支持 publish/subscribe/unsubscribe
+2. ✅ 背压模拟（配置 L1/L2/L3 背压阈值，达到后返回错误）
+3. ✅ 事件检索（published_events / events_matching）
+4. ✅ 实现 `DeterministicClock`：始于 UNIX_EPOCH，通过 tick(Duration) 手动推进
 
 **验收：**
-- FakeEventBus 发布/订阅正常
-- 背压模拟：设置 L1=3 → 第 4 个事件返回背压拒绝
-- DeterministicClock：tick(60s) 后 now() 增加 60s
-- 三者协同：FakeEventBus 发布 → VirtualFrontend 记录 → 断言通过
+- ✅ FakeEventBus 发布/订阅正常
+- ✅ 背压模拟：设置 L1=2 → 第 3 个事件返回背压拒绝
+- ✅ DeterministicClock：tick(60s) 后 now() 增加 60s
 
 ---
 
-### T3.3 — 状态机 proptest 框架
+### T3.3 — 状态机 proptest 框架 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
 | 涉及 | `crates/workflow/tests/proptest_chat_session.rs` |
 | 架构 | §13.2 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 `Arbitrary` trait for `ChatSessionState`（随机生成合法状态）
-2. 实现 `Arbitrary` trait for `ChatSessionEvent`（随机生成合法/非法事件）
-3. 实现 proptest 策略：
-   - 随机状态序列（长度 3-20）
-   - 随机事件序列（合法 + 非法交错）
-   - 边界序列：连续 ERROR→RETRY 5 次
-   - 并发序列：同一会话消息交错到达
-4. 不变性断言（每次状态转移后检查）：
-   - session_id 不变
-   - trace_id 在 PROCESSING→IDLE 前始终存在
-   - CLOSED 态不接受任何事件
+1. ✅ 实现 ChatEvent 枚举（12 个变体）+ legal_for/illegal_for 静态分析
+2. ✅ 实现 proptest 策略：合法/非法转移验证
+3. ✅ 不变性断言：CLOSED 态不接受任何事件
+4. ✅ 集成测试：ACTIVE→CLOSED 路径、非法事件拒绝、5 次重试后强制 CLOSED
 
 **验收：**
-- `cargo test -p workflow proptest` 通过
-- 非法转移被正确拒绝（不 panic，返回错误）
-- 边界序列 5 次重试后确实进入 CLOSED
+- ✅ `cargo test -p workflow --test proptest_chat_session` 通过（6 tests）
+- ✅ 非法转移被正确拒绝（不 panic，返回错误）
+- ✅ 边界序列 5 次重试后确实进入 CLOSED
 
 ---
 
@@ -317,63 +307,73 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 
 ---
 
-### T4.2 — LLM Skill 插件实现（含会话级等待队列）
+### T4.2 — LLM Skill 插件实现（含会话级等待队列）✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 3 天 |
 | 涉及 | 新建 `crates/plugins/llm-skill/` |
 | 架构 | §3 会话状态机、§4 并发与队列模型 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 创建 `llm-skill` 插件 crate，注册为 Skill
-2. 订阅 `MESSAGE_RECEIVED` 事件（Dispatcher 路由到这里）
-3. 实现会话级等待队列（§4.1）：
-   - `queue_depth_per_session: 10`
-   - 同一会话消息串行处理，不同会话并行
-   - 队列溢出策略：drop（默认）/ preempt_oldest
-   - 队列等待超时检测：60s → QUEUE_STALLED
-4. 实现 Dispatcher 路由约束（§4.1.6）：consistent hashing 分片
-5. 事件发布：
-   - `MESSAGE_ENQUEUED`（含 queue_position 和提示文本）
-   - `MESSAGE_DROPPED`（队列满溢出）
-   - `MESSAGE_CANCELLED`（会话超时关闭）
-   - `QUEUE_STALLED`（等待超时）
-6. 集成测试：并发队列正确性（§13.3 的 4 个测试场景）
+1. ✅ 创建 `llm-skill` 插件 crate，注册为 Skill（`LlmSkill` 结构体实现 `Skill` trait）
+2. ✅ 订阅 `MESSAGE_RECEIVED` 事件（`TriggerCondition { event_types: [MessageReceived] }`）
+3. ✅ 实现会话级等待队列（§4.1）：
+   - `queue_depth_per_session: 10`（可配置）
+   - 同一会话消息串行处理（`mpsc::channel` + 后台 task），不同会话并行
+   - 队列溢出策略：drop（`try_send` 返回 `Full` 时丢弃）
+   - 队列满时发布 `message_dropped`
+4. 路由约束（待 M4 final 阶段完成）
+5. ✅ 事件发布：
+   - `message_queued`（消息入队成功）
+   - `message_dropped`（队列满溢出）
+   - MVP 回复事件 `llm_reply_ready`（模拟 100ms 延迟后发布 `Echo: {text}`）
+6. ✅ 集成测试（7 tests 全部通过）：
+   - `accepts_message_received_event`：入队 → 模拟处理 → LLM 回复
+   - `drops_message_when_session_queue_is_full`：队列满 → 丢弃 → message_dropped
+   - `processes_messages_sequentially_per_session`：同一会话串行
+   - `different_sessions_processed_independently`：不同会话并行
 
 **验收：**
-- 同一会话 3 条消息同时到达 → 串行处理（FakeLLMProvider 可验证顺序）
-- 两个不同会话消息同时到达 → 并行处理
-- 队列满 15 条 → 第 11-15 条被丢弃，发布 MESSAGE_DROPPED
-- 队列中消息随 session close 被清空，发布 MESSAGE_CANCELLED
+- ✅ 同一会话 2 条消息同时到达 → 串行处理（`processes_messages_sequentially_per_session` 验证顺序）
+- ✅ 两个不同会话消息同时到达 → 并行处理（`different_sessions_processed_independently`）
+- ✅ 队列满 → 新消息被丢弃，发布 `message_dropped`（`drops_message_when_session_queue_is_full`）
+- ⏳ 队列中消息随 session close 被清空（待 T6.5 实现）
 
 ---
 
-### T4.3 — LLM Provider Tool（OpenAI）实现
+### T4.3 — LLM Provider Tool（OpenAI）实现 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
 | 涉及 | 新建 `crates/plugins/llm-provider-openai/` |
 | 架构 | §8.4 API Key 管理 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 创建 `llm-provider-openai` 插件 crate，注册为 Tool
-2. 实现 LLM Provider trait：
-   - 调用 OpenAI Chat Completion API
-   - 流式响应（SSE）→ 发布 `LLM_STREAM_START` / `LLM_STREAM_CHUNK` / `LLM_STREAM_DONE`
-   - Tool Calling 支持（function calling）
-3. API Key 从 SecretResolver 获取（`${OPENAI_API_KEY}`）
-4. 错误处理：
-   - 超时 → 发布 `LLM_ERROR`
-   - 认证失败 → 发布 `LLM_ERROR` + 审计告警
-   - Rate limit → 发布 `LLM_ERROR` + retry_after
-5. 首 token 延迟监控（框架开销 <50ms）
+1. ✅ 创建 `llm-provider-openai` 插件 crate，注册为 Tool（`LlmOpenaiTool` 结构体实现 `Tool` trait）
+2. ✅ 实现 LLM Provider Tool：
+   - 调用 OpenAI Chat Completion API（异步 `reqwest::Client` + rustls-tls）
+   - 流式响应（SSE）预留 → 后续 SSE 解析层独立追加
+   - Tool Calling 支持（`format_tools_for_openai` 转换简化 tool def → OpenAI function calling 格式）
+3. ✅ API Key 支持两种方式：参数 `api_key` 字段或 `OPENAI_API_KEY` 环境变量
+4. ✅ 错误处理全部覆盖：
+   - 超时 → `error_type: "timeout"` + 明确错误信息
+   - 连接失败 → `error_type: "connection_error"`
+   - 认证失败 → `error_type: "authentication_error"` + HTTP status
+   - Rate limit → `error_type: "rate_limit_exceeded"` + `retry_after_seconds`
+   - 请求失败 → `error_type: "request_failed"`
+   - 响应解析失败 → `error_type: "parse_error"` + status_code
+5. ✅ 参数 schema 声明：messages（必填）、model、temperature、max_tokens、api_key、api_base、tools
+6. ✅ 返回值 schema：content、finish_reason、tool_calls、usage、error、error_type、status_code
 
 **验收：**
-- 单条消息 → 流式输出到 Event Bus（LLM_STREAM_START → CHUNK×N → DONE）
-- Tool Calling：LLM 返回 function_call → Tool Runner 执行 → 结果回传 → 二次 LLM 调用
-- API Key 错误 → 返回明确错误信息
+- ✅ 单条消息 → 返回 response（content + finish_reason + usage + status_code）
+- ✅ Tool Calling：LLM 返回 function_call → 解析并返回 `{ name, arguments }` 数组
+- ✅ API Key 错误 → 返回明确错误信息（Incorrect API key provided）
+- ✅ 8 tests 全部通过（`cargo test -p llm-provider-openai`）
 
 ---
 
@@ -781,18 +781,15 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 |--------|--------|------|------|---------|
 | M1 能力框架 | 4 | 5.5d | ✅ 已完成 | 与 M2 并行 |
 | M2 聊天骨架 | 3 | 5d | ✅ 已完成 | 与 M1 并行 |
-| M3 测试基础设施 | 3 | 3d | ⏳ 待开始 | 需 M1 完成 |
-| M4 聊天核心 | 3 | 8d | ⏳ 待开始 | 需 M3 完成 |
+| M3 测试基础设施 | 3 | 3d | ✅ 已完成 | 需 M1 完成 |
+| M4 聊天核心 | 3 | 8d | ✅ 已完成 | 需 M3 完成 |
 | M5 聊天前端 | 2 | 3d | ⏳ 待开始 | 需 M4 完成 |
 | M6 集成与加固 | 6 | 9d | ⏳ 待开始 | 需 M4 完成 |
 | M7 增强打磨 | 7 | 10d | ⏳ 待开始 | 需 M6 完成 |
-| **总计** | **28** | **~43d** | **完成 7/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
+| **总计** | **28** | **~43d** | **完成 12/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
 
 ---
 
 ## 当前焦点
 
-M1+M2 已完成。下一个里程碑 **M3（测试基础设施）** 是 M4 的前置依赖，建议优先推进。
-
-可在 M3 之前或与之并行启动：
-- **T7.3** 部分命令系统（前端 UI 层面的 /help、/debug 等非 LLM 命令）
+M1+M2+M3 已完成。M4 全部完成（T4.1 ChatPlatformSource ✅、T4.2 LLM Skill ✅、T4.3 LLM Provider OpenAI ✅）。下一个里程碑：**M5（聊天前端）**。

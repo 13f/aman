@@ -31,6 +31,10 @@ members = [
   "crates/sdk/examples/hello-skill",
   "crates/tauri",
   "crates/tauri/src-tauri",
+  "crates/test-utils",
+  "crates/plugins/chat-source",
+  "crates/plugins/llm-skill",
+  "crates/plugins/llm-provider-openai",
 ]
 default-members = [
   "crates/core",
@@ -54,6 +58,10 @@ default-members = [
   "crates/sdk/examples/hello-skill",
   "crates/tauri",
   "crates/tauri/src-tauri",
+  "crates/test-utils",
+  "crates/plugins/chat-source",
+  "crates/plugins/llm-skill",
+  "crates/plugins/llm-provider-openai",
 ]
 
 [workspace.package]
@@ -84,3 +92,5 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
 trybuild = "1.0.112"
 uuid = { version = "1.18.1", features = ["serde", "v7"] }
+proptest = "1.6.0"
+rand = "0.8"

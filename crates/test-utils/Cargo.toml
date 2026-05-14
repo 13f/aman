@@ -1,5 +1,5 @@
 [package]
-name = "workflow"
+name = "test-utils"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,16 +12,9 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 kernel = { path = "../core", version = "0.1.0" }
-serde.workspace = true
+event-bus = { path = "../event-bus", version = "0.1.0" }
 serde_json.workspace = true
-uuid.workspace = true
+uuid = { version = "1.18.1", features = ["v7"] }
 
 [dev-dependencies]
-criterion.workspace = true
-pipeline = { path = "../pipeline", version = "0.1.0" }
-pollster.workspace = true
-proptest.workspace = true
-
-[[bench]]
-name = "recovery"
-harness = false
+tokio = { version = "1", features = ["rt", "macros"] }

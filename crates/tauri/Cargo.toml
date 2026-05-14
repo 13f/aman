@@ -22,6 +22,7 @@ persistence = { path = "../persistence", version = "0.1.0" }
 skill = { path = "../skill", version = "0.1.0" }
 workflow = { path = "../workflow", version = "0.1.0" }
 soul = { path = "../soul", version = "0.1.0" }
+uuid = { workspace = true, features = ["v7"] }
 plugin = { path = "../plugin", version = "0.1.0" }
 
 [build-dependencies]

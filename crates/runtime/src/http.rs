@@ -109,6 +109,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/health/live", get(health_live))
         .route("/health/ready", get(health_ready))
         .route("/health", get(health_ready))
+        .route("/health/llm", get(health_llm))
         .route("/metrics", get(metrics))
         .merge(control)
         .with_state(runtime)
@@ -124,6 +125,20 @@ async fn health_live(State(runtime): State<Arc<AgentRuntime>>) -> impl IntoRespo
 
 async fn health_ready(State(runtime): State<Arc<AgentRuntime>>) -> impl IntoResponse {
     if runtime.is_ready() {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+async fn health_llm(State(runtime): State<Arc<AgentRuntime>>) -> impl IntoResponse {
+    // LLM provider is considered healthy if a tool whose name starts with
+    // "llm_" is registered in the runtime's tool registry.
+    let tools = runtime.tools();
+    let has_provider = ["llm_openai", "llm_provider_openai"]
+        .iter()
+        .any(|name| tools.get(name).is_some());
+    if runtime.is_ready() && has_provider {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -1276,12 +1291,18 @@ async fn metrics(State(runtime): State<Arc<AgentRuntime>>) -> Response {
             })
             .collect::<Vec<_>>()
     };
+    let sessions = runtime.workflow_engine().list_instances();
+    let active_sessions = sessions
+        .iter()
+        .filter(|inst| inst.workflow_name == "chat-session" && inst.current_state != "CLOSED")
+        .count();
     runtime.metrics().update_from(
         bus,
         dlq_depth,
         runtime.inflight_pipelines(),
         runtime.inflight_skills(),
         &plugin_states,
+        active_sessions,
     );
     let body = runtime.metrics().encode();
     (

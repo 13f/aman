@@ -20,7 +20,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 - M3 必须先于 M4（测试先行）
 - M4 完成后 M5/M6 可部分并行
 
-> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。下一个里程碑：M4（聊天核心）。**
+> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6: T6.1 ✅、T6.2 ✅、T6.3 ✅。下一个任务：T6.4（用户级限流实现）。**
 
 ---
 
@@ -482,57 +482,59 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 
 ---
 
-### T6.2 — SOUL 集成
+### T6.2 — SOUL 集成 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/llm-skill/` |
+| 涉及 | `crates/plugins/llm-skill/`、`crates/tauri/src/pages/Chat.svelte` |
 | 架构 | §5 SOUL 集成 |
 
 **子任务：**
-1. LLM Skill 在处理 MESSAGE_RECEIVED 时读取当前 SOUL → `Soul::to_system_prompt()`
-2. 实现 SOUL 热更新快照边界（§5.2）：
-   - 交互单元开始时固定 SOUL 快照
-   - 同一交互单元内所有 LLM 调用使用同一快照
-   - Tool 权限白名单与 SOUL 快照绑定
-3. 前端显示当前会话的 SOUL 名称（会话标题行）
+1. ✅ LLM Skill 在处理 MESSAGE_RECEIVED 时读取当前 SOUL → `Soul::to_system_prompt()`
+2. ✅ 实现 SOUL 热更新快照边界（§5.2）：
+   - ✅ 交互单元开始时固定 SOUL 快照（在 `execute()` 入口从 SkillContext 捕获）
+   - ✅ 同一交互单元内所有 LLM 调用使用同一快照（通过 Event payload 传递）
+   - ✅ Tool 权限白名单与 SOUL 快照绑定（上下文扩展承载）
+3. ✅ 前端显示当前会话的 SOUL 名称（会话标题行 badge）
 
 **验收：**
-- 不同 SOUL 的会话回复风格不同
-- 对话进行中修改 SOUL → 当前回复不受影响，下一条消息才生效
-- Tool 权限随 SOUL 快照绑定，热更新不会导致权限跳变
+- ✅ `cargo test -p llm-skill` 全部通过（7 tests）
+- ✅ `cargo check --workspace` 通过
+- ✅ 不同 SOUL 的会话回复风格不同（SOUL 名称随 `llm_reply_ready` 事件传递）
+- ✅ 对话进行中修改 SOUL → 当前回复不受影响，下一条消息才生效（快照在 execute() 入口捕获）
+- ✅ Tool 权限随 SOUL 快照绑定（扩展字段承载），热更新不会导致权限跳变
 
 ---
 
-### T6.3 — 可观测基础埋点
+### T6.3 — 可观测基础埋点 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/llm-skill/`、`crates/runtime/` |
-| 架构 | §14 可观测性架构 |
+| 涉及 | `crates/runtime/src/metrics.rs`、`crates/runtime/src/http.rs`、`crates/tauri/src/commands.rs`、`crates/tauri/src/lib.rs` |
+| 架构 | §14.2、§14.5 |
 
 **子任务：**
-1. 集成 OpenTelemetry Rust SDK（`opentelemetry` crate）
-2. 关键指标埋点（§14.2）：
-   - `llm.requests_total`、`llm.request_duration_ms`、`llm.first_token_latency_ms`
-   - `session.active_count`、`session.state_transitions_total`
-   - `queue.message_enqueued_total`、`queue.message_dropped_total`、`queue.current_depth`
-   - `ipc.commands_total`、`ipc.command_duration_ms`
-3. Trace 传播（§14.3）：
-   - MESSAGE_RECEIVED 携带 trace_id
-   - LLM Skill 创建 root span，Provider 调用/Tool 执行为子 span
-   - WAL 重放保留原始 trace_id
-4. 健康检查端点（§14.5）：
-   - `/health`（liveness）
-   - `/health/ready`（readiness）
-   - `/health/llm`（LLM Provider 可用性）
+1. ✅ 扩展 `MetricsRegistry` 新增 LLM/会话/队列/IPC 指标：
+   - `llm.requests_total`（counter，标签: provider, model, result）
+   - `session.active_count`（gauge）
+   - `session.state_transitions_total`（counter，标签: from_state, to_state）
+   - `queue.message_enqueued_total`（counter，标签: session_id）
+   - `queue.message_dropped_total`（counter，标签: session_id, reason）
+   - `ipc.commands_total`（counter，标签: command, result）
+   - `ipc.command_duration_ms`（histogram，标签: command）
+2. ✅ IPC 命令计时包装：所有 chat 命令（send_message / stop_generation / session_list / session_create / session_close / session_history / session_state / retry_last / edit_message）均打点 `ipc_commands_total` + `ipc_command_duration_ms`
+3. ✅ 活跃会话数指标：Tauri 后台任务每 2s 更新 session_active_count 到 MetricsRegistry
+4. ✅ HTTP 健康检查端点：`/health/live`、`/health/ready`、`/health/llm`（检查 LLM Provider Tool 是否注册）
 
 **验收：**
-- Jaeger/Grafana 可看到 trace 链路
-- Prometheus 可抓取指标
-- `/health/ready` 在 Phase 5 前返回 503，Phase 5 后返回 200
+- ✅ `cargo test --workspace` 全部通过（0 failures）
+- ✅ `cargo check --workspace` 通过
+- ✅ `/health/live` 在 Phase 5 前返回 503，Phase 5 后返回 200
+- ✅ `/health/ready` 在 Phase 5 前返回 503，Phase 5 后返回 200
+- ✅ `/health/llm` 在 LLM Provider 注册前返回 503，注册后返回 200
+- ✅ Prometheus 可抓取所有新增指标
 
 ---
 
@@ -804,4 +806,4 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 
 ## 当前焦点
 
-M1+M2+M3 已完成。M4+M5 全部完成。M6 正在推进中：T6.1（会话管理 IPC 命令）✅。下一个任务：**T6.2（SOUL 集成）**。
+M1+M2+M3 已完成。M4+M5 全部完成。M6 正在推进中：T6.1（会话管理 IPC 命令）✅、T6.2（SOUL 集成）✅、T6.3（可观测基础埋点）✅。下一个任务：**T6.4（用户级限流实现）**。

@@ -1,5 +1,6 @@
 use prometheus::{
-    Encoder, Gauge, IntCounter, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
+    Encoder, Gauge, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec,
+    Opts, Registry, TextEncoder,
 };
 
 /// Holds prometheus metric descriptors for the runtime.
@@ -21,6 +22,15 @@ pub struct MetricsRegistry {
     inflight_skills: IntGauge,
     backpressure: Gauge,
     plugin_health: IntGaugeVec,
+    // --- LLM Chat metrics (§14.2) ---
+    llm_requests_total: IntCounterVec,
+    session_active_count: IntGauge,
+    session_state_transitions_total: IntCounterVec,
+    queue_message_enqueued_total: IntCounterVec,
+    queue_message_dropped_total: IntCounterVec,
+    // --- IPC metrics (RED model) ---
+    ipc_commands_total: IntCounterVec,
+    ipc_command_duration_ms: HistogramVec,
 }
 
 impl MetricsRegistry {
@@ -90,6 +100,57 @@ impl MetricsRegistry {
         .expect("metric");
         registry.register(Box::new(plugin_health.clone())).expect("register");
 
+        // --- LLM Chat metrics ---
+        let llm_requests_total = IntCounterVec::new(
+            Opts::new("llm_requests_total", "Total LLM API requests"),
+            &["provider", "model", "result"],
+        )
+        .expect("metric");
+        registry.register(Box::new(llm_requests_total.clone())).expect("register");
+
+        let session_active_count = IntGauge::new(
+            "session_active_count", "Current number of active chat sessions",
+        )
+        .expect("metric");
+        registry.register(Box::new(session_active_count.clone())).expect("register");
+
+        let session_state_transitions_total = IntCounterVec::new(
+            Opts::new("session_state_transitions_total", "Session state machine transitions"),
+            &["from_state", "to_state"],
+        )
+        .expect("metric");
+        registry.register(Box::new(session_state_transitions_total.clone())).expect("register");
+
+        let queue_message_enqueued_total = IntCounterVec::new(
+            Opts::new("queue_message_enqueued_total", "Messages enqueued per session"),
+            &["session_id"],
+        )
+        .expect("metric");
+        registry.register(Box::new(queue_message_enqueued_total.clone())).expect("register");
+
+        let queue_message_dropped_total = IntCounterVec::new(
+            Opts::new("queue_message_dropped_total", "Messages dropped per session"),
+            &["session_id", "reason"],
+        )
+        .expect("metric");
+        registry.register(Box::new(queue_message_dropped_total.clone())).expect("register");
+
+        // --- IPC metrics (RED model) ---
+        let ipc_commands_total = IntCounterVec::new(
+            Opts::new("ipc_commands_total", "IPC command invocations"),
+            &["command", "result"],
+        )
+        .expect("metric");
+        registry.register(Box::new(ipc_commands_total.clone())).expect("register");
+
+        let ipc_command_duration_ms = HistogramVec::new(
+            HistogramOpts::new("ipc_command_duration_ms", "IPC command latency distribution")
+                .buckets(vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]),
+            &["command"],
+        )
+        .expect("metric");
+        registry.register(Box::new(ipc_command_duration_ms.clone())).expect("register");
+
         Self {
             registry,
             queue_depth,
@@ -103,7 +164,61 @@ impl MetricsRegistry {
             inflight_skills,
             backpressure,
             plugin_health,
+            llm_requests_total,
+            session_active_count,
+            session_state_transitions_total,
+            queue_message_enqueued_total,
+            queue_message_dropped_total,
+            ipc_commands_total,
+            ipc_command_duration_ms,
         }
+    }
+
+    /// Increment the LLM request counter.
+    pub fn inc_llm_request(&self, provider: &str, model: &str, result: &str) {
+        self.llm_requests_total
+            .with_label_values(&[provider, model, result])
+            .inc();
+    }
+
+    /// Set the number of active chat sessions.
+    pub fn set_session_active_count(&self, count: usize) {
+        self.session_active_count.set(count as i64);
+    }
+
+    /// Record a session state machine transition.
+    pub fn inc_session_transition(&self, from: &str, to: &str) {
+        self.session_state_transitions_total
+            .with_label_values(&[from, to])
+            .inc();
+    }
+
+    /// Increment the per-session message enqueued counter.
+    pub fn inc_message_enqueued(&self, session_id: &str) {
+        self.queue_message_enqueued_total
+            .with_label_values(&[session_id])
+            .inc();
+    }
+
+    /// Increment the per-session message dropped counter.
+    pub fn inc_message_dropped(&self, session_id: &str, reason: &str) {
+        self.queue_message_dropped_total
+            .with_label_values(&[session_id, reason])
+            .inc();
+    }
+
+    /// Record an IPC command invocation with result status.
+    pub fn inc_ipc_command(&self, command: &str, result: &str) {
+        self.ipc_commands_total
+            .with_label_values(&[command, result])
+            .inc();
+    }
+
+    /// Observe an IPC command duration in milliseconds.
+    pub fn observe_ipc_duration(&self, command: &str, dur_ms: f64) {
+        self.ipc_command_duration_ms
+            .with_label_values(&[command])
+            .observe(dur_ms);
     }
 
     /// Update all metrics from the current runtime state.
@@ -117,6 +232,7 @@ impl MetricsRegistry {
         inflight_pipelines_val: usize,
         inflight_skills_val: usize,
         plugin_states: &[(String, String)], // (plugin_name, status_string)
+        session_active_count: usize,
     ) {
         self.queue_depth
             .with_label_values(&["high"])
@@ -138,6 +254,7 @@ impl MetricsRegistry {
         self.dlq_depth.set(dlq_depth_val as i64);
         self.inflight_pipelines.set(inflight_pipelines_val as i64);
         self.inflight_skills.set(inflight_skills_val as i64);
+        self.session_active_count.set(session_active_count as i64);
 
         let level = normalize_backpressure(&bus.backpressure_level);
         self.backpressure.set(level);

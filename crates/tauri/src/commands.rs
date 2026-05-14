@@ -9,7 +9,16 @@ use config::ConfigLoader;
 use kernel::event::{Event, EventType};
 use persistence::DeadLetterQueue;
 use runtime::{AgentRuntimeBuilder, RuntimePhase};
+use std::time::Instant;
 use tauri::State;
+
+/// Record IPC command metrics from an optional runtime reference.
+fn record_ipc(rt: Option<&runtime::AgentRuntime>, cmd: &str, ok: bool, dur_ms: f64) {
+    if let Some(r) = rt {
+        r.metrics().inc_ipc_command(cmd, if ok { "ok" } else { "error" });
+        r.metrics().observe_ipc_duration(cmd, dur_ms);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Runtime lifecycle
@@ -583,6 +592,7 @@ pub async fn chat_stop_generation(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<String, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -596,7 +606,7 @@ pub async fn chat_stop_generation(
         "chat-platform:tauri-desktop",
         kernel::event::EventType::Custom("session_stop".to_owned()),
         serde_json::json!({
-            "session_id": session_id,
+            "session_id": &session_id,
             "requested_at": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
@@ -607,7 +617,9 @@ pub async fn chat_stop_generation(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(session_id)
+    let result = Ok(session_id);
+    record_ipc(Some(rt), "chat:stop_generation", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
@@ -616,57 +628,70 @@ pub async fn chat_send_message(
     text: String,
     session_id: String,
 ) -> Result<String, String> {
-    let guard = state.runtime.lock().await;
-    let rt = guard
-        .as_ref()
-        .ok_or_else(|| "No runtime running".to_owned())?;
+    let _start = Instant::now();
+    let result = (|| async {
+        let guard = state.runtime.lock().await;
+        let rt = guard
+            .as_ref()
+            .ok_or_else(|| "No runtime running".to_owned())?;
 
-    // Check chat capability
-    if !rt.has_capability("chat").await {
-        return Err("Chat capability not available".to_owned());
-    }
+        // Check chat capability
+        if !rt.has_capability("chat").await {
+            return Err("Chat capability not available".to_owned());
+        }
 
-    // Validate message length (chat-source default max is 4096 chars)
-    let len = text.chars().count();
-    if len > 4096 {
-        return Err(format!(
-            "Message exceeds maximum length of 4096 characters (got {len})"
-        ));
-    }
-    if text.trim().is_empty() {
-        return Err("Message cannot be empty".to_owned());
-    }
-    if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
-    }
+        // Validate message length (chat-source default max is 4096 chars)
+        let len = text.chars().count();
+        if len > 4096 {
+            return Err(format!(
+                "Message exceeds maximum length of 4096 characters (got {len})"
+            ));
+        }
+        if text.trim().is_empty() {
+            return Err("Message cannot be empty".to_owned());
+        }
+        if session_id.trim().is_empty() {
+            return Err("Session ID cannot be empty".to_owned());
+        }
 
-    // Publish MESSAGE_RECEIVED event to the Event Bus
-    let event = kernel::event::Event::new(
-        "chat-platform:tauri-desktop",
-        kernel::event::EventType::MessageReceived,
-        serde_json::json!({
-            "session_id": session_id,
-            "text": text,
-            "channel": "tauri_desktop",
-            "message_id": uuid::Uuid::now_v7(),
-            "client_timestamp": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-        }),
-    );
-    let event_id = event.id;
-    rt.publish_event(event)
-        .await
-        .map_err(|e| e.to_string())?;
+        // Publish MESSAGE_RECEIVED event to the Event Bus
+        let event = kernel::event::Event::new(
+            "chat-platform:tauri-desktop",
+            kernel::event::EventType::MessageReceived,
+            serde_json::json!({
+                "session_id": session_id,
+                "text": text,
+                "channel": "tauri_desktop",
+                "message_id": uuid::Uuid::now_v7(),
+                "client_timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0),
+            }),
+        );
+        let event_id = event.id;
+        rt.publish_event(event)
+            .await
+            .map_err(|e| e.to_string())?;
 
-    Ok(event_id.to_string()) // return event UUID as correlation key
+        Ok::<_, String>(event_id.to_string())
+    })()
+    .await;
+
+    let _dur_ms = _start.elapsed().as_secs_f64() * 1000.0;
+    if let Ok(guard) = state.runtime.try_lock() {
+        if let Some(rt) = guard.as_ref() {
+            record_ipc(Some(rt), "chat:send_message", result.is_ok(), _dur_ms);
+        }
+    }
+    result
 }
 
 #[tauri::command]
 pub async fn chat_session_list(
     state: State<'_, AppState>,
 ) -> Result<Vec<ChatSessionInfo>, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -700,13 +725,16 @@ pub async fn chat_session_list(
             }
         })
         .collect();
-    Ok(sessions)
+    let result = Ok(sessions);
+    record_ipc(Some(rt), "chat:session_list", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
 pub async fn chat_session_create(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -727,7 +755,9 @@ pub async fn chat_session_create(
             }),
         )
         .map_err(|e| e.to_string())?;
-    Ok(instance.id)
+    let result = Ok(instance.id);
+    record_ipc(Some(rt), "chat:session_create", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
@@ -735,6 +765,7 @@ pub async fn chat_session_close(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<String, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -754,7 +785,9 @@ pub async fn chat_session_close(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(session_id)
+    let result = Ok(session_id);
+    record_ipc(Some(rt), "chat:session_close", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
@@ -763,6 +796,7 @@ pub async fn chat_session_history(
     session_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<ChatMessageEntry>, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -791,7 +825,9 @@ pub async fn chat_session_history(
         })
         .collect();
     messages.reverse(); // chronological order
-    Ok(messages)
+    let result = Ok(messages);
+    record_ipc(Some(rt), "chat:session_history", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
@@ -799,6 +835,7 @@ pub async fn chat_session_state(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<ChatSessionState, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -832,12 +869,14 @@ pub async fn chat_session_state(
         .collect();
     messages.reverse();
 
-    Ok(ChatSessionState {
+    let result = Ok(ChatSessionState {
         session_id: instance.id,
         state: instance.current_state,
         retry_count: instance.total_retry_count,
         messages,
-    })
+    });
+    record_ipc(Some(rt), "chat:session_state", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
@@ -845,6 +884,7 @@ pub async fn chat_retry_last(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<String, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -864,7 +904,9 @@ pub async fn chat_retry_last(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(session_id)
+    let result = Ok(session_id);
+    record_ipc(Some(rt), "chat:retry_last", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }
 
 #[tauri::command]
@@ -874,6 +916,7 @@ pub async fn chat_edit_message(
     message_id: String,
     text: String,
 ) -> Result<String, String> {
+    let _start = Instant::now();
     let guard = state.runtime.lock().await;
     let rt = guard
         .as_ref()
@@ -904,5 +947,7 @@ pub async fn chat_edit_message(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(event_id.to_string())
+    let result = Ok(event_id.to_string());
+    record_ipc(Some(rt), "chat:edit_message", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
 }

@@ -109,6 +109,18 @@ pub fn run() {
                             let bus = rt.bus_metrics();
                             let dlq_depth = rt.dlq().depth();
                             let loader = rt.plugin_loader().await;
+
+                            // Report LLM Chat session count metric.
+                            let sessions = rt.workflow_engine().list_instances();
+                            let active_sessions = sessions
+                                .iter()
+                                .filter(|inst| {
+                                    inst.workflow_name == "chat-session"
+                                        && inst.current_state != "CLOSED"
+                                })
+                                .count();
+                            rt.metrics().set_session_active_count(active_sessions);
+
                             let plugin_health: Vec<crate::models::PluginHealthEntry> = loader
                                 .loaded_plugins()
                                 .into_iter()

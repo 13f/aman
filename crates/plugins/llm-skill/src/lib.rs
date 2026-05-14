@@ -83,7 +83,17 @@ impl Skill for LlmSkill {
         &self.triggers
     }
 
-    async fn execute(&self, event: Event, _ctx: SkillContext) -> AmanResult<()> {
+    async fn execute(&self, mut event: Event, ctx: SkillContext) -> AmanResult<()> {
+        // Snapshot SOUL at interaction boundary (§5.2 of architect doc):
+        // capture the current SOUL name and system prompt so the entire
+        // interaction unit (tool calls → final reply) uses a consistent snapshot.
+        if let Some(soul_name) = &ctx.soul_name {
+            event.payload["soul_name"] = json!(soul_name);
+        }
+        if let Some(soul_prompt) = ctx.base.extensions.get("soul.system_prompt") {
+            event.payload["soul_system_prompt"] = soul_prompt.clone();
+        }
+
         let session_id = event
             .payload
             .get("session_id")
@@ -176,6 +186,13 @@ async fn process_session(
             .and_then(|v| v.as_str())
             .unwrap_or(""); // TODO: Replace with real LLM call (T4.3).
 
+        // Extract SOUL snapshot captured at interaction boundary.
+        let soul_name = msg
+            .payload
+            .get("soul_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("assistant");
+
         let reply = Event::new(
             "skill:llm",
             EventType::Custom("llm_reply_ready".to_owned()),
@@ -183,6 +200,7 @@ async fn process_session(
                 "session_id": session_id,
                 "original_message_id": msg.id.to_string(),
                 "reply": format!("Echo: {text}"),
+                "soul_name": soul_name,
             }),
         );
 

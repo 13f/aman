@@ -37,6 +37,7 @@
   let messages = $state<Message[]>([]);
   let inputText = $state("");
   let isLoading = $state(false);
+  let currentSoulName = $state("");
   let unlisteners: (() => void)[] = [];
   let messageAreaEl: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
@@ -128,6 +129,9 @@
     updateMessage(data.original_message_id, { status: "completed" });
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");
+    if (data.soul_name) {
+      currentSoulName = data.soul_name;
+    }
   }
 
   function handleLlmToolCall(data: any) {
@@ -298,7 +302,12 @@
   <div class="chat-main">
     <!-- Chat Header -->
     <header class="chat-header">
-      <h2>{activeSession?.title ?? "Select a session"}</h2>
+      <h2>
+        {activeSession?.title ?? "Select a session"}
+        {#if currentSoulName}
+          <span class="soul-badge">{currentSoulName}</span>
+        {/if}
+      </h2>
       <span class="chat-status" class:loading={isProcessing}>
         {isProcessing ? "Processing..." : "Ready"}
       </span>
@@ -476,6 +485,18 @@
     margin: 0;
     font-size: 15px;
     font-weight: 600;
+  }
+
+  .soul-badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 1px 8px;
+    margin-left: 8px;
+    border-radius: 10px;
+    background: var(--accent-light, #dbeafe);
+    color: var(--accent, #3b82f6);
+    vertical-align: middle;
   }
 
   .chat-status {

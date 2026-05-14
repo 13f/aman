@@ -13,5 +13,6 @@ pub use agent_runtime::{AgentRuntime, AgentRuntimeBuilder, RuntimePhase, Runtime
 pub use audit::{AuditLogger, AuditRecord};
 pub use event_store::EventStore;
 pub use http::{serve, HttpServerConfig, HttpServerHandle};
+pub use metrics::MetricsRegistry;
 pub use soul_runtime::SoulRuntime;
 pub use tracing_setup::init_tracing;

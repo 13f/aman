@@ -77,6 +77,7 @@ pub fn run() {
             commands::chat_stop_generation,
             commands::chat_session_list,
             commands::chat_session_create,
+            commands::chat_session_branch,
             commands::chat_session_close,
             commands::chat_session_history,
             commands::chat_session_state,

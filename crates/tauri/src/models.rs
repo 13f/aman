@@ -142,6 +142,17 @@ pub struct ChatSessionInfo {
     pub message_count: usize,
     pub created_at: i64,
     pub last_active_at: Option<i64>,
+    /// Session type: "ad-hoc", "persistent", "shared", "shared-sub", "branch", "role-play"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_type: Option<String>,
+    /// For branch sessions: the parent session ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
+    /// For branch sessions: the message ID where the branch was created
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_message_id: Option<String>,
+    /// Optimistic lock version — incremented on each state-changing operation
+    pub version: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -160,4 +171,8 @@ pub struct ChatSessionState {
     pub state_version: u64,
     pub retry_count: u32,
     pub messages: Vec<ChatMessageEntry>,
+    /// Session type: "ad-hoc", "persistent", "shared", "shared-sub", "branch", "role-play"
+    pub session_type: String,
+    /// Optimistic lock version — incremented on each state-changing operation
+    pub version: u64,
 }

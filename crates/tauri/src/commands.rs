@@ -628,6 +628,7 @@ pub async fn chat_send_message(
     state: State<'_, AppState>,
     text: String,
     session_id: String,
+    expected_version: Option<u64>,
 ) -> Result<String, String> {
     let _start = Instant::now();
 
@@ -667,6 +668,14 @@ pub async fn chat_send_message(
         if session_id.trim().is_empty() {
             return Err("Session ID cannot be empty".to_owned());
         }
+
+        // --- Optimistic lock version check (§11.3) ---
+        let instance = rt
+            .workflow_engine()
+            .get_instance(&session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        check_session_version(&instance, expected_version)?;
+        drop(instance); // release borrow before publish
 
         // --- InputSanitizer (§8.1): three-tier sanitization ---
         let sanitizer = InputSanitizer::new();
@@ -746,6 +755,9 @@ pub async fn chat_send_message(
             .await
             .map_err(|e| e.to_string())?;
 
+        // Update session version after successful publish.
+        touch_session(rt, &session_id).await?;
+
         Ok::<_, String>(event_id.to_string())
     })()
     .await;
@@ -757,6 +769,47 @@ pub async fn chat_send_message(
         }
     }
     result
+}
+
+/// Read the current optimistic lock version from a workflow instance's data.
+fn read_session_version(instance: &workflow::WorkflowInstance) -> u64 {
+    instance.data.get("version").and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+/// Check the expected version against the current version of a session.
+///
+/// If `expected_version` is `Some(v)`, returns an error if the stored version
+/// does not match. Used for optimistic locking (§11.3).
+fn check_session_version(instance: &workflow::WorkflowInstance, expected_version: Option<u64>) -> Result<(), String> {
+    if let Some(expected) = expected_version {
+        let current = read_session_version(instance);
+        if current != expected {
+            return Err(format!(
+                "Session version conflict: expected {expected}, actual {current}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Helper: update session last_active_at and increment version in workflow data.
+async fn touch_session(
+    rt: &runtime::AgentRuntime,
+    session_id: &str,
+) -> Result<(), String> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    rt.workflow_engine()
+        .update_instance_data(session_id, |data| {
+            data["last_active_at"] = serde_json::json!(now_ms);
+            // Increment optimistic lock version.
+            let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+            data["version"] = serde_json::json!(v + 1);
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -788,12 +841,20 @@ pub async fn chat_session_list(
                 .data
                 .get("last_active_at")
                 .and_then(|v| v.as_i64());
+            let session_type = inst.data.get("session_type").and_then(|v| v.as_str()).map(String::from);
+            let parent_session_id = inst.data.get("parent_session_id").and_then(|v| v.as_str()).map(String::from);
+            let branch_message_id = inst.data.get("branch_message_id").and_then(|v| v.as_str()).map(String::from);
+            let version = inst.data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
             ChatSessionInfo {
                 id: inst.id,
                 state: inst.current_state,
                 message_count: 0, // computed on request or cached
                 created_at: created,
                 last_active_at: last_active,
+                session_type,
+                parent_session_id,
+                branch_message_id,
+                version,
             }
         })
         .collect();
@@ -805,6 +866,7 @@ pub async fn chat_session_list(
 #[tauri::command]
 pub async fn chat_session_create(
     state: State<'_, AppState>,
+    session_type: Option<String>,
 ) -> Result<String, String> {
     let _start = Instant::now();
     let guard = state.runtime.lock().await;
@@ -817,11 +879,15 @@ pub async fn chat_session_create(
         .map(|d| d.as_millis())
         .unwrap_or(0);
 
+    let st = session_type.unwrap_or_else(|| "persistent".to_owned());
+
     let instance = rt
         .workflow_engine()
         .create_instance(
             "chat-session",
             serde_json::json!({
+                "session_type": st,
+                "version": 0,
                 "created_at": now_ms,
                 "last_active_at": now_ms,
             }),
@@ -832,10 +898,71 @@ pub async fn chat_session_create(
     result
 }
 
+/// Create a branch session forked from a specific message in an existing session.
+///
+/// The new session inherits the source session's history up to (and including)
+/// the given `message_id`, then diverges independently. The branch stores
+/// references to the parent session and branch point for traceability.
+///
+/// Returns the new session ID.
+#[tauri::command]
+pub async fn chat_session_branch(
+    state: State<'_, AppState>,
+    session_id: String,
+    message_id: String,
+    session_type: Option<String>,
+) -> Result<String, String> {
+    let _start = Instant::now();
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+    if message_id.trim().is_empty() {
+        return Err("Message ID cannot be empty".to_owned());
+    }
+
+    // Verify source session exists.
+    let _parent = rt
+        .workflow_engine()
+        .get_instance(&session_id)
+        .ok_or_else(|| format!("Source session not found: {session_id}"))?;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    let st = session_type.unwrap_or_else(|| "branch".to_owned());
+
+    let instance = rt
+        .workflow_engine()
+        .create_instance(
+            "chat-session",
+            serde_json::json!({
+                "session_type": st,
+                "version": 0,
+                "parent_session_id": session_id,
+                "branch_message_id": message_id,
+                "created_at": now_ms,
+                "last_active_at": now_ms,
+            }),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let result = Ok(instance.id);
+    record_ipc(Some(rt), "chat:session_branch", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
+    result
+}
+
 #[tauri::command]
 pub async fn chat_session_close(
     state: State<'_, AppState>,
     session_id: String,
+    expected_version: Option<u64>,
 ) -> Result<String, String> {
     let _start = Instant::now();
     let guard = state.runtime.lock().await;
@@ -847,6 +974,15 @@ pub async fn chat_session_close(
         return Err("Session ID cannot be empty".to_owned());
     }
 
+    // Optimistic lock version check (§11.3)
+    {
+        let instance = rt
+            .workflow_engine()
+            .get_instance(&session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        check_session_version(&instance, expected_version)?;
+    }
+
     let event = kernel::event::Event::new(
         "tauri:control",
         kernel::event::EventType::Custom("SESSION_CLOSE_CMD".to_owned()),
@@ -856,6 +992,8 @@ pub async fn chat_session_close(
         .handle_event(&session_id, event)
         .await
         .map_err(|e| e.to_string())?;
+
+    touch_session(rt, &session_id).await?;
 
     let result = Ok(session_id);
     record_ipc(Some(rt), "chat:session_close", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
@@ -942,6 +1080,17 @@ pub async fn chat_session_state(
     messages.reverse();
 
     let state_version = messages.len() as u64;
+    let session_type = instance
+        .data
+        .get("session_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("persistent")
+        .to_owned();
+    let version = instance
+        .data
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
     let result = Ok(ChatSessionState {
         session_id: instance.id,
@@ -949,6 +1098,8 @@ pub async fn chat_session_state(
         state_version,
         retry_count: instance.total_retry_count,
         messages,
+        session_type,
+        version,
     });
     record_ipc(Some(rt), "chat:session_state", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
     result
@@ -958,6 +1109,7 @@ pub async fn chat_session_state(
 pub async fn chat_retry_last(
     state: State<'_, AppState>,
     session_id: String,
+    expected_version: Option<u64>,
 ) -> Result<String, String> {
     let _start = Instant::now();
     let guard = state.runtime.lock().await;
@@ -967,6 +1119,15 @@ pub async fn chat_retry_last(
 
     if session_id.trim().is_empty() {
         return Err("Session ID cannot be empty".to_owned());
+    }
+
+    // Optimistic lock version check (§11.3)
+    {
+        let instance = rt
+            .workflow_engine()
+            .get_instance(&session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        check_session_version(&instance, expected_version)?;
     }
 
     let event = kernel::event::Event::new(
@@ -979,6 +1140,8 @@ pub async fn chat_retry_last(
         .await
         .map_err(|e| e.to_string())?;
 
+    touch_session(rt, &session_id).await?;
+
     let result = Ok(session_id);
     record_ipc(Some(rt), "chat:retry_last", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);
     result
@@ -990,6 +1153,7 @@ pub async fn chat_edit_message(
     session_id: String,
     message_id: String,
     text: String,
+    expected_version: Option<u64>,
 ) -> Result<String, String> {
     let _start = Instant::now();
     let guard = state.runtime.lock().await;
@@ -1002,6 +1166,15 @@ pub async fn chat_edit_message(
     }
     if text.trim().is_empty() {
         return Err("Edited message cannot be empty".to_owned());
+    }
+
+    // Optimistic lock version check (§11.3)
+    {
+        let instance = rt
+            .workflow_engine()
+            .get_instance(&session_id)
+            .ok_or_else(|| format!("Session not found: {session_id}"))?;
+        check_session_version(&instance, expected_version)?;
     }
 
     let event = kernel::event::Event::new(
@@ -1021,6 +1194,8 @@ pub async fn chat_edit_message(
     rt.publish_event(event)
         .await
         .map_err(|e| e.to_string())?;
+
+    touch_session(rt, &session_id).await?;
 
     let result = Ok(event_id.to_string());
     record_ipc(Some(rt), "chat:edit_message", result.is_ok(), _start.elapsed().as_secs_f64() * 1000.0);

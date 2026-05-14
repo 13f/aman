@@ -611,6 +611,27 @@ impl WorkflowEngine {
             .cloned()
     }
 
+    /// Update the `data` field of a workflow instance in-place.
+    ///
+    /// The `updater` closure receives a mutable reference to the instance's
+    /// `data` (`serde_json::Value`), allowing callers to add or modify fields.
+    /// Returns `Ok(())` if the instance exists, `Err` otherwise.
+    pub fn update_instance_data(
+        &self,
+        instance_id: &str,
+        updater: impl FnOnce(&mut serde_json::Value),
+    ) -> AmanResult<()> {
+        let mut instances = self.instances.lock().expect("instances lock");
+        let instance = instances.get_mut(instance_id).ok_or_else(|| {
+            Error::NotFound {
+                name: format!("workflow_instance:{}", instance_id),
+            }
+        })?;
+        updater(&mut instance.data);
+        self.store.save(instance)?;
+        Ok(())
+    }
+
     #[must_use]
     pub fn state_change_events(&self) -> Vec<Event> {
         self.state_change_events
@@ -1951,5 +1972,40 @@ mod tests {
             assert_eq!(removed, 1);
             assert!(engine.get_instance(&instance.id).is_none());
         });
+    }
+
+    #[test]
+    fn update_instance_data_modifies_data_field() {
+        let engine = WorkflowEngine::new();
+        let def = base_workflow();
+        engine.workflows.lock().expect("lock").insert(def.name.clone(), def);
+        let instance = engine
+            .create_instance("approval", json!({"version": 0, "key": "value"}))
+            .expect("create instance");
+        let id = instance.id.clone();
+
+        // Update the data field.
+        engine
+            .update_instance_data(&id, |data| {
+                data["version"] = json!(5);
+                data["modified"] = json!(true);
+            })
+            .expect("update should succeed");
+
+        let updated = engine.get_instance(&id).expect("instance exists");
+        assert_eq!(updated.data["version"].as_u64(), Some(5));
+        assert_eq!(updated.data["modified"].as_bool(), Some(true));
+        assert_eq!(updated.data["key"].as_str(), Some("value"));
+    }
+
+    #[test]
+    fn update_instance_data_returns_error_for_missing_id() {
+        let engine = WorkflowEngine::new();
+        let err = engine
+            .update_instance_data("nonexistent", |data| {
+                data["foo"] = json!("bar");
+            })
+            .expect_err("should fail for missing instance");
+        assert!(matches!(err, Error::NotFound { .. }));
     }
 }

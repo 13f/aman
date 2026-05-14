@@ -4,6 +4,7 @@
   import { onMount, onDestroy } from "svelte";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
+  import DebugPanel from "./DebugPanel.svelte";
 
   type MessageType =
     | "user_text" | "user_command"
@@ -21,6 +22,9 @@
     sessionId: string;
     status: MessageStatus;
     toolCall?: ToolCallData;
+    channelType?: string;
+    archived?: boolean;
+    traceId?: string;
   }
 
   interface Session {
@@ -43,6 +47,12 @@
   let messageAreaEl: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
   let chatCapabilityAvailable = $state(true);
+  let showDebugPanel = $state(false);
+  let soulDescription = $state("");
+  let soulDetailExpanded = $state(false);
+  let soulIntroShown = $state(false);
+  let archivedMsgIds = $state<Set<string>>(new Set());
+  let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
 
   const activeSession = $derived(sessions.find(s => s.id === activeSessionId));
   const isProcessing = $derived(
@@ -96,6 +106,31 @@
     }
   });
 
+  function showToast(type: "info" | "warn" | "error" | "success", message: string, durationMs = 5000) {
+    const id = crypto.randomUUID();
+    const toast = { id, type, message, timeout: null as ReturnType<typeof setTimeout> | null };
+    toast.timeout = setTimeout(() => {
+      toasts = toasts.filter(t => t.id !== id);
+    }, durationMs);
+    toasts = [...toasts, toast];
+  }
+
+  function dismissToast(id: string) {
+    const t = toasts.find(t => t.id === id);
+    if (t?.timeout) clearTimeout(t.timeout);
+    toasts = toasts.filter(t => t.id !== id);
+  }
+
+  // Load SOUL info on mount
+  async function loadSoulInfo() {
+    try {
+      const info = await invoke<{ current_soul: string | null; last_changed: string | null }>("get_soul_info");
+      if (info.current_soul) {
+        currentSoulName = info.current_soul;
+      }
+    } catch { /* runtime not ready yet */ }
+  }
+
   // Loading timeout — force reset if no events arrive
   $effect(() => {
     if (isLoading) {
@@ -127,6 +162,8 @@
   }
 
   function handleLlmReplyReady(data: any) {
+    const channelType: string | undefined = data.channel_type;
+    const traceId: string | undefined = data.trace_id;
     const reply: Message = {
       id: crypto.randomUUID(),
       type: "assistant_text",
@@ -134,19 +171,35 @@
       timestamp: new Date().toISOString(),
       sessionId: data.session_id,
       status: "completed",
+      channelType,
+      traceId,
     };
     messages = [...messages, reply];
-    updateMessage(data.original_message_id, { status: "completed" });
+    updateMessage(data.original_message_id, { status: "completed", channelType });
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");
     if (data.soul_name) {
       currentSoulName = data.soul_name;
+      // Show SOUL intro on first reply
+      if (!soulIntroShown) {
+        soulIntroShown = true;
+        messages = [...messages, {
+          id: crypto.randomUUID(),
+          type: "system_event",
+          content: `You are talking to **${data.soul_name}**. Ask me anything!`,
+          timestamp: new Date().toISOString(),
+          sessionId: data.session_id,
+          status: "completed" as MessageStatus,
+        }];
+      }
     }
   }
 
   function handleLlmToolCall(data: any) {
     // data = { session_id, call_id, tool_name, arguments }
     const callId: string = data.call_id;
+    const channelType: string | undefined = data.channel_type;
+    const traceId: string | undefined = data.trace_id;
     const toolCall: Message = {
       id: callId,
       type: "assistant_tool_call",
@@ -154,6 +207,8 @@
       timestamp: new Date().toISOString(),
       sessionId: data.session_id,
       status: "streaming",
+      channelType,
+      traceId,
       toolCall: {
         callId,
         toolName: data.tool_name,
@@ -193,33 +248,72 @@
 
     // Capability events use different payload structure
     if (eventType === "capability_removed") {
-      // Individual event: { capability: "chat" }
-      if (data?.capability === "chat") {
+      // Individual event: { capability: "chat", plugin: "chat-source" }
+      const cap: string = data?.capability ?? "";
+      if (cap === "chat") {
         chatCapabilityAvailable = false;
+        showToast("warn", `Chat capability removed (plugin: ${data?.plugin ?? "unknown"})`);
         // Phase 4.5: close active tabs, clear message buffer
         // but DON'T clear persistent state (history can be restored later)
         messages = messages.filter(m => m.sessionId !== activeSessionId);
         sessions = sessions.filter(s => s.status === "idle");
         // Reset to default session
         activeSessionId = "default";
+      } else {
+        showToast("info", `Capability removed: ${cap}`);
       }
       return;
     }
     if (eventType === "capability_available") {
-      if (data?.capability === "chat") {
+      const cap: string = data?.capability ?? "";
+      if (cap === "chat") {
         chatCapabilityAvailable = true;
+        showToast("success", "Chat capability is now available");
+      } else {
+        showToast("info", `New capability available: ${cap}`);
+      }
+      return;
+    }
+    if (eventType === "capability_degraded") {
+      // { capability, plugin, reason }
+      const cap: string = data?.capability ?? "";
+      const reason: string = data?.reason ?? "unknown";
+      if (cap === "chat") {
+        chatCapabilityAvailable = false;
+        showToast("error", `Chat capability degraded: ${reason}. Check plugin status and try restarting.`);
+      } else {
+        showToast("warn", `Capability degraded: ${cap} (${reason})`);
       }
       return;
     }
     // Full registry update: { available, added, removed }
     if (eventType === "capability_registry_updated") {
       const available: string[] = payload.available ?? [];
+      const wasAvailable = chatCapabilityAvailable;
       chatCapabilityAvailable = available.includes("chat");
+      if (chatCapabilityAvailable && !wasAvailable) {
+        showToast("success", "Chat capability restored");
+      } else if (!chatCapabilityAvailable && wasAvailable) {
+        showToast("warn", "Chat capability no longer available");
+      }
       return;
     }
 
     if (!data?.session_id) return;
+
+    // SOUL update event — capture name regardless of session
+    if (eventType === "soul_updated" || eventType === "SOUL_UPDATED") {
+      if (data.soul_name) {
+        currentSoulName = data.soul_name;
+        showToast("info", `SOUL switched to "${data.soul_name}"`);
+      }
+      return;
+    }
+
     if (data.session_id !== activeSessionId) return;
+
+    // Capture channel_type from event payload
+    const channelType: string | undefined = data.channel_type;
 
     switch (eventType) {
       case "message_queued":
@@ -240,7 +334,29 @@
       case "output_blocked":
         handleOutputBlocked(data);
         break;
+      case "history_trimmed":
+      case "HISTORY_TRIMMED":
+        handleHistoryTrimmed(data);
+        break;
     }
+  }
+
+  function handleHistoryTrimmed(data: any) {
+    // data = { session_id, trimmed_count, remaining_count, message_ids_archived?, strategy }
+    const sid: string = data.session_id;
+    if (sid !== activeSessionId) return;
+    const archived: string[] = data.message_ids_archived ?? [];
+    if (archived.length > 0) {
+      archivedMsgIds = new Set([...archivedMsgIds, ...archived]);
+    }
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event" as MessageType,
+      content: `Context trimmed: ${data.trimmed_count} older messages archived (${data.remaining_count} remaining). Strategy: ${data.strategy ?? "token_based"}.`,
+      timestamp: new Date().toISOString(),
+      sessionId: sid,
+      status: "completed" as MessageStatus,
+    }];
   }
 
   function handleOutputBlocked(data: any) {
@@ -467,7 +583,17 @@
     }
   }
 
-  async function handleDebug(_args: string[]) {
+  async function handleDebug(args: string[]) {
+    // /debug toggle → show/hide debug panel
+    if (args[0] === "panel" || args[0] === "toggle") {
+      showDebugPanel = !showDebugPanel;
+      messages = [...messages, {
+        id: crypto.randomUUID(), type: "system_event",
+        content: `Debug panel ${showDebugPanel ? "opened" : "closed"}.`,
+        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+      }];
+      return;
+    }
     const sessionMsgs = messages.filter(m => m.sessionId === activeSessionId);
     const info = [
       "**Debug info:**",
@@ -478,6 +604,8 @@
       `  Loading: ${isLoading}`,
       `  Processing: ${isProcessing}`,
       `  Rate limit countdown: ${rateLimitCountdown}s`,
+      `  SOUL: ${currentSoulName || "none"}`,
+      `  Archived messages: ${archivedMsgIds.size}`,
     ];
     messages = [...messages, {
       id: crypto.randomUUID(), type: "system_event",
@@ -557,10 +685,29 @@
     }},
     { name: "retry", aliases: ["r"], category: "llm_dependent", usage: "/retry [--full]", description: "Retry last reply", handler: handleRetry },
     { name: "edit", aliases: ["e"], category: "llm_dependent", usage: "/edit <msg_index> <text>", description: "Edit and resend", handler: handleEdit },
-    { name: "debug", aliases: ["dbg"], category: "non_llm", usage: "/debug", description: "Show debug info", handler: handleDebug },
+    { name: "debug", aliases: ["dbg"], category: "non_llm", usage: "/debug [panel|toggle]", description: "Show debug info or toggle panel", handler: handleDebug },
     { name: "export", aliases: [], category: "non_llm", usage: "/export", description: "Export conversation", handler: handleExport },
-    { name: "soul", aliases: [], category: "llm_dependent", usage: "/soul switch <name>", description: "Switch active SOUL", handler: async (args) => {
+    { name: "soul", aliases: [], category: "llm_dependent", usage: "/soul switch|info <name>", description: "Switch SOUL or show info", handler: async (args) => {
       if (args[0] === "switch") await handleSoulSwitch(args.slice(1));
+      else if (args[0] === "info") {
+        try {
+          const soulRaw = await invoke<any>("get_soul_raw", {});
+          const soulInfo = await invoke<any>("get_soul_info", {});
+          soulDescription = soulRaw?.description ?? soulRaw?.identity ?? "(no description)";
+          soulDetailExpanded = true;
+          messages = [...messages, {
+            id: crypto.randomUUID(), type: "system_event",
+            content: `**SOUL: ${currentSoulName || "unknown"}**\n  Description: ${soulDescription}\n  Last changed: ${soulInfo?.last_changed ?? "unknown"}`,
+            timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
+          }];
+        } catch (err: any) {
+          messages = [...messages, {
+            id: crypto.randomUUID(), type: "system_event",
+            content: `Failed to load SOUL info: ${err}`,
+            timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "error" as MessageStatus,
+          }];
+        }
+      }
       else {
         messages = [...messages, {
           id: crypto.randomUUID(), type: "system_event",
@@ -661,13 +808,24 @@
     }
   }
 
+  function handleGlobalKeydown(e: KeyboardEvent) {
+    // Ctrl+Shift+D or Meta+Shift+D: toggle debug panel
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "D") {
+      e.preventDefault();
+      showDebugPanel = !showDebugPanel;
+    }
+  }
+
   onMount(async () => {
     const unsub1 = await listen("event:processed", handleEventProcessed);
     unlisteners.push(unsub1);
+    await loadSoulInfo();
+    window.addEventListener("keydown", handleGlobalKeydown);
   });
 
   onDestroy(() => {
     for (const fn of unlisteners) fn();
+    window.removeEventListener("keydown", handleGlobalKeydown);
   });
 </script>
 
@@ -699,12 +857,28 @@
       <h2>
         {activeSession?.title ?? "Select a session"}
         {#if currentSoulName}
-          <span class="soul-badge">{currentSoulName}</span>
+          <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+          <span class="soul-badge" title="Current SOUL. Click for details." onclick={() => soulDetailExpanded = !soulDetailExpanded} onkeydown={(e) => e.key === 'Enter' && (soulDetailExpanded = !soulDetailExpanded)} role="button" tabindex="0">
+            {currentSoulName}
+          </span>
+        {/if}
+        {#if soulDetailExpanded && currentSoulName}
+          <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+          <div class="soul-detail-popup" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
+            <strong>{currentSoulName}</strong>
+            <p class="soul-desc">{soulDescription || "No description available."}</p>
+            <p class="soul-hint">Use <code>/soul info</code> for full details. <code>/soul switch &lt;name&gt;</code> to change.</p>
+          </div>
         {/if}
       </h2>
-      <span class="chat-status" class:loading={isProcessing}>
-        {isProcessing ? "Processing..." : "Ready"}
-      </span>
+      <div class="chat-header-end">
+        <span class="chat-status" class:loading={isProcessing}>
+          {isProcessing ? "Processing..." : "Ready"}
+        </span>
+        <button class="debug-toggle-btn" onclick={() => showDebugPanel = !showDebugPanel} title="Toggle Debug Panel (Ctrl+Shift+D)">
+          &#x2699;
+        </button>
+      </div>
     </header>
 
     <!-- Messages -->
@@ -724,6 +898,7 @@
           {@const isAssistant = msg.type.startsWith("assistant") && !(msg.type === "assistant_tool_call" || msg.type === "assistant_tool_result")}
           {@const isSystem = msg.type.startsWith("system") || msg.type.startsWith("security")}
           {@const isToolCall = msg.type === "assistant_tool_call"}
+          {@const isArchived = msg.archived === true || archivedMsgIds.has(msg.id)}
           <div
             class="message"
             class:user={isUser}
@@ -731,6 +906,7 @@
             class:system={isSystem}
             class:tool-call={isToolCall}
             class:interrupted={msg.status === "interrupted"}
+            class:archived={isArchived}
           >
             {#if isToolCall && msg.toolCall}
               <ToolCallCard tool={msg.toolCall} />
@@ -750,6 +926,12 @@
             {/if}
             <span class="msg-time">
               {msg.timestamp.slice(11, 19)}
+              {#if msg.channelType}
+                <span class="channel-tag">{msg.channelType}</span>
+              {/if}
+              {#if isArchived}
+                <span class="archived-label">archived</span>
+              {/if}
               {#if msg.status === "pending"}
                 <span class="msg-status pending">sending...</span>
               {:else if msg.status === "error"}
@@ -784,6 +966,22 @@
     </div>
   </div>
 </div>
+
+<!-- Toast notifications -->
+<div class="toast-container">
+  {#each toasts as toast (toast.id)}
+    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+    <div class="toast toast-{toast.type}" onclick={() => dismissToast(toast.id)} onkeydown={(e) => e.key === 'Enter' && dismissToast(toast.id)} role="button" tabindex="0">
+      <span class="toast-icon">
+        {#if toast.type === "success"}&#10003;{:else if toast.type === "warn"}&#9888;{:else if toast.type === "error"}&#10007;{:else}&#8505;{/if}
+      </span>
+      <span class="toast-msg">{toast.message}</span>
+    </div>
+  {/each}
+</div>
+
+<!-- Debug Panel overlay -->
+<DebugPanel bind:visible={showDebugPanel} />
 
 <style>
   .chat-layout {
@@ -1114,5 +1312,160 @@
     font-weight: 600;
     cursor: not-allowed;
     align-self: flex-end;
+  }
+
+  /* -------- T7.6 Additions -------- */
+
+  .chat-header-end {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .debug-toggle-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--border, #ddd);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary, #888);
+    font-size: 16px;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+
+  .debug-toggle-btn:hover {
+    background: var(--surface-hover, #eee);
+    color: var(--text-primary, #111);
+  }
+
+  .soul-detail-popup {
+    position: absolute;
+    top: 48px;
+    left: 16px;
+    z-index: 100;
+    width: 300px;
+    padding: 12px 16px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #ddd);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .soul-detail-popup strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+
+  .soul-desc {
+    margin: 0 0 6px 0;
+    color: var(--text-secondary, #666);
+  }
+
+  .soul-hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-secondary, #999);
+  }
+
+  .soul-hint code {
+    font-size: 10px;
+    background: var(--surface-secondary, #f5f5f5);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+
+  .message.archived {
+    opacity: 0.5;
+  }
+
+  .message.archived:hover {
+    opacity: 0.8;
+  }
+
+  .channel-tag {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--surface-secondary, #e8e8e8);
+    color: var(--text-secondary, #888);
+    text-transform: uppercase;
+    font-weight: 500;
+  }
+
+  .archived-label {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--warning-light, #fef3c7);
+    color: var(--warning, #b45309);
+    font-weight: 500;
+  }
+
+  .toast-container {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 360px;
+  }
+
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 12px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    animation: toast-in 0.25s ease-out;
+    line-height: 1.4;
+  }
+
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .toast-info {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1e40af;
+  }
+
+  .toast-success {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #166534;
+  }
+
+  .toast-warn {
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    color: #92400e;
+  }
+
+  .toast-error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+  }
+
+  .toast-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+    width: 18px;
+    text-align: center;
+  }
+
+  .toast-msg {
+    flex: 1;
+    word-break: break-word;
   }
 </style>

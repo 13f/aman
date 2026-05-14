@@ -1093,6 +1093,12 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
+                // Phase 4.5: drain LLM skill sessions before Event Bus drain
+                let drained = self.drain_llm_skill("phase4_shutdown").await;
+                if drained > 0 {
+                    tracing::info!(drained, "phase4.5: drained LLM skill sessions");
+                }
+
                 let snapshots = self.sources.list().await;
                 for source in snapshots {
                     let _ = self.sources.shutdown(&source.id).await;
@@ -1208,14 +1214,96 @@ impl AgentRuntime {
     }
 
     pub async fn disable_plugin(&self, plugin_name: &str) -> AmanResult<()> {
+        // Phase 4.5 drain: drain LLM skill sessions before disabling the plugin
+        self.drain_llm_skill("plugin.disable").await;
         self.plugin_loader.lock().await.disable_plugin(plugin_name)
     }
 
     pub async fn uninstall_plugin(&self, plugin_name: &str) -> AmanResult<()> {
+        // Phase 4.5 drain: drain LLM skill sessions before uninstalling the plugin
+        self.drain_llm_skill("plugin.uninstall").await;
         let mut loader = self.plugin_loader.lock().await;
         self.plugin_installer
             .uninstall(Some(&mut loader), plugin_name)
             .await
+    }
+
+    /// Phase 4.5 drain: drain llm-skill's per-session queues.
+    ///
+    /// 1. Mark capability as Degraded (refuse new requests).
+    /// 2. Close all session mpsc channels.
+    /// 3. Wait up to `drain_timeout_sec` for in-flight processing to finish.
+    /// 4. If still active after timeout, log forced-cancel audit entry.
+    ///
+    /// Called during plugin disable/uninstall and Phase 4→3 shutdown.
+    /// Returns the number of sessions drained.
+    pub async fn drain_llm_skill(&self, action: &str) -> usize {
+        // Check if llm-skill is registered
+        let snapshot = self.skills.snapshot("llm-skill");
+        if snapshot.is_none() {
+            return 0;
+        }
+
+        // Step 1: Mark capability as Degraded (refuse new requests)
+        {
+            let mut registry = self.capability_registry.write().await;
+            for entries in registry.values_mut() {
+                for entry in entries.iter_mut() {
+                    if entry.plugin == "llm-skill" || entry.capability == "chat" {
+                        entry.status = CapabilityStatus::Degraded;
+                    }
+                }
+            }
+        }
+
+        // Step 2: Drain all skills (close session channels)
+        let drained = self.skills.drain_all();
+        if drained == 0 {
+            return 0;
+        }
+
+        self.audit.record(
+            "system",
+            action,
+            "skill:llm-skill",
+            "drain_started",
+            format!("drained_sessions={drained}"),
+        );
+
+        // Step 3: Wait for in-flight skill processing to finish
+        let timeout = Duration::from_secs(self.config.runtime.drain_timeout_sec);
+        let started = tokio::time::Instant::now();
+        loop {
+            let inflight = self.inflight_skills.load(Ordering::Acquire);
+            if inflight == 0 {
+                self.audit.record(
+                    "system",
+                    action,
+                    "skill:llm-skill",
+                    "drain_completed",
+                    format!("drained_sessions={drained}, inflight_cleared"),
+                );
+                break;
+            }
+            if started.elapsed() >= timeout {
+                // Step 4: Forced cancel — log audit entry
+                self.audit.record(
+                    "system",
+                    action,
+                    "skill:llm-skill",
+                    "drain_forced_cancel",
+                    format!(
+                        "drained_sessions={drained}, inflight_remaining={inflight}, \
+                         reason=drain_forced_cancel, timeout_sec={}",
+                        self.config.runtime.drain_timeout_sec
+                    ),
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        drained
     }
 }
 

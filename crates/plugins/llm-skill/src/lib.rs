@@ -11,6 +11,7 @@ use semver::Version;
 use serde_json::json;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
@@ -32,6 +33,8 @@ pub struct LlmSkill {
     bus: Arc<dyn EventBus>,
     sessions: Arc<Mutex<HashMap<String, mpsc::Sender<Event>>>>,
     max_queue: usize,
+    /// Set of event UUIDs already processed (for WAL replay dedup, §9.2).
+    processed_events: Arc<Mutex<HashSet<String>>>,
 }
 
 impl LlmSkill {
@@ -55,6 +58,7 @@ impl LlmSkill {
             bus,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             max_queue: max_queue_per_session.max(1),
+            processed_events: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -62,6 +66,17 @@ impl LlmSkill {
     #[must_use]
     pub fn max_queue_per_session(&self) -> usize {
         self.max_queue
+    }
+
+    /// Drain all active sessions: close every per-session channel.
+    /// Returns the number of sessions that were active.
+    /// Background `process_session` tasks exit naturally when all senders
+    /// are dropped and their `rx.recv()` returns `None`.
+    pub fn drain_sessions(&self) -> usize {
+        let mut sessions = self.sessions.lock().expect("sessions lock");
+        let count = sessions.len();
+        sessions.clear(); // drop all senders → receivers get None → tasks exit
+        count
     }
 }
 
@@ -81,6 +96,10 @@ impl Skill for LlmSkill {
 
     fn triggers(&self) -> &[TriggerCondition] {
         &self.triggers
+    }
+
+    fn drain(&self) -> usize {
+        self.drain_sessions()
     }
 
     async fn execute(&self, mut event: Event, ctx: SkillContext) -> AmanResult<()> {
@@ -104,6 +123,15 @@ impl Skill for LlmSkill {
             .to_owned();
 
         let event_id = event.id;
+
+        // UUIDv7 dedup check (§9.2): skip events already processed (WAL replay).
+        {
+            let mut processed = self.processed_events.lock().expect("processed_events lock");
+            if !processed.insert(event_id.to_string()) {
+                // Already processed this event — skip (idempotent replay).
+                return Ok(());
+            }
+        }
 
         // Get or create session sender under lock.
         let sender = {

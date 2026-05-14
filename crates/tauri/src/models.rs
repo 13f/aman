@@ -157,6 +157,7 @@ pub struct ChatMessageEntry {
 pub struct ChatSessionState {
     pub session_id: String,
     pub state: String,
+    pub state_version: u64,
     pub retry_count: u32,
     pub messages: Vec<ChatMessageEntry>,
 }

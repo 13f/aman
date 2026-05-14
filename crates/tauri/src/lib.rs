@@ -3,6 +3,7 @@
 
 pub mod commands;
 pub mod models;
+pub mod rate_limiter;
 pub mod state;
 
 use state::AppState;

@@ -31,6 +31,14 @@ pub trait Skill: Send + Sync {
     async fn on_unload(&mut self) -> AmanResult<()> {
         Ok(())
     }
+
+    /// Drain any in-flight work (per-session queues, open channels, etc.).
+    /// Returns the number of drained items (sessions, tasks, etc.).
+    /// Called during plugin hot-unload (Phase 4.5) before capability removal.
+    /// Default implementation is a no-op returning 0.
+    fn drain(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]

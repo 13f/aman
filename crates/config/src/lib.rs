@@ -60,7 +60,7 @@ pub struct EventBusConfig {
 impl Default for EventBusConfig {
     fn default() -> Self {
         Self {
-            mode: BusMode::InMemory,
+            mode: BusMode::Persistent,
             max_queue_size: 10_000,
             persistence: None,
         }

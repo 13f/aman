@@ -38,9 +38,11 @@
   let inputText = $state("");
   let isLoading = $state(false);
   let currentSoulName = $state("");
+  let rateLimitCountdown = $state(0);
   let unlisteners: (() => void)[] = [];
   let messageAreaEl: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
+  let chatCapabilityAvailable = $state(true);
 
   const activeSession = $derived(sessions.find(s => s.id === activeSessionId));
   const isProcessing = $derived(
@@ -102,7 +104,15 @@
     }
   });
 
-  // --- Event handlers ---
+  // Rate limit countdown timer
+  $effect(() => {
+    if (rateLimitCountdown > 0) {
+      const interval = setInterval(() => {
+        rateLimitCountdown = Math.max(0, rateLimitCountdown - 1);
+      }, 1000);
+      return () => clearInterval(interval);
+    }
+  });
 
   function handleMessageQueued(data: any) {
     const msgId: string = data.message_id;
@@ -181,6 +191,33 @@
     const eventType: string = payload.event_type;
     const data = payload.payload;
 
+    // Capability events use different payload structure
+    if (eventType === "capability_removed") {
+      // Individual event: { capability: "chat" }
+      if (data?.capability === "chat") {
+        chatCapabilityAvailable = false;
+        // Phase 4.5: close active tabs, clear message buffer
+        // but DON'T clear persistent state (history can be restored later)
+        messages = messages.filter(m => m.sessionId !== activeSessionId);
+        sessions = sessions.filter(s => s.status === "idle");
+        // Reset to default session
+        activeSessionId = "default";
+      }
+      return;
+    }
+    if (eventType === "capability_available") {
+      if (data?.capability === "chat") {
+        chatCapabilityAvailable = true;
+      }
+      return;
+    }
+    // Full registry update: { available, added, removed }
+    if (eventType === "capability_registry_updated") {
+      const available: string[] = payload.available ?? [];
+      chatCapabilityAvailable = available.includes("chat");
+      return;
+    }
+
     if (!data?.session_id) return;
     if (data.session_id !== activeSessionId) return;
 
@@ -254,7 +291,20 @@
       const eventId = await invoke<string>("chat:send_message", { text, sessionId: activeSessionId });
       messages = messages.map(m => (m.id === tempId ? { ...m, id: eventId, status: "sent" } : m));
     } catch (err: any) {
-      updateMessage(tempId, { status: "error", content: `Error: ${err}` });
+      // Handle rate limiting (429)
+      const errStr = typeof err === "string" ? err : (err?.message ?? String(err));
+      if (errStr.startsWith("429:")) {
+        // Parse retry_after from the message
+        const match = errStr.match(/in (\d+) seconds/);
+        if (match) {
+          rateLimitCountdown = parseInt(match[1], 10);
+        } else {
+          rateLimitCountdown = 10; // fallback
+        }
+        updateMessage(tempId, { status: "error", content: `Rate limited. Try again in ${rateLimitCountdown}s.` });
+      } else {
+        updateMessage(tempId, { status: "error", content: `Error: ${errStr}` });
+      }
       isLoading = false;
       updateSessionStatus(activeSessionId, "idle");
     }
@@ -318,7 +368,11 @@
       {#if messages.length === 0}
         <div class="empty-state">
           <p>No messages yet. Start a conversation above.</p>
-          <p class="hint">Tip: Chat capability is not active until the runtime detects a chat plugin.</p>
+          {#if !chatCapabilityAvailable}
+            <p class="hint warning">Chat capability is disabled. New sessions cannot be created until re-enabled.</p>
+          {:else}
+            <p class="hint">Tip: Chat capability is not active until the runtime detects a chat plugin.</p>
+          {/if}
         </div>
       {:else}
         {#each messages as msg (msg.id)}
@@ -368,11 +422,17 @@
       <textarea
         bind:value={inputText}
         onkeydown={handleKeydown}
-        placeholder="Type a message... (Enter to send, Shift+Enter for newline)"
+        placeholder={!chatCapabilityAvailable
+          ? "Chat capability unavailable..."
+          : rateLimitCountdown > 0
+            ? `Rate limited — wait ${rateLimitCountdown}s...`
+            : "Type a message... (Enter to send, Shift+Enter for newline)"}
         rows="1"
-        disabled={isProcessing}
+        disabled={isProcessing || rateLimitCountdown > 0 || !chatCapabilityAvailable}
       ></textarea>
-      {#if isProcessing}
+      {#if rateLimitCountdown > 0}
+        <button class="rate-limited-btn" disabled>{rateLimitCountdown}s</button>
+      {:else if isProcessing}
         <button class="stop-btn" onclick={stopGeneration}>Stop</button>
       {:else}
         <button class="send-btn" onclick={sendMessage} disabled={!inputText.trim()}>Send</button>
@@ -528,6 +588,12 @@
     font-size: 12px;
     margin-top: 8px;
     opacity: 0.7;
+  }
+
+  .empty-state .hint.warning {
+    color: var(--warning, #b45309);
+    opacity: 1;
+    font-weight: 500;
   }
 
   .message {
@@ -692,5 +758,17 @@
 
   .stop-btn:hover {
     background: var(--red-light, #fef2f2);
+  }
+
+  .rate-limited-btn {
+    padding: 8px 20px;
+    border: 1px solid var(--warning, #f59e0b);
+    border-radius: 8px;
+    background: var(--warning-light, #fef3c7);
+    color: var(--warning, #b45309);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: not-allowed;
+    align-self: flex-end;
   }
 </style>

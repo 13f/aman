@@ -80,6 +80,9 @@ impl PersistentBus {
             .checkpoint_offset()
     }
 
+    /// Recover events from WAL and re-publish them.
+    ///
+    /// Each recovered event is tagged with `"replay": true` in its payload (§9.2).
     pub async fn recover_from_wal(&self) -> AmanResult<usize> {
         let events = self
             .wal
@@ -87,7 +90,13 @@ impl PersistentBus {
             .expect("persistent bus wal mutex should not be poisoned")
             .replay_from_checkpoint_with_limit(self.config.wal_replay_buffer_max)?;
         let mut recovered = 0;
-        for event in events {
+        for mut event in events {
+            // Tag as replay (§9.2 — downstream consumers check this flag
+            // for idempotency and to skip side-effecting operations).
+            if let Some(obj) = event.payload.as_object_mut() {
+                obj.insert("replay".to_owned(), serde_json::Value::Bool(true));
+            }
+
             match self.bus.publish(event.clone()).await {
                 Ok(()) => recovered += 1,
                 Err(error) => {

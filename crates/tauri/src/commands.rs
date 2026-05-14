@@ -629,6 +629,19 @@ pub async fn chat_send_message(
     session_id: String,
 ) -> Result<String, String> {
     let _start = Instant::now();
+
+    // --- Rate limiting check (user-level: 10 msg / 60s sliding window, §4.5) ---
+    let user_key = session_id.clone();
+    if let Err(err) = state.rate_limiter.allow(&user_key) {
+        let dur_ms = _start.elapsed().as_secs_f64() * 1000.0;
+        if let Ok(guard) = state.runtime.try_lock() {
+            if let Some(rt) = guard.as_ref() {
+                record_ipc(Some(rt), "chat:send_message", false, dur_ms);
+            }
+        }
+        return Err(format!("429:{}", err.message));
+    }
+
     let result = (|| async {
         let guard = state.runtime.lock().await;
         let rt = guard
@@ -869,9 +882,12 @@ pub async fn chat_session_state(
         .collect();
     messages.reverse();
 
+    let state_version = messages.len() as u64;
+
     let result = Ok(ChatSessionState {
         session_id: instance.id,
         state: instance.current_state,
+        state_version,
         retry_count: instance.total_retry_count,
         messages,
     });

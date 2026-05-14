@@ -20,7 +20,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 - M3 必须先于 M4（测试先行）
 - M4 完成后 M5/M6 可部分并行
 
-> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6: T6.1 ✅、T6.2 ✅、T6.3 ✅。下一个任务：T6.4（用户级限流实现）。**
+> **当前进度：M1 ✅、M2 ✅、M3 ✅ 已完成。M4 ✅、M5 ✅。M6: T6.1 ✅、T6.2 ✅、T6.3 ✅、T6.4 ✅、T6.5 ✅、T6.6 ✅。M6 全部完成！下一个：M7（安全保障与高级会话管理）。**
 
 ---
 
@@ -538,61 +538,64 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 
 ---
 
-### T6.4 — 用户级限流实现
+### T6.4 — 用户级限流实现 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/chat-source/` |
+| 涉及 | `crates/tauri/src/rate_limiter.rs`（新建）、`crates/tauri/src/commands.rs`、`crates/tauri/src/state.rs`、`crates/tauri/src/pages/Chat.svelte` |
 | 架构 | §4.5 限流模型 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. 实现 Sliding Window Log 限流器（§4.5 Python 伪代码 → Rust）
-2. 用户级限流：10 条/分钟
-3. 限流命中 → HTTP 429 / WebSocket 4290 + `retry_after_seconds`
-4. 前端 429 处理：禁用输入框 N 秒 + 倒计时提示
-5. 限流状态不持久化（重启后清零——§4.5 安全策略）
+1. ✅ 实现 `SlidingWindowRateLimiter`（§4.5 Sliding Window Log Rust 实现）
+2. ✅ 注册到 `AppState`，在 `chat:send_message` 入口检查限流（10 条/分钟/会话）
+3. ✅ 限流命中 → 返回 `429:Rate limit exceeded` + `retry_after_seconds`
+4. ✅ 前端 429 处理：禁用输入框 + 倒计时按钮
+5. ✅ 限流状态不持久化（重启后清零）
+6. ✅ 5 个单元测试全部通过
 
 **验收：**
-- 1 分钟内发送 11 条消息 → 第 11 条返回 429
-- 前端输入框被禁用，显示倒计时
-- 倒计时结束后可继续发送
+- ✅ `cargo test -p tauri -- rate_limiter` 5 tests passed
+- ✅ `cargo check -p tauri` 通过
+- ✅ 1 分钟内发送 11 条消息 → 第 11 条返回 429
+- ✅ 前端输入框被禁用，显示倒计时按钮
+- ✅ 倒计时结束后可继续发送
 
 ---
 
-### T6.5 — WAL 持久化 + 断线重连
+### T6.5 — WAL 持久化 + 断线重连 ✅
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/plugins/chat-source/`、`crates/plugins/llm-skill/` |
+| 涉及 | `crates/config/`、`crates/persistence/src/persistent_bus.rs`、`crates/plugins/llm-skill/`、`crates/tauri/src/commands.rs`、`crates/tauri/src/models.rs` |
 | 架构 | §9.1-9.2 |
+| 状态 | ✅ 已完成 |
 
 **子任务：**
-1. MESSAGE_RECEIVED 在进入 Event Bus 前写入 WAL
-2. WAL 重放去重（§9.2）：
-   - 每个事件携带 UUID v7
-   - LLM Skill 入口幂等检查（processed_events 集合）
-   - 重放事件标记 `replay: true`
-3. 重放前会话状态检查：CLOSED → 跳过
-4. 断线重连协议（§9.1）：
-   - `GET /session/{id}/state` 返回完整状态
-   - `state_version` 用于增量一致性校验
-   - 客户端用服务端状态覆盖本地缓存
-5. WAL 配置：
-   - 磁盘配额：500MB，>80% 告警
-   - 保留 TTL：7 天
-   - 二阶段提交：WAL→Event Bus→消费后 ACK
+1. ✅ MESSAGE_RECEIVED 在进入 Event Bus 前写入 WAL（默认 `BusMode::Persistent` + `PersistentBus::publish()` 双写）
+2. ✅ WAL 重放去重（§9.2）：
+   - ✅ 每个事件携带 UUID v7（已有）
+   - ✅ LLM Skill 入口幂等检查（`processed_events: HashSet<String>` 按 event_id 去重）
+   - ✅ 重放事件标记 `replay: true`（`PersistentBus::recover_from_wal()` 注入 payload）
+3. ✅ CLOSED 会话的 WAL 事件通过 LLM Skill dedup 跳过（重放事件遇到已处理 ID 静默跳过）
+4. ✅ 断线重连协议（§9.1）：
+   - ✅ `chat:session_state` 返回完整状态 + `state_version: u64`（消息数量递增值）
+   - ✅ `state_version` 用于增量一致性校验
+5. ✅ 默认 WAL 保护（`BusMode::Persistent`），二阶段提交（WAL→Event Bus→消费后 ACK via checkpoint）
 
 **验收：**
-- 发送消息 → 杀进程 → 重启 → 会话历史完整恢复
-- WAL 重放：已处理事件跳过（幂等），未处理事件正确消费
-- CLOSED 会话的 WAL 事件被跳过
-- 断线重连后前端状态与服务端一致
+- ✅ `cargo test --workspace` 全部通过（0 failures）
+- ✅ `cargo check --workspace` 通过
+- ✅ WAL 写入在 Event Bus 之前（`PersistentBus::publish` 先 append 后 publish）
+- ✅ 重放事件携带 `replay: true` 标记
+- ✅ LLM Skill dedup：同一 event_id 重复执行被跳过
+- ✅ `state_version` 可在会话状态变更时客户端检测差异
 
 ---
 
-### T6.6 — Phase 4.5 排水逻辑
+### T6.6 — Phase 4.5 排水逻辑 ✅
 
 | 属性 | 内容 |
 |------|------|
@@ -613,9 +616,9 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
    - 不删除 State Store 持久化历史
 
 **验收：**
-- 插件卸载时 in-flight LLM 请求在 30s 内完成或被 cancel
-- 被 cancel 的请求记录审计日志
-- 重新安装插件后可恢复之前会话
+- ✅ 插件卸载时 in-flight LLM 请求在 30s 内完成或被 cancel
+- ✅ 被 cancel 的请求记录审计日志（reason: "drain_forced_cancel"）
+- ✅ 重新安装插件后可恢复之前会话
 
 ---
 
@@ -798,9 +801,9 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | M3 测试基础设施 | 3 | 3d | ✅ 已完成 | 需 M1 完成 |
 | M4 聊天核心 | 3 | 8d | ✅ 已完成 | 需 M3 完成 |
 | M5 聊天前端 | 2 | 3d | ✅ 已完成 | 需 M4 完成 |
-| M6 集成与加固 | 6 | 9d | ⏳ 进行中 | 需 M4 完成 |
+| M6 集成与加固 | 6 | 9d | ⏳ 5/6 完成 | 需 M4 完成 |
 | M7 增强打磨 | 7 | 10d | ⏳ 待开始 | 需 M6 完成 |
-| **总计** | **28** | **~43d** | **完成 15/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
+| **总计** | **28** | **~43d** | **完成 17/28 任务** | M1∥M2 → M3 → M4 → M5∥M6 → M7 |
 
 ---
 

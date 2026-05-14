@@ -244,6 +244,18 @@ impl SkillRegistry {
             .collect()
     }
 
+    /// Drain all registered skills (Phase 4.5).
+    /// Each skill's `drain()` is called to close per-session queues and
+    /// cancel in-flight work. Returns the total number of drained items.
+    pub fn drain_all(&self) -> usize {
+        let skills = self.skills.read().expect("skill registry read lock");
+        let mut total = 0;
+        for registration in skills.values() {
+            total += registration.skill.drain();
+        }
+        total
+    }
+
     fn enabled_entries(&self) -> Vec<EnabledSkillEntry> {
         self.skills
             .read()

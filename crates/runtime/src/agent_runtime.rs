@@ -1620,7 +1620,22 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
 /// (without a top-level `model:` in config.yaml) still get a working LLM config.
 /// If no agent is found either, falls back to environment variables.
 fn build_llm_config() -> llm_plugin::LlmConfig {
+    let mut sessions_dir = None;
     if let Ok(aman) = config::AmanConfig::from_default_path() {
+        // Compute sessions dir from first configured agent.
+        if let Some(first_key) = aman.agents.keys().next() {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            sessions_dir = Some(
+                PathBuf::from(&home)
+                    .join(".aman")
+                    .join("agents")
+                    .join(first_key)
+                    .join("sessions")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+
         // Priority 1: default model config
         if let Some(model) = &aman.model {
             let provider_key = &model.provider;
@@ -1642,6 +1657,7 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                 api_key,
                 base_url,
                 model: model.default.clone(),
+                sessions_dir,
             };
         }
 
@@ -1662,6 +1678,7 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                     api_key,
                     base_url: provider_config.base_url.clone(),
                     model: agent.model.clone(),
+                    sessions_dir,
                 };
             }
             tracing::warn!(
@@ -1683,6 +1700,7 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
         base_url: std::env::var("AMAN_DEFAULT_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned()),
         model: std::env::var("AMAN_DEFAULT_MODEL").unwrap_or_else(|_| "gpt-4o".to_owned()),
+        sessions_dir,
     }
 }
 

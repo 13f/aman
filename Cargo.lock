@@ -2864,6 +2864,7 @@ name = "llm-plugin"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "event-bus",
  "kernel",
  "pollster",

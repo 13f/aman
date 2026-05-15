@@ -29,6 +29,10 @@ pub struct LlmConfig {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+    /// Base directory for session persistence, e.g. `~/.aman/agents/{key}/sessions`.
+    /// When `Some`, every LLM interaction is appended as JSONL:
+    ///   `{sessions_dir}/{yyyy-MM}/{yyyy-MM-dd}-{session_id}.jsonl`
+    pub sessions_dir: Option<String>,
 }
 
 // --- History trimming configuration (§15) ---
@@ -267,6 +271,22 @@ async fn process_session(
         // Record user message in history before processing.
         history.push("user", &msg.id.to_string(), text);
 
+        // Persist user message to session JSONL.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        append_session_jsonl(
+            llm_config.sessions_dir.as_deref(),
+            &session_id,
+            &serde_json::json!({
+                "role": "user",
+                "content": text,
+                "event_id": msg.id.to_string(),
+                "timestamp": now_ms,
+            }),
+        );
+
         // Extract SOUL snapshot captured at interaction boundary.
         let soul_prompt = msg
             .payload
@@ -341,6 +361,23 @@ async fn process_session(
         // Record assistant reply in history.
         history.push("assistant", &msg.id.to_string(), &reply_text);
 
+        // Persist assistant reply to session JSONL.
+        let reply_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        append_session_jsonl(
+            llm_config.sessions_dir.as_deref(),
+            &session_id,
+            &serde_json::json!({
+                "role": "assistant",
+                "content": reply_text,
+                "model": llm_config.model,
+                "event_id": msg.id.to_string(),
+                "timestamp": reply_ms,
+            }),
+        );
+
         // OutputValidator check (§8.2): validate complete reply before publishing.
         let outcome = validator.validate(&reply_text);
         match outcome {
@@ -403,6 +440,44 @@ async fn process_session(
                 let _ = bus.publish(blocked).await;
             }
         }
+    }
+}
+
+/// Append a JSON line to the session's JSONL file.
+///
+/// Creates the `{sessions_dir}/{yyyy-MM}/` directory if needed, then
+/// appends a JSONL line to `{sessions_dir}/{yyyy-MM}/{yyyy-MM-dd}-{session_id}.jsonl`.
+/// Silently returns when `sessions_dir` is `None`.
+fn append_session_jsonl(sessions_dir: Option<&str>, session_id: &str, data: &serde_json::Value) {
+    let dir = match sessions_dir {
+        Some(d) => d,
+        None => return,
+    };
+    let now = chrono::Local::now();
+    let month_dir = format!("{}/{}", dir, now.format("%Y-%m"));
+    let file_path = format!("{}/{}-{}.jsonl", month_dir, now.format("%Y-%m-%d"), session_id);
+    if let Err(e) = std::fs::create_dir_all(&month_dir) {
+        tracing::warn!(error = %e, "llm-plugin: failed to create sessions month dir");
+        return;
+    }
+    let line = match serde_json::to_string(data) {
+        Ok(s) => s + "\n",
+        Err(e) => {
+            tracing::warn!(error = %e, "llm-plugin: failed to serialize session line");
+            return;
+        }
+    };
+    if let Err(e) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+        .and_then(|f| {
+            use std::io::Write;
+            let mut writer = std::io::BufWriter::new(f);
+            writer.write_all(line.as_bytes())
+        })
+    {
+        tracing::warn!(error = %e, "llm-plugin: failed to write session line");
     }
 }
 
@@ -565,6 +640,7 @@ mod tests {
             api_key: "test-key".to_owned(),
             base_url: "http://localhost:99999/nonexistent".to_owned(),
             model: "test-model".to_owned(),
+            sessions_dir: None,
         }
     }
 

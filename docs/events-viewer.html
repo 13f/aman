@@ -569,40 +569,27 @@ flowchart LR
 stateDiagram-v2
     [*] --> ACTIVE: session created
 
-    state ACTIVE {
-        [*] --> Processing: MESSAGE_RECEIVED
-    }
-
-    state PROCESSING {
-        [*] --> IDLE: LLM_REPLY_READY / LLM_STREAM_DONE
-        [*] --> ERROR: LLM_ERROR
-        [*] --> TIMEOUT: STREAM_TIMEOUT (120s)
-        [*] --> CLOSED: SESSION_CLOSE_CMD
-    }
-
-    state IDLE {
-        [*] --> PROCESSING: MESSAGE_RECEIVED
-        [*] --> TIMEOUT: SESSION_TIMEOUT (600s)
-        [*] --> CLOSED: SESSION_END
-    }
-
-    state ERROR {
-        [*] --> RETRYING: RETRY_CMD
-        [*] --> IDLE: SESSION_END
-        [*] --> CLOSED: ABANDON_TIMEOUT (120s)
-    }
-
-    state RETRYING {
-        [*] --> PROCESSING: RETRY_STARTED
-        [*] --> ERROR: RETRY_FAILED
-    }
-
-    state TIMEOUT {
-        [*] --> CLOSED: SESSION_END
-        [*] --> IDLE: MESSAGE_RECEIVED
-    }
-
+    ACTIVE --> PROCESSING: MESSAGE_RECEIVED
     ACTIVE --> TIMEOUT: SESSION_TIMEOUT (300s)
+
+    PROCESSING --> IDLE: LLM_REPLY_READY / LLM_STREAM_DONE
+    PROCESSING --> ERROR: LLM_ERROR
+    PROCESSING --> TIMEOUT: STREAM_TIMEOUT (120s)
+    PROCESSING --> CLOSED: SESSION_CLOSE_CMD
+
+    IDLE --> PROCESSING: MESSAGE_RECEIVED
+    IDLE --> TIMEOUT: SESSION_TIMEOUT (600s)
+    IDLE --> CLOSED: SESSION_END
+
+    ERROR --> RETRYING: RETRY_CMD
+    ERROR --> IDLE: SESSION_END
+    ERROR --> CLOSED: ABANDON_TIMEOUT (120s)
+
+    RETRYING --> PROCESSING: RETRY_STARTED
+    RETRYING --> ERROR: RETRY_FAILED
+
+    TIMEOUT --> CLOSED: SESSION_END
+    TIMEOUT --> IDLE: MESSAGE_RECEIVED
 
     note right of ACTIVE: Initial session state
     note right of PROCESSING: LLM is generating

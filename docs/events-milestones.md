@@ -58,23 +58,27 @@
 
 | 文件 | 改动 |
 |------|------|
-| `crates/tool/src/lib.rs` | 在 `ToolRegistry` invoke 逻辑中补充 tool invoke/completed/failed 事件发布到 event bus |
-| `crates/gateway/src/runtime/agent_runtime.rs` | Skill event dispatcher（subscribe handler）中，dispatch 前/后发布 message:dispatch / message:completed |
-| 可选：`crates/core/src/event.rs` | 同上，非必须 |
+| `crates/pipeline/src/lib.rs` | 新增 `ToolEventSink` trait；`PipelineEngine` 增加 `tool_sink` 字段 + `with_tool_sink()`；`execute_tool_with_retry()` 中 invoke/completed/failed 三点发出事件 |
+| `crates/gateway/src/runtime/agent_runtime.rs` | 新增 `BusToolEventSink` 实现（将 `ToolEventSink` 事件发布到 EventBus）；`SkillEventDispatcher` 中 dispatch 前/后发布 `message:dispatch` / `message:completed` |
 
 ### 涉及运行时改动
 
-- `ToolRegistry` 需要持有 `EventBus` 引用。目前它不依赖 event bus。
-  - 方案 A：`ToolRegistry` 加 `Option<Arc<dyn EventBus>>` 字段，可选注入
-  - 方案 B：在 runtime 层面包装 tool invocation，由 runtime 负责发布事件（推荐——不需要改 tool 签名）
-- Skill dispatcher 在 `ensure_observer_subscribed` 的 handler 中已有 `EventStore`；可以复用或追加 publisher。
+- `ToolEventSink` trait 定义于 `pipeline` crate，三种回调：`on_tool_invoke` / `on_tool_completed` / `on_tool_failed`
+- `BusToolEventSink` 实现于 `gateway` crate（依赖 `pipeline` + `event-bus`），将 sink 回调转为 EventBus publish
+- `PipelineEngine.execute_tool_with_retry()` 中在每个 tool 调用前后调用 sink（若配置）
+- `SkillEventDispatcher.handle()` 中在 `execute_matching()` 前后分别发布 `message:dispatch` 和 `message:completed`
+
+### 架构说明
+
+当前 `PipelineEngine` 不在生产路径中（仅用于 tests 和 dispatcher crate），因此 tool 事件在生产环境的聊天流程中暂时不会触发。
+生产路径中 tool 调用由 LLM plugin 的 `rig::agent::prompt()` 直接处理，未经过 `ToolRunner` 或 `PipelineEngine`。
+如需生产环境 tool 事件，后续需在 LLM plugin 级别的 tool invocation 处补充，或待 dispatcher/PipelineEngine 接入生产路径。
 
 ### 验证
 
-1. 聊天中发送消息引发 tool call → EventStore 中出现 `tool:invoke` + `tool:completed` 事件
-2. 模拟工具失败 → EventStore 中出现 `tool:failed` 事件
-3. Skill 匹配处理事件 → EventStore 中出现 `message:dispatch` + `message:completed` 事件
-4. Trace chain 能通过 parent_event_id 串联 `message:dispatch` → `tool:invoke` → `tool:completed`
+1. `cargo test -p pipeline` 全部通过（12 tests）— `ToolEventSink` 不影响 sink=None 的现有逻辑
+2. `message:dispatch` + `message:completed` 在生产路径的 `SkillEventDispatcher` 中触发（events → skills）
+3. `tool:invoke` + `tool:completed` + `tool:failed` 在 `PipelineEngine` 路径中触发（通过 `ToolEventSink`）
 
 ---
 

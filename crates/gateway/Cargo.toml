@@ -19,6 +19,7 @@ event-bus = { path = "../event-bus", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
 llm-plugin = { path = "../plugins/llm-plugin", version = "0.1.0" }
 persistence = { path = "../persistence", version = "0.1.0" }
+pipeline = { path = "../pipeline", version = "0.1.0" }
 plugin = { path = "../plugin", version = "0.1.0" }
 pollster.workspace = true
 prometheus.workspace = true

@@ -15,6 +15,13 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+#[async_trait::async_trait]
+pub trait ToolEventSink: Send + Sync {
+    async fn on_tool_invoke(&self, tool_name: &str, pipeline_id: &str, instance_id: &str);
+    async fn on_tool_completed(&self, tool_name: &str, pipeline_id: &str, instance_id: &str, duration_ms: u64);
+    async fn on_tool_failed(&self, tool_name: &str, pipeline_id: &str, instance_id: &str, error: &str);
+}
+
 #[derive(Debug, Clone)]
 pub struct PipelineDefinition {
     pub id: String,
@@ -297,12 +304,19 @@ pub struct PipelineEngine {
     compensation_engine: CompensationEngine,
     concurrency_controller: ConcurrencyController,
     inflight_pipelines: Arc<std::sync::atomic::AtomicUsize>,
+    tool_sink: Option<Arc<dyn ToolEventSink>>,
 }
 
 impl PipelineEngine {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_tool_sink(mut self, sink: Arc<dyn ToolEventSink>) -> Self {
+        self.tool_sink = Some(sink);
+        self
     }
 
     /// Number of pipelines currently being executed.
@@ -533,6 +547,7 @@ impl PipelineEngine {
     ) -> AmanResult<Value> {
         let max_attempts = step.retry.max_attempts.max(1);
         let mut attempt = 1;
+        let tool_name = step.tool.name().to_owned();
         loop {
             let mut base = BaseContext::new(trace_id);
             base.labels
@@ -554,7 +569,7 @@ impl PipelineEngine {
 
             let context = ToolContext {
                 base,
-                tool_name: Some(step.tool.name().to_owned()),
+                tool_name: Some(tool_name.clone()),
                 working_directory: Some(
                     instance
                         .temp_dir
@@ -572,14 +587,32 @@ impl PipelineEngine {
                 "attempt": attempt,
             });
 
+            if let Some(sink) = &self.tool_sink {
+                sink.on_tool_invoke(&tool_name, &pipeline.id, &instance.id).await;
+            }
+
+            let started = Instant::now();
             match step.tool.execute(params, context).await {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    if let Some(sink) = &self.tool_sink {
+                        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        sink.on_tool_completed(&tool_name, &pipeline.id, &instance.id, duration_ms).await;
+                    }
+                    return Ok(value);
+                }
                 Err(error) if attempt < max_attempts => {
+                    if let Some(sink) = &self.tool_sink {
+                        sink.on_tool_failed(&tool_name, &pipeline.id, &instance.id, &error.to_string()).await;
+                    }
                     wait_backoff(&step.retry.retry_backoff, attempt);
                     attempt += 1;
-                    let _ = error;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if let Some(sink) = &self.tool_sink {
+                        sink.on_tool_failed(&tool_name, &pipeline.id, &instance.id, &error.to_string()).await;
+                    }
+                    return Err(error);
+                }
             }
         }
     }

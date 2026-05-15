@@ -9,6 +9,7 @@ use kernel::tool::Tool;
 use kernel::{AmanResult, Error};
 use persistence::{DeadLetterQueue, InMemoryDeadLetterQueue, PersistentBus, WalSync, WriteAheadLog};
 use kernel::plugin::Plugin;
+use pipeline::ToolEventSink;
 use plugin::{
     PluginCandidate, PluginExports, PluginIsolationMode, PluginLifecycleConfig,
     PluginExportRegistrar, PluginInstaller, PluginLoader, PluginManifest,
@@ -405,16 +406,37 @@ impl AgentRuntimeBuilder {
         use kernel::context::BaseContext;
         struct SkillEventDispatcher {
             executor: skill::SkillExecutor,
+            bus: Arc<dyn event_bus::EventBus>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for SkillEventDispatcher {
             async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let trace_id = event.metadata.trace_id;
                 let ctx = SkillContext {
-                    base: BaseContext::new(event.metadata.trace_id),
+                    base: BaseContext::new(trace_id),
                     skill_name: None,
                     soul_name: None,
                 };
-                self.executor.execute_matching(event, ctx).await;
+                let _ = self.bus.publish(Event::new(
+                    "skill:dispatcher",
+                    EventType::Custom("message:dispatch".to_owned()),
+                    json!({
+                        "trace_id": trace_id.to_string(),
+                        "event_id": event.id.to_string(),
+                        "event_type": event.event_type.as_str(),
+                        "source": event.source.as_str(),
+                    }),
+                )).await;
+                let result = self.executor.execute_matching(event, ctx).await;
+                let _ = self.bus.publish(Event::new(
+                    "skill:dispatcher",
+                    EventType::Custom("message:completed".to_owned()),
+                    json!({
+                        "trace_id": trace_id.to_string(),
+                        "executed": result.executed,
+                        "failed": result.failed.iter().map(|f| json!({"name": f.skill_name, "error": f.message})).collect::<Vec<_>>(),
+                    }),
+                )).await;
                 Ok(())
             }
         }
@@ -422,6 +444,7 @@ impl AgentRuntimeBuilder {
             event_bus::SubscriptionFilter::default(),
             Box::new(SkillEventDispatcher {
                 executor: skill::SkillExecutor::new(Arc::clone(&skills)),
+                bus: Arc::clone(&bus),
             }),
         ));
 
@@ -484,6 +507,62 @@ impl AgentRuntimeBuilder {
             capability_registry: Default::default(),
             chat_sender,
         }))
+    }
+}
+
+/// Concrete [`ToolEventSink`] that publishes tool lifecycle events to the EventBus.
+///
+/// Used to wire `PipelineEngine` tool events when it is configured with an
+/// event bus. Currently `PipelineEngine` is not in the production tool path;
+/// this sink is infrastructure for future wiring.
+pub struct BusToolEventSink {
+    bus: Arc<dyn EventBus>,
+}
+
+impl BusToolEventSink {
+    pub fn new(bus: Arc<dyn EventBus>) -> Self {
+        Self { bus }
+    }
+}
+
+#[async_trait::async_trait]
+impl ToolEventSink for BusToolEventSink {
+    async fn on_tool_invoke(&self, tool_name: &str, pipeline_id: &str, instance_id: &str) {
+        let _ = self.bus.publish(Event::new(
+            "pipeline:tool",
+            EventType::Custom("tool:invoke".to_owned()),
+            serde_json::json!({
+                "tool_name": tool_name,
+                "pipeline_id": pipeline_id,
+                "instance_id": instance_id,
+            }),
+        )).await;
+    }
+
+    async fn on_tool_completed(&self, tool_name: &str, pipeline_id: &str, instance_id: &str, duration_ms: u64) {
+        let _ = self.bus.publish(Event::new(
+            "pipeline:tool",
+            EventType::Custom("tool:completed".to_owned()),
+            serde_json::json!({
+                "tool_name": tool_name,
+                "pipeline_id": pipeline_id,
+                "instance_id": instance_id,
+                "duration_ms": duration_ms,
+            }),
+        )).await;
+    }
+
+    async fn on_tool_failed(&self, tool_name: &str, pipeline_id: &str, instance_id: &str, error: &str) {
+        let _ = self.bus.publish(Event::new(
+            "pipeline:tool",
+            EventType::Custom("tool:failed".to_owned()),
+            serde_json::json!({
+                "tool_name": tool_name,
+                "pipeline_id": pipeline_id,
+                "instance_id": instance_id,
+                "error": error,
+            }),
+        )).await;
     }
 }
 

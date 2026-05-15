@@ -24,17 +24,19 @@
 | 文件 | 改动 |
 |------|------|
 | `crates/gateway/src/runtime/http.rs` | `chat_session_create`→发布 `session:started`；`chat_session_close`→发布 `session:closed` |
-| `crates/gateway/src/runtime/agent_runtime.rs` | 聊天工作流超时逻辑中补充 `session:timeout` 事件 |
 | `crates/gateway/src/main.rs` | 三处生命周期点发布 gateway 事件 |
-| 可选：`crates/core/src/event.rs` | 如果这些事件使用频率高，可以加枚举变体（非必须，`Custom` 即可） |
+
+> **`session:timeout` 暂未实现** — 当前工作流 engine 的 `handle_timeouts()` 仅在测试模块中被调用，
+> 生产环境没有 timeout 轮询。需要一个后台 task 定期调用 `workflow_engine.handle_timeouts(now)`
+> 才能触发此事件。该事件保留在计划中，待引入正式 timeout 轮询时一起完成。
 
 ### 验证
 
-1. 创建聊天会话 → EventStore 中出现 `session:started` 事件
-2. 关闭会话 → EventStore 中出现 `session:closed` 事件
-3. 会话超时（等待 120s）→ EventStore 中出现 `session:timeout` 事件
-4. `pkill -f gateway` → EventStore 中出现 `gateway:stopping` 事件
-5. 重启 gateway → EventStore 中出现 `gateway:starting`、`gateway:ready` 事件
+- [x] 创建聊天会话 → EventStore 中出现 `session:started` 事件
+- [x] 关闭会话 → EventStore 中出现 `session:closed` 事件
+- [ ] 会话超时（等待 120s）→ EventStore 中出现 `session:timeout` 事件（待 timeout 轮询实现）
+- [x] `pkill -f gateway` → EventStore 中出现 `gateway:stopping` 事件（需 EventStore 已订阅）
+- [x] 重启 gateway → EventStore 中出现 `gateway:starting`、`gateway:ready` 事件
 
 ---
 

@@ -11,6 +11,7 @@
 
 use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use kernel::event::{Event, EventType};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,6 +115,13 @@ async fn run() -> Result<(), i32> {
         tracing::info!(pid_path = %pid_path.display(), "pid file written");
     }
 
+    // Publish gateway lifecycle event before starting runtime.
+    let _ = runtime.publish_event(Event::new(
+        "gateway:lifecycle",
+        EventType::Custom("gateway:starting".to_owned()),
+        serde_json::json!({"bind": bind.to_string()}),
+    )).await;
+
     // Start runtime.
     runtime.start().await.map_err(|e| {
         eprintln!("Runtime start error: {e}");
@@ -122,6 +130,12 @@ async fn run() -> Result<(), i32> {
 
     let addr = server.local_addr();
     tracing::info!(%addr, "gateway ready");
+
+    let _ = runtime.publish_event(Event::new(
+        "gateway:lifecycle",
+        EventType::Custom("gateway:ready".to_owned()),
+        serde_json::json!({"bind": bind.to_string(), "addr": addr.to_string()}),
+    )).await;
 
     // Wait for shutdown signal.
     #[cfg(unix)]
@@ -145,6 +159,11 @@ async fn run() -> Result<(), i32> {
         tracing::info!("received SIGINT, shutting down");
     }
 
+    let _ = runtime.publish_event(Event::new(
+        "gateway:lifecycle",
+        EventType::Custom("gateway:stopping".to_owned()),
+        serde_json::json!({}),
+    )).await;
     let _ = runtime.shutdown().await;
     server.shutdown();
 

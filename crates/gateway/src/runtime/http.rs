@@ -1660,6 +1660,15 @@ async fn chat_session_create(
                 "ok",
                 "",
             );
+            let _ = runtime.publish_event(Event::new(
+                "session:control",
+                EventType::Custom("session:started".to_owned()),
+                json!({
+                    "session_id": instance.id,
+                    "session_type": session_type,
+                    "operator": operator,
+                }),
+            )).await;
             (StatusCode::OK, Json(json!({ "id": instance.id }))).into_response()
         }
         Err(error) => {
@@ -1989,6 +1998,14 @@ async fn chat_session_close(
                 let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
                 data["version"] = json!(v + 1);
             });
+            let _ = runtime.publish_event(Event::new(
+                "session:control",
+                EventType::Custom("session:closed".to_owned()),
+                json!({
+                    "session_id": id,
+                    "operator": operator,
+                }),
+            )).await;
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
         }
         Err(error) => {

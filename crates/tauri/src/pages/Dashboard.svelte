@@ -37,13 +37,11 @@
   let metrics = $state<MetricsSnapshot | null>(null);
   let status = $state<RuntimeStatus>({ phase: "stopped", ready: false, live: false, running: false });
   let config = $state<RuntimeConfig | null>(null);
-  let configPath = $state("");
+  let gatewayUrl = $state("http://127.0.0.1:9999");
   let loading = $state(false);
   let error = $state("");
   let info = $state("");
   let unlisten: (() => void) | null = null;
-  let countdown = $state(0);
-  let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
   async function refreshStatus() {
     try {
@@ -63,34 +61,13 @@
     }
   }
 
-  function clearCountdown() {
-    if (countdownTimer) {
-      clearInterval(countdownTimer);
-      countdownTimer = null;
-    }
-    countdown = 0;
-  }
-
-  function startCountdown(seconds: number) {
-    clearCountdown();
-    countdown = seconds;
-    countdownTimer = setInterval(() => {
-      countdown -= 1;
-      if (countdown <= 0) {
-        clearCountdown();
-        startRuntime();
-      }
-    }, 1000);
-  }
-
-  async function startRuntime() {
-    clearCountdown();
+  async function connectGateway() {
     loading = true;
     error = "";
     info = "";
     try {
-      const path = configPath.trim() || undefined;
-      const msg = await invoke<string>("start_runtime", { configPath: path });
+      const url = gatewayUrl.trim() || "http://127.0.0.1:9999";
+      const msg = await invoke<string>("start_runtime", { gatewayUrl: url });
       info = msg;
       await refreshStatus();
       await refreshConfig();
@@ -101,7 +78,7 @@
     }
   }
 
-  async function stopRuntime() {
+  async function disconnectGateway() {
     loading = true;
     error = "";
     info = "";
@@ -119,8 +96,16 @@
 
   onMount(async () => {
     await refreshStatus();
+    // Try connecting to default gateway URL on startup
     if (!status.running) {
-      startCountdown(3);
+      try {
+        const msg = await invoke<string>("start_runtime", { gatewayUrl: "http://127.0.0.1:9999" });
+        info = msg;
+        await refreshStatus();
+        await refreshConfig();
+      } catch {
+        // Gateway not running — user can connect manually
+      }
     }
     listen<MetricsSnapshot>("metrics:updated", (e) => {
       metrics = e.payload;
@@ -128,14 +113,13 @@
   });
 
   onDestroy(() => {
-    clearCountdown();
     if (unlisten) unlisten();
   });
 </script>
 
 <div class="card" style="display:flex; align-items:center; justify-content:space-between;">
   <div>
-    <h2>Runtime Status</h2>
+    <h2>Gateway Status</h2>
     <p style="color:var(--fg-dim);margin-top:4px;">
       Phase: <strong>{status.phase}</strong>
       &middot; Ready: <strong class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</strong>
@@ -144,32 +128,23 @@
   </div>
   <div style="display:flex;gap:8px;align-items:center;">
     {#if status.running}
-      <button class="danger" onclick={stopRuntime} disabled={loading}>Stop Runtime</button>
+      <button class="danger" onclick={disconnectGateway} disabled={loading}>Disconnect</button>
     {:else}
-      {#if countdown > 0}
-        <span style="font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums;">
-          Auto-start in {countdown}s
-        </span>
-        <button class="secondary" onclick={startRuntime} disabled={loading}>
-          Start Now
-        </button>
-      {:else}
-        <button onclick={startRuntime} disabled={loading}>Start Runtime</button>
-      {/if}
+      <button onclick={connectGateway} disabled={loading}>Connect</button>
     {/if}
   </div>
 </div>
 
-<!-- Config path input (only when stopped) -->
+<!-- Gateway URL input (only when disconnected) -->
 {#if !status.running}
   <div class="card">
     <div style="display:flex;gap:10px;align-items:center;">
-      <label for="cfgpath" style="font-size:13px;white-space:nowrap;">Config Path:</label>
+      <label for="gwurl" style="font-size:13px;white-space:nowrap;">Gateway URL:</label>
       <input
-        id="cfgpath"
+        id="gwurl"
         type="text"
-        bind:value={configPath}
-        placeholder="~/.aman/config.yaml (default)"
+        bind:value={gatewayUrl}
+        placeholder="http://127.0.0.1:9999"
         style="flex:1;"
       />
     </div>

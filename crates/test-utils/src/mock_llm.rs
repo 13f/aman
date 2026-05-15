@@ -49,23 +49,12 @@ pub enum LlmFinishReason {
     Length,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MockCallConfig {
     pub response_text: String,
     pub tool_calls: Vec<LlmToolCall>,
     pub delay_ms: u64,
     pub should_error: bool,
-}
-
-impl Default for MockCallConfig {
-    fn default() -> Self {
-        Self {
-            response_text: String::new(),
-            tool_calls: Vec::new(),
-            delay_ms: 0,
-            should_error: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

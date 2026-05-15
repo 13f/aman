@@ -1,0 +1,650 @@
+use serde_json::Value;
+use std::time::Duration;
+
+/// HTTP client for communicating with the Aman Gateway daemon.
+#[derive(Debug, Clone)]
+pub struct GatewayClient {
+    pub base_url: String,
+    client: reqwest::Client,
+}
+
+impl GatewayClient {
+    pub fn new(base_url: &str) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .no_proxy()
+            .build()
+            .expect("reqwest Client::builder");
+        Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            client,
+        }
+    }
+
+    pub fn new_with_token(base_url: &str, api_token: &str) -> Self {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {api_token}")) {
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        }
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(30))
+            .no_proxy()
+            .build()
+            .expect("reqwest Client::builder");
+        Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            client,
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url, path)
+    }
+
+    // ── Health ──────────────────────────────────────────────────────────
+
+    pub async fn health(&self) -> Result<(), String> {
+        let resp = self
+            .client
+            .get(self.url("/health"))
+            .send()
+            .await
+            .map_err(|e| format!("Gateway connection failed: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("Gateway health check failed: {}", resp.status()))
+        }
+    }
+
+    // ── Runtime ─────────────────────────────────────────────────────────
+
+    pub async fn runtime_status(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/runtime/status"))
+            .send()
+            .await
+            .map_err(|e| format!("runtime_status: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("runtime_status decode: {e}"))
+    }
+
+    pub async fn runtime_config(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/runtime/config"))
+            .send()
+            .await
+            .map_err(|e| format!("runtime_config: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("runtime_config decode: {e}"))
+    }
+
+    // ── Debug Metrics ───────────────────────────────────────────────────
+
+    pub async fn debug_metrics(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/debug/metrics"))
+            .send()
+            .await
+            .map_err(|e| format!("debug_metrics: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("debug_metrics decode: {e}"))
+    }
+
+    // ── Skills ──────────────────────────────────────────────────────────
+
+    pub async fn list_skills(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/skills"))
+            .send()
+            .await
+            .map_err(|e| format!("list_skills: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("list_skills decode: {e}"))
+    }
+
+    pub async fn reload_skills(&self) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url("/skills/reload"))
+            .send()
+            .await
+            .map_err(|e| format!("reload_skills: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("reload_skills", resp.status()).await)
+        }
+    }
+
+    pub async fn enable_skill(&self, name: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/skill/{name}/enable")))
+            .send()
+            .await
+            .map_err(|e| format!("enable_skill: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("enable_skill", resp.status()).await)
+        }
+    }
+
+    pub async fn disable_skill(&self, name: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/skill/{name}/disable")))
+            .send()
+            .await
+            .map_err(|e| format!("disable_skill: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("disable_skill", resp.status()).await)
+        }
+    }
+
+    // ── Events ──────────────────────────────────────────────────────────
+
+    pub async fn recent_events(&self, limit: usize) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/events/recent?limit={limit}")))
+            .send()
+            .await
+            .map_err(|e| format!("recent_events: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("recent_events decode: {e}"))
+    }
+
+    pub async fn event_trace(&self, trace_id: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/events/trace/{trace_id}")))
+            .send()
+            .await
+            .map_err(|e| format!("event_trace: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("event_trace decode: {e}"))
+        } else {
+            Err(status_error("event_trace", resp.status()).await)
+        }
+    }
+
+    pub async fn inject_event(&self, source: &str, event_type: &str, payload: Value) -> Result<String, String> {
+        let body = serde_json::json!({
+            "source": source,
+            "event_type": event_type,
+            "payload": payload,
+        });
+        let resp = self
+            .client
+            .post(self.url("/inject-event"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("inject_event: {e}"))?;
+        if resp.status().is_success() {
+            let v: Value = resp.json().await.map_err(|e| format!("inject_event decode: {e}"))?;
+            Ok(v["id"].as_str().unwrap_or("").to_owned())
+        } else {
+            Err(status_error("inject_event", resp.status()).await)
+        }
+    }
+
+    // ── Workflows ───────────────────────────────────────────────────────
+
+    pub async fn workflow_instances(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/workflow-instances"))
+            .send()
+            .await
+            .map_err(|e| format!("workflow_instances: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("workflow_instances decode: {e}"))
+    }
+
+    pub async fn workflow_def(&self, name: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/workflow/{name}")))
+            .send()
+            .await
+            .map_err(|e| format!("workflow_def: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("workflow_def decode: {e}"))
+        } else {
+            Err(status_error("workflow_def", resp.status()).await)
+        }
+    }
+
+    pub async fn retry_workflow(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/workflow-instance/{id}/retry")))
+            .send()
+            .await
+            .map_err(|e| format!("retry_workflow: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("retry_workflow", resp.status()).await)
+        }
+    }
+
+    pub async fn cancel_workflow(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/workflow-instance/{id}/cancel")))
+            .send()
+            .await
+            .map_err(|e| format!("cancel_workflow: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("cancel_workflow", resp.status()).await)
+        }
+    }
+
+    // ── Soul ───────────────────────────────────────────────────────────
+
+    pub async fn soul_info(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/soul/info"))
+            .send()
+            .await
+            .map_err(|e| format!("soul_info: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("soul_info decode: {e}"))
+        } else if resp.status().as_u16() == 404 {
+            Ok(serde_json::json!({}))
+        } else {
+            Err(status_error("soul_info", resp.status()).await)
+        }
+    }
+
+    pub async fn soul_raw(&self) -> Result<String, String> {
+        let resp = self
+            .client
+            .get(self.url("/soul/raw"))
+            .send()
+            .await
+            .map_err(|e| format!("soul_raw: {e}"))?;
+        if resp.status().is_success() {
+            let v: Value = resp.json().await.map_err(|e| format!("soul_raw decode: {e}"))?;
+            Ok(v["raw"].as_str().unwrap_or("").to_owned())
+        } else if resp.status().as_u16() == 404 {
+            Err("No SOUL configured".to_owned())
+        } else {
+            Err(status_error("soul_raw", resp.status()).await)
+        }
+    }
+
+    pub async fn soul_system_prompt(&self) -> Result<String, String> {
+        let resp = self
+            .client
+            .get(self.url("/soul/system-prompt"))
+            .send()
+            .await
+            .map_err(|e| format!("soul_system_prompt: {e}"))?;
+        if resp.status().is_success() {
+            let v: Value = resp.json().await.map_err(|e| format!("soul_system_prompt decode: {e}"))?;
+            Ok(v["system_prompt"].as_str().unwrap_or("").to_owned())
+        } else if resp.status().as_u16() == 404 {
+            Err("No SOUL configured".to_owned())
+        } else {
+            Err(status_error("soul_system_prompt", resp.status()).await)
+        }
+    }
+
+    pub async fn update_soul(&self, content: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "content": content });
+        let resp = self
+            .client
+            .post(self.url("/soul/update"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("update_soul: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("update_soul", resp.status()).await)
+        }
+    }
+
+    // ── Plugins ─────────────────────────────────────────────────────────
+
+    pub async fn list_plugins(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/plugins"))
+            .send()
+            .await
+            .map_err(|e| format!("list_plugins: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("list_plugins decode: {e}"))
+    }
+
+    pub async fn enable_plugin(&self, name: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/plugin/{name}/enable")))
+            .send()
+            .await
+            .map_err(|e| format!("enable_plugin: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("enable_plugin", resp.status()).await)
+        }
+    }
+
+    pub async fn disable_plugin(&self, name: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/plugin/{name}/disable")))
+            .send()
+            .await
+            .map_err(|e| format!("disable_plugin: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("disable_plugin", resp.status()).await)
+        }
+    }
+
+    // ── Capabilities ────────────────────────────────────────────────────
+
+    pub async fn capabilities(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/capabilities"))
+            .send()
+            .await
+            .map_err(|e| format!("capabilities: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("capabilities decode: {e}"))
+    }
+
+    // ── DLQ ─────────────────────────────────────────────────────────────
+
+    pub async fn list_dlq(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/dlq"))
+            .send()
+            .await
+            .map_err(|e| format!("list_dlq: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("list_dlq decode: {e}"))
+    }
+
+    pub async fn retry_dlq(&self, id: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "reason": "manual retry from dashboard" });
+        let resp = self
+            .client
+            .post(self.url(&format!("/dlq/{id}/retry")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("retry_dlq: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("retry_dlq", resp.status()).await)
+        }
+    }
+
+    pub async fn discard_dlq(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/dlq/{id}/discard")))
+            .send()
+            .await
+            .map_err(|e| format!("discard_dlq: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("discard_dlq", resp.status()).await)
+        }
+    }
+
+    // ── Chat ────────────────────────────────────────────────────────────
+
+    pub async fn chat_sessions(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/chat/sessions"))
+            .send()
+            .await
+            .map_err(|e| format!("chat_sessions: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("chat_sessions decode: {e}"))
+    }
+
+    pub async fn chat_session_create(&self, session_type: Option<&str>) -> Result<String, String> {
+        let body = serde_json::json!({
+            "session_type": session_type.unwrap_or("persistent"),
+        });
+        let resp = self
+            .client
+            .post(self.url("/chat/session/create"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("chat_session_create: {e}"))?;
+        if resp.status().is_success() {
+            let v: Value = resp.json().await.map_err(|e| format!("chat_session_create decode: {e}"))?;
+            Ok(v["id"].as_str().unwrap_or("").to_owned())
+        } else {
+            Err(status_error("chat_session_create", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_session_create_branch(
+        &self,
+        parent_session_id: &str,
+        branch_message_id: &str,
+        session_type: Option<&str>,
+    ) -> Result<String, String> {
+        let body = serde_json::json!({
+            "session_type": session_type.unwrap_or("branch"),
+            "parent_session_id": parent_session_id,
+            "branch_message_id": branch_message_id,
+        });
+        let resp = self
+            .client
+            .post(self.url("/chat/session/create"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("chat_session_create_branch: {e}"))?;
+        if resp.status().is_success() {
+            let v: Value = resp.json().await.map_err(|e| format!("chat_session_create_branch decode: {e}"))?;
+            Ok(v["id"].as_str().unwrap_or("").to_owned())
+        } else {
+            Err(status_error("chat_session_create_branch", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_session_state(&self, session_id: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/chat/session/{session_id}/state")))
+            .send()
+            .await
+            .map_err(|e| format!("chat_session_state: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("chat_session_state decode: {e}"))
+        } else if resp.status().as_u16() == 404 {
+            Err(format!("Session not found: {session_id}"))
+        } else {
+            Err(status_error("chat_session_state", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_session_history(&self, session_id: &str, _limit: Option<usize>) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/chat/session/{session_id}/history")))
+            .send()
+            .await
+            .map_err(|e| format!("chat_session_history: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("chat_session_history decode: {e}"))
+        } else {
+            Err(status_error("chat_session_history", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_send_message(
+        &self,
+        session_id: &str,
+        text: &str,
+        expected_version: Option<u64>,
+    ) -> Result<String, String> {
+        let mut body = serde_json::json!({
+            "text": text,
+        });
+        if let Some(ver) = expected_version {
+            body["expected_version"] = serde_json::json!(ver);
+        }
+        let resp = self
+            .client
+            .post(self.url(&format!("/chat/session/{session_id}/send")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("chat_send_message: {e}"))?;
+        if resp.status().is_success() {
+            let v: Value = resp.json().await.map_err(|e| format!("chat_send_message decode: {e}"))?;
+            Ok(v["event_id"].as_str().unwrap_or("").to_owned())
+        } else {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            Err(format!("chat_send_message ({}): {}", status, body_text))
+        }
+    }
+
+    pub async fn chat_close_session(&self, session_id: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "reason": null });
+        let resp = self
+            .client
+            .post(self.url(&format!("/chat/session/{session_id}/close")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("chat_close_session: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("chat_close_session", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_stop_generation(&self, session_id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/chat/session/{session_id}/stop")))
+            .send()
+            .await
+            .map_err(|e| format!("chat_stop_generation: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("chat_stop_generation", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_retry(&self, session_id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/chat/session/{session_id}/retry")))
+            .send()
+            .await
+            .map_err(|e| format!("chat_retry: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("chat_retry", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_edit_message(
+        &self,
+        session_id: &str,
+        message_event_id: &str,
+        new_text: &str,
+        expected_version: Option<u64>,
+    ) -> Result<(), String> {
+        let mut body = serde_json::json!({
+            "message_event_id": message_event_id,
+            "new_text": new_text,
+        });
+        if let Some(ver) = expected_version {
+            body["expected_version"] = serde_json::json!(ver);
+        }
+        let resp = self
+            .client
+            .post(self.url(&format!("/chat/session/{session_id}/edit")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("chat_edit_message: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("chat_edit_message", resp.status()).await)
+        }
+    }
+
+    pub async fn chat_validator_health(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/chat/validator-health"))
+            .send()
+            .await
+            .map_err(|e| format!("chat_validator_health: {e}"))?;
+        let healthy = resp.status().is_success();
+        Ok(serde_json::json!({
+            "ok": healthy,
+            "healthy": healthy,
+            "rule_count": if healthy { 7 } else { 0 },
+            "timeout_sec": 2,
+            "fail_closed": true,
+        }))
+    }
+}
+
+async fn status_error(context: &str, status: reqwest::StatusCode) -> String {
+    format!("{context} failed: {status}")
+}

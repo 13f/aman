@@ -8,6 +8,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use kernel::event::{Event, EventType};
+use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
 use kernel::Error;
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
 use plugin::PluginManifest;
@@ -77,6 +78,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/skill/{name}/disable", post(skill_disable))
         .route("/skill/{name}/versions", get(skill_versions))
         .route("/skill/{name}/rollback", post(skill_rollback))
+        .route("/skills/reload", post(skills_reload))
         .route("/workflows", get(workflow_list))
         .route("/workflow/{name}", get(workflow_info))
         .route("/workflow/{name}/create", post(workflow_create))
@@ -94,12 +96,32 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/cron/{id}/remove", post(cron_remove))
         .route("/inject-event", post(inject_event))
         .route("/events/dump/{id}", get(event_dump))
+        .route("/events/recent", get(events_recent))
         .route("/events/trace/{trace_id}", get(event_trace))
         .route("/dlq", get(dlq_list))
         .route("/dlq/{id}/retry", post(dlq_retry))
         .route("/dlq/{id}/discard", post(dlq_discard))
         .route("/config/set", post(config_set))
         .route("/audit-log", get(audit_log))
+        .route("/runtime/status", get(runtime_status))
+        .route("/runtime/config", get(runtime_config))
+        .route("/chat/sessions", get(chat_sessions))
+        .route("/chat/session/create", post(chat_session_create))
+        .route("/chat/session/{id}/state", get(chat_session_state))
+        .route("/chat/session/{id}/history", get(chat_session_history))
+        .route("/chat/session/{id}/send", post(chat_session_send))
+        .route("/chat/session/{id}/close", post(chat_session_close))
+        .route("/chat/session/{id}/stop", post(chat_session_stop))
+        .route("/chat/session/{id}/retry", post(chat_session_retry))
+        .route("/chat/session/{id}/edit", post(chat_session_edit))
+        .route("/chat/validator-health", get(chat_validator_health))
+        .route("/soul/info", get(soul_info))
+        .route("/soul/raw", get(soul_raw))
+        .route("/soul/update", post(soul_update))
+        .route("/soul/system-prompt", get(soul_system_prompt))
+        .route("/capabilities", get(capability_list))
+        .route("/dlq/depth", get(dlq_depth))
+        .route("/debug/metrics", get(debug_metrics))
         .route_layer(middleware::from_fn_with_state(
             runtime.clone(),
             require_api_token,
@@ -1467,6 +1489,825 @@ async fn require_api_token(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     next.run(request).await
+}
+
+// ── Runtime status ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeStatusResponse {
+    phase: u8,
+    ready: bool,
+    live: bool,
+}
+
+async fn runtime_status(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    Json(RuntimeStatusResponse {
+        phase: runtime.phase() as u8,
+        ready: runtime.is_ready(),
+        live: runtime.is_live(),
+    })
+    .into_response()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RuntimeConfigResponse {
+    bind_addr: String,
+    runtime_dir: String,
+    skills_dir: String,
+    api_token_configured: bool,
+    risky_capabilities_enabled: bool,
+}
+
+async fn runtime_config(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    Json(RuntimeConfigResponse {
+        bind_addr: runtime.bind_addr().to_string(),
+        runtime_dir: runtime.runtime_dir().display().to_string(),
+        skills_dir: runtime.skills_dir().display().to_string(),
+        api_token_configured: runtime.api_token().is_some(),
+        risky_capabilities_enabled: runtime.risky_capabilities_enabled(),
+    })
+    .into_response()
+}
+
+// ── Soul endpoints ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct SoulInfoResponse {
+    name: String,
+    last_changed_at: Option<i64>,
+}
+
+async fn soul_info(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let Some(soul) = runtime.soul_runtime() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: "no soul configured".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+    let current = soul.current_soul();
+    let changed = soul.last_soul_changed_event();
+    Json(SoulInfoResponse {
+        name: current.name.clone(),
+        last_changed_at: changed.as_ref().map(|e| e.timestamp.as_millis()),
+    })
+    .into_response()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SoulRawResponse {
+    raw: String,
+}
+
+async fn soul_raw(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let Some(soul) = runtime.soul_runtime() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: "no soul configured".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+    Json(SoulRawResponse {
+        raw: soul.current_soul().raw.clone(),
+    })
+    .into_response()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SoulUpdateRequest {
+    content: String,
+}
+
+async fn soul_update(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Json(req): Json<SoulUpdateRequest>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    match runtime.update_soul(&req.content).await {
+        Ok(()) => {
+            runtime
+                .audit()
+                .record(operator, "soul.update", "soul", "ok", "");
+            (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "soul.update",
+                "soul",
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
+// ── Capabilities ─────────────────────────────────────────────────────────
+
+async fn capability_list(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let entries = runtime.get_capability_entries().await;
+    (StatusCode::OK, Json(json!(entries))).into_response()
+}
+
+// ── DLQ depth ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct DlqDepthResponse {
+    depth: usize,
+}
+
+async fn dlq_depth(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    Json(DlqDepthResponse {
+        depth: runtime.dlq().depth(),
+    })
+    .into_response()
+}
+
+// ── Chat endpoints ───────────────────────────────────────────────────────
+
+async fn chat_session_create(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Json(payload): Json<Value>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let session_type = payload
+        .get("session_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("persistent");
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let data = json!({
+        "session_type": session_type,
+        "version": 0,
+        "created_at": now_ms,
+        "last_active_at": now_ms,
+    });
+    match runtime.workflow_engine().create_instance("chat-session", data) {
+        Ok(instance) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.create",
+                format!("session:{}", instance.id),
+                "ok",
+                "",
+            );
+            (StatusCode::OK, Json(json!({ "id": instance.id }))).into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.create",
+                "session",
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatSessionItem {
+    id: String,
+    session_type: String,
+    state: String,
+    created_at: u64,
+    last_active_at: u64,
+    version: u64,
+}
+
+async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let instances = runtime.workflow_engine().list_instances();
+    let mut items: Vec<ChatSessionItem> = instances
+        .into_iter()
+        .filter(|inst| inst.workflow_name == "chat-session")
+        .map(|inst| {
+            let session_type = inst
+                .data
+                .get("session_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("persistent")
+                .to_owned();
+            let created_at = inst
+                .data
+                .get("created_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let last_active_at = inst
+                .data
+                .get("last_active_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let version = inst
+                .data
+                .get("version")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            ChatSessionItem {
+                id: inst.id,
+                session_type,
+                state: inst.current_state,
+                created_at,
+                last_active_at,
+                version,
+            }
+        })
+        .collect();
+    items.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+    (StatusCode::OK, Json(json!({ "items": items }))).into_response()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ChatSessionStateResponse {
+    id: String,
+    state: String,
+    version: u64,
+    messages: Vec<Value>,
+}
+
+async fn chat_session_state(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(instance) = runtime.workflow_engine().get_instance(&id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: format!("session not found: {id}"),
+            }),
+        )
+            .into_response();
+    };
+    let version = instance
+        .data
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let messages = runtime
+        .event_store()
+        .recent(2000)
+        .into_iter()
+        .filter(|e| {
+            e.payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|sid| sid == id)
+        })
+        .map(|e| {
+            json!({
+                "event_id": e.id.to_string(),
+                "event_type": format!("{:?}", e.event_type),
+                "source": e.source,
+                "timestamp_ms": e.timestamp.as_millis(),
+                "payload": e.payload,
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(ChatSessionStateResponse {
+        id,
+        state: instance.current_state,
+        version,
+        messages,
+    })
+    .into_response()
+}
+
+async fn chat_session_history(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(id): Path<String>,
+) -> Response {
+    let messages = runtime
+        .event_store()
+        .recent(2000)
+        .into_iter()
+        .filter(|e| {
+            e.payload
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|sid| sid == id)
+        })
+        .map(|e| {
+            json!({
+                "event_id": e.id.to_string(),
+                "event_type": format!("{:?}", e.event_type),
+                "source": e.source,
+                "timestamp_ms": e.timestamp.as_millis(),
+                "payload": e.payload,
+            })
+        })
+        .collect::<Vec<_>>();
+    (StatusCode::OK, Json(json!({ "messages": messages }))).into_response()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatSendRequest {
+    text: String,
+    #[serde(default)]
+    expected_version: Option<u64>,
+}
+
+async fn chat_session_send(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<ChatSendRequest>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+
+    // Validate session exists and check optimistic lock version.
+    let instance = match runtime.workflow_engine().get_instance(&id) {
+        Some(inst) => inst,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    message: format!("session not found: {id}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let current_ver = instance
+        .data
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if let Some(expected) = req.expected_version {
+        if current_ver != expected {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    message: format!(
+                        "version conflict: expected {}, got {}",
+                        expected, current_ver
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Sanitize input.
+    let sanitizer = InputSanitizer::new();
+    let text = match sanitizer.sanitize(&req.text) {
+        SanitizeResult::Block { matched_patterns } => {
+            runtime.audit().record(
+                operator,
+                "chat.send_message",
+                format!("session:{id}"),
+                "blocked",
+                format!("matched:{}", matched_patterns.join(",")),
+            );
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    message: format!("Message blocked: matched {}", matched_patterns.join(", ")),
+                }),
+            )
+                .into_response();
+        }
+        SanitizeResult::ReplaceMessage { matched_patterns } => {
+            runtime.audit().record(
+                operator,
+                "chat.send_message",
+                format!("session:{id}"),
+                "sanitized_replace",
+                format!("matched:{}", matched_patterns.join(",")),
+            );
+            "[message blocked by content policy]".to_owned()
+        }
+        SanitizeResult::ReplaceToken {
+            sanitized,
+            matched_patterns,
+        } => {
+            runtime.audit().record(
+                operator,
+                "chat.send_message",
+                format!("session:{id}"),
+                "sanitized_token",
+                format!(
+                    "matched:{},sanitized_len:{}",
+                    matched_patterns.join(","),
+                    sanitized.len()
+                ),
+            );
+            sanitized
+        }
+        SanitizeResult::PassThrough => req.text.clone(),
+    };
+
+    // Publish the message event.
+    let event = Event::new(
+        "chat:platform",
+        EventType::MessageReceived,
+        json!({
+            "session_id": id,
+            "text": text,
+            "sender": operator,
+            "source": "tauri-desktop",
+        }),
+    );
+    let event_id = event.id.to_string();
+    if let Err(error) = runtime.publish_event(event).await {
+        runtime.audit().record(
+            operator,
+            "chat.send_message",
+            format!("session:{id}"),
+            "error",
+            error.to_string(),
+        );
+        return error_response(error);
+    }
+
+    // Touch session (update timestamp + version).
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let _ = runtime.workflow_engine().update_instance_data(&id, |data| {
+        data["last_active_at"] = json!(now_ms);
+        let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+        data["version"] = json!(v + 1);
+    });
+
+    runtime.audit().record(
+        operator,
+        "chat.send_message",
+        format!("session:{id}"),
+        "ok",
+        format!("text_hash:{}", content_hash(&text)),
+    );
+    (StatusCode::OK, Json(json!({ "ok": true, "event_id": event_id }))).into_response()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatSessionActionRequest {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn chat_session_close(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<ChatSessionActionRequest>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let event = Event::new(
+        "chat:control",
+        EventType::Custom("SESSION_CLOSE_CMD".to_owned()),
+        json!({
+            "session_id": id,
+            "operator": operator,
+            "reason": req.reason,
+        }),
+    );
+    match runtime.workflow_engine().handle_event(&id, event).await {
+        Ok(_result) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.close",
+                format!("session:{id}"),
+                "ok",
+                "",
+            );
+            let _ = runtime.workflow_engine().update_instance_data(&id, |data| {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                data["last_active_at"] = json!(now_ms);
+                let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                data["version"] = json!(v + 1);
+            });
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.close",
+                format!("session:{id}"),
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
+async fn chat_session_stop(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let event = Event::new(
+        "chat:control",
+        EventType::Custom("STOP_GENERATION".to_owned()),
+        json!({
+            "session_id": id,
+            "operator": operator,
+        }),
+    );
+    if let Err(error) = runtime.publish_event(event).await {
+        return error_response(error);
+    }
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+async fn chat_session_retry(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let event = Event::new(
+        "chat:control",
+        EventType::Custom("RETRY_CMD".to_owned()),
+        json!({
+            "session_id": id,
+            "operator": operator,
+        }),
+    );
+    match runtime.workflow_engine().handle_event(&id, event).await {
+        Ok(_result) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.retry",
+                format!("session:{id}"),
+                "ok",
+                "",
+            );
+            let _ = runtime.workflow_engine().update_instance_data(&id, |data| {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                data["last_active_at"] = json!(now_ms);
+                let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+                data["version"] = json!(v + 1);
+            });
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.retry",
+                format!("session:{id}"),
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ChatEditRequest {
+    message_event_id: String,
+    new_text: String,
+    #[serde(default)]
+    expected_version: Option<u64>,
+}
+
+async fn chat_session_edit(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<ChatEditRequest>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+
+    // Validate session.
+    let instance = match runtime.workflow_engine().get_instance(&id) {
+        Some(inst) => inst,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    message: format!("session not found: {id}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let current_ver = instance
+        .data
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if let Some(expected) = req.expected_version {
+        if current_ver != expected {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    message: format!(
+                        "version conflict: expected {}, got {}",
+                        expected, current_ver
+                    ),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // Verify the message exists in event store.
+    if runtime.event_store().get(&req.message_event_id).is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: format!("message not found: {}", req.message_event_id),
+            }),
+        )
+            .into_response();
+    }
+
+    let event = Event::new(
+        "chat:control",
+        EventType::Custom("MESSAGE_EDITED".to_owned()),
+        json!({
+            "session_id": id,
+            "message_event_id": req.message_event_id,
+            "new_text": req.new_text,
+            "operator": operator,
+        }),
+    );
+    if let Err(error) = runtime.publish_event(event).await {
+        runtime.audit().record(
+            operator,
+            "chat.session.edit",
+            format!("session:{id}"),
+            "error",
+            error.to_string(),
+        );
+        return error_response(error);
+    }
+    let _ = runtime.workflow_engine().update_instance_data(&id, |data| {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        data["last_active_at"] = json!(now_ms);
+        let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+        data["version"] = json!(v + 1);
+    });
+    runtime.audit().record(
+        operator,
+        "chat.session.edit",
+        format!("session:{id}"),
+        "ok",
+        "",
+    );
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+async fn chat_validator_health(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let loader = runtime.plugin_loader().await;
+    let healthy = loader
+        .state_of("llm-plugin")
+        .map(|s| s == plugin::PluginLifecycleState::Running)
+        .unwrap_or(false);
+    if healthy {
+        StatusCode::OK.into_response()
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE.into_response()
+    }
+}
+
+// ── Skills reload ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillsReloadResponse {
+    ok: bool,
+}
+
+async fn skills_reload(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    match runtime.reload_skills_now() {
+        Ok(_report) => {
+            runtime.audit().record(
+                operator,
+                "skills.reload",
+                "skills",
+                "ok",
+                "",
+            );
+            (StatusCode::OK, Json(SkillsReloadResponse { ok: true })).into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "skills.reload",
+                "skills",
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
+// ── Events recent ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct EventsRecentQuery {
+    limit: Option<usize>,
+}
+
+async fn events_recent(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Query(query): Query<EventsRecentQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(50).min(1000);
+    let events = runtime.event_store().recent(limit);
+    (StatusCode::OK, Json(json!({ "events": events }))).into_response()
+}
+
+// ── Soul system prompt ─────────────────────────────────────────────────
+
+async fn soul_system_prompt(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let Some(soul) = runtime.soul_runtime() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: "no soul configured".to_owned(),
+            }),
+        )
+            .into_response();
+    };
+    let prompt = soul.current_soul().to_system_prompt();
+    (StatusCode::OK, Json(json!({ "system_prompt": prompt }))).into_response()
+}
+
+// ── Debug metrics ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct DebugMetricsResponse {
+    queue_depth_high: usize,
+    queue_depth_normal: usize,
+    queue_depth_low: usize,
+    retry_queue_depth: usize,
+    throughput: u64,
+    discarded_count: u64,
+    duplicate_count: u64,
+    subscription_count: usize,
+    backpressure_level: String,
+    dlq_depth: usize,
+    inflight_pipelines: usize,
+    inflight_skills: usize,
+    plugin_health: Vec<PluginHealthItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PluginHealthItem {
+    name: String,
+    status: String,
+}
+
+async fn debug_metrics(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let bus = runtime.bus_metrics();
+    let dlq_depth = runtime.dlq().depth();
+    let loader = runtime.plugin_loader().await;
+    let plugin_health: Vec<PluginHealthItem> = loader
+        .loaded_plugins()
+        .into_iter()
+        .map(|name| {
+            let status = match loader.state_of(&name) {
+                Some(s) => format!("{s:?}"),
+                None => "unknown".to_owned(),
+            };
+            PluginHealthItem { name, status }
+        })
+        .collect();
+
+    Json(DebugMetricsResponse {
+        queue_depth_high: bus.queue_depth.high,
+        queue_depth_normal: bus.queue_depth.normal,
+        queue_depth_low: bus.queue_depth.low,
+        retry_queue_depth: bus.retry_queue_depth,
+        throughput: bus.throughput,
+        discarded_count: bus.discarded_count,
+        duplicate_count: bus.duplicate_count,
+        subscription_count: bus.subscription_count,
+        backpressure_level: format!("{:?}", bus.backpressure_level),
+        dlq_depth,
+        inflight_pipelines: runtime.inflight_pipelines(),
+        inflight_skills: runtime.inflight_skills(),
+        plugin_health,
+    })
+    .into_response()
 }
 
 fn parse_bearer(headers: &HeaderMap) -> Option<String> {

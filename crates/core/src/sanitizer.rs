@@ -148,11 +148,9 @@ fn redact_tokens(text: &str, rules: &[Rule], matched_names: &[String]) -> String
     let lower = text.to_lowercase();
     let mut result = text.to_owned();
     for rule in rules {
-        if matched_names.contains(&rule.name) {
-            if let Some(pos) = lower.find(&rule.pattern) {
-                let end = pos + rule.pattern.len();
-                result.replace_range(pos..end, "[redacted]");
-            }
+        if matched_names.contains(&rule.name) && let Some(pos) = lower.find(&rule.pattern) {
+            let end = pos + rule.pattern.len();
+            result.replace_range(pos..end, "[redacted]");
         }
     }
     result

@@ -337,7 +337,7 @@ async fn process_session(
         let trace_prev = msg.payload.get("trace_prev").and_then(|v| v.as_str()).map(|s| s.to_owned());
 
         // Call LLM via rig.
-        let reply_text = match call_llm(text, &soul_prompt, &llm_config).await {
+        let reply_text = match call_llm(text, soul_prompt, &llm_config).await {
             Ok(reply) => reply,
             Err(e) => {
                 tracing::error!(%session_id, error = %e, "llm-plugin: LLM call failed");

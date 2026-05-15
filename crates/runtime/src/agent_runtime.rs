@@ -13,6 +13,7 @@ use plugin::{
     PluginCandidate, PluginExports, PluginIsolationMode, PluginLifecycleConfig,
     PluginExportRegistrar, PluginInstaller, PluginLoader, PluginManifest,
 };
+use serde::Serialize;
 use serde_json::json;
 use secret::{
     AwsSecretsManagerCliBackend, EnvSecretBackend, KeychainBackend, OnePasswordCliBackend,
@@ -40,14 +41,14 @@ use workflow::{
 // Capability registry types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum CapabilityStatus {
     Healthy,
     Degraded,
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CapabilityEntry {
     pub capability: String,
     pub plugin: String,

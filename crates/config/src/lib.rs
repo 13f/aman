@@ -198,7 +198,7 @@ pub struct AgentEntryConfig {
 ///     model: gpt-5
 ///     system_prompt_override: null
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AmanConfig {
     #[serde(flatten, default)]
     pub runtime: AgentConfig,
@@ -226,17 +226,6 @@ where
     match MaybeMap::<HashMap<K, V>>::deserialize(deserializer)? {
         MaybeMap::Some(m) => Ok(m),
         MaybeMap::Null => Ok(HashMap::new()),
-    }
-}
-
-impl Default for AmanConfig {
-    fn default() -> Self {
-        Self {
-            runtime: AgentConfig::default(),
-            providers: HashMap::new(),
-            model: None,
-            agents: HashMap::new(),
-        }
     }
 }
 
@@ -967,6 +956,7 @@ runtime:
             super::ProviderConfig {
                 display_name: "Bad".to_string(),
                 base_url: "https://example.com".to_string(),
+                api_key: None,
             },
         );
 
@@ -987,6 +977,7 @@ runtime:
             super::ProviderConfig {
                 display_name: "Valid".to_string(),
                 base_url: "https://example.com".to_string(),
+                api_key: None,
             },
         );
         config.agents.insert(
@@ -1038,6 +1029,7 @@ runtime:
             super::ProviderConfig {
                 display_name: "OpenAI".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
+                api_key: None,
             },
         );
         config.model = Some(super::DefaultModelConfig {

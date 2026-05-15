@@ -168,10 +168,11 @@ impl Tool for LlmOpenaiTool {
             "max_tokens": max_tokens,
         });
 
-        if let Some(tools_val) = tools {
-            if !tools_val.is_null() && tools_val.as_array().is_some_and(|a| !a.is_empty()) {
-                body["tools"] = format_tools_for_openai(tools_val);
-            }
+        if let Some(tools_val) = tools
+            && !tools_val.is_null()
+            && tools_val.as_array().is_some_and(|a| !a.is_empty())
+        {
+            body["tools"] = format_tools_for_openai(tools_val);
         }
 
         let url = format!("{api_base}/chat/completions");

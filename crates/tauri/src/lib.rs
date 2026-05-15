@@ -3,6 +3,7 @@
 
 pub mod agent_fs;
 pub mod commands;
+pub mod gateway_client;
 pub mod models;
 pub mod rate_limiter;
 pub mod state;
@@ -18,15 +19,10 @@ use tokio::time::{interval, Duration};
 /// Called from the binary entry point (`src-tauri/main.rs`).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load any stored API keys from secrets file into env vars.
-    commands::load_secrets_into_env();
-
     let app_state = AppState::new();
 
-    // Clone the inner runtime handle for background tasks before moving
-    // app_state into Tauri's managed state.
-    let rt_state_for_metrics = app_state.runtime.clone();
-    let rt_state_for_events = app_state.runtime.clone();
+    let gc_for_metrics = app_state.gateway_client.clone();
+    let gc_for_events = app_state.gateway_client.clone();
 
     // Create a Tokio runtime for background tasks. Must be created before
     // Tauri's event loop since `setup()` runs on the main thread which has
@@ -141,52 +137,40 @@ pub fn run() {
                 let mut tick = interval(Duration::from_secs(2));
                 loop {
                     tick.tick().await;
-                    let guard = rt_state_for_metrics.lock().await;
+                    let guard = gc_for_metrics.lock().await;
                     let snapshot = match guard.as_ref() {
-                        Some(rt) => {
-                            let bus = rt.bus_metrics();
-                            let dlq_depth = rt.dlq().depth();
-                            let loader = rt.plugin_loader().await;
+                        Some(client) => {
+                            match client.debug_metrics().await {
+                                Ok(v) => {
+                                    let plugin_health = v["plugin_health"].as_array()
+                                        .map(|arr| {
+                                            arr.iter().map(|item| crate::models::PluginHealthEntry {
+                                                name: item["name"].as_str().unwrap_or("").to_owned(),
+                                                status: item["status"].as_str().unwrap_or("").to_owned(),
+                                            }).collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
 
-                            // Report LLM Chat session count metric.
-                            let sessions = rt.workflow_engine().list_instances();
-                            let active_sessions = sessions
-                                .iter()
-                                .filter(|inst| {
-                                    inst.workflow_name == "chat-session"
-                                        && inst.current_state != "CLOSED"
-                                })
-                                .count();
-                            rt.metrics().set_session_active_count(active_sessions);
-
-                            let plugin_health: Vec<crate::models::PluginHealthEntry> = loader
-                                .loaded_plugins()
-                                .into_iter()
-                                .map(|name| {
-                                    let status = match loader.state_of(&name) {
-                                        Some(s) => format!("{s:?}"),
-                                        None => "unknown".to_owned(),
-                                    };
-                                    crate::models::PluginHealthEntry { name, status }
-                                })
-                                .collect();
-                            Some(crate::models::MetricsSnapshot {
-                                queue_depth: crate::models::QueueDepth {
-                                    high: bus.queue_depth.high as i64,
-                                    normal: bus.queue_depth.normal as i64,
-                                    low: bus.queue_depth.low as i64,
-                                },
-                                throughput: bus.throughput,
-                                discarded: bus.discarded_count,
-                                duplicate: bus.duplicate_count,
-                                subscription_count: bus.subscription_count as i64,
-                                retry_queue_depth: bus.retry_queue_depth as i64,
-                                dlq_depth,
-                                inflight_pipelines: rt.inflight_pipelines(),
-                                inflight_skills: rt.inflight_skills(),
-                                backpressure_level: format!("{:?}", bus.backpressure_level),
-                                plugin_health,
-                            })
+                                    Some(crate::models::MetricsSnapshot {
+                                        queue_depth: crate::models::QueueDepth {
+                                            high: v["queue_depth_high"].as_i64().unwrap_or(0),
+                                            normal: v["queue_depth_normal"].as_i64().unwrap_or(0),
+                                            low: v["queue_depth_low"].as_i64().unwrap_or(0),
+                                        },
+                                        throughput: v["throughput"].as_u64().unwrap_or(0),
+                                        discarded: v["discarded_count"].as_u64().unwrap_or(0),
+                                        duplicate: v["duplicate_count"].as_u64().unwrap_or(0),
+                                        subscription_count: v["subscription_count"].as_i64().unwrap_or(0),
+                                        retry_queue_depth: v["retry_queue_depth"].as_i64().unwrap_or(0),
+                                        dlq_depth: v["dlq_depth"].as_u64().unwrap_or(0) as usize,
+                                        inflight_pipelines: v["inflight_pipelines"].as_u64().unwrap_or(0) as usize,
+                                        inflight_skills: v["inflight_skills"].as_u64().unwrap_or(0) as usize,
+                                        backpressure_level: v["backpressure_level"].as_str().unwrap_or("Normal").to_owned(),
+                                        plugin_health,
+                                    })
+                                }
+                                Err(_) => None,
+                            }
                         }
                         None => None,
                     };
@@ -198,21 +182,28 @@ pub fn run() {
                 }
             });
 
-            // Background task: emit `event:processed` every 1 s (poll EventStore).
+            // Background task: emit `event:processed` every 1 s (poll EventStore via gateway).
             rt.spawn(async move {
                 let mut tick = interval(Duration::from_secs(1));
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 loop {
                     tick.tick().await;
-                    let guard = rt_state_for_events.lock().await;
-                    if let Some(rt) = guard.as_ref() {
-                        let events = rt.event_store().recent(20);
-                        drop(guard);
-                        for event in events {
-                            if seen.insert(event.id.to_string()) {
-                                let payload = serde_json::to_value(&event).unwrap_or_default();
-                                let _ = handle2.emit("event:processed", payload);
+                    let guard = gc_for_events.lock().await;
+                    if let Some(client) = guard.as_ref() {
+                        match client.recent_events(20).await {
+                            Ok(v) => {
+                                drop(guard);
+                                if let Some(events) = v["events"].as_array() {
+                                    for event_val in events {
+                                        if let Some(id) = event_val["id"].as_str() {
+                                            if seen.insert(id.to_owned()) {
+                                                let _ = handle2.emit("event:processed", event_val.clone());
+                                            }
+                                        }
+                                    }
+                                }
                             }
+                            Err(_) => { drop(guard); }
                         }
                     } else {
                         drop(guard);

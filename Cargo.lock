@@ -80,34 +80,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
-name = "aman-tauri"
-version = "0.1.0"
-dependencies = [
- "aman-tauri-lib",
- "tauri",
- "tauri-build",
-]
-
-[[package]]
 name = "aman-tauri-lib"
 version = "0.1.0"
 dependencies = [
  "config",
- "event-bus",
- "kernel",
- "persistence",
- "plugin",
- "runtime",
+ "reqwest 0.12.28",
  "secret",
  "serde",
  "serde_json",
- "skill",
- "soul",
  "tauri",
  "tauri-build",
  "tokio",
- "uuid",
- "workflow",
 ]
 
 [[package]]
@@ -1755,6 +1738,18 @@ dependencies = [
  "fxhash",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "gateway"
+version = "0.1.0"
+dependencies = [
+ "config",
+ "kernel",
+ "runtime",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

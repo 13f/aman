@@ -30,11 +30,11 @@ members = [
   "crates/sdk",
   "crates/sdk/examples/hello-skill",
   "crates/tauri",
-  "crates/tauri/src-tauri",
   "crates/test-utils",
   "crates/plugins/chat-source",
   "crates/plugins/llm-plugin",
   "crates/plugins/llm-provider-openai",
+  "crates/gateway",
 ]
 default-members = [
   "crates/core",
@@ -57,11 +57,11 @@ default-members = [
   "crates/sdk",
   "crates/sdk/examples/hello-skill",
   "crates/tauri",
-  "crates/tauri/src-tauri",
   "crates/test-utils",
   "crates/plugins/chat-source",
   "crates/plugins/llm-plugin",
   "crates/plugins/llm-provider-openai",
+  "crates/gateway",
 ]
 
 [workspace.package]

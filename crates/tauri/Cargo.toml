@@ -15,16 +15,12 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
 config = { path = "../config", version = "0.1.0" }
-runtime = { path = "../runtime", version = "0.1.0" }
-kernel = { path = "../core", version = "0.1.0" }
-event-bus = { path = "../event-bus", version = "0.1.0" }
-persistence = { path = "../persistence", version = "0.1.0" }
-skill = { path = "../skill", version = "0.1.0" }
-workflow = { path = "../workflow", version = "0.1.0" }
-soul = { path = "../soul", version = "0.1.0" }
 secret = { path = "../secret", version = "0.1.0" }
-uuid = { workspace = true, features = ["v7"] }
-plugin = { path = "../plugin", version = "0.1.0" }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+
+[[bin]]
+name = "aman-tauri"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", default-features = false, features = [] }

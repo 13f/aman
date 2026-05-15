@@ -97,7 +97,7 @@
 
 | 文件 | 改动 |
 |------|------|
-| `crates/plugins/llm-plugin/src/lib.rs` | LLM provider 调用前后发布事件。具体位置在 `llm_plugin` 调用 `CompletionProvider` 的 `complete()` 前后 |
+| `crates/plugins/llm-plugin/src/lib.rs` | `process_session()` 中，`call_llm()` 前发布 `llm:call_started`，成功后发布 `llm:call_ended`；失败时 publish `llm_error`（不出现 `call_ended`） |
 
 ### 不涉及改动
 
@@ -105,11 +105,19 @@
 - 不需要改 event bus 基础设施
 - 不需要改 gateway / Tauri
 
+### 实现细节
+
+- `llm:call_started` payload: `session_id`, `model`, `input_tokens_estimate`, `original_message_id`, `soul_name`
+- `llm:call_ended` payload: `session_id`, `model`, `input_tokens_estimate`, `output_tokens_estimate`, `latency_ms`, `original_message_id`, `soul_name`
+- token 数为估算值（`text.len() / 4 + 1`），非 provider 精确计数
+- 失败路径：`llm:call_started` 已发布但 `call_ended` 不发布 + 原有 `llm_error` 事件
+
 ### 验证
 
-1. 聊天中发送消息触发 LLM 调用 → EventStore 中出现 `llm:call_started` + `llm:call_ended` 事件
-2. 事件 payload 应包含 `model`, `input_tokens`, `output_tokens`, `latency_ms`
-3. 如果 LLM 调用失败 → EventStore 中出现 `llm:call_started` + 原有 `llm_error` 事件（不出现 `call_ended`）
+- [x] `cargo test -p llm-plugin` 全部通过（13 tests）
+- [x] `cargo check -p gateway -p llm-plugin -p pipeline` 全部通过，无新警告（仅 `BusToolEventSink` 的 dead-code 警告预期内）
+- [ ] 端到端：聊天消息 → LLM 调用后 EventStore 中出现 `llm:call_started` + `llm:call_ended`
+- [ ] 模拟 LLM 调用失败 → EventStore 中出现 `llm:call_started` + `llm_error`（无 `call_ended`）
 
 ---
 

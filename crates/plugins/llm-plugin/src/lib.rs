@@ -336,12 +336,32 @@ async fn process_session(
         // Propagate trace_prev from incoming event to reply (T7.7, §11.6).
         let trace_prev = msg.payload.get("trace_prev").and_then(|v| v.as_str()).map(|s| s.to_owned());
 
+        // Estimate input tokens for LLM call event.
+        let input_tokens_estimate = soul_tokens + history.estimated_total_tokens() + msg_tokens;
+
+        // Publish llm:call_started before invoking the LLM provider.
+        let _ = bus.publish(Event::new(
+            "plugin:llm",
+            EventType::Custom("llm:call_started".to_owned()),
+            json!({
+                "session_id": session_id,
+                "model": llm_config.model,
+                "input_tokens_estimate": input_tokens_estimate,
+                "original_message_id": msg.id.to_string(),
+                "soul_name": soul_name,
+            }),
+        )).await;
+
+        let llm_started = std::time::Instant::now();
+
         // Call LLM via rig.
         let reply_text = match call_llm(text, soul_prompt, &llm_config).await {
             Ok(reply) => reply,
             Err(e) => {
                 tracing::error!(%session_id, error = %e, "llm-plugin: LLM call failed");
                 // Publish an error event so the frontend can display the failure.
+                // Note: llm:call_started is published above but call_ended is not — matches the
+                // convention that call_ended only appears on success (see events-milestones.md M3).
                 let error_payload = json!({
                     "session_id": session_id,
                     "original_message_id": msg.id.to_string(),
@@ -357,6 +377,24 @@ async fn process_session(
                 continue;
             }
         };
+
+        let llm_latency_ms = u64::try_from(llm_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let output_tokens_estimate = (reply_text.len() / CHARS_PER_TOKEN).max(1);
+
+        // Publish llm:call_ended after successful LLM response.
+        let _ = bus.publish(Event::new(
+            "plugin:llm",
+            EventType::Custom("llm:call_ended".to_owned()),
+            json!({
+                "session_id": session_id,
+                "model": llm_config.model,
+                "input_tokens_estimate": input_tokens_estimate,
+                "output_tokens_estimate": output_tokens_estimate,
+                "latency_ms": llm_latency_ms,
+                "original_message_id": msg.id.to_string(),
+                "soul_name": soul_name,
+            }),
+        )).await;
 
         // Record assistant reply in history.
         history.push("assistant", &msg.id.to_string(), &reply_text);

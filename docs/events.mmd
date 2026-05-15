@@ -1,0 +1,249 @@
+---
+title: Aman Events System
+---
+
+%% ============================================================================
+%% 1. Event Type Hierarchy
+%% ============================================================================
+
+mindmap
+  root((EventType))
+    Standard
+      FileCreated
+      FileChanged
+      FileDeleted
+      CronTick
+      TimerTick
+      Heartbeat
+      MessageReceived
+      WebhookReceived
+      SystemSignal
+      WorkflowStateChanged
+      SkillLoaded
+      SkillReloaded
+      ConfigChanged
+      SecretRotated
+      InjectionDetected
+    Custom(String)
+      Session_Control
+        SESSION_CLOSE_CMD
+        STOP_GENERATION
+        RETRY_CMD
+        MESSAGE_EDITED
+      Session_Lifecycle
+        session:started
+        session:closed
+      Gateway_Lifecycle
+        gateway:starting
+        gateway:ready
+        gateway:stopping
+      LLM_Plugin
+        message_queued
+        message_dropped
+        history_trimmed
+        llm:call_started
+        llm:call_ended
+        llm_error
+        llm_reply_ready
+        output_blocked
+      Dispatch
+        message:dispatch
+        message:completed
+      Tool
+        tool:invoke
+        tool:completed
+        tool:failed
+      Capability
+        capability_available
+        capability_removed
+        capability_registry_updated
+      Soul
+        soul_changed
+      Workflow_Control
+        retry
+        cancel
+
+%% ============================================================================
+%% 2. Event Flow Architecture
+%% ============================================================================
+
+flowchart TD
+    subgraph Sources["Event Sources"]
+        FS[FileWatchSource<br/>file_watch.rs]
+        Timer[TimerSource<br/>timer.rs]
+        Cron[CronSource<br/>cron.rs]
+        WS[WebhookSource<br/>webhook.rs]
+        Signal[SignalSource<br/>signal.rs]
+        Socket[SocketSource<br/>socket.rs]
+        Chat[ChatPlatformSource<br/>chat-source/lib.rs]
+    end
+
+    subgraph Bus["Event Bus (InMemoryBus / PersistentBus)"]
+        EB[EventBus<br/>publish / subscribe]
+        BP[Backpressure<br/>L1 L2 L3 L4A L4B]
+        DD[Dedup]
+        OV[Overflow-to-Disk]
+        RQ[RetryQueue]
+    end
+
+    subgraph Subscribers["Core Subscribers"]
+        SA[StoreAllEventsHandler<br/>→ EventStore<br/>agent_runtime.rs:903]
+        SD[SkillEventDispatcher<br/>→ skill matching<br/>→ message:dispatch/completed<br/>agent_runtime.rs:422]
+        LP[LLMPlugin<br/>→ MessageReceived<br/>→ llm:call_started/ended<br/>llm-plugin/lib.rs:342]
+    end
+
+    subgraph Producers["Custom Event Producers"]
+        GW[Gateway Daemon<br/>main.rs<br/>gateway:start/ready/stop]
+        HTTP[HTTP Handlers<br/>http.rs<br/>session:started/closed]
+        CR[CapabilityRegistry<br/>agent_runtime.rs:833<br/>capability_*]
+        SX[SoulRuntime<br/>soul/lib.rs:384<br/>soul_changed]
+        WE[WorkflowEngine<br/>workflow/lib.rs<br/>retry / cancel]
+    end
+
+    subgraph Storage["Storage & Observability"]
+        ES[(EventStore<br/>in-memory ring buffer)]
+        DLQ[(Dead Letter Queue<br/>persistence/dlq.rs)]
+        AL[(Audit Log<br/>audit.rs)]
+        DP[Debug Panel<br/>Tauri frontend]
+    end
+
+    Sources -->|poll + publish| EB
+    EB -->|route by filter| Subscribers
+    Producers -->|publish_event| EB
+    WE -->|handle_event| Subscribers
+    SA -->|record all| ES
+    SD -->|message:dispatch/completed| EB
+    LP -->|llm:call_started/ended| EB
+    ES --> DP
+    EB -->|failed delivery| DLQ
+
+    style EB fill:#4a6b8a,color:#fff
+    style Subscribers fill:#2d5a3d,color:#fff
+    style Storage fill:#5a3d2d,color:#fff
+
+%% ============================================================================
+%% 3. Trace Chain Flow
+%% ============================================================================
+
+flowchart LR
+    subgraph TraceChain["Trace Chain (trace_id + parent_event_id)"]
+        direction LR
+        MSG[MessageReceived<br/>trace_id: T]
+        DISPATCH[message:dispatch<br/>trace_id: T<br/>parent: MSG.id]
+        CALL[llm:call_started<br/>trace_id: T<br/>parent: DISPATCH.id]
+        REPLY[llm:call_ended<br/>trace_id: T<br/>parent: CALL.id]
+        COMPLETE[message:completed<br/>trace_id: T<br/>parent: REPLY.id]
+    end
+
+    MSG --> DISPATCH --> CALL --> REPLY --> COMPLETE
+
+    style MSG fill:#4a6b8a,color:#fff
+    style DISPATCH fill:#6a8a4a,color:#fff
+    style CALL fill:#8a6a4a,color:#fff
+    style REPLY fill:#8a4a6a,color:#fff
+    style COMPLETE fill:#4a8a6a,color:#fff
+
+%% ============================================================================
+%% 4. Chat Session Workflow State Machine
+%% ============================================================================
+
+stateDiagram-v2
+    [*] --> ACTIVE: session created
+
+    state ACTIVE {
+        [*] --> Processing: MESSAGE_RECEIVED
+    }
+
+    state PROCESSING {
+        [*] --> IDLE: LLM_REPLY_READY / LLM_STREAM_DONE
+        [*] --> ERROR: LLM_ERROR
+        [*] --> TIMEOUT: STREAM_TIMEOUT (120s)
+        [*] --> CLOSED: SESSION_CLOSE_CMD
+    }
+
+    state IDLE {
+        [*] --> PROCESSING: MESSAGE_RECEIVED
+        [*] --> TIMEOUT: SESSION_TIMEOUT (600s)
+        [*] --> CLOSED: SESSION_END
+    }
+
+    state ERROR {
+        [*] --> RETRYING: RETRY_CMD
+        [*] --> IDLE: SESSION_END
+        [*] --> CLOSED: ABANDON_TIMEOUT (120s)
+    }
+
+    state RETRYING {
+        [*] --> PROCESSING: RETRY_STARTED
+        [*] --> ERROR: RETRY_FAILED
+    }
+
+    state TIMEOUT {
+        [*] --> CLOSED: SESSION_END
+        [*] --> IDLE: MESSAGE_RECEIVED
+    }
+
+    ACTIVE --> TIMEOUT: SESSION_TIMEOUT (300s)
+
+    note right of ACTIVE: Initial session state
+    note right of PROCESSING: LLM is generating
+    note right of IDLE: Waiting for next message
+    note right of ERROR: Needs retry or cancel
+    note right of RETRYING: Auto/manual retry in progress
+    note right of TIMEOUT: Session timed out
+
+%% ============================================================================
+%% 5. Custom Events by Source
+%% ============================================================================
+
+block-beta
+  columns 3
+  block:Gateways:1
+    columns 1
+    GATEWAY("gateway:")
+    G1("gateway:starting")
+    G2("gateway:ready")
+    G3("gateway:stopping")
+  end
+  block:Session:1
+    columns 1
+    SESSION("session:")
+    S1("session:started")
+    S2("session:closed")
+  end
+  block:LLMEvents:1
+    columns 1
+    LLM("llm:")
+    L1("llm:call_started")
+    L2("llm:call_ended")
+  end
+  block:Tools:1
+    columns 1
+    TOOL("tool:")
+    T1("tool:invoke")
+    T2("tool:completed")
+    T3("tool:failed")
+  end
+  block:Messages:1
+    columns 1
+    MSG("message:")
+    M1("message:dispatch")
+    M2("message:completed")
+  end
+  block:Others:1
+    columns 1
+    OTH("other")
+    O1("soul_changed")
+    O2("retry / cancel")
+    O3("capability_*")
+  end
+  block:Llms:1
+    columns 1
+    LLL("llm-plugin:")
+    LA("message_queued")
+    LB("message_dropped")
+    LC("history_trimmed")
+    LD("llm_error")
+    LE("llm_reply_ready")
+    LF("output_blocked")
+  end

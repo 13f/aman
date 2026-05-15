@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
 
@@ -47,16 +48,28 @@
     return "";
   }
 
-  function handleEventProcessed(e: any) {
-    const payload = e.payload;
-    const entry: DebugEventEntry = {
+  function toEntry(payload: any): DebugEventEntry {
+    return {
       timestamp: new Date().toISOString(),
       event_type: payload.event_type ?? "unknown",
       session_id: payload.payload?.session_id ?? "",
       trace_id: payload.trace_id ?? payload.payload?.trace_id,
       channel_type: payload.payload?.channel_type,
     };
-    eventLog = [...eventLog, entry].slice(-MAX_EVENT_LOG);
+  }
+
+  async function fetchDebugEvents() {
+    try {
+      const events: any[] = await invoke("get_debug_events", { limit: 50 });
+      const entries = events.map(toEntry);
+      eventLog = [...entries, ...eventLog].slice(-MAX_EVENT_LOG);
+    } catch {
+      // no runtime running, ignore
+    }
+  }
+
+  function handleEventProcessed(e: any) {
+    eventLog = [...eventLog, toEntry(e.payload)].slice(-MAX_EVENT_LOG);
   }
 
   function handleMetricsUpdated(e: any) {
@@ -85,6 +98,7 @@
   }
 
   onMount(async () => {
+    await fetchDebugEvents();
     unlisteners.push(await listen("event:processed", handleEventProcessed));
     unlisteners.push(await listen("metrics:updated", handleMetricsUpdated));
   });
@@ -101,6 +115,7 @@
       <header class="dp-header">
         <h3>&#x2699; Debug Panel</h3>
         <div class="dp-header-actions">
+          <button class="dp-btn" onclick={fetchDebugEvents} title="Backfill from EventStore">Refresh</button>
           <button class="dp-btn" onclick={exportLog} title="Export as JSON">Export</button>
           <button class="dp-btn" onclick={clearLog} title="Clear event log">Clear</button>
           <button class="dp-btn dp-close" onclick={() => visible = false} title="Close">&times;</button>

@@ -176,3 +176,28 @@ pub struct ChatSessionState {
     /// Optimistic lock version — incremented on each state-changing operation
     pub version: u64,
 }
+
+// ---------------------------------------------------------------------------
+// Multi-agent models (P2+)
+// ---------------------------------------------------------------------------
+
+/// A single LLM provider entry for IPC responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderEntry {
+    pub key: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub has_api_key: bool,
+}
+
+/// A single agent entry for IPC responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentEntry {
+    pub key: String,
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    pub soul_summary: String,
+    pub session_count: u64,
+    pub is_active: bool,
+}

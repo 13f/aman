@@ -1,18 +1,22 @@
 <script lang="ts">
   import "./app.css";
   import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import SkillEditor from "./pages/SkillEditor.svelte";
   import EventViewer from "./pages/EventViewer.svelte";
   import WorkflowBoard from "./pages/WorkflowBoard.svelte";
-  import SoulEditor from "./pages/SoulEditor.svelte";
   import PluginManager from "./pages/PluginManager.svelte";
   import DLQ from "./pages/DLQ.svelte";
   import Chat from "./pages/Chat.svelte";
+  import Providers from "./pages/Providers.svelte";
+  import Agents from "./pages/Agents.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
   let chatAvailable = $state(false);
+  let hasProvider = $state(false);
+  let hasAgent = $state(false);
 
   type Page = { id: string; label: string };
 
@@ -21,14 +25,21 @@
     { id: "skills", label: "Skill Editor" },
     { id: "events", label: "Event Viewer" },
     { id: "workflows", label: "Workflow Board" },
-    { id: "soul", label: "SOUL Editor" },
     { id: "plugins", label: "Plugin Manager" },
     { id: "dlq", label: "DLQ" },
   ];
 
+  const providerPage: Page = { id: "providers", label: "Providers" };
+  const agentPage: Page = { id: "agents", label: "Agents" };
   const chatPage: Page = { id: "chat", label: "Chat" };
 
-  let pages = $derived(chatAvailable ? [...staticPages, chatPage] : staticPages);
+  let pages = $derived(
+    chatAvailable
+      ? [...staticPages, providerPage, agentPage, chatPage]
+      : [...staticPages, providerPage, agentPage, chatPage]
+  );
+
+  let initialLoadDone = $state(false);
 
   async function checkCapabilities() {
     try {
@@ -36,6 +47,24 @@
       chatAvailable = caps.some((c) => c.capability === "chat");
     } catch {
       chatAvailable = false;
+    }
+  }
+
+  async function checkOnboarding() {
+    try {
+      const [hp, ha] = await Promise.all([
+        invoke<boolean>("has_any_provider"),
+        invoke<boolean>("has_any_agent"),
+      ]);
+      hasProvider = hp;
+      hasAgent = ha;
+
+      // Onboarding: if no providers, redirect to providers page
+      if (!hp && currentPage === "dashboard") {
+        currentPage = "providers";
+      }
+    } catch {
+      // Config may not exist yet — that's fine
     }
   }
 
@@ -47,19 +76,43 @@
       chatAvailable = false;
     }
   }
+
+  function handlePageVisited(pageId: string) {
+    // Re-check onboarding state when providers or agents page is visited
+    if (pageId === "providers" || pageId === "agents") {
+      checkOnboarding();
+    }
+  }
+
+  function navigateTo(pageId: string) {
+    currentPage = pageId;
+    handlePageVisited(pageId);
+  }
+
+  onMount(async () => {
+    await checkOnboarding();
+    initialLoadDone = true;
+  });
 </script>
 
 <nav class="sidebar">
   <h1>Aman</h1>
   {#each pages as page}
-    <a
-      href="#"
-      class={currentPage === page.id ? "active" : ""}
-      onclick={(e) => { e.preventDefault(); currentPage = page.id; }}
-    >
-      <span class="status-dot {runtimeRunning ? 'running' : 'stopped'}"></span>
-      {page.label}
-    </a>
+    {#if page.id === "chat" && !runtimeRunning}
+      <span class="sidebar-link disabled" title="Start the runtime first">
+        <span class="status-dot stopped"></span>
+        {page.label}
+      </span>
+    {:else}
+      <a
+        href="#"
+        class={currentPage === page.id ? "active" : ""}
+        onclick={(e) => { e.preventDefault(); navigateTo(page.id); }}
+      >
+        <span class="status-dot {runtimeRunning ? 'running' : 'stopped'}"></span>
+        {page.label}
+      </a>
+    {/if}
   {/each}
 </nav>
 
@@ -72,12 +125,14 @@
     <EventViewer />
   {:else if currentPage === "workflows"}
     <WorkflowBoard />
-  {:else if currentPage === "soul"}
-    <SoulEditor />
   {:else if currentPage === "plugins"}
     <PluginManager />
   {:else if currentPage === "dlq"}
     <DLQ />
+  {:else if currentPage === "providers"}
+    <Providers />
+  {:else if currentPage === "agents"}
+    <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}
     <Chat />
   {/if}

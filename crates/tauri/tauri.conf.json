@@ -1,9 +1,9 @@
 {
-  "productName": "Aman",
+  "productName": "aman",
   "version": "0.1.0",
-  "identifier": "com.aman.desktop",
+  "identifier": "github.13f.aman",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "Aman Agent Manager",
+        "title": "aman",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

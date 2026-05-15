@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDef {
@@ -585,7 +584,7 @@ impl WorkflowEngine {
 
     pub fn create_instance(&self, workflow_name: &str, data: Value) -> AmanResult<WorkflowInstance> {
         let workflow = self.workflow(workflow_name)?;
-        let id = Uuid::now_v7().to_string();
+        let id = xid::new().to_string();
         let mut instance = WorkflowInstance::new(
             id,
             workflow.name.clone(),

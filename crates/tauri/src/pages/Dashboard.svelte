@@ -42,6 +42,8 @@
   let error = $state("");
   let info = $state("");
   let unlisten: (() => void) | null = null;
+  let countdown = $state(0);
+  let countdownTimer: ReturnType<typeof setInterval> | null = null;
 
   async function refreshStatus() {
     try {
@@ -61,7 +63,28 @@
     }
   }
 
+  function clearCountdown() {
+    if (countdownTimer) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+    countdown = 0;
+  }
+
+  function startCountdown(seconds: number) {
+    clearCountdown();
+    countdown = seconds;
+    countdownTimer = setInterval(() => {
+      countdown -= 1;
+      if (countdown <= 0) {
+        clearCountdown();
+        startRuntime();
+      }
+    }, 1000);
+  }
+
   async function startRuntime() {
+    clearCountdown();
     loading = true;
     error = "";
     info = "";
@@ -94,14 +117,18 @@
     }
   }
 
-  onMount(() => {
-    refreshStatus();
+  onMount(async () => {
+    await refreshStatus();
+    if (!status.running) {
+      startCountdown(3);
+    }
     listen<MetricsSnapshot>("metrics:updated", (e) => {
       metrics = e.payload;
     }).then((fn) => { unlisten = fn; });
   });
 
   onDestroy(() => {
+    clearCountdown();
     if (unlisten) unlisten();
   });
 </script>
@@ -115,11 +142,20 @@
       &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
     </p>
   </div>
-  <div style="display:flex;gap:8px;">
+  <div style="display:flex;gap:8px;align-items:center;">
     {#if status.running}
       <button class="danger" onclick={stopRuntime} disabled={loading}>Stop Runtime</button>
     {:else}
-      <button onclick={startRuntime} disabled={loading}>Start Runtime</button>
+      {#if countdown > 0}
+        <span style="font-size:13px;color:var(--accent);font-variant-numeric:tabular-nums;">
+          Auto-start in {countdown}s
+        </span>
+        <button class="secondary" onclick={startRuntime} disabled={loading}>
+          Start Now
+        </button>
+      {:else}
+        <button onclick={startRuntime} disabled={loading}>Start Runtime</button>
+      {/if}
     {/if}
   </div>
 </div>

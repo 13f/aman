@@ -10,6 +10,7 @@ use kernel::event::{Event, EventType};
 use kernel::sanitizer::{InputSanitizer, SanitizeResult, content_hash};
 use persistence::DeadLetterQueue;
 use runtime::{AgentRuntimeBuilder, RuntimePhase};
+use secret::{KeychainBackend, SecretBackend};
 use std::time::Instant;
 use tauri::State;
 
@@ -251,6 +252,22 @@ pub async fn inject_event(
         .await
         .map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+#[tauri::command]
+pub async fn get_debug_events(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let guard = state.runtime.lock().await;
+    let rt = guard
+        .as_ref()
+        .ok_or_else(|| "No runtime running".to_owned())?;
+    let events = rt.event_store().recent(limit.unwrap_or(50));
+    Ok(events
+        .into_iter()
+        .filter_map(|e| serde_json::to_value(&e).ok())
+        .collect())
 }
 
 #[tauri::command]
@@ -653,6 +670,7 @@ pub async fn chat_send_message(
 
         // Check chat capability
         if !rt.has_capability("chat").await {
+            eprintln!("[diag] chat_send_message: no chat capability for session={session_id}");
             return Err("Chat capability not available".to_owned());
         }
 
@@ -755,9 +773,14 @@ pub async fn chat_send_message(
             payload,
         );
         let event_id = event.id;
+        eprintln!("[diag] chat_send_message: publishing event session={session_id} event_id={event_id}");
         rt.publish_event(event)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                eprintln!("[diag] chat_send_message: publish failed session={session_id} error={e}");
+                format!("Publish error: {e}")
+            })?;
+        eprintln!("[diag] chat_send_message: event published session={session_id} event_id={event_id}");
 
         // Update session version after successful publish.
         touch_session(rt, &session_id).await?;
@@ -1322,4 +1345,423 @@ pub async fn chat_trace_chain(
         .collect();
 
     Ok(entries)
+}
+
+// ---------------------------------------------------------------------------
+// Provider management (multi-agent P2) — no runtime required
+// ---------------------------------------------------------------------------
+
+/// Normalize a provider key into an env-var-compatible uppercase identifier.
+fn provider_env_key(key: &str) -> String {
+    key.to_ascii_uppercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Check whether a provider's API key is available.
+/// Checks Keychain first, then env var as fallback.
+fn provider_has_api_key(key: &str) -> bool {
+    // Keychain is the primary store
+    let backend = KeychainBackend;
+    if let Ok(Some(_)) = backend.get(&format!("aman.providers.{key}.api_key")) {
+        return true;
+    }
+    // Env var fallback (runtime override)
+    let env_var = format!("AMAN_PROVIDER_{}_API_KEY", provider_env_key(key));
+    std::env::var(env_var).is_ok()
+}
+
+#[tauri::command]
+pub async fn list_providers() -> Result<Vec<crate::models::ProviderEntry>, String> {
+    let config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    let mut entries: Vec<crate::models::ProviderEntry> = config
+        .providers
+        .into_iter()
+        .map(|(key, p)| {
+            let has_key = provider_has_api_key(&key);
+            crate::models::ProviderEntry {
+                key,
+                display_name: p.display_name,
+                base_url: p.base_url,
+                has_api_key: has_key,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn create_provider(
+    key: String,
+    display_name: String,
+    base_url: String,
+) -> Result<String, String> {
+    if !config::is_valid_identifier(&key) {
+        return Err("Provider key 只能包含英文字母、数字、下划线、短横线".to_owned());
+    }
+
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    if aman_config.providers.contains_key(&key) {
+        return Err(format!("Provider '{key}' 已存在"));
+    }
+
+    aman_config.providers.insert(
+        key.clone(),
+        config::ProviderConfig {
+            display_name,
+            base_url,
+        },
+    );
+
+    let path = default_config_path();
+    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    Ok(format!("Provider '{key}' 已创建"))
+}
+
+#[tauri::command]
+pub async fn update_provider(
+    key: String,
+    display_name: Option<String>,
+    base_url: Option<String>,
+) -> Result<String, String> {
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    let provider = aman_config
+        .providers
+        .get_mut(&key)
+        .ok_or_else(|| format!("Provider '{key}' 不存在"))?;
+
+    if let Some(name) = display_name {
+        provider.display_name = name;
+    }
+    if let Some(url) = base_url {
+        provider.base_url = url;
+    }
+
+    let path = default_config_path();
+    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    Ok(format!("Provider '{key}' 已更新"))
+}
+
+#[tauri::command]
+pub async fn delete_provider(key: String) -> Result<String, String> {
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    if !aman_config.providers.contains_key(&key) {
+        return Err(format!("Provider '{key}' 不存在"));
+    }
+
+    // Check that no agent references this provider.
+    let agents_using: Vec<String> = aman_config
+        .agents
+        .iter()
+        .filter(|(_, a)| a.provider == key)
+        .map(|(k, _)| k.clone())
+        .collect();
+    if !agents_using.is_empty() {
+        return Err(format!(
+            "Provider '{key}' 被以下 Agent 引用，无法删除: {}",
+            agents_using.join(", "),
+        ));
+    }
+
+    aman_config.providers.remove(&key);
+
+    let path = default_config_path();
+    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    Ok(format!("Provider '{key}' 已删除"))
+}
+
+#[tauri::command]
+pub async fn set_provider_api_key(key: String, api_key: String) -> Result<String, String> {
+    // Validate provider exists
+    let aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    if !aman_config.providers.contains_key(&key) {
+        return Err(format!("Provider '{key}' 不存在"));
+    }
+
+    let backend = KeychainBackend;
+    backend
+        .set(&format!("aman.providers.{key}.api_key"), &api_key)
+        .map_err(|e| format!("保存到 Keychain 失败: {e}"))?;
+
+    Ok(format!("Provider '{key}' API Key 已保存到 macOS Keychain"))
+}
+
+#[tauri::command]
+pub async fn has_provider_api_key(key: String) -> Result<bool, String> {
+    // Validate provider exists
+    let aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    if !aman_config.providers.contains_key(&key) {
+        return Err(format!("Provider '{key}' 不存在"));
+    }
+
+    Ok(provider_has_api_key(&key))
+}
+
+/// Called once at app startup. API keys are stored in macOS Keychain,
+/// no env var injection needed.
+pub fn load_secrets_into_env() {}
+
+// ---------------------------------------------------------------------------
+// Agent management (multi-agent P2) — partially requires filesystem config
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn list_agents(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::AgentEntry>, String> {
+    let aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    let active_key = state.active_agent_key.lock().await.clone();
+
+    let mut entries: Vec<crate::models::AgentEntry> = aman_config
+        .agents
+        .into_iter()
+        .map(|(key, agent)| {
+            let summary = crate::agent_fs::soul_summary(&key);
+            // Count session directories on disk (approximate, P4 will use sessions.db).
+            let agent_dir = crate::agent_fs::agents_dir().join(&key).join("sessions");
+            let session_count = agent_dir.exists().then(|| {
+                let mut count = 0u64;
+                if let Ok(entries) = std::fs::read_dir(&agent_dir) {
+                    for entry in entries.flatten() {
+                        if entry.file_type().map_or(false, |t| t.is_dir()) {
+                            count += 1;
+                        }
+                    }
+                }
+                count
+            }).unwrap_or(0);
+
+            let is_active = active_key.as_deref() == Some(&key);
+            crate::models::AgentEntry {
+                key,
+                display_name: agent.display_name,
+                provider: agent.provider,
+                model: agent.model,
+                soul_summary: summary,
+                session_count,
+                is_active,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(entries)
+}
+
+#[tauri::command]
+pub async fn create_agent(
+    key: String,
+    display_name: String,
+    provider: String,
+    model: String,
+    soul_content: String,
+) -> Result<String, String> {
+    if !config::is_valid_identifier(&key) {
+        return Err("Agent key 只能包含英文字母、数字、下划线、短横线".to_owned());
+    }
+
+    // Validate provider exists.
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    if !aman_config.providers.contains_key(&provider) {
+        return Err(format!("Provider '{provider}' 不存在，请先创建 Provider"));
+    }
+    if aman_config.agents.contains_key(&key) {
+        return Err(format!("Agent '{key}' 已存在"));
+    }
+
+    // Create filesystem structure with {name} substituted.
+    let soul_content = soul_content.replace("{name}", &display_name);
+    crate::agent_fs::init_agent_dir(&key, &soul_content)?;
+
+    // Update config.
+    aman_config.agents.insert(
+        key.clone(),
+        config::AgentEntryConfig {
+            display_name,
+            provider,
+            model,
+            system_prompt_override: None,
+        },
+    );
+
+    let path = default_config_path();
+    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    Ok(format!("Agent '{key}' 已创建"))
+}
+
+#[tauri::command]
+pub async fn update_agent(
+    key: String,
+    display_name: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    soul_content: Option<String>,
+    system_prompt_override: Option<Option<String>>,
+) -> Result<String, String> {
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    let agent = aman_config
+        .agents
+        .get_mut(&key)
+        .ok_or_else(|| format!("Agent '{key}' 不存在"))?;
+
+    if let Some(name) = display_name {
+        agent.display_name = name;
+    }
+    if let Some(p) = provider {
+        if !aman_config.providers.contains_key(&p) {
+            return Err(format!("Provider '{p}' 不存在"));
+        }
+        agent.provider = p;
+    }
+    if let Some(m) = model {
+        agent.model = m;
+    }
+    if let Some(override_val) = system_prompt_override {
+        agent.system_prompt_override = override_val;
+    }
+
+    let path = default_config_path();
+    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    // Write soul content separately if provided.
+    if let Some(content) = soul_content {
+        crate::agent_fs::write_soul(&key, &content)?;
+    }
+
+    Ok(format!("Agent '{key}' 已更新"))
+}
+
+#[tauri::command]
+pub async fn delete_agent(
+    key: String,
+) -> Result<String, String> {
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    if !aman_config.agents.contains_key(&key) {
+        return Err(format!("Agent '{key}' 不存在"));
+    }
+
+    // Remove from config.
+    aman_config.agents.remove(&key);
+
+    let path = default_config_path();
+    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    // Remove filesystem directory.
+    let _ = crate::agent_fs::remove_agent_dir(&key);
+
+    Ok(format!("Agent '{key}' 已删除"))
+}
+
+#[tauri::command]
+pub async fn get_agent_soul(key: String) -> Result<String, String> {
+    crate::agent_fs::read_soul(&key)
+}
+
+#[tauri::command]
+pub async fn select_agent(
+    state: State<'_, AppState>,
+    key: String,
+) -> Result<String, String> {
+    // Validate agent exists in config.
+    let aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    if !aman_config.agents.contains_key(&key) {
+        return Err(format!("Agent '{key}' 不存在"));
+    }
+
+    let mut active = state.active_agent_key.lock().await;
+    *active = Some(key.clone());
+    Ok(format!("Agent '{key}' 已激活"))
+}
+
+#[tauri::command]
+pub async fn get_active_agent(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::models::AgentEntry>, String> {
+    let active_key = state.active_agent_key.lock().await.clone();
+    let Some(key) = active_key else {
+        return Ok(None);
+    };
+
+    let aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    match aman_config.agents.get(&key) {
+        Some(agent) => {
+            let summary = crate::agent_fs::soul_summary(&key);
+            Ok(Some(crate::models::AgentEntry {
+                key,
+                display_name: agent.display_name.clone(),
+                provider: agent.provider.clone(),
+                model: agent.model.clone(),
+                soul_summary: summary,
+                session_count: 0,
+                is_active: true,
+            }))
+        }
+        None => {
+            // Config may have been removed while agent was selected.
+            let mut active = state.active_agent_key.lock().await;
+            *active = None;
+            Ok(None)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config/status queries (multi-agent P2)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_aman_config() -> Result<config::AmanConfig, String> {
+    config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))
+}
+
+#[tauri::command]
+pub async fn has_any_provider() -> Result<bool, String> {
+    let config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    Ok(!config.providers.is_empty())
+}
+
+#[tauri::command]
+pub async fn has_any_agent() -> Result<bool, String> {
+    let config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    Ok(!config.agents.is_empty())
+}
+
+#[tauri::command]
+pub async fn get_default_model() -> Result<Option<config::DefaultModelConfig>, String> {
+    let config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    Ok(config.model)
+}
+
+fn default_config_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home).join(".aman").join("config.yaml")
 }

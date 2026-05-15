@@ -31,6 +31,15 @@ pub struct Secret {
 
 pub trait SecretBackend: Send + Sync {
     fn get(&self, key: &str) -> AmanResult<Option<String>>;
+
+    /// Write a secret value. Backends that do not support writes return an error by default.
+    fn set(&self, key: &str, value: &str) -> AmanResult<()> {
+        let _ = (key, value);
+        Err(Error::Unrecoverable {
+            message: format!("backend '{}' does not support writes", self.name()),
+        })
+    }
+
     fn priority(&self) -> u32;
     fn name(&self) -> &'static str;
 }
@@ -191,6 +200,65 @@ impl SecretBackend for VaultCliBackend {
 
     fn name(&self) -> &'static str {
         "vault_cli"
+    }
+}
+
+/// macOS Keychain backend using the `security` CLI tool.
+///
+/// Stores secrets in the user's login keychain. This is the preferred storage
+/// for API keys on macOS — no plaintext file on disk.
+///
+/// The `key` parameter is used as the Keychain label directly (caller
+/// should include the full namespace such as `aman.providers.{name}.api_key`).
+///
+/// Keychain entry layout:
+///   service : "aman"
+///   account : "aman-desktop"
+///   label   : <key>
+#[derive(Debug, Clone)]
+pub struct KeychainBackend;
+
+impl SecretBackend for KeychainBackend {
+    fn get(&self, key: &str) -> AmanResult<Option<String>> {
+        let output = Command::new("security")
+            .arg("find-generic-password")
+            .arg("-a").arg("aman-desktop")
+            .arg("-s").arg("aman")
+            .arg("-l").arg(key)
+            .arg("-w")
+            .output()?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(if value.is_empty() { None } else { Some(value) })
+    }
+
+    fn set(&self, key: &str, value: &str) -> AmanResult<()> {
+        let output = Command::new("security")
+            .arg("add-generic-password")
+            .arg("-a").arg("aman-desktop")
+            .arg("-s").arg("aman")
+            .arg("-l").arg(key)
+            .arg("-w").arg(value)
+            .arg("-U") // update existing item
+            .arg("-A") // allow all apps access without warning
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::Unrecoverable {
+                message: format!("keychain write failed: {stderr}"),
+            });
+        }
+        Ok(())
+    }
+
+    fn priority(&self) -> u32 {
+        30
+    }
+
+    fn name(&self) -> &'static str {
+        "keychain"
     }
 }
 
@@ -1240,5 +1308,41 @@ mod tests {
         assert_eq!(targets[1].calls.len(), 1);
         assert_eq!(targets[0].calls[0], keys);
         assert_eq!(targets[1].calls[0], vec!["DB_URL".to_string()]);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn keychain_backend_roundtrip() {
+        let backend = super::KeychainBackend;
+        let test_key = "aman.test.secret_crate_test";
+
+        // Ensure clean state
+        let _ = std::process::Command::new("security")
+            .arg("delete-generic-password")
+            .arg("-a").arg("aman-desktop")
+            .arg("-s").arg("aman")
+            .arg("-l").arg(test_key)
+            .output();
+
+        // Initially should be None
+        assert_eq!(backend.get(test_key).unwrap(), None);
+
+        // Set and verify
+        backend.set(test_key, "roundtrip_value").unwrap();
+        let result = backend.get(test_key).unwrap();
+        assert_eq!(result, Some("roundtrip_value".to_string()));
+
+        // Update existing
+        backend.set(test_key, "updated_value").unwrap();
+        let result = backend.get(test_key).unwrap();
+        assert_eq!(result, Some("updated_value".to_string()));
+
+        // Cleanup
+        let _ = std::process::Command::new("security")
+            .arg("delete-generic-password")
+            .arg("-a").arg("aman-desktop")
+            .arg("-s").arg("aman")
+            .arg("-l").arg(test_key)
+            .output();
     }
 }

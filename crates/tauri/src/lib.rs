@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![doc = "Tauri desktop integration library for Aman."]
 
+pub mod agent_fs;
 pub mod commands;
 pub mod models;
 pub mod rate_limiter;
@@ -17,6 +18,9 @@ use tokio::time::{interval, Duration};
 /// Called from the binary entry point (`src-tauri/main.rs`).
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load any stored API keys from secrets file into env vars.
+    commands::load_secrets_into_env();
+
     let app_state = AppState::new();
 
     // Clone the inner runtime handle for background tasks before moving
@@ -57,6 +61,7 @@ pub fn run() {
             commands::enable_skill,
             commands::disable_skill,
             commands::inject_event,
+            commands::get_debug_events,
             commands::get_event_trace,
             commands::get_workflow_instances,
             commands::get_workflow_def,
@@ -85,6 +90,26 @@ pub fn run() {
             commands::chat_edit_message,
             commands::chat_validator_health,
             commands::chat_trace_chain,
+            // Multi-agent provider commands (P2)
+            commands::list_providers,
+            commands::create_provider,
+            commands::update_provider,
+            commands::delete_provider,
+            commands::set_provider_api_key,
+            commands::has_provider_api_key,
+            // Multi-agent agent commands (P2)
+            commands::list_agents,
+            commands::create_agent,
+            commands::update_agent,
+            commands::delete_agent,
+            commands::get_agent_soul,
+            commands::select_agent,
+            commands::get_active_agent,
+            // Multi-agent config/status (P2)
+            commands::get_aman_config,
+            commands::has_any_provider,
+            commands::has_any_agent,
+            commands::get_default_model,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar
@@ -93,10 +118,19 @@ pub fn run() {
             let separator = PredefinedMenuItem::separator(handle)?;
             let quit = PredefinedMenuItem::quit(handle, Some("Quit Aman"))?;
             let file_menu = Submenu::with_items(handle, "File", true, &[&reload, &separator, &quit])?;
+            let cut = PredefinedMenuItem::cut(handle, Some("Cut"))?;
+            let copy = PredefinedMenuItem::copy(handle, Some("Copy"))?;
+            let paste = PredefinedMenuItem::paste(handle, Some("Paste"))?;
+            let select_all = PredefinedMenuItem::select_all(handle, Some("Select All"))?;
+            let edit_sep = PredefinedMenuItem::separator(handle)?;
+            let edit_menu = Submenu::with_items(
+                handle, "Edit", true,
+                &[&cut, &copy, &paste, &edit_sep, &select_all],
+            )?;
             let about = PredefinedMenuItem::about(handle, Some("About Aman"), None)?;
             let devtools = MenuItem::with_id(handle, "devtools", "Toggle DevTools", true, Some("CmdOrCtrl+Shift+I"))?;
             let help_menu = Submenu::with_items(handle, "Help", true, &[&about, &devtools])?;
-            let menu = Menu::with_items(handle, &[&file_menu, &help_menu])?;
+            let menu = Menu::with_items(handle, &[&file_menu, &edit_menu, &help_menu])?;
             app.set_menu(menu)?;
 
             let handle1 = app.handle().clone();

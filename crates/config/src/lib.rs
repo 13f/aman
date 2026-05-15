@@ -5,7 +5,7 @@ use kernel::event::{Event, EventType};
 use kernel::{AmanResult, Error};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,9 +22,14 @@ pub enum BusMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeConfig {
+    #[serde(default = "default_drain_timeout")]
     pub drain_timeout_sec: u64,
+    #[serde(default = "default_tool_timeout")]
     pub tool_timeout_sec: u64,
 }
+
+fn default_drain_timeout() -> u64 { 30 }
+fn default_tool_timeout() -> u64 { 60 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
@@ -37,9 +42,14 @@ impl Default for RuntimeConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistenceConfig {
+    #[serde(default = "default_wal_sync")]
     pub wal_sync: String,
+    #[serde(default = "default_checkpoint_interval")]
     pub checkpoint_interval: u64,
 }
+
+fn default_wal_sync() -> String { "fsync".to_string() }
+fn default_checkpoint_interval() -> u64 { 500 }
 
 impl Default for PersistenceConfig {
     fn default() -> Self {
@@ -52,10 +62,15 @@ impl Default for PersistenceConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventBusConfig {
+    #[serde(default)]
     pub mode: BusMode,
+    #[serde(default = "default_max_queue_size")]
     pub max_queue_size: usize,
+    #[serde(default)]
     pub persistence: Option<PersistenceConfig>,
 }
+
+fn default_max_queue_size() -> usize { 10_000 }
 
 impl Default for EventBusConfig {
     fn default() -> Self {
@@ -69,8 +84,11 @@ impl Default for EventBusConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginConfig {
+    #[serde(default = "default_enforce_dep")]
     pub enforce_dependency_check: bool,
 }
+
+fn default_enforce_dep() -> bool { true }
 
 impl Default for PluginConfig {
     fn default() -> Self {
@@ -83,7 +101,9 @@ impl Default for PluginConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct SourceConfig {
+    #[serde(default)]
     pub notify_on_complete: bool,
+    #[serde(default)]
     pub watch_patterns: Vec<String>,
 }
 
@@ -97,24 +117,196 @@ pub struct WorkflowDefinition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WorkflowConfig {
+    #[serde(default)]
     pub definitions: Vec<WorkflowDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct SecurityConfig {
+    #[serde(default)]
     pub risky_capabilities_enabled: bool,
 }
 
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
+    #[serde(default)]
     pub runtime: RuntimeConfig,
+    #[serde(default)]
     pub event_bus: EventBusConfig,
+    #[serde(default)]
     pub plugin: PluginConfig,
+    #[serde(default)]
     pub source: SourceConfig,
+    #[serde(default)]
     pub workflow: WorkflowConfig,
+    #[serde(default)]
     pub security: SecurityConfig,
+}
+
+// ── Multi-Agent config (P1) ──────────────────────────────────────
+
+/// Single LLM provider configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub display_name: String,
+    pub base_url: String,
+}
+
+/// Default LLM model configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultModelConfig {
+    pub default: String,
+    pub provider: String,
+    pub base_url: String,
+}
+
+/// Single agent entry in the multi-agent config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEntryConfig {
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_override: Option<String>,
+}
+
+/// Top-level multi-agent configuration that wraps the existing runtime
+/// config (`AgentConfig`) alongside `providers`, `model`, and `agents`.
+///
+/// YAML layout:
+/// ```yaml
+/// event_bus: ...       # flattened from runtime (AgentConfig)
+/// providers:
+///   openai:
+///     display_name: OpenAI
+///     base_url: https://api.openai.com/v1
+/// model:
+///   default: gpt-5
+///   provider: openai
+///   base_url: https://api.openai.com/v1
+/// agents:
+///   cortana:
+///     display_name: Cortana
+///     provider: openai
+///     model: gpt-5
+///     system_prompt_override: null
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AmanConfig {
+    #[serde(flatten, default)]
+    pub runtime: AgentConfig,
+    #[serde(default, deserialize_with = "deserialize_null_map")]
+    pub providers: HashMap<String, ProviderConfig>,
+    pub model: Option<DefaultModelConfig>,
+    #[serde(default, deserialize_with = "deserialize_null_map")]
+    pub agents: HashMap<String, AgentEntryConfig>,
+}
+
+/// Deserialize a HashMap from a YAML map, treating null/absent as empty.
+fn deserialize_null_map<'de, D, K, V>(deserializer: D) -> Result<HashMap<K, V>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    K: serde::Deserialize<'de> + std::hash::Hash + Eq,
+    V: serde::Deserialize<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum MaybeMap<V> {
+        Some(V),
+        Null,
+    }
+
+    match MaybeMap::<HashMap<K, V>>::deserialize(deserializer)? {
+        MaybeMap::Some(m) => Ok(m),
+        MaybeMap::Null => Ok(HashMap::new()),
+    }
+}
+
+impl Default for AmanConfig {
+    fn default() -> Self {
+        Self {
+            runtime: AgentConfig::default(),
+            providers: HashMap::new(),
+            model: None,
+            agents: HashMap::new(),
+        }
+    }
+}
+
+impl AmanConfig {
+    /// Validate the entire multi-agent config, returning warnings.
+    /// Checks runtime validity + provider/agent key rules + provider references.
+    pub fn validate_full(&self) -> AmanResult<Vec<String>> {
+        let mut warnings = self.runtime.validate()?;
+
+        for key in self.providers.keys() {
+            if !is_valid_identifier(key) {
+                return Err(Error::config_invalid(format!(
+                    "Provider key '{key}' 只能包含英文字母、数字、下划线、短横线"
+                )));
+            }
+        }
+
+        for key in self.agents.keys() {
+            if !is_valid_identifier(key) {
+                return Err(Error::config_invalid(format!(
+                    "Agent key '{key}' 只能包含英文字母、数字、下划线、短横线"
+                )));
+            }
+        }
+
+        for (agent_key, agent) in &self.agents {
+            if !self.providers.contains_key(&agent.provider) {
+                warnings.push(format!(
+                    "Agent '{agent_key}' 的 provider '{}' 未在 providers 中定义",
+                    agent.provider
+                ));
+            }
+        }
+
+        Ok(warnings)
+    }
+
+    /// Load config from `~/.aman/config.yaml`.
+    pub fn from_default_path() -> AmanResult<Self> {
+        let path = default_config_path();
+        Self::from_file(&path)
+    }
+
+    /// Load and validate config from an explicit file path.
+    pub fn from_file(path: &Path) -> AmanResult<Self> {
+        let content = fs::read_to_string(path)
+            .map_err(|e| Error::config_invalid(format!("读取 {}: {e}", path.display())))?;
+        let config: AmanConfig = serde_yaml::from_str(&content)
+            .map_err(|e| Error::config_invalid(format!("解析 config.yaml 失败: {e}")))?;
+        config.validate_full()?;
+        Ok(config)
+    }
+
+    /// Serialize and write config to disk, creating parent directories if needed.
+    pub fn save(&self, path: &Path) -> AmanResult<()> {
+        let content = serde_yaml::to_string(self)
+            .map_err(|e| Error::config_invalid(format!("序列化配置失败: {e}")))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, &content)?;
+        Ok(())
+    }
+}
+
+/// Provider/Agent key must be non-empty and contain only ASCII alphanumeric,
+/// underscore or hyphen.
+pub fn is_valid_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn default_config_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".aman").join("config.yaml")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,7 +752,7 @@ fn collect_changed_fields(path: &str, before: &Value, after: &Value, output: &mu
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentConfig, BusMode, ConfigLoader, ConfigReloader};
+    use super::{AgentConfig, AmanConfig, BusMode, ConfigLoader, ConfigReloader};
     use std::fs;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -737,5 +929,184 @@ runtime:
         );
 
         let _ = fs::remove_file(file);
+    }
+
+    // ── Multi-agent config (P1) tests ────────────────────────
+
+    #[test]
+    fn is_valid_identifier_accepts_legal_keys() {
+        assert!(super::is_valid_identifier("cortana"));
+        assert!(super::is_valid_identifier("deepseek-v4-pro"));
+        assert!(super::is_valid_identifier("my_agent_1"));
+        assert!(super::is_valid_identifier("a"));
+        assert!(super::is_valid_identifier("ABC-123_def"));
+    }
+
+    #[test]
+    fn is_valid_identifier_rejects_illegal_keys() {
+        assert!(!super::is_valid_identifier(""));
+        assert!(!super::is_valid_identifier("my agent"));
+        assert!(!super::is_valid_identifier("agent/foo"));
+        assert!(!super::is_valid_identifier("space key"));
+        assert!(!super::is_valid_identifier("中文"));
+        assert!(!super::is_valid_identifier("emoji🔥"));
+    }
+
+    #[test]
+    fn aman_config_validate_full_rejects_invalid_provider_key() {
+        let mut config = AmanConfig::default();
+        config.runtime.runtime.drain_timeout_sec = 10;
+        config.runtime.runtime.tool_timeout_sec = 20;
+        config.providers.insert(
+            "bad provider!".to_string(),
+            super::ProviderConfig {
+                display_name: "Bad".to_string(),
+                base_url: "https://example.com".to_string(),
+            },
+        );
+
+        let error = config.validate_full().expect_err("should fail");
+        assert!(
+            error.to_string().contains("只能包含英文字母"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn aman_config_validate_full_rejects_invalid_agent_key() {
+        let mut config = AmanConfig::default();
+        config.runtime.runtime.drain_timeout_sec = 10;
+        config.runtime.runtime.tool_timeout_sec = 20;
+        config.providers.insert(
+            "valid".to_string(),
+            super::ProviderConfig {
+                display_name: "Valid".to_string(),
+                base_url: "https://example.com".to_string(),
+            },
+        );
+        config.agents.insert(
+            "".to_string(),
+            super::AgentEntryConfig {
+                display_name: "Empty".to_string(),
+                provider: "valid".to_string(),
+                model: "gpt-5".to_string(),
+                system_prompt_override: None,
+            },
+        );
+
+        let error = config.validate_full().expect_err("should fail");
+        assert!(
+            error.to_string().contains("只能包含英文字母"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn aman_config_validate_full_warns_missing_provider() {
+        let mut config = AmanConfig::default();
+        config.runtime.runtime.drain_timeout_sec = 10;
+        config.runtime.runtime.tool_timeout_sec = 20;
+        config.agents.insert(
+            "orphan".to_string(),
+            super::AgentEntryConfig {
+                display_name: "Orphan".to_string(),
+                provider: "nonexistent".to_string(),
+                model: "gpt-5".to_string(),
+                system_prompt_override: None,
+            },
+        );
+
+        let warnings = config.validate_full().expect("should warn not error");
+        assert!(
+            warnings.iter().any(|w| w.contains("orphan") && w.contains("nonexistent")),
+            "expected warning about missing provider, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn aman_config_validate_full_passes_healthy_config() {
+        let mut config = AmanConfig::default();
+        config.runtime.runtime.drain_timeout_sec = 10;
+        config.runtime.runtime.tool_timeout_sec = 20;
+        config.providers.insert(
+            "openai".to_string(),
+            super::ProviderConfig {
+                display_name: "OpenAI".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+            },
+        );
+        config.model = Some(super::DefaultModelConfig {
+            default: "gpt-5".to_string(),
+            provider: "openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+        });
+        config.agents.insert(
+            "cortana".to_string(),
+            super::AgentEntryConfig {
+                display_name: "Cortana".to_string(),
+                provider: "openai".to_string(),
+                model: "gpt-5".to_string(),
+                system_prompt_override: None,
+            },
+        );
+
+        let warnings = config.validate_full().expect("should pass");
+        assert!(warnings.is_empty(), "expected no warnings, got {warnings:?}");
+    }
+
+    #[test]
+    fn aman_config_save_and_from_file_roundtrip() {
+        let yaml = r#"
+runtime:
+  drain_timeout_sec: 30
+  tool_timeout_sec: 60
+event_bus:
+  mode: persistent
+  max_queue_size: 500
+providers:
+  openai:
+    display_name: OpenAI
+    base_url: https://api.openai.com/v1
+model:
+  default: gpt-5
+  provider: openai
+  base_url: https://api.openai.com/v1
+agents:
+  cortana:
+    display_name: Cortana
+    provider: openai
+    model: gpt-5
+"#;
+        let path = write_temp_file(yaml);
+        let config = AmanConfig::from_file(&path).expect("should parse config");
+
+        assert_eq!(config.runtime.event_bus.mode, BusMode::Persistent);
+        assert_eq!(config.runtime.event_bus.max_queue_size, 500);
+        assert_eq!(config.providers.len(), 1);
+        assert!(config.providers.contains_key("openai"));
+        assert_eq!(
+            config.providers["openai"].display_name,
+            "OpenAI"
+        );
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.agents["cortana"].provider, "openai");
+
+        // Round-trip: save → re-read
+        let save_path = write_temp_file("");
+        config.save(&save_path).expect("should save");
+        let reloaded = AmanConfig::from_file(&save_path).expect("should re-parse");
+        assert_eq!(reloaded.providers.len(), 1);
+        assert_eq!(reloaded.agents.len(), 1);
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(save_path);
+    }
+
+    #[test]
+    fn aman_config_default_is_empty() {
+        let config = AmanConfig::default();
+        assert!(config.providers.is_empty());
+        assert!(config.model.is_none());
+        assert!(config.agents.is_empty());
     }
 }

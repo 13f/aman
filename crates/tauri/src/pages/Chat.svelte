@@ -34,10 +34,8 @@
     status: "idle" | "processing";
   }
 
-  let sessions = $state<Session[]>([
-    { id: "default", title: "Default Chat", messageCount: 0, status: "idle" },
-  ]);
-  let activeSessionId = $state("default");
+  let sessions = $state<Session[]>([]);
+  let activeSessionId = $state("");
   let messages = $state<Message[]>([]);
   let inputText = $state("");
   let isLoading = $state(false);
@@ -59,6 +57,37 @@
     isLoading || messages.some(m => m.sessionId === activeSessionId && (m.status === "pending" || m.status === "streaming"))
   );
 
+  // Agent selector state
+  let agentList = $state<Array<{ key: string; display_name: string }>>([]);
+  let activeAgentKey = $state("");
+
+  async function loadAgents() {
+    try {
+      const agents = await invoke<Array<{ key: string; display_name: string; is_active: boolean }>>("list_agents");
+      agentList = agents;
+      const active = agents.find(a => a.is_active);
+      if (active) {
+        activeAgentKey = active.key;
+      } else if (agents.length > 0) {
+        // Auto-select first agent when none is active.
+        activeAgentKey = agents[0].key;
+        handleAgentChange();
+      }
+    } catch (e) {
+      showToast("error", `Failed to load agents: ${e}`);
+    }
+  }
+
+  async function handleAgentChange() {
+    if (!activeAgentKey) return;
+    try {
+      await invoke("select_agent", { key: activeAgentKey });
+      showToast("info", `Switched to agent: ${activeAgentKey}`);
+    } catch (e) {
+      showToast("error", `Failed to select agent: ${e}`);
+    }
+  }
+
   function updateMessage(id: string, patch: Partial<Message>) {
     messages = messages.map(m => (m.id === id ? { ...m, ...patch } : m));
   }
@@ -77,8 +106,15 @@
     updateSession(id, { messageCount: count });
   }
 
-  function createSession() {
-    const id = crypto.randomUUID();
+  async function createSession() {
+    let id: string;
+    try {
+      id = await invoke<string>("chat_session_create");
+    } catch {
+      // Runtime not running — create a local-only session
+      // Short 12-char hex ID similar to xid format
+      id = Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    }
     const count = sessions.length + 1;
     sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle" }];
     activeSessionId = id;
@@ -241,10 +277,12 @@
     );
   }
 
-  function handleEventProcessed(e: any) {
+  async function handleEventProcessed(e: any) {
     const payload = e.payload;
     const eventType: string = payload.event_type;
     const data = payload.payload;
+    console.log("[Chat] event:", eventType, "sid:", data?.session_id, "active:", activeSessionId);
+    if (eventType === "llm_reply_ready") console.log("[Chat] reply data:", JSON.stringify(data));
 
     // Capability events use different payload structure
     if (eventType === "capability_removed") {
@@ -257,8 +295,12 @@
         // but DON'T clear persistent state (history can be restored later)
         messages = messages.filter(m => m.sessionId !== activeSessionId);
         sessions = sessions.filter(s => s.status === "idle");
-        // Reset to default session
-        activeSessionId = "default";
+        // Pick the first remaining session, or create a new one
+        if (sessions.length > 0) {
+          activeSessionId = sessions[0].id;
+        } else {
+          await createSession();
+        }
       } else {
         showToast("info", `Capability removed: ${cap}`);
       }
@@ -334,6 +376,9 @@
       case "output_blocked":
         handleOutputBlocked(data);
         break;
+      case "llm_error":
+        handleLlmError(data);
+        break;
       case "history_trimmed":
       case "HISTORY_TRIMMED":
         handleHistoryTrimmed(data);
@@ -356,6 +401,21 @@
       timestamp: new Date().toISOString(),
       sessionId: sid,
       status: "completed" as MessageStatus,
+    }];
+  }
+
+  function handleLlmError(data: any) {
+    // data = { session_id, original_message_id, error, soul_name }
+    isLoading = false;
+    updateMessage(data.original_message_id, { status: "error" });
+    updateSessionStatus(data.session_id, "idle");
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event",
+      content: `**LLM Error:** ${data.error ?? "Unknown error"}`,
+      timestamp: new Date().toISOString(),
+      sessionId: data.session_id,
+      status: "error" as MessageStatus,
     }];
   }
 
@@ -491,7 +551,7 @@
 
   async function handleSessionNew(_args: string[]) {
     try {
-      const id = await invoke<string>("chat:session_create");
+      const id = await invoke<string>("chat_session_create");
       const count = sessions.length + 1;
       sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle" }];
       activeSessionId = id;
@@ -506,7 +566,7 @@
 
   async function handleSessionClose(_args: string[]) {
     try {
-      await invoke("chat:session_close", { sessionId: activeSessionId });
+      await invoke("chat_session_close", { sessionId: activeSessionId });
       messages = [...messages, {
         id: crypto.randomUUID(), type: "system_event",
         content: `Session closed.`,
@@ -529,7 +589,7 @@
       m.sessionId === activeSessionId && m.type.startsWith("assistant") && m.traceId
     );
     try {
-      const msgId = await invoke<string>("chat:retry_last", {
+      const msgId = await invoke<string>("chat_retry_last", {
         sessionId: activeSessionId,
         expectedVersion: null,
       });
@@ -569,7 +629,7 @@
     }
     const targetMsg = sessionMsgs[msgIndex - 1];
     try {
-      const eventId = await invoke<string>("chat:edit_message", {
+      const eventId = await invoke<string>("chat_edit_message", {
         sessionId: activeSessionId,
         messageId: targetMsg.id,
         text: newText,
@@ -580,7 +640,7 @@
       // Mark the edited message
       updateMessage(targetMsg.id, { content: `${targetMsg.content}\n*(edited → will resend)*` });
       // Send the new text as a fresh message with trace_prev pointing to the original
-      await invoke<string>("chat:send_message", {
+      await invoke<string>("chat_send_message", {
         text: newText,
         sessionId: activeSessionId,
         tracePrev: targetMsg.traceId ?? null,
@@ -636,7 +696,7 @@
       return;
     }
     try {
-      const chain = await invoke<Array<{ event_id: string; event_type: string; trace_id: string; timestamp_ms: number; session_id: string }>>("chat:trace_chain", { traceId });
+      const chain = await invoke<Array<{ event_id: string; event_type: string; trace_id: string; timestamp_ms: number; session_id: string }>>("chat_trace_chain", { traceId });
       if (chain.length === 0) {
         messages = [...messages, {
           id: crypto.randomUUID(), type: "system_event",
@@ -802,7 +862,7 @@
     }, 500);
 
     try {
-      await invoke("chat:stop_generation", { sessionId: activeSessionId });
+      await invoke("chat_stop_generation", { sessionId: activeSessionId });
     } catch { /* non-fatal */ }
 
     isLoading = false;
@@ -835,7 +895,7 @@
     updateSessionStatus(activeSessionId, "processing");
 
     try {
-      const eventId = await invoke<string>("chat:send_message", { text, sessionId: activeSessionId });
+      const eventId = await invoke<string>("chat_send_message", { text, sessionId: activeSessionId });
       messages = messages.map(m => (m.id === tempId ? { ...m, id: eventId, status: "sent" } : m));
     } catch (err: any) {
       // Handle rate limiting (429)
@@ -875,7 +935,22 @@
   onMount(async () => {
     const unsub1 = await listen("event:processed", handleEventProcessed);
     unlisteners.push(unsub1);
+
+    // Check chat capability directly in case we missed runtime events.
+    try {
+      const caps = await invoke<{ capability: string }[]>("get_capabilities");
+      chatCapabilityAvailable = caps.some((c) => c.capability === "chat");
+    } catch {
+      chatCapabilityAvailable = false;
+    }
+
+    // Ensure there's at least one session. Try backend first, fall back to local.
+    if (sessions.length === 0) {
+      await createSession();
+    }
+
     await loadSoulInfo();
+    await loadAgents();
     window.addEventListener("keydown", handleGlobalKeydown);
   });
 
@@ -928,6 +1003,15 @@
         {/if}
       </h2>
       <div class="chat-header-end">
+        {#if agentList.length === 0}
+          <span class="dim">No agents configured</span>
+        {:else}
+          <select class="agent-selector" bind:value={activeAgentKey} onchange={handleAgentChange}>
+            {#each agentList as agent}
+              <option value={agent.key}>{agent.display_name}</option>
+            {/each}
+          </select>
+        {/if}
         <span class="chat-status" class:loading={isProcessing}>
           {isProcessing ? "Processing..." : "Ready"}
         </span>
@@ -964,6 +1048,9 @@
             class:interrupted={msg.status === "interrupted"}
             class:archived={isArchived}
           >
+            {#if isAssistant}
+              <span class="msg-label">Aman</span>
+            {/if}
             {#if isToolCall && msg.toolCall}
               <ToolCallCard tool={msg.toolCall} />
             {:else}
@@ -1052,8 +1139,8 @@
   .session-panel {
     width: 240px;
     min-width: 240px;
-    background: var(--surface-secondary, #f5f5f5);
-    border-right: 1px solid var(--border, #ddd);
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
   }
@@ -1063,7 +1150,7 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px;
-    border-bottom: 1px solid var(--border, #ddd);
+    border-bottom: 1px solid var(--border);
   }
 
   .panel-header h2 {
@@ -1073,18 +1160,21 @@
   }
 
   .new-btn {
-    width: 24px;
-    height: 24px;
-    border: 1px solid var(--border, #ddd);
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
     border-radius: 4px;
-    background: var(--surface, #fff);
+    background: var(--bg);
     cursor: pointer;
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1;
   }
 
   .new-btn:hover {
-    background: var(--accent-light, #dbeafe);
+    background: var(--bg-hover);
   }
 
   .session-list {
@@ -1107,22 +1197,22 @@
   }
 
   .session-item:hover {
-    background: var(--surface-hover, #e8e8e8);
+    background: var(--bg-hover);
   }
 
   .session-item.active {
-    background: var(--accent-light, #dbeafe);
+    background: var(--bg-hover);
+    border-left: 2px solid var(--accent);
   }
 
   .session-title {
     font-size: 13px;
     font-weight: 500;
-    color: var(--text-primary, #111);
   }
 
   .session-meta {
     font-size: 11px;
-    color: var(--text-secondary, #666);
+    color: var(--fg-dim);
     margin-top: 2px;
   }
 
@@ -1138,8 +1228,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    border-bottom: 1px solid var(--border, #ddd);
-    background: var(--surface, #fff);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
   }
 
   .chat-header h2 {
@@ -1162,7 +1252,7 @@
 
   .chat-status {
     font-size: 12px;
-    color: var(--text-secondary, #666);
+    color: var(--fg-dim);
   }
 
   .chat-status.loading {
@@ -1181,7 +1271,7 @@
     align-items: center;
     justify-content: center;
     height: 100%;
-    color: var(--text-secondary, #666);
+    color: var(--fg-dim);
     text-align: center;
   }
 
@@ -1192,13 +1282,13 @@
   }
 
   .empty-state .hint.warning {
-    color: var(--warning, #b45309);
+    color: var(--yellow);
     opacity: 1;
     font-weight: 500;
   }
 
   .message {
-    margin-bottom: 12px;
+    margin-bottom: 6px;
     display: flex;
     flex-direction: column;
   }
@@ -1222,9 +1312,9 @@
 
   .msg-bubble {
     max-width: 70%;
-    padding: 8px 14px;
-    border-radius: 12px;
-    background: var(--surface-secondary, #f0f0f0);
+    padding: 10px 16px;
+    border-radius: 18px;
+    line-height: 1.5;
   }
 
   .message.user .msg-bubble {
@@ -1234,14 +1324,15 @@
   }
 
   .message.assistant .msg-bubble {
-    background: var(--surface-secondary, #f0f0f0);
+    background: var(--bubble-assistant, #2a2d3a);
+    color: var(--fg);
     border-bottom-left-radius: 4px;
   }
 
   .message.system .msg-bubble {
     background: transparent;
     font-size: 12px;
-    color: var(--text-secondary, #888);
+    color: var(--fg-dim);
   }
 
   .msg-bubble p {
@@ -1252,12 +1343,20 @@
 
   .msg-time {
     font-size: 11px;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
     margin-top: 2px;
     padding: 0 4px;
     display: flex;
     gap: 4px;
     align-items: center;
+  }
+
+  .msg-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-dim);
+    margin-bottom: 2px;
+    padding: 0 4px;
   }
 
   .msg-status {
@@ -1273,12 +1372,12 @@
   }
 
   .interrupted .msg-bubble {
-    border: 1px dashed var(--warning, #f59e0b);
+    border: 1px dashed var(--yellow);
   }
 
   .msg-bubble.status-error {
     border-color: var(--red, #ef4444);
-    background: var(--red-light, #fef2f2);
+    background: rgba(248,113,113,0.15);
   }
 
   .msg-bubble.streaming {
@@ -1299,18 +1398,34 @@
     vertical-align: text-bottom;
   }
 
+  .agent-selector {
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: var(--fg);
+    font-size: 12px;
+    cursor: pointer;
+    margin-right: 8px;
+    max-width: 140px;
+  }
+  .agent-selector:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
   .input-area {
     display: flex;
     gap: 8px;
     padding: 12px 16px;
-    border-top: 1px solid var(--border, #ddd);
-    background: var(--surface, #fff);
+    border-top: 1px solid var(--border);
+    background: var(--bg);
   }
 
   .input-area textarea {
     flex: 1;
     padding: 8px 12px;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border);
     border-radius: 8px;
     resize: none;
     font-family: inherit;
@@ -1321,7 +1436,7 @@
   }
 
   .input-area textarea:disabled {
-    background: var(--surface-secondary, #f5f5f5);
+    background: var(--bg-card);
   }
 
   .send-btn {
@@ -1358,15 +1473,15 @@
   }
 
   .stop-btn:hover {
-    background: var(--red-light, #fef2f2);
+    background: rgba(248,113,113,0.15);
   }
 
   .rate-limited-btn {
     padding: 8px 20px;
-    border: 1px solid var(--warning, #f59e0b);
+    border: 1px solid var(--yellow);
     border-radius: 8px;
-    background: var(--warning-light, #fef3c7);
-    color: var(--warning, #b45309);
+    background: rgba(250,204,21,0.15);
+    color: var(--yellow);
     font-size: 13px;
     font-weight: 600;
     cursor: not-allowed;
@@ -1383,18 +1498,18 @@
 
   .debug-toggle-btn {
     padding: 2px 8px;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border);
     border-radius: 4px;
     background: transparent;
-    color: var(--text-secondary, #888);
+    color: var(--fg-dim);
     font-size: 16px;
     cursor: pointer;
     line-height: 1.4;
   }
 
   .debug-toggle-btn:hover {
-    background: var(--surface-hover, #eee);
-    color: var(--text-primary, #111);
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   .soul-detail-popup {
@@ -1404,8 +1519,8 @@
     z-index: 100;
     width: 300px;
     padding: 12px 16px;
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #ddd);
+    background: var(--bg);
+    border: 1px solid var(--border);
     border-radius: 8px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.12);
     font-size: 12px;
@@ -1420,18 +1535,18 @@
 
   .soul-desc {
     margin: 0 0 6px 0;
-    color: var(--text-secondary, #666);
+    color: var(--fg-dim);
   }
 
   .soul-hint {
     margin: 0;
     font-size: 11px;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
   }
 
   .soul-hint code {
     font-size: 10px;
-    background: var(--surface-secondary, #f5f5f5);
+    background: var(--bg-card);
     padding: 1px 4px;
     border-radius: 3px;
   }
@@ -1449,7 +1564,7 @@
     padding: 1px 5px;
     border-radius: 3px;
     background: var(--surface-secondary, #e8e8e8);
-    color: var(--text-secondary, #888);
+    color: var(--fg-dim);
     text-transform: uppercase;
     font-weight: 500;
   }
@@ -1458,8 +1573,8 @@
     font-size: 9px;
     padding: 1px 5px;
     border-radius: 3px;
-    background: var(--warning-light, #fef3c7);
-    color: var(--warning, #b45309);
+    background: rgba(250,204,21,0.15);
+    color: var(--yellow);
     font-weight: 500;
   }
 
@@ -1468,7 +1583,7 @@
     padding: 1px 5px;
     border-radius: 3px;
     background: var(--surface-secondary, #e8e8e8);
-    color: var(--text-secondary, #777);
+    color: var(--fg-dim);
     font-family: "SF Mono", "Fira Code", monospace;
     font-size: 9px;
     cursor: help;

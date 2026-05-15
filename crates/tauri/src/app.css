@@ -54,6 +54,14 @@ body { min-height: 100vh; }
   background: var(--bg-hover);
   color: var(--fg);
 }
+.sidebar .disabled {
+  display: block;
+  padding: 10px 20px;
+  color: var(--border);
+  font-size: 14px;
+  cursor: default;
+  opacity: 0.5;
+}
 .sidebar .status-dot {
   display: inline-block;
   width: 8px;

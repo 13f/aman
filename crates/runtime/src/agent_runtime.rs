@@ -11,8 +11,8 @@ use persistence::{DeadLetterQueue, InMemoryDeadLetterQueue, PersistentBus, WalSy
 use plugin::{PluginExportRegistrar, PluginInstaller, PluginLoader};
 use serde_json::json;
 use secret::{
-    AwsSecretsManagerCliBackend, EnvSecretBackend, OnePasswordCliBackend, SecretCacheFallbackConfig,
-    SecretResolver, SecretResolverConfig, VaultCliBackend,
+    AwsSecretsManagerCliBackend, EnvSecretBackend, KeychainBackend, OnePasswordCliBackend,
+    SecretBackend, SecretCacheFallbackConfig, SecretResolver, SecretResolverConfig, VaultCliBackend,
 };
 use source::{CronManager, CronSource, SourceRegistry};
 use std::collections::{BTreeSet, HashMap};
@@ -350,6 +350,38 @@ impl AgentRuntimeBuilder {
         let plugin_installer = Arc::new(PluginInstaller::new(self.runtime_dir.join("plugins")));
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
+        // Register built-in LLM skill and hook it to the EventBus.
+        // The LlmSkill consumes MESSAGE_RECEIVED events (published by chat_send_message)
+        // and produces llm_reply_ready / llm_tool_call / output_blocked events.
+        let llm_config = build_llm_config();
+        let llm_skill: Arc<dyn Skill> = Arc::new(llm_skill::LlmSkill::new(Arc::clone(&bus), llm_config));
+        let _ = skills.register(llm_skill);
+
+        // Subscribe a handler that dispatches every event to matching skills.
+        use kernel::context::SkillContext;
+        use kernel::context::BaseContext;
+        struct SkillEventDispatcher {
+            executor: skill::SkillExecutor,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for SkillEventDispatcher {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let ctx = SkillContext {
+                    base: BaseContext::new(event.metadata.trace_id),
+                    skill_name: None,
+                    soul_name: None,
+                };
+                self.executor.execute_matching(event, ctx).await;
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter::default(),
+            Box::new(SkillEventDispatcher {
+                executor: skill::SkillExecutor::new(Arc::clone(&skills)),
+            }),
+        ));
+
         let (soul_runtime, soul_manager) = if let Some(soul_file) = self.soul_file {
             let runtime = SoulRuntime::new(soul::Soul::from_file(&soul_file)?);
             let mut manager = runtime.build_hot_reload_manager(soul_file)?;
@@ -659,6 +691,13 @@ impl AgentRuntime {
 
     /// Check if a specific capability is available.
     pub async fn has_capability(&self, capability: &str) -> bool {
+        // The chat capability is available whenever a chat-platform source is
+        // configured, even if no plugin explicitly registers it.
+        if capability == "chat" {
+            if self.chat_sender.is_some() {
+                return true;
+            }
+        }
         self.capability_registry
             .read()
             .await
@@ -687,6 +726,19 @@ impl AgentRuntime {
             new_registry.insert(capability.clone(), entries);
         }
         drop(loader);
+        // When the chat-platform source is configured, always register the
+        // "chat" capability regardless of plugin declarations.
+        if self.chat_sender.is_some() {
+            new_registry.entry("chat".to_owned()).or_insert_with(|| {
+                vec![CapabilityEntry {
+                    capability: "chat".to_owned(),
+                    plugin: "chat-platform".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    status: CapabilityStatus::Healthy,
+                }]
+            });
+        }
+
         *registry = new_registry;
 
         let new_caps: Vec<String> = registry.keys().cloned().collect();
@@ -1487,9 +1539,6 @@ fn test_secret_backend() -> Option<Box<dyn SecretBackend>> {
 }
 
 #[cfg(test)]
-use secret::SecretBackend;
-
-#[cfg(test)]
 struct TestSecretBackend;
 
 #[cfg(test)]
@@ -1572,4 +1621,94 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
         base: kernel::context::BaseContext::new(kernel::types::TraceId::new()),
         source_name: Some("cron_manager".to_owned()),
     }
+}
+
+/// Build LlmConfig from AmanConfig (providers, model / agents) + Keychain API key.
+///
+/// Reads the default `aman.model` first. If not set, falls back to the first
+/// configured agent (provider + model) so users who only configure agents
+/// (without a top-level `model:` in config.yaml) still get a working LLM config.
+/// If no agent is found either, falls back to environment variables.
+fn build_llm_config() -> llm_skill::LlmConfig {
+    if let Ok(aman) = config::AmanConfig::from_default_path() {
+        // Priority 1: default model config
+        if let Some(model) = &aman.model {
+            let provider_key = &model.provider;
+            let base_url = aman
+                .providers
+                .get(provider_key)
+                .map(|p| p.base_url.clone())
+                .unwrap_or_else(|| model.base_url.clone());
+            let api_key = get_llm_api_key(provider_key);
+            let key_len = api_key.len();
+            tracing::info!(
+                provider = %provider_key,
+                model = %model.default,
+                api_key_len = key_len,
+                "build_llm_config: using default model config"
+            );
+            return llm_skill::LlmConfig {
+                provider_key: provider_key.clone(),
+                api_key,
+                base_url,
+                model: model.default.clone(),
+            };
+        }
+
+        // Priority 2: first configured agent (provider + model)
+        for (_key, agent) in &aman.agents {
+            if let Some(provider_config) = aman.providers.get(&agent.provider) {
+                let api_key = get_llm_api_key(&agent.provider);
+                let key_len = api_key.len();
+                tracing::info!(
+                    agent_key = %_key,
+                    provider = %agent.provider,
+                    model = %agent.model,
+                    api_key_len = key_len,
+                    "build_llm_config: using agent config"
+                );
+                return llm_skill::LlmConfig {
+                    provider_key: agent.provider.clone(),
+                    api_key,
+                    base_url: provider_config.base_url.clone(),
+                    model: agent.model.clone(),
+                };
+            }
+            tracing::warn!(
+                agent_key = %_key,
+                provider = %agent.provider,
+                "build_llm_config: agent provider not found in config"
+            );
+        }
+    }
+    // Priority 3: environment variables
+    let api_key = std::env::var("AMAN_DEFAULT_API_KEY").unwrap_or_default();
+    tracing::info!(
+        api_key_len = api_key.len(),
+        "build_llm_config: using env var fallback"
+    );
+    llm_skill::LlmConfig {
+        provider_key: "default".to_owned(),
+        api_key,
+        base_url: std::env::var("AMAN_DEFAULT_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned()),
+        model: std::env::var("AMAN_DEFAULT_MODEL").unwrap_or_else(|_| "gpt-4o".to_owned()),
+    }
+}
+
+/// Get API key for a provider from Keychain, falling back to env var.
+fn get_llm_api_key(provider_key: &str) -> String {
+    let backend = KeychainBackend;
+    if let Ok(Some(key)) = backend.get(&format!("aman.providers.{provider_key}.api_key")) {
+        return key;
+    }
+    let env_var = format!(
+        "AMAN_PROVIDER_{}_API_KEY",
+        provider_key
+            .to_ascii_uppercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+            .collect::<String>()
+    );
+    std::env::var(env_var).unwrap_or_default()
 }

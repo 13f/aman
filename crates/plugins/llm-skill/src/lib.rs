@@ -16,10 +16,17 @@ use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
 
 const DEFAULT_MAX_QUEUE_PER_SESSION: usize = 10;
-const SIMULATED_LLM_DELAY_MS: u64 = 100;
+
+/// Configuration for the LLM provider connection.
+#[derive(Debug, Clone)]
+pub struct LlmConfig {
+    pub provider_key: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
 
 // --- History trimming configuration (§15) ---
 /// Default context window in tokens (conservative; real LLM provides this).
@@ -156,18 +163,20 @@ pub struct LlmSkill {
     processed_events: Arc<Mutex<HashSet<String>>>,
     /// OutputValidator for LLM reply security checks (§8.2).
     validator: OutputValidator,
+    /// LLM provider configuration.
+    llm_config: LlmConfig,
 }
 
 impl LlmSkill {
     /// Create a new LLM Skill with the default max queue depth (10 per session).
     #[must_use]
-    pub fn new(bus: Arc<dyn EventBus>) -> Self {
-        Self::with_config(bus, DEFAULT_MAX_QUEUE_PER_SESSION)
+    pub fn new(bus: Arc<dyn EventBus>, llm_config: LlmConfig) -> Self {
+        Self::with_config(bus, llm_config, DEFAULT_MAX_QUEUE_PER_SESSION)
     }
 
     /// Create a new LLM Skill with a custom max queue depth per session.
     #[must_use]
-    pub fn with_config(bus: Arc<dyn EventBus>, max_queue_per_session: usize) -> Self {
+    pub fn with_config(bus: Arc<dyn EventBus>, llm_config: LlmConfig, max_queue_per_session: usize) -> Self {
         Self {
             name: "llm-skill".to_owned(),
             version: Version::new(0, 1, 0),
@@ -181,6 +190,7 @@ impl LlmSkill {
             max_queue: max_queue_per_session.max(1),
             processed_events: Arc::new(Mutex::new(HashSet::new())),
             validator: OutputValidator::new(),
+            llm_config,
         }
     }
 
@@ -264,7 +274,7 @@ impl Skill for LlmSkill {
                     if entry.get().is_closed() {
                         // Session processor ended; replace with new channel.
                         let (tx, rx) = mpsc::channel(self.max_queue);
-                        spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone());
+                        spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone(), self.llm_config.clone());
                         entry.insert(tx.clone());
                         tx
                     } else {
@@ -273,7 +283,7 @@ impl Skill for LlmSkill {
                 }
                 Entry::Vacant(entry) => {
                     let (tx, rx) = mpsc::channel(self.max_queue);
-                    spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone());
+                    spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone(), self.llm_config.clone());
                     entry.insert(tx.clone());
                     tx
                 }
@@ -330,6 +340,7 @@ async fn process_session(
     bus: Arc<dyn EventBus>,
     session_id: String,
     validator: OutputValidator,
+    llm_config: LlmConfig,
 ) {
     let mut history = SessionHistory::new();
 
@@ -338,7 +349,7 @@ async fn process_session(
             .payload
             .get("text")
             .and_then(|v| v.as_str())
-            .unwrap_or(""); // TODO: Replace with real LLM call (T4.3).
+            .unwrap_or("");
 
         // Record user message in history before processing.
         history.push("user", &msg.id.to_string(), text);
@@ -392,10 +403,27 @@ async fn process_session(
         // Propagate trace_prev from incoming event to reply (T7.7, §11.6).
         let trace_prev = msg.payload.get("trace_prev").and_then(|v| v.as_str()).map(|s| s.to_owned());
 
-        // Simulate LLM processing delay.
-        sleep(Duration::from_millis(SIMULATED_LLM_DELAY_MS)).await;
-
-        let reply_text = format!("Echo: {text}");
+        // Call LLM via rig.
+        let reply_text = match call_llm(text, &soul_prompt, &llm_config).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                tracing::error!(%session_id, error = %e, "llm-skill: LLM call failed");
+                // Publish an error event so the frontend can display the failure.
+                let error_payload = json!({
+                    "session_id": session_id,
+                    "original_message_id": msg.id.to_string(),
+                    "error": format!("LLM request failed: {e}"),
+                    "soul_name": soul_name,
+                });
+                let error_event = Event::new(
+                    "skill:llm",
+                    EventType::Custom("llm_error".to_owned()),
+                    error_payload,
+                );
+                let _ = bus.publish(error_event).await;
+                continue;
+            }
+        };
 
         // Record assistant reply in history.
         history.push("assistant", &msg.id.to_string(), &reply_text);
@@ -465,14 +493,38 @@ async fn process_session(
     }
 }
 
+/// Call the LLM via rig's OpenAI-compatible client.
+async fn call_llm(text: &str, soul_prompt: &str, config: &LlmConfig) -> Result<String, String> {
+    use rig_core::client::CompletionClient;
+    use rig_core::completion::Prompt;
+
+    let client = rig_core::providers::openai::CompletionsClient::builder()
+        .api_key(&config.api_key)
+        .base_url(&config.base_url)
+        .build()
+        .map_err(|e| format!("failed to build rig client: {e}"))?;
+
+    let mut agent_builder = client.agent(&config.model);
+    if !soul_prompt.is_empty() {
+        agent_builder = agent_builder.preamble(soul_prompt);
+    }
+
+    let agent = agent_builder.build();
+    agent
+        .prompt(text)
+        .await
+        .map_err(|e| format!("LLM prompt failed: {e}"))
+}
+
 fn spawn_session_processor(
     rx: mpsc::Receiver<Event>,
     bus: Arc<dyn EventBus>,
     session_id: String,
     validator: OutputValidator,
+    llm_config: LlmConfig,
 ) {
     tokio::spawn(async move {
-        process_session(rx, bus, session_id, validator).await;
+        process_session(rx, bus, session_id, validator, llm_config).await;
     });
 }
 
@@ -482,6 +534,16 @@ mod tests {
     use kernel::context::BaseContext;
     use kernel::types::TraceId;
     use test_utils::fake_event_bus::{FakeBusConfig, FakeEventBus};
+    use tokio::time::{sleep, Duration};
+
+    fn test_llm_config() -> LlmConfig {
+        LlmConfig {
+            provider_key: "test".to_owned(),
+            api_key: "test-key".to_owned(),
+            base_url: "http://localhost:99999/nonexistent".to_owned(),
+            model: "test-model".to_owned(),
+        }
+    }
 
     fn make_message_event(session_id: &str, text: &str) -> Event {
         Event::new(
@@ -505,7 +567,7 @@ mod tests {
     #[tokio::test]
     async fn accepts_message_received_event() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone());
+        let skill = LlmSkill::new(bus.clone(), test_llm_config());
         let event = make_message_event("session-1", "hello");
         let ctx = skill_context();
 
@@ -524,22 +586,18 @@ mod tests {
             Some("session-1")
         );
 
-        // Should eventually produce an LLM reply
+        // Should eventually produce an LLM error (no real endpoint in tests)
         sleep(Duration::from_millis(200)).await;
-        let replies = bus.events_matching(|e| {
-            e.event_type == EventType::Custom("llm_reply_ready".to_owned())
+        let errors = bus.events_matching(|e| {
+            e.event_type == EventType::Custom("llm_error".to_owned())
         });
-        assert_eq!(replies.len(), 1, "should produce one LLM reply");
-        assert_eq!(
-            replies[0].payload["reply"].as_str(),
-            Some("Echo: hello")
-        );
+        assert_eq!(errors.len(), 1, "should produce one LLM error");
     }
 
     #[tokio::test]
     async fn rejects_event_without_session_id() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone());
+        let skill = LlmSkill::new(bus.clone(), test_llm_config());
         let event = Event::new("chat:platform", EventType::MessageReceived, json!({"text": "hi"}));
         let ctx = skill_context();
 
@@ -553,7 +611,7 @@ mod tests {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
         // max_queue = 1 so the second message is dropped (first is being processed by the
         // background task, occupying the channel capacity).
-        let skill = LlmSkill::with_config(bus.clone(), 1);
+        let skill = LlmSkill::with_config(bus.clone(), test_llm_config(), 1);
         let ctx = skill_context();
 
         // First message occupies the channel.
@@ -591,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn processes_messages_sequentially_per_session() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone());
+        let skill = LlmSkill::new(bus.clone(), test_llm_config());
         let ctx = skill_context();
 
         // Send two messages for the same session.
@@ -607,18 +665,16 @@ mod tests {
         // Wait for both to be processed (2 * 100ms + margin).
         sleep(Duration::from_millis(300)).await;
 
-        let replies = bus.events_matching(|e| {
-            e.event_type == EventType::Custom("llm_reply_ready".to_owned())
+        let errors = bus.events_matching(|e| {
+            e.event_type == EventType::Custom("llm_error".to_owned())
         });
-        assert_eq!(replies.len(), 2, "both messages should produce replies");
-        assert_eq!(replies[0].payload["reply"].as_str(), Some("Echo: first"));
-        assert_eq!(replies[1].payload["reply"].as_str(), Some("Echo: second"));
+        assert_eq!(errors.len(), 2, "both messages should produce LLM errors");
     }
 
     #[tokio::test]
     async fn different_sessions_processed_independently() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone());
+        let skill = LlmSkill::new(bus.clone(), test_llm_config());
         let ctx = skill_context();
 
         skill
@@ -632,17 +688,18 @@ mod tests {
 
         sleep(Duration::from_millis(200)).await;
 
-        let replies = bus.events_matching(|e| {
-            e.event_type == EventType::Custom("llm_reply_ready".to_owned())
+        let errors = bus.events_matching(|e| {
+            e.event_type == EventType::Custom("llm_error".to_owned())
         });
-        assert_eq!(replies.len(), 2);
-        assert!(replies.iter().any(|e| e.payload["reply"] == json!("Echo: from a")));
-        assert!(replies.iter().any(|e| e.payload["reply"] == json!("Echo: from b")));
+        assert_eq!(errors.len(), 2);
     }
 
     #[tokio::test]
     async fn metadata_defaults() {
-        let skill = LlmSkill::new(Arc::new(FakeEventBus::new(FakeBusConfig::default())));
+        let skill = LlmSkill::new(
+            Arc::new(FakeEventBus::new(FakeBusConfig::default())),
+            test_llm_config(),
+        );
         assert_eq!(skill.name(), "llm-skill");
         assert_eq!(skill.version(), &Version::new(0, 1, 0));
         assert!(!skill.description().is_empty());
@@ -657,7 +714,7 @@ mod tests {
     #[tokio::test]
     async fn custom_max_queue_config() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::with_config(bus, 5);
+        let skill = LlmSkill::with_config(bus, test_llm_config(), 5);
         assert_eq!(skill.max_queue_per_session(), 5);
     }
 
@@ -782,13 +839,11 @@ mod tests {
     #[tokio::test]
     async fn history_trimmed_event_published_when_threshold_exceeded() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone());
+        let skill = LlmSkill::new(bus.clone(), test_llm_config());
         let ctx = skill_context();
         let long_text = "X".repeat(4096); // ≈1024 tokens per message
 
         // Send enough messages to trigger trimming.
-        // 3 pairs of user+assistant = 6 messages × 1024 chars ≈ 6144 tokens,
-        // which exceeds 4096 × 0.8 = 3277 token threshold.
         for i in 0..6 {
             skill
                 .execute(make_message_event("trim-session", &long_text), ctx.clone())
@@ -834,7 +889,7 @@ mod tests {
     #[tokio::test]
     async fn short_conversation_does_not_trigger_trim() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone());
+        let skill = LlmSkill::new(bus.clone(), test_llm_config());
         let ctx = skill_context();
 
         // Short messages should not trigger trimming.
@@ -857,9 +912,9 @@ mod tests {
             trimmed_events.len()
         );
 
-        let replies = bus.events_matching(|e| {
-            e.event_type == EventType::Custom("llm_reply_ready".to_owned())
+        let errors = bus.events_matching(|e| {
+            e.event_type == EventType::Custom("llm_error".to_owned())
         });
-        assert_eq!(replies.len(), 3, "all 3 messages should produce replies");
+        assert_eq!(errors.len(), 3, "all 3 messages should produce LLM errors");
     }
 }

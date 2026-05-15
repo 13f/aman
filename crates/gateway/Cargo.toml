@@ -11,9 +11,28 @@ description = "Aman Gateway Daemon — standalone background process for the age
 workspace = true
 
 [dependencies]
+axum = { version = "0.8.6", features = ["multipart"] }
+async-trait.workspace = true
+chat-source = { path = "../plugins/chat-source", version = "0.1.0" }
 config = { path = "../config", version = "0.1.0" }
-runtime = { path = "../runtime", version = "0.1.0" }
+event-bus = { path = "../event-bus", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
-tokio = { version = "1", features = ["rt-multi-thread", "signal", "rt", "macros"] }
+llm-plugin = { path = "../plugins/llm-plugin", version = "0.1.0" }
+persistence = { path = "../persistence", version = "0.1.0" }
+plugin = { path = "../plugin", version = "0.1.0" }
+pollster.workspace = true
+prometheus.workspace = true
+secret = { path = "../secret", version = "0.1.0" }
+soul = { path = "../soul", version = "0.1.0" }
+source = { path = "../source", version = "0.1.0" }
+skill = { path = "../skill", version = "0.1.0" }
+tool = { path = "../tool", version = "0.1.0" }
+workflow = { path = "../workflow", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = "0.9.34"
+tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "signal", "sync", "macros", "time"] }
+tower = { version = "0.5.2", features = ["util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true

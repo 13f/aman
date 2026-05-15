@@ -661,9 +661,9 @@ name = "cli"
 version = "0.1.0"
 dependencies = [
  "config",
+ "gateway",
  "kernel",
  "reqwest 0.12.28",
- "runtime",
  "serde_json",
  "serde_yaml",
  "tokio",
@@ -1744,12 +1744,31 @@ dependencies = [
 name = "gateway"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
+ "chat-source",
  "config",
+ "event-bus",
  "kernel",
- "runtime",
+ "llm-plugin",
+ "persistence",
+ "plugin",
+ "pollster",
+ "prometheus",
+ "secret",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "skill",
+ "soul",
+ "source",
  "tokio",
+ "tool",
+ "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "workflow",
 ]
 
 [[package]]
@@ -4418,40 +4437,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtime"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "chat-source",
- "config",
- "criterion",
- "event-bus",
- "kernel",
- "llm-plugin",
- "persistence",
- "plugin",
- "pollster",
- "prometheus",
- "reqwest 0.12.28",
- "secret",
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "skill",
- "soul",
- "source",
- "tokio",
- "tool",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "workflow",
-]
-
-[[package]]
 name = "rusqlite"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4722,10 +4707,10 @@ version = "0.1.0"
 dependencies = [
  "config",
  "event-bus",
+ "gateway",
  "kernel",
  "persistence",
  "plugin",
- "runtime",
  "secret",
  "skill",
  "soul",

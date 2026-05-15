@@ -1,5 +1,5 @@
 use config::AgentConfig;
-use runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use serde_json::json;
 use std::fs;
 use std::process::Command;

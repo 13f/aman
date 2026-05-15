@@ -1,5 +1,5 @@
 use config::AgentConfig;
-use runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use std::process::Command;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

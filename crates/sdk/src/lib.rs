@@ -34,8 +34,8 @@ pub use persistence;
 /// Plugin lifecycle
 pub use plugin;
 
-/// Agent runtime
-pub use runtime;
+/// Agent runtime (re-exported from gateway crate)
+pub use gateway::runtime;
 
 /// Secret management
 pub use secret;
@@ -60,7 +60,7 @@ pub mod prelude {
 
     pub use kernel::prelude::*;
 
-    pub use runtime::{
+    pub use gateway::runtime::{
         serve, AgentRuntime, AgentRuntimeBuilder, HttpServerConfig, HttpServerHandle, RuntimePhase,
         RuntimeStatus,
     };

@@ -10,7 +10,7 @@
 //!   gateway [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]
 
 use config::ConfigLoader;
-use runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;

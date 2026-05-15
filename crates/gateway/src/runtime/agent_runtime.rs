@@ -28,8 +28,8 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
-use crate::{AuditLogger, EventStore};
-use crate::SoulRuntime;
+use super::{AuditLogger, EventStore};
+use super::SoulRuntime;
 use soul::SoulHotReloadManager;
 use tracing::instrument;
 use workflow::{
@@ -157,7 +157,7 @@ impl AgentRuntimeBuilder {
     }
 
     pub fn build(self) -> AmanResult<Arc<AgentRuntime>> {
-        crate::init_tracing();
+        super::init_tracing();
         std::fs::create_dir_all(&self.runtime_dir)?;
 
         let dlq = Arc::new(InMemoryDeadLetterQueue::new(5));
@@ -167,7 +167,7 @@ impl AgentRuntimeBuilder {
 
         let inflight_pipelines = Arc::new(AtomicUsize::new(0));
         let inflight_skills = Arc::new(AtomicUsize::new(0));
-        let metrics = crate::metrics::MetricsRegistry::new();
+        let metrics = super::metrics::MetricsRegistry::new();
         let audit_for_hook = Arc::clone(&audit);
         let (bus, persistent_bus) =
             build_runtime_bus(&config, &self.runtime_dir, config.event_bus.max_queue_size, Some(
@@ -524,7 +524,7 @@ pub struct AgentRuntime {
     startup_pause: Duration,
     inflight_pipelines: Arc<AtomicUsize>,
     inflight_skills: Arc<AtomicUsize>,
-    metrics: crate::metrics::MetricsRegistry,
+    metrics: super::metrics::MetricsRegistry,
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
     chat_sender: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
 }
@@ -706,7 +706,7 @@ impl AgentRuntime {
     }
 
     #[must_use]
-    pub fn metrics(&self) -> &crate::metrics::MetricsRegistry {
+    pub fn metrics(&self) -> &super::metrics::MetricsRegistry {
         &self.metrics
     }
 
@@ -1512,7 +1512,7 @@ fn secret_resolver_config(runtime_dir: &Path) -> SecretResolverConfig {
 mod tests {
     use super::resolve_secrets_in_config;
     use config::AgentConfig;
-    use crate::AuditLogger;
+    use super::super::AuditLogger;
 
     #[test]
     fn resolve_secrets_replaces_placeholders() {

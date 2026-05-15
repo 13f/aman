@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use config::{ConfigLoader, AgentConfig};
-use runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;

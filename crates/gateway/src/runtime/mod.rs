@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
-#![doc = "Runtime orchestration and control plane for Aman."]
+#![doc = "Runtime orchestration and control plane for Aman (inlined into gateway)."]
 
 mod agent_runtime;
 mod audit;
-mod http;
 mod event_store;
+mod http;
 mod metrics;
 mod soul_runtime;
 mod tracing_setup;

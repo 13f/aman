@@ -2860,21 +2860,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "llm-provider-openai"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "kernel",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "test-utils",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "llm-skill"
+name = "llm-plugin"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2887,6 +2873,20 @@ dependencies = [
  "serde_json",
  "test-utils",
  "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "llm-provider-openai"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "kernel",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "test-utils",
  "tokio",
  "tracing",
 ]
@@ -4432,7 +4432,7 @@ dependencies = [
  "criterion",
  "event-bus",
  "kernel",
- "llm-skill",
+ "llm-plugin",
  "persistence",
  "plugin",
  "pollster",

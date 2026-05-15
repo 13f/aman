@@ -1,13 +1,16 @@
 #![forbid(unsafe_code)]
-#![doc = "LLM Skill — processes MESSAGE_RECEIVED events with per-session serial queue."]
+#![doc = "LLM Plugin — processes MESSAGE_RECEIVED events with per-session serial queue."]
 
 use async_trait::async_trait;
-use event_bus::EventBus;
-use kernel::context::SkillContext;
+use event_bus::{EventBus, EventHandler, SubscriptionFilter, SubscriptionId};
+use kernel::context::PluginContext;
 use kernel::event::{Event, EventType};
-use kernel::skill::{Skill, TriggerCondition};
+use kernel::plugin::{Plugin, PluginDependency};
+use kernel::skill::Skill;
+use kernel::source::EventSource;
+use kernel::tool::Tool;
 use kernel::validator::{OutputValidator, ValidationOutcome};
-use kernel::{AmanResult, Error};
+use kernel::AmanResult;
 use serde::Serialize;
 use semver::Version;
 use serde_json::json;
@@ -145,114 +148,27 @@ impl SessionHistory {
     }
 }
 
-/// LLM Skill with per-session serial event processing.
-///
-/// Each unique `session_id` extracted from `MESSAGE_RECEIVED` event payload
-/// gets its own `mpsc::channel` and a background task that processes events
-/// one at a time. If a session's queue reaches capacity, new messages are
-/// dropped and a `message_dropped` event is published.
-pub struct LlmSkill {
-    name: String,
-    version: Version,
-    description: String,
-    triggers: Vec<TriggerCondition>,
-    bus: Arc<dyn EventBus>,
+/// Event handler that routes MESSAGE_RECEIVED events into per-session queues.
+struct LlmEventHandler {
     sessions: Arc<Mutex<HashMap<String, mpsc::Sender<Event>>>>,
     max_queue: usize,
-    /// Set of event UUIDs already processed (for WAL replay dedup, §9.2).
     processed_events: Arc<Mutex<HashSet<String>>>,
-    /// OutputValidator for LLM reply security checks (§8.2).
+    bus: Arc<dyn EventBus>,
     validator: OutputValidator,
-    /// LLM provider configuration.
     llm_config: LlmConfig,
 }
 
-impl LlmSkill {
-    /// Create a new LLM Skill with the default max queue depth (10 per session).
-    #[must_use]
-    pub fn new(bus: Arc<dyn EventBus>, llm_config: LlmConfig) -> Self {
-        Self::with_config(bus, llm_config, DEFAULT_MAX_QUEUE_PER_SESSION)
-    }
-
-    /// Create a new LLM Skill with a custom max queue depth per session.
-    #[must_use]
-    pub fn with_config(bus: Arc<dyn EventBus>, llm_config: LlmConfig, max_queue_per_session: usize) -> Self {
-        Self {
-            name: "llm-skill".to_owned(),
-            version: Version::new(0, 1, 0),
-            description: "Processes messages via LLM with per-session serial queue".to_owned(),
-            triggers: vec![TriggerCondition {
-                event_types: vec![EventType::MessageReceived],
-                ..Default::default()
-            }],
-            bus,
-            sessions: Arc::new(Mutex::new(HashMap::new())),
-            max_queue: max_queue_per_session.max(1),
-            processed_events: Arc::new(Mutex::new(HashSet::new())),
-            validator: OutputValidator::new(),
-            llm_config,
-        }
-    }
-
-    /// Maximum number of queued messages per session.
-    #[must_use]
-    pub fn max_queue_per_session(&self) -> usize {
-        self.max_queue
-    }
-
-    /// Drain all active sessions: close every per-session channel.
-    /// Returns the number of sessions that were active.
-    /// Background `process_session` tasks exit naturally when all senders
-    /// are dropped and their `rx.recv()` returns `None`.
-    pub fn drain_sessions(&self) -> usize {
-        let mut sessions = self.sessions.lock().expect("sessions lock");
-        let count = sessions.len();
-        sessions.clear(); // drop all senders → receivers get None → tasks exit
-        count
-    }
-}
-
 #[async_trait]
-impl Skill for LlmSkill {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn version(&self) -> &Version {
-        &self.version
-    }
-
-    fn description(&self) -> &str {
-        &self.description
-    }
-
-    fn triggers(&self) -> &[TriggerCondition] {
-        &self.triggers
-    }
-
-    fn drain(&self) -> usize {
-        self.drain_sessions()
-    }
-
-    async fn execute(&self, mut event: Event, ctx: SkillContext) -> AmanResult<()> {
-        // Snapshot SOUL at interaction boundary (§5.2 of architect doc):
-        // capture the current SOUL name and system prompt so the entire
-        // interaction unit (tool calls → final reply) uses a consistent snapshot.
-        if let Some(soul_name) = &ctx.soul_name {
-            event.payload["soul_name"] = json!(soul_name);
-        }
-        if let Some(soul_prompt) = ctx.base.extensions.get("soul.system_prompt") {
-            event.payload["soul_system_prompt"] = soul_prompt.clone();
-        }
-
-        let session_id = event
+impl EventHandler for LlmEventHandler {
+    async fn handle(&self, event: Event) -> AmanResult<()> {
+        let session_id = match event
             .payload
             .get("session_id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| Error::ConfigInvalid {
-                message: "MESSAGE_RECEIVED event missing `session_id`".to_owned(),
-            })?
-            .to_owned();
+        {
+            Some(id) => id.to_owned(),
+            None => return Ok(()), // skip events without session_id
+        };
 
         let event_id = event.id;
 
@@ -260,7 +176,6 @@ impl Skill for LlmSkill {
         {
             let mut processed = self.processed_events.lock().expect("processed_events lock");
             if !processed.insert(event_id.to_string()) {
-                // Already processed this event — skip (idempotent replay).
                 return Ok(());
             }
         }
@@ -272,7 +187,6 @@ impl Skill for LlmSkill {
             match sessions.entry(session_id.clone()) {
                 Entry::Occupied(mut entry) => {
                     if entry.get().is_closed() {
-                        // Session processor ended; replace with new channel.
                         let (tx, rx) = mpsc::channel(self.max_queue);
                         spawn_session_processor(rx, self.bus.clone(), session_id.clone(), self.validator.clone(), self.llm_config.clone());
                         entry.insert(tx.clone());
@@ -296,7 +210,7 @@ impl Skill for LlmSkill {
                 let _ = self
                     .bus
                     .publish(Event::new(
-                        "skill:llm",
+                        "plugin:llm",
                         EventType::Custom("message_queued".to_owned()),
                         json!({
                             "session_id": session_id,
@@ -310,7 +224,7 @@ impl Skill for LlmSkill {
                 let _ = self
                     .bus
                     .publish(Event::new(
-                        "skill:llm",
+                        "plugin:llm",
                         EventType::Custom("message_dropped".to_owned()),
                         json!({
                             "session_id": session_id,
@@ -322,7 +236,6 @@ impl Skill for LlmSkill {
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Closed(_event)) => {
-                // Channel was just replaced — practically impossible but handle gracefully.
                 tracing::warn!(%session_id, "session channel closed immediately after creation");
                 Ok(())
             }
@@ -378,7 +291,7 @@ async fn process_session(
                 let remaining_count = history.messages.len();
                 let trim_id = history.next_trim_id(&msg.id.to_string());
                 let trimmed_event = Event::new(
-                    "skill:llm",
+                    "plugin:llm",
                     EventType::Custom("history_trimmed".to_owned()),
                     json!({
                         "session_id": session_id,
@@ -407,7 +320,7 @@ async fn process_session(
         let reply_text = match call_llm(text, &soul_prompt, &llm_config).await {
             Ok(reply) => reply,
             Err(e) => {
-                tracing::error!(%session_id, error = %e, "llm-skill: LLM call failed");
+                tracing::error!(%session_id, error = %e, "llm-plugin: LLM call failed");
                 // Publish an error event so the frontend can display the failure.
                 let error_payload = json!({
                     "session_id": session_id,
@@ -416,7 +329,7 @@ async fn process_session(
                     "soul_name": soul_name,
                 });
                 let error_event = Event::new(
-                    "skill:llm",
+                    "plugin:llm",
                     EventType::Custom("llm_error".to_owned()),
                     error_payload,
                 );
@@ -443,16 +356,16 @@ async fn process_session(
                     reply_payload["trace_id"] = json!(msg.metadata.trace_id.to_string());
                 }
                 let reply = Event::new(
-                    "skill:llm",
+                    "plugin:llm",
                     EventType::Custom("llm_reply_ready".to_owned()),
                     reply_payload,
                 );
                 if let Err(e) = bus.publish(reply).await {
-                    tracing::warn!(%session_id, error = %e, "llm-skill: failed to publish reply");
+                    tracing::warn!(%session_id, error = %e, "llm-plugin: failed to publish reply");
                 }
             }
             ValidationOutcome::Fail { matched_rules, reason } => {
-                tracing::warn!(%session_id, matched = ?matched_rules, "llm-skill: output validation failed");
+                tracing::warn!(%session_id, matched = ?matched_rules, "llm-plugin: output validation failed");
                 let mut blocked_payload = json!({
                     "session_id": session_id,
                     "original_message_id": msg.id.to_string(),
@@ -464,14 +377,14 @@ async fn process_session(
                     blocked_payload["trace_prev"] = json!(prev);
                 }
                 let blocked = Event::new(
-                    "skill:llm",
+                    "plugin:llm",
                     EventType::Custom("output_blocked".to_owned()),
                     blocked_payload,
                 );
                 let _ = bus.publish(blocked).await;
             }
             ValidationOutcome::Error { message } => {
-                tracing::warn!(%session_id, error = %message, "llm-skill: validator error (fail_closed)");
+                tracing::warn!(%session_id, error = %message, "llm-plugin: validator error (fail_closed)");
                 let mut blocked_payload = json!({
                     "session_id": session_id,
                     "original_message_id": msg.id.to_string(),
@@ -483,7 +396,7 @@ async fn process_session(
                     blocked_payload["trace_prev"] = json!(prev);
                 }
                 let blocked = Event::new(
-                    "skill:llm",
+                    "plugin:llm",
                     EventType::Custom("output_blocked".to_owned()),
                     blocked_payload,
                 );
@@ -528,11 +441,121 @@ fn spawn_session_processor(
     });
 }
 
+/// LLM Plugin — subscribes to MESSAGE_RECEIVED events and processes them
+/// with per-session serial queues.
+///
+/// Loaded via PluginLoader during startup. Subscribes to the EventBus
+/// directly in `on_load()`, bypassing the Skill dispatch system entirely.
+pub struct LlmPlugin {
+    name: String,
+    version: Version,
+    bus: Arc<dyn EventBus>,
+    sessions: Arc<Mutex<HashMap<String, mpsc::Sender<Event>>>>,
+    max_queue: usize,
+    processed_events: Arc<Mutex<HashSet<String>>>,
+    validator: OutputValidator,
+    llm_config: LlmConfig,
+    subscription_id: Mutex<Option<SubscriptionId>>,
+}
+
+impl LlmPlugin {
+    #[must_use]
+    pub fn new(bus: Arc<dyn EventBus>, llm_config: LlmConfig) -> Self {
+        Self {
+            name: "llm-plugin".to_owned(),
+            version: Version::new(0, 1, 0),
+            bus,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            max_queue: DEFAULT_MAX_QUEUE_PER_SESSION,
+            processed_events: Arc::new(Mutex::new(HashSet::new())),
+            validator: OutputValidator::new(),
+            llm_config,
+            subscription_id: Mutex::new(None),
+        }
+    }
+
+    /// Number of currently active sessions.
+    #[must_use]
+    pub fn active_session_count(&self) -> usize {
+        self.sessions.lock().expect("sessions lock").len()
+    }
+
+    /// Drain all active sessions: close every per-session channel.
+    pub fn drain_sessions(&self) -> usize {
+        let mut sessions = self.sessions.lock().expect("sessions lock");
+        let count = sessions.len();
+        sessions.clear();
+        count
+    }
+}
+
+#[async_trait]
+impl Plugin for LlmPlugin {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn version(&self) -> &Version {
+        &self.version
+    }
+
+    fn dependencies(&self) -> &[PluginDependency] {
+        &[]
+    }
+
+    async fn on_load(&mut self, _ctx: PluginContext) -> AmanResult<()> {
+        let handler = Box::new(LlmEventHandler {
+            sessions: Arc::clone(&self.sessions),
+            max_queue: self.max_queue,
+            processed_events: Arc::clone(&self.processed_events),
+            bus: Arc::clone(&self.bus),
+            validator: self.validator.clone(),
+            llm_config: self.llm_config.clone(),
+        });
+        let filter = SubscriptionFilter {
+            event_types: Some(vec![EventType::MessageReceived]),
+            ..SubscriptionFilter::default()
+        };
+        let id = self.bus.subscribe(filter, handler).await?;
+        *self.subscription_id.lock().expect("subscription_id lock") = Some(id);
+        tracing::info!("llm-plugin: subscribed to MESSAGE_RECEIVED events");
+        Ok(())
+    }
+
+    async fn on_unload(&mut self) -> AmanResult<()> {
+        // Unsubscribe from bus first (drop the lock before the await)
+        let sub_id = {
+            self.subscription_id.lock().expect("subscription_id lock").take()
+        };
+        if let Some(id) = sub_id {
+            self.bus.unsubscribe(id).await;
+        }
+        // Then drain remaining sessions
+        let drained = self.drain_sessions();
+        tracing::info!(drained, "llm-plugin: unloaded, sessions drained");
+        Ok(())
+    }
+
+    async fn on_dependency_unloading(&self, _dep_name: &str) -> AmanResult<()> {
+        Ok(())
+    }
+
+    fn event_sources(&self) -> Vec<Arc<dyn EventSource>> {
+        vec![]
+    }
+
+    fn skills(&self) -> Vec<Arc<dyn Skill>> {
+        vec![]
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel::context::BaseContext;
-    use kernel::types::TraceId;
     use test_utils::fake_event_bus::{FakeBusConfig, FakeEventBus};
     use tokio::time::{sleep, Duration};
 
@@ -556,27 +579,24 @@ mod tests {
         )
     }
 
-    fn skill_context() -> SkillContext {
-        SkillContext {
-            base: BaseContext::new(TraceId::new()),
-            skill_name: Some("llm-skill".to_owned()),
-            soul_name: None,
-        }
+    async fn load_plugin(bus: Arc<FakeEventBus>, config: LlmConfig) -> LlmPlugin {
+        let mut plugin = LlmPlugin::new(bus, config);
+        plugin
+            .on_load(PluginContext::default())
+            .await
+            .expect("plugin on_load");
+        plugin
     }
 
     #[tokio::test]
     async fn accepts_message_received_event() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone(), test_llm_config());
-        let event = make_message_event("session-1", "hello");
-        let ctx = skill_context();
-
-        skill
-            .execute(event, ctx)
+        let _plugin = load_plugin(bus.clone(), test_llm_config()).await;
+        bus.publish(make_message_event("session-1", "hello"))
             .await
-            .expect("execute should succeed");
+            .expect("publish");
 
-        // Should have published message_queued
+        // Should have published message_queued via the handler
         let queued = bus.events_matching(|e| {
             e.event_type == EventType::Custom("message_queued".to_owned())
         });
@@ -595,46 +615,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_event_without_session_id() {
-        let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone(), test_llm_config());
-        let event = Event::new("chat:platform", EventType::MessageReceived, json!({"text": "hi"}));
-        let ctx = skill_context();
-
-        let err = skill.execute(event, ctx).await.expect_err("missing session_id");
-        assert!(matches!(err, Error::ConfigInvalid { .. }));
-        assert!(err.to_string().contains("session_id"));
-    }
-
-    #[tokio::test]
     async fn drops_message_when_session_queue_is_full() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        // max_queue = 1 so the second message is dropped (first is being processed by the
-        // background task, occupying the channel capacity).
-        let skill = LlmSkill::with_config(bus.clone(), test_llm_config(), 1);
-        let ctx = skill_context();
-
-        // First message occupies the channel.
-        skill
-            .execute(make_message_event("busy-session", "first"), ctx.clone())
+        let mut plugin = LlmPlugin::new(bus.clone(), test_llm_config());
+        // Use a minimal max_queue size and make the test bus dispatch inline
+        // by using the inner bus's direct publish mechanism.
+        //
+        // We set a short queue and rely on the background session processor
+        // being occupied with the first message.
+        plugin.max_queue = 1;
+        plugin
+            .on_load(PluginContext::default())
             .await
-            .expect("first message accepted");
+            .expect("plugin on_load");
 
-        // Wait a tiny bit so the background task picks up the first message,
-        // emptying the channel slot.
+        // First message starts processing (background task picks it up).
+        bus.publish(make_message_event("busy-session", "first"))
+            .await
+            .expect("publish first");
+
+        // Wait so the background task picks up the first message, freeing the mpsc slot.
         sleep(Duration::from_millis(20)).await;
 
-        // Second message fills the one remaining slot.
-        skill
-            .execute(make_message_event("busy-session", "second"), ctx.clone())
+        // Second message fills the channel slot.
+        bus.publish(make_message_event("busy-session", "second"))
             .await
-            .expect("second message accepted");
+            .expect("publish second");
 
         // Third message should be dropped (queue full).
-        skill
-            .execute(make_message_event("busy-session", "third"), ctx.clone())
+        bus.publish(make_message_event("busy-session", "third"))
             .await
-            .expect("third message handled (dropped)");
+            .expect("publish third");
 
         let dropped = bus.events_matching(|e| {
             e.event_type == EventType::Custom("message_dropped".to_owned())
@@ -649,18 +660,15 @@ mod tests {
     #[tokio::test]
     async fn processes_messages_sequentially_per_session() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone(), test_llm_config());
-        let ctx = skill_context();
+        let _plugin = load_plugin(bus.clone(), test_llm_config()).await;
 
         // Send two messages for the same session.
-        skill
-            .execute(make_message_event("seq-session", "first"), ctx.clone())
+        bus.publish(make_message_event("seq-session", "first"))
             .await
-            .expect("first");
-        skill
-            .execute(make_message_event("seq-session", "second"), ctx.clone())
+            .expect("publish first");
+        bus.publish(make_message_event("seq-session", "second"))
             .await
-            .expect("second");
+            .expect("publish second");
 
         // Wait for both to be processed (2 * 100ms + margin).
         sleep(Duration::from_millis(300)).await;
@@ -674,17 +682,14 @@ mod tests {
     #[tokio::test]
     async fn different_sessions_processed_independently() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone(), test_llm_config());
-        let ctx = skill_context();
+        let _plugin = load_plugin(bus.clone(), test_llm_config()).await;
 
-        skill
-            .execute(make_message_event("session-a", "from a"), ctx.clone())
+        bus.publish(make_message_event("session-a", "from a"))
             .await
-            .expect("session a");
-        skill
-            .execute(make_message_event("session-b", "from b"), ctx.clone())
+            .expect("publish a");
+        bus.publish(make_message_event("session-b", "from b"))
             .await
-            .expect("session b");
+            .expect("publish b");
 
         sleep(Duration::from_millis(200)).await;
 
@@ -695,27 +700,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metadata_defaults() {
-        let skill = LlmSkill::new(
-            Arc::new(FakeEventBus::new(FakeBusConfig::default())),
-            test_llm_config(),
-        );
-        assert_eq!(skill.name(), "llm-skill");
-        assert_eq!(skill.version(), &Version::new(0, 1, 0));
-        assert!(!skill.description().is_empty());
-        assert_eq!(skill.triggers().len(), 1);
-        assert_eq!(
-            skill.triggers()[0].event_types,
-            vec![EventType::MessageReceived]
-        );
-        assert_eq!(skill.max_queue_per_session(), 10);
-    }
-
-    #[tokio::test]
-    async fn custom_max_queue_config() {
+    async fn plugin_metadata() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::with_config(bus, test_llm_config(), 5);
-        assert_eq!(skill.max_queue_per_session(), 5);
+        let plugin = LlmPlugin::new(bus, test_llm_config());
+        assert_eq!(plugin.name(), "llm-plugin");
+        assert_eq!(plugin.version(), &Version::new(0, 1, 0));
+        assert_eq!(plugin.active_session_count(), 0);
     }
 
     // --- SessionHistory unit tests ---
@@ -839,14 +829,12 @@ mod tests {
     #[tokio::test]
     async fn history_trimmed_event_published_when_threshold_exceeded() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone(), test_llm_config());
-        let ctx = skill_context();
+        let _plugin = load_plugin(bus.clone(), test_llm_config()).await;
         let long_text = "X".repeat(4096); // ≈1024 tokens per message
 
         // Send enough messages to trigger trimming.
         for i in 0..6 {
-            skill
-                .execute(make_message_event("trim-session", &long_text), ctx.clone())
+            bus.publish(make_message_event("trim-session", &long_text))
                 .await
                 .expect(&format!("message {i} accepted"));
             // Wait for each message to be processed before sending the next,
@@ -856,8 +844,7 @@ mod tests {
 
         // Now send one more message to trigger trim.
         sleep(Duration::from_millis(200)).await;
-        skill
-            .execute(make_message_event("trim-session", &long_text), ctx.clone())
+        bus.publish(make_message_event("trim-session", &long_text))
             .await
             .expect("final message accepted");
 
@@ -889,13 +876,11 @@ mod tests {
     #[tokio::test]
     async fn short_conversation_does_not_trigger_trim() {
         let bus = Arc::new(FakeEventBus::new(FakeBusConfig::default()));
-        let skill = LlmSkill::new(bus.clone(), test_llm_config());
-        let ctx = skill_context();
+        let _plugin = load_plugin(bus.clone(), test_llm_config()).await;
 
         // Short messages should not trigger trimming.
         for i in 0..3 {
-            skill
-                .execute(make_message_event("short-session", "hello!"), ctx.clone())
+            bus.publish(make_message_event("short-session", "hello!"))
                 .await
                 .expect(&format!("msg {i}"));
             sleep(Duration::from_millis(150)).await;

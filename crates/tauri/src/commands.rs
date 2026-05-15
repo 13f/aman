@@ -1271,7 +1271,7 @@ pub async fn chat_edit_message(
 pub async fn chat_validator_health(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    // Check if the llm-skill is registered (indicates validator is operational)
+    // Check if the LLM plugin's skill is registered (indicates validator is operational)
     let rt = {
         let guard = state.runtime.lock().await;
         guard.as_ref().map(std::sync::Arc::clone)
@@ -1287,7 +1287,9 @@ pub async fn chat_validator_health(
         }
     };
 
-    let has_skill = rt.skills().snapshot("llm-skill").is_some();
+    let has_skill = rt.plugin_loader().await.state_of("llm-plugin")
+        .map(|s| s == plugin::PluginLifecycleState::Running)
+        .unwrap_or(false);
     let (healthy, rule_count) = if has_skill {
         (true, 7) // default rule count
     } else {
@@ -1416,6 +1418,7 @@ pub async fn create_provider(
         config::ProviderConfig {
             display_name,
             base_url,
+            api_key: None,
         },
     );
 

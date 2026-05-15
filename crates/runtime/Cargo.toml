@@ -16,7 +16,7 @@ chat-source = { path = "../plugins/chat-source", version = "0.1.0" }
 config = { path = "../config", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
-llm-skill = { path = "../plugins/llm-skill", version = "0.1.0" }
+llm-plugin = { path = "../plugins/llm-plugin", version = "0.1.0" }
 persistence = { path = "../persistence", version = "0.1.0" }
 plugin = { path = "../plugin", version = "0.1.0" }
 pollster.workspace = true

@@ -3,7 +3,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import Dashboard from "./pages/Dashboard.svelte";
-  import SkillEditor from "./pages/SkillEditor.svelte";
   import EventViewer from "./pages/EventViewer.svelte";
   import WorkflowBoard from "./pages/WorkflowBoard.svelte";
   import PluginManager from "./pages/PluginManager.svelte";
@@ -22,7 +21,6 @@
 
   const staticPages: Page[] = [
     { id: "dashboard", label: "Dashboard" },
-    { id: "skills", label: "Skill Editor" },
     { id: "events", label: "Event Viewer" },
     { id: "workflows", label: "Workflow Board" },
     { id: "plugins", label: "Plugin Manager" },
@@ -119,8 +117,6 @@
 <main class="main">
   {#if currentPage === "dashboard"}
     <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
-  {:else if currentPage === "skills"}
-    <SkillEditor />
   {:else if currentPage === "events"}
     <EventViewer />
   {:else if currentPage === "workflows"}

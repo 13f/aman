@@ -8,7 +8,11 @@ use kernel::source::EventSource;
 use kernel::tool::Tool;
 use kernel::{AmanResult, Error};
 use persistence::{DeadLetterQueue, InMemoryDeadLetterQueue, PersistentBus, WalSync, WriteAheadLog};
-use plugin::{PluginExportRegistrar, PluginInstaller, PluginLoader};
+use kernel::plugin::Plugin;
+use plugin::{
+    PluginCandidate, PluginExports, PluginIsolationMode, PluginLifecycleConfig,
+    PluginExportRegistrar, PluginInstaller, PluginLoader, PluginManifest,
+};
 use serde_json::json;
 use secret::{
     AwsSecretsManagerCliBackend, EnvSecretBackend, KeychainBackend, OnePasswordCliBackend,
@@ -89,7 +93,6 @@ pub enum RuntimeStatus {
     Shutdown,
 }
 
-#[derive(Clone)]
 pub struct AgentRuntimeBuilder {
     config: AgentConfig,
     runtime_dir: PathBuf,
@@ -97,6 +100,7 @@ pub struct AgentRuntimeBuilder {
     api_token: Option<String>,
     startup_pause: Duration,
     soul_file: Option<PathBuf>,
+    extra_plugins: Vec<plugin::PluginCandidate>,
 }
 
 impl AgentRuntimeBuilder {
@@ -109,6 +113,7 @@ impl AgentRuntimeBuilder {
             api_token: None,
             startup_pause: Duration::from_millis(0),
             soul_file: None,
+            extra_plugins: vec![],
         }
     }
 
@@ -139,6 +144,14 @@ impl AgentRuntimeBuilder {
     #[must_use]
     pub fn with_soul(mut self, soul_file: impl Into<PathBuf>) -> Self {
         self.soul_file = Some(soul_file.into());
+        self
+    }
+
+    /// Add an extra plugin candidate to load alongside the built-in LLM plugin.
+    /// Primarily used in tests to verify plugin lifecycle behavior.
+    #[must_use]
+    pub fn with_extra_plugin(mut self, candidate: plugin::PluginCandidate) -> Self {
+        self.extra_plugins.push(candidate);
         self
     }
 
@@ -342,20 +355,49 @@ impl AgentRuntimeBuilder {
                 retry_backoff: Default::default(),
             },
         });
-        let plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
-            Arc::clone(&skills),
-            Arc::clone(&tools),
-        )));
         let cron_manager = CronManager::with_runtime_dir(self.runtime_dir.clone());
         let plugin_installer = Arc::new(PluginInstaller::new(self.runtime_dir.join("plugins")));
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
-        // Register built-in LLM skill and hook it to the EventBus.
-        // The LlmSkill consumes MESSAGE_RECEIVED events (published by chat_send_message)
-        // and produces llm_reply_ready / llm_tool_call / output_blocked events.
+        // Build LLM config for the built-in LLM plugin.
         let llm_config = build_llm_config();
-        let llm_skill: Arc<dyn Skill> = Arc::new(llm_skill::LlmSkill::new(Arc::clone(&bus), llm_config));
-        let _ = skills.register(llm_skill);
+        let llm_plugin = llm_plugin::LlmPlugin::new(Arc::clone(&bus), llm_config);
+
+        // Load the built-in LLM plugin via PluginLoader.
+        let llm_candidate = PluginCandidate {
+            manifest: PluginManifest {
+                name: "llm-plugin".to_owned(),
+                version: llm_plugin.version().clone(),
+                depends_on: vec![],
+                lifecycle: PluginLifecycleConfig { auto_start: true },
+                exports: PluginExports {
+                    skills: vec![],
+                    tools: vec![],
+                    event_sources: vec![],
+                },
+                config_schema: None,
+                isolation: Some(PluginIsolationMode::InProcess),
+                subprocess: None,
+                wasm_path: None,
+                capabilities: vec!["chat".to_owned()],
+                ui: None,
+            },
+            plugin: Box::new(llm_plugin),
+            isolation: PluginIsolationMode::InProcess,
+            subprocess: None,
+            wasm_module_bytes: None,
+        };
+
+        // Load the built-in LLM plugin (and any extra plugins from builder).
+        let mut all_candidates = vec![llm_candidate];
+        all_candidates.extend(self.extra_plugins);
+        let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
+            Arc::clone(&skills),
+            Arc::clone(&tools),
+        )));
+        if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
+            tracing::error!(error = %e, "failed to load built-in LLM plugin");
+        }
 
         // Subscribe a handler that dispatches every event to matching skills.
         use kernel::context::SkillContext;
@@ -1145,10 +1187,10 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
-                // Phase 4.5: drain LLM skill sessions before Event Bus drain
-                let drained = self.drain_llm_skill("phase4_shutdown").await;
+                // Phase 4.5: drain LLM plugin sessions before Event Bus drain
+                let drained = self.drain_llm_plugin("phase4_shutdown").await;
                 if drained > 0 {
-                    tracing::info!(drained, "phase4.5: drained LLM skill sessions");
+                    tracing::info!(drained, "phase4.5: drained LLM plugin sessions");
                 }
 
                 let snapshots = self.sources.list().await;
@@ -1266,96 +1308,44 @@ impl AgentRuntime {
     }
 
     pub async fn disable_plugin(&self, plugin_name: &str) -> AmanResult<()> {
-        // Phase 4.5 drain: drain LLM skill sessions before disabling the plugin
-        self.drain_llm_skill("plugin.disable").await;
+        // Phase 4.5 drain: drain LLM plugin sessions before disabling the plugin
+        self.drain_llm_plugin("plugin.disable").await;
         self.plugin_loader.lock().await.disable_plugin(plugin_name)
     }
 
     pub async fn uninstall_plugin(&self, plugin_name: &str) -> AmanResult<()> {
-        // Phase 4.5 drain: drain LLM skill sessions before uninstalling the plugin
-        self.drain_llm_skill("plugin.uninstall").await;
+        // Phase 4.5 drain: drain LLM plugin sessions before uninstalling the plugin
+        self.drain_llm_plugin("plugin.uninstall").await;
         let mut loader = self.plugin_loader.lock().await;
         self.plugin_installer
             .uninstall(Some(&mut loader), plugin_name)
             .await
     }
 
-    /// Phase 4.5 drain: drain llm-skill's per-session queues.
+    /// Phase 4.5 drain: mark LLM capability as Degraded.
     ///
-    /// 1. Mark capability as Degraded (refuse new requests).
-    /// 2. Close all session mpsc channels.
-    /// 3. Wait up to `drain_timeout_sec` for in-flight processing to finish.
-    /// 4. If still active after timeout, log forced-cancel audit entry.
+    /// The LLM plugin no longer uses the Skill system — its sessions are
+    /// drained in Phase 2 via `PluginLoader::unload_all` →
+    /// `LlmPlugin::on_unload` → `drain_sessions`. This function ensures the
+    /// "chat" capability is marked Degraded so the frontend refuses new
+    /// requests before the shutdown drains the event bus.
     ///
     /// Called during plugin disable/uninstall and Phase 4→3 shutdown.
-    /// Returns the number of sessions drained.
-    pub async fn drain_llm_skill(&self, action: &str) -> usize {
-        // Check if llm-skill is registered
-        let snapshot = self.skills.snapshot("llm-skill");
-        if snapshot.is_none() {
-            return 0;
-        }
-
-        // Step 1: Mark capability as Degraded (refuse new requests)
+    pub async fn drain_llm_plugin(&self, action: &str) -> usize {
+        // Mark capability as Degraded (refuse new requests)
         {
             let mut registry = self.capability_registry.write().await;
             for entries in registry.values_mut() {
                 for entry in entries.iter_mut() {
-                    if entry.plugin == "llm-skill" || entry.capability == "chat" {
+                    if entry.plugin == "llm-plugin" || entry.capability == "chat" {
                         entry.status = CapabilityStatus::Degraded;
                     }
                 }
             }
         }
 
-        // Step 2: Drain all skills (close session channels)
-        let drained = self.skills.drain_all();
-        if drained == 0 {
-            return 0;
-        }
-
-        self.audit.record(
-            "system",
-            action,
-            "skill:llm-skill",
-            "drain_started",
-            format!("drained_sessions={drained}"),
-        );
-
-        // Step 3: Wait for in-flight skill processing to finish
-        let timeout = Duration::from_secs(self.config.runtime.drain_timeout_sec);
-        let started = tokio::time::Instant::now();
-        loop {
-            let inflight = self.inflight_skills.load(Ordering::Acquire);
-            if inflight == 0 {
-                self.audit.record(
-                    "system",
-                    action,
-                    "skill:llm-skill",
-                    "drain_completed",
-                    format!("drained_sessions={drained}, inflight_cleared"),
-                );
-                break;
-            }
-            if started.elapsed() >= timeout {
-                // Step 4: Forced cancel — log audit entry
-                self.audit.record(
-                    "system",
-                    action,
-                    "skill:llm-skill",
-                    "drain_forced_cancel",
-                    format!(
-                        "drained_sessions={drained}, inflight_remaining={inflight}, \
-                         reason=drain_forced_cancel, timeout_sec={}",
-                        self.config.runtime.drain_timeout_sec
-                    ),
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        drained
+        tracing::info!(action, "llm capability marked degraded");
+        0
     }
 }
 
@@ -1629,7 +1619,7 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
 /// configured agent (provider + model) so users who only configure agents
 /// (without a top-level `model:` in config.yaml) still get a working LLM config.
 /// If no agent is found either, falls back to environment variables.
-fn build_llm_config() -> llm_skill::LlmConfig {
+fn build_llm_config() -> llm_plugin::LlmConfig {
     if let Ok(aman) = config::AmanConfig::from_default_path() {
         // Priority 1: default model config
         if let Some(model) = &aman.model {
@@ -1639,7 +1629,7 @@ fn build_llm_config() -> llm_skill::LlmConfig {
                 .get(provider_key)
                 .map(|p| p.base_url.clone())
                 .unwrap_or_else(|| model.base_url.clone());
-            let api_key = get_llm_api_key(provider_key);
+            let api_key = get_llm_api_key_or_inline(provider_key, aman.providers.get(provider_key));
             let key_len = api_key.len();
             tracing::info!(
                 provider = %provider_key,
@@ -1647,7 +1637,7 @@ fn build_llm_config() -> llm_skill::LlmConfig {
                 api_key_len = key_len,
                 "build_llm_config: using default model config"
             );
-            return llm_skill::LlmConfig {
+            return llm_plugin::LlmConfig {
                 provider_key: provider_key.clone(),
                 api_key,
                 base_url,
@@ -1658,7 +1648,7 @@ fn build_llm_config() -> llm_skill::LlmConfig {
         // Priority 2: first configured agent (provider + model)
         for (_key, agent) in &aman.agents {
             if let Some(provider_config) = aman.providers.get(&agent.provider) {
-                let api_key = get_llm_api_key(&agent.provider);
+                let api_key = get_llm_api_key_or_inline(&agent.provider, Some(provider_config));
                 let key_len = api_key.len();
                 tracing::info!(
                     agent_key = %_key,
@@ -1667,7 +1657,7 @@ fn build_llm_config() -> llm_skill::LlmConfig {
                     api_key_len = key_len,
                     "build_llm_config: using agent config"
                 );
-                return llm_skill::LlmConfig {
+                return llm_plugin::LlmConfig {
                     provider_key: agent.provider.clone(),
                     api_key,
                     base_url: provider_config.base_url.clone(),
@@ -1687,7 +1677,7 @@ fn build_llm_config() -> llm_skill::LlmConfig {
         api_key_len = api_key.len(),
         "build_llm_config: using env var fallback"
     );
-    llm_skill::LlmConfig {
+    llm_plugin::LlmConfig {
         provider_key: "default".to_owned(),
         api_key,
         base_url: std::env::var("AMAN_DEFAULT_BASE_URL")
@@ -1711,4 +1701,23 @@ fn get_llm_api_key(provider_key: &str) -> String {
             .collect::<String>()
     );
     std::env::var(env_var).unwrap_or_default()
+}
+
+/// Get API key checking Keychain → env var → inline provider config.
+fn get_llm_api_key_or_inline(
+    provider_key: &str,
+    provider_config: Option<&config::ProviderConfig>,
+) -> String {
+    let key = get_llm_api_key(provider_key);
+    if !key.is_empty() {
+        return key;
+    }
+    if let Some(config) = provider_config {
+        if let Some(ref inline) = config.api_key {
+            if !inline.is_empty() {
+                return inline.clone();
+            }
+        }
+    }
+    String::new()
 }

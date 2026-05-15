@@ -69,11 +69,6 @@ async fn shutdown_unloads_loaded_plugins() {
     let version = Version::new(1, 0, 0);
 
     let config = AgentConfig::default();
-    let runtime = AgentRuntimeBuilder::new(config)
-        .with_runtime_dir(temp_runtime_dir("unload"))
-        .build()
-        .expect("build runtime");
-
     let candidate = PluginCandidate {
         manifest: PluginManifest {
             name: plugin_name.clone(),
@@ -97,14 +92,11 @@ async fn shutdown_unloads_loaded_plugins() {
         subprocess: None,
         wasm_module_bytes: None,
     };
-
-    {
-        let mut loader = runtime.plugin_loader().await;
-        let _ = loader
-            .load_all(vec![candidate])
-            .await
-            .expect("load plugin");
-    }
+    let runtime = AgentRuntimeBuilder::new(config)
+        .with_runtime_dir(temp_runtime_dir("unload"))
+        .with_extra_plugin(candidate)
+        .build()
+        .expect("build runtime");
 
     runtime.shutdown().await.expect("shutdown");
     assert_eq!(unload_calls.load(Ordering::Acquire), 1);

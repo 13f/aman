@@ -152,6 +152,11 @@ pub struct AgentConfig {
 pub struct ProviderConfig {
     pub display_name: String,
     pub base_url: String,
+    /// Optional inline API key. Checked after Keychain and env var fallbacks.
+    /// Use `$KEYCHAIN:aman.providers.<provider>.api_key` or
+    /// `$ENV:AMAN_PROVIDER_<PROVIDER>_API_KEY` for secret management.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 /// Default LLM model configuration.

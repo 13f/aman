@@ -1,11 +1,11 @@
 [package]
-name = "llm-skill"
+name = "llm-plugin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "LLM Skill plugin — consumes MESSAGE_RECEIVED events with per-session serial processing"
+description = "LLM Plugin — subscribes to MESSAGE_RECEIVED events with per-session serial processing"
 
 [lints]
 workspace = true

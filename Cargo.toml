@@ -33,7 +33,7 @@ members = [
   "crates/tauri/src-tauri",
   "crates/test-utils",
   "crates/plugins/chat-source",
-  "crates/plugins/llm-skill",
+  "crates/plugins/llm-plugin",
   "crates/plugins/llm-provider-openai",
 ]
 default-members = [
@@ -60,7 +60,7 @@ default-members = [
   "crates/tauri/src-tauri",
   "crates/test-utils",
   "crates/plugins/chat-source",
-  "crates/plugins/llm-skill",
+  "crates/plugins/llm-plugin",
   "crates/plugins/llm-provider-openai",
 ]
 

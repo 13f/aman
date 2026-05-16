@@ -6,6 +6,7 @@ mod audit;
 mod event_store;
 mod http;
 mod metrics;
+mod skill_sync;
 mod soul_runtime;
 mod tracing_setup;
 

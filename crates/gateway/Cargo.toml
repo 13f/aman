@@ -13,9 +13,12 @@ workspace = true
 [dependencies]
 axum = { version = "0.8.6", features = ["multipart"] }
 async-trait.workspace = true
+blake3.workspace = true
 chat-source = { path = "../plugins/chat-source", version = "0.1.0" }
 config = { path = "../config", version = "0.1.0" }
+idle-system = { path = "../plugins/idle-system", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
+idle = { path = "../idle", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
 llm-plugin = { path = "../plugins/llm-plugin", version = "0.1.0" }
 persistence = { path = "../persistence", version = "0.1.0" }

@@ -150,6 +150,52 @@ pub enum SourceType {
     Platform,
     #[default]
     Custom,
+    /// 未知/未初始化（to_u8() 返回 0，适用于 AtomicU8 安全默认值）
+    Unknown,
+    /// 聊天对话来源
+    Chat,
+}
+
+impl SourceType {
+    /// 返回稳定的 u8 表示，用于 AtomicU8 存储。
+    /// Unknown → 0（安全默认值），其余按声明顺序。
+    #[must_use]
+    pub fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Timer => 1,
+            Self::File => 2,
+            Self::Network => 3,
+            Self::Webhook => 4,
+            Self::Data => 5,
+            Self::Platform => 6,
+            Self::Custom => 7,
+            Self::Chat => 8,
+        }
+    }
+
+    /// 从 u8 恢复 SourceType。未知值返回 Unknown。
+    #[must_use]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Unknown,
+            1 => Self::Timer,
+            2 => Self::File,
+            3 => Self::Network,
+            4 => Self::Webhook,
+            5 => Self::Data,
+            6 => Self::Platform,
+            7 => Self::Custom,
+            8 => Self::Chat,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// 是否是聊天来源。
+    #[must_use]
+    pub fn is_chat(self) -> bool {
+        matches!(self, Self::Chat)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

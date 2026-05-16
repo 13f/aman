@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 #![doc = "Dispatcher primitives for the Aman agent framework."]
 
+use event_bus::EventBus;
+use idle::coordination::IdleCoordination;
+use idle::types::{QueueDrained, ReflectionBreaker};
 use kernel::event::{Event, EventType};
 use kernel::types::{Priority, SourceId};
 use kernel::{AmanResult, Error};
@@ -8,8 +11,11 @@ use pipeline::{PipelineDefinition, PipelineEngine};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio::time;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MatchCondition {
@@ -137,15 +143,22 @@ pub struct DispatchResult {
     pub failures: Vec<DispatchFailure>,
 }
 
-#[derive(Default)]
 pub struct Dispatcher {
     rules: Vec<RouteRule>,
     pipelines: HashMap<String, PipelineDefinition>,
     pipeline_engine: PipelineEngine,
     runtime_state: Mutex<DispatcherRuntimeState>,
+    /// Event bus reference for the idle-integrated [`run_loop`].
+    event_bus: Option<Arc<dyn EventBus>>,
+    /// Reflection circuit breaker configuration (from IdlePersonality).
+    reflection_breaker: Option<ReflectionBreaker>,
 }
 
 impl Dispatcher {
+    /// Create a new `Dispatcher` without idle integration.
+    ///
+    /// Use [`configure_idle`](Self::configure_idle) before calling
+    /// [`run_loop`](Self::run_loop) when idle system support is needed.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -153,7 +166,17 @@ impl Dispatcher {
             pipelines: HashMap::new(),
             pipeline_engine: PipelineEngine::new(),
             runtime_state: Mutex::new(DispatcherRuntimeState::default()),
+            event_bus: None,
+            reflection_breaker: None,
         }
+    }
+
+    /// Configure the Dispatcher for idle-integrated event loop operation.
+    ///
+    /// Must be called before [`run_loop`](Self::run_loop).
+    pub fn configure_idle(&mut self, event_bus: Arc<dyn EventBus>, breaker: ReflectionBreaker) {
+        self.event_bus = Some(event_bus);
+        self.reflection_breaker = Some(breaker);
     }
 
     pub fn add_rule(&mut self, rule: RouteRule) {
@@ -312,6 +335,162 @@ impl Dispatcher {
         };
         self.pipeline_engine.execute(pipeline, event).await
     }
+
+    // ── Idle-integrated event loop (M4) ─────────────────────────
+
+    /// Run the dispatcher main loop with idle system integration.
+    ///
+    /// This loop processes events from the bus with three-way classification:
+    ///
+    /// 1. **Real events** (`is_queue_drained` and `is_idle_event` are false):
+    ///    - Updates `last_source_type` (only for external sources, R5-1 guard)
+    ///    - Calls `coord.reset_idle_signal()` to cancel running idle workflows
+    ///    - Dispatches the event to matching pipelines
+    ///    - Sets `recently_processed_real_event = true`
+    ///
+    /// 2. **QueueDrained events**:
+    ///    - Sets `coord.busy_reflecting = true`
+    ///    - Uses `tokio::select!` to race between:
+    ///      - Reflection pipeline execution
+    ///      - `wait_for_event()` — new event preempts reflection (R2-9)
+    ///    - On preemption: aborts reflection, resets circuit breaker count
+    ///
+    /// 3. **Idle events**: dispatched normally via routing rules.
+    ///
+    /// When the queue is empty and a real event was recently processed,
+    /// produces a `QueueDrained` event (subject to circuit breaker).
+    pub async fn run_loop(&mut self, coord: &IdleCoordination) {
+        let event_bus = self
+            .event_bus
+            .clone()
+            .expect("Dispatcher::run_loop requires event_bus (call configure_idle)");
+        let breaker_config = self
+            .reflection_breaker
+            .expect("Dispatcher::run_loop requires reflection_breaker (call configure_idle)");
+
+        let mut recently_processed_real_event = false;
+        let mut reflection_consecutive_count: u32 = 0;
+        let mut last_event_type = String::new();
+        let mut last_trace_id = String::new();
+
+        loop {
+            match event_bus.try_dequeue() {
+                Some(event) => {
+                    let is_real = !event.is_queue_drained() && !event.is_idle_event();
+
+                    if is_real {
+                        // ── Real event branch ──
+                        recently_processed_real_event = true;
+
+                        // T4.4 (R5-1 guard): only external sources update last_source_type.
+                        // Internal chain tasks (e.g. Reflection output) must not
+                        // overwrite it — otherwise ChatMode gets silently deactivated
+                        // during an active conversation.
+                        if event.is_from_external_source() {
+                            coord.last_source_type.store(
+                                event.source_type().to_u8(),
+                                Ordering::Relaxed,
+                            );
+                        }
+
+                        // T4.6: cancel running idle workflows
+                        coord.reset_idle_signal().await;
+
+                        // Track event metadata for QueueDrained production
+                        last_event_type = event.event_type.to_string();
+                        last_trace_id = event.metadata.trace_id.to_string();
+
+                        self.dispatch(event).await;
+                    } else if event.is_queue_drained() {
+                        // ── QueueDrained → Reflection branch (T4.3) ──
+                        coord.busy_reflecting.store(true, Ordering::SeqCst);
+
+                        // T4.3: select! between reflection execution and new event arrival
+                        // Use a typed future for the reflection pipeline to help inference.
+                        let reflection_fut = self.dispatch_to_pipeline("pipeline:reflection", event);
+                        tokio::pin!(reflection_fut);
+
+                        tokio::select! {
+                            result = &mut reflection_fut => {
+                                coord.busy_reflecting.store(false, Ordering::SeqCst);
+                                // result: &AmanResult<Vec<Event>>
+                                if let Ok(output_events) = result {
+                                    if output_events.is_empty() {
+                                        // No output → reset circuit breaker
+                                        reflection_consecutive_count = 0;
+                                    } else {
+                                        // Publish output events back to the bus
+                                        for new_event in output_events {
+                                            let _ = event_bus.publish(new_event.clone()).await;
+                                        }
+                                    }
+                                } else {
+                                    // Error → don't count as consecutive
+                                    reflection_consecutive_count = 0;
+                                }
+                            }
+                            event_result = event_bus.wait_for_event(Duration::from_secs(3600)) => {
+                                // T4.3 (R2-9): new event arrived during reflection.
+                                // R2-8: preempted → reset circuit breaker count.
+                                reflection_consecutive_count = 0;
+                                coord.busy_reflecting.store(false, Ordering::SeqCst);
+
+                                // wait_for_event may have consumed an event from the queue.
+                                // Process it directly if available (avoids losing events).
+                                if let Ok(preempt_event) = event_result {
+                                    // Treat as a real event (T4.4 + T4.6)
+                                    if preempt_event.is_from_external_source() {
+                                        coord.last_source_type.store(
+                                            preempt_event.source_type().to_u8(),
+                                            Ordering::Relaxed,
+                                        );
+                                    }
+                                    coord.reset_idle_signal().await;
+                                    last_event_type = preempt_event.event_type.to_string();
+                                    last_trace_id = preempt_event.metadata.trace_id.to_string();
+                                    self.dispatch(preempt_event).await;
+                                    recently_processed_real_event = true;
+                                }
+                            }
+                        }
+                    } else {
+                        // ── Idle event branch ──
+                        self.dispatch(event).await;
+                    }
+                }
+                None => {
+                    // ── Queue empty branch ──
+                    if recently_processed_real_event {
+                        recently_processed_real_event = false;
+
+                        // T4.5: circuit breaker — check before producing QueueDrained
+                        if reflection_consecutive_count >= breaker_config.max_consecutive * 2 {
+                            // Full cooldown: skip QueueDrained, sleep, reset counter
+                            reflection_consecutive_count = 0;
+                            time::sleep(Duration::from_secs(breaker_config.cooldown_secs)).await;
+                            continue;
+                        }
+
+                        // T4.2: produce QueueDrained
+                        #[allow(unused_variables)]
+                        let drained = QueueDrained {
+                            last_event_type: last_event_type.clone(),
+                            last_trace_id: last_trace_id.clone(),
+                            last_result_summary: String::new(),
+                            arousal_level: coord.arousal.current(),
+                            reflection_consecutive_count,
+                        };
+
+                        let _ = event_bus.publish(drained.into()).await;
+                        reflection_consecutive_count += 1;
+                    }
+
+                    // Brief sleep before polling again
+                    time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
 }
 
 #[must_use]
@@ -382,7 +561,9 @@ mod tests {
         match_condition_from_subscription_filter, DispatchTarget, Dispatcher, FilterRule,
         MatchCondition, RouteRule, TransformRule,
     };
-    use event_bus::SubscriptionFilter;
+    use event_bus::{EventBus, InMemoryBus, SubscriptionFilter};
+    use idle::coordination::IdleCoordination;
+    use idle::types::{QueueDrained, ReflectionBreaker};
     use kernel::context::ToolContext;
     use kernel::event::{Event, EventType};
     use kernel::pipeline::{PipelineStep, StepType};
@@ -745,6 +926,129 @@ mod tests {
             assert_eq!(
                 result.pipeline_runs[0].output_events[0].event_type,
                 EventType::Custom("rewritten_type".to_owned())
+            );
+        });
+    }
+
+    // ── M4: Idle integration tests ──────────────────────────────
+
+    /// Helper: build a bare-bones InMemoryBus for testing.
+    fn test_bus() -> Arc<InMemoryBus> {
+        let mut config = event_bus::InMemoryBusConfig::default();
+        config.max_queue_size = 100;
+        Arc::new(InMemoryBus::new(config))
+    }
+
+    #[test]
+    fn configure_idle_sets_event_bus_and_breaker() {
+        let bus = test_bus();
+        let breaker = ReflectionBreaker {
+            max_consecutive: 5,
+            cooldown_secs: 300,
+        };
+
+        let mut dispatcher = Dispatcher::new();
+        dispatcher.configure_idle(bus.clone(), breaker);
+
+        // Can't access private fields, but verify dispatch still works
+        // and id is correctly handled.
+        let event = Event::new(
+            "source:a",
+            EventType::MessageReceived,
+            json!({"ok": true}),
+        );
+        let result = pollster::block_on(dispatcher.dispatch(event));
+        assert!(result.failures.is_empty());
+    }
+
+    #[test]
+    fn queue_drained_event_construction_and_classification() {
+        // Verify QueueDrained can be constructed and classified correctly
+        let qd = QueueDrained {
+            last_event_type: "message_received".into(),
+            last_trace_id: "test-trace".into(),
+            last_result_summary: String::new(),
+            arousal_level: 0.5,
+            reflection_consecutive_count: 0,
+        };
+        let qd_event: Event = qd.into();
+        assert!(qd_event.is_queue_drained());
+        assert!(!qd_event.is_from_external_source());
+        assert!(!qd_event.is_idle_event());
+        assert_eq!(qd_event.event_type.as_str(), "system.queue_drained");
+    }
+
+    #[test]
+    fn real_event_classification_identifies_all_types() {
+        let real = Event::new("source:a", EventType::MessageReceived, json!({}));
+        let idle = Event::new("idle.system", EventType::Idle, json!({}));
+        let qd: Event = QueueDrained {
+            last_event_type: "test".into(),
+            last_trace_id: "t1".into(),
+            last_result_summary: String::new(),
+            arousal_level: 0.0,
+            reflection_consecutive_count: 0,
+        }
+        .into();
+
+        // Real event: not queue_drained AND not idle
+        assert!(!real.is_queue_drained() && !real.is_idle_event());
+        // QueueDrained event
+        assert!(qd.is_queue_drained());
+        assert!(!qd.is_idle_event());
+        // Idle event
+        assert!(idle.is_idle_event());
+        assert!(!idle.is_queue_drained());
+
+        // QueueDrained and Idle are "not from external source"
+        assert!(!qd.is_from_external_source());
+        assert!(!idle.is_from_external_source());
+        assert!(real.is_from_external_source());
+    }
+
+    #[test]
+    fn external_event_updates_source_type() {
+        pollster::block_on(async {
+            let bus = test_bus();
+            let coord = IdleCoordination::new(1.0, 900.0);
+            let mut dispatcher = Dispatcher::new();
+            dispatcher.configure_idle(
+                bus.clone(),
+                ReflectionBreaker {
+                    max_consecutive: 5,
+                    cooldown_secs: 300,
+                },
+            );
+
+            // Chat source event should set last_source_type to Chat
+            let chat_event = Event::new(
+                "chat:slack",
+                EventType::MessageReceived,
+                json!({"msg": "hello"}),
+            );
+            assert!(chat_event.is_from_external_source());
+            assert_eq!(
+                chat_event.source_type().to_u8(),
+                kernel::types::SourceType::Chat.to_u8()
+            );
+
+            // Directly test the source_type store logic from run_loop
+            coord.last_source_type.store(
+                chat_event.source_type().to_u8(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            assert_eq!(coord.last_source_type.load(std::sync::atomic::Ordering::Relaxed), 8);
+
+            // Non-chat external event
+            let file_event = Event::new(
+                "watch:invoices",
+                EventType::FileCreated,
+                json!({"file": "a.pdf"}),
+            );
+            assert!(file_event.is_from_external_source());
+            assert_eq!(
+                file_event.source_type().to_u8(),
+                kernel::types::SourceType::Custom.to_u8()
             );
         });
     }

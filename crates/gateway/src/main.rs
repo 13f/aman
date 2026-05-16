@@ -15,6 +15,7 @@ use kernel::event::{Event, EventType};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 const DEFAULT_BIND: &str = "127.0.0.1:9999";
 const PID_FILE: &str = ".aman/gateway.pid";
@@ -122,11 +123,20 @@ async fn run() -> Result<(), i32> {
         serde_json::json!({"bind": bind.to_string()}),
     )).await;
 
-    // Start runtime.
-    runtime.start().await.map_err(|e| {
-        eprintln!("Runtime start error: {e}");
-        1
-    })?;
+    // Start runtime with a timeout so the process doesn't hang forever
+    // if a startup phase gets stuck (e.g. Phase 4 source init).
+    match tokio::time::timeout(Duration::from_secs(30), runtime.start()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            eprintln!("Runtime start error: {e}");
+            return Err(1);
+        }
+        Err(_) => {
+            let phase = runtime.phase();
+            eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+            return Err(1);
+        }
+    }
 
     let addr = server.local_addr();
     tracing::info!(%addr, "gateway ready");

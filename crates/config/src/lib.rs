@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![doc = "Configuration model and layered loader for the Aman agent framework."]
 
+use idle::IdlePersonality;
 use kernel::event::{Event, EventType};
 use kernel::{AmanResult, Error};
 use serde::{Deserialize, Serialize};
@@ -128,8 +129,175 @@ pub struct SecurityConfig {
     pub risky_capabilities_enabled: bool,
 }
 
+// ── Idle State System config (M2.3) ───────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Reflection 处理器配置。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReflectionConfig {
+    #[serde(default = "default_reflection_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_reflection_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_reflection_check_items")]
+    pub check_items: Vec<String>,
+}
+
+fn default_reflection_enabled() -> bool { true }
+fn default_reflection_timeout_secs() -> u64 { 30 }
+fn default_reflection_check_items() -> Vec<String> {
+    vec!["chain_tasks".into(), "immediate_errors".into(), "lessons_learned".into()]
+}
+
+impl Default for ReflectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            timeout_secs: 30,
+            check_items: vec!["chain_tasks".into(), "immediate_errors".into(), "lessons_learned".into()],
+        }
+    }
+}
+
+/// Arousal 系统配置。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArousalConfig {
+    #[serde(default = "default_arousal_initial")]
+    pub initial_value: f64,
+    #[serde(default = "default_arousal_half_life_secs")]
+    pub half_life_secs: f64,
+}
+
+fn default_arousal_initial() -> f64 { 1.0 }
+fn default_arousal_half_life_secs() -> f64 { 900.0 }
+
+impl Default for ArousalConfig {
+    fn default() -> Self {
+        Self {
+            initial_value: 1.0,
+            half_life_secs: 900.0,
+        }
+    }
+}
+
+/// Idle 上下文配置。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdleContextConfig {
+    #[serde(default = "default_max_output_buffer")]
+    pub max_output_buffer: usize,
+}
+
+fn default_max_output_buffer() -> usize { 10 }
+
+impl Default for IdleContextConfig {
+    fn default() -> Self {
+        Self { max_output_buffer: 10 }
+    }
+}
+
+/// Sleep 子配置。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepConfig {
+    #[serde(default = "default_short_term_retention_days")]
+    pub short_term_retention_days: u64,
+    #[serde(default = "default_cache_expiry_days")]
+    pub cache_expiry_days: u64,
+    #[serde(default = "default_max_cpu_seconds")]
+    pub max_cpu_seconds: u64,
+}
+
+fn default_short_term_retention_days() -> u64 { 7 }
+fn default_cache_expiry_days() -> u64 { 30 }
+fn default_max_cpu_seconds() -> u64 { 300 }
+
+impl Default for SleepConfig {
+    fn default() -> Self {
+        Self {
+            short_term_retention_days: 7,
+            cache_expiry_days: 30,
+            max_cpu_seconds: 300,
+        }
+    }
+}
+
+/// Exploration 子配置。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExplorationConfig {
+    #[serde(default = "default_api_rate_per_minute")]
+    pub api_rate_per_minute: u32,
+    #[serde(default = "default_exploration_fallback")]
+    pub on_quota_exhausted: String,
+}
+
+fn default_api_rate_per_minute() -> u32 { 10 }
+fn default_exploration_fallback() -> String { "fallback".into() }
+
+impl Default for ExplorationConfig {
+    fn default() -> Self {
+        Self {
+            api_rate_per_minute: 10,
+            on_quota_exhausted: "fallback".into(),
+        }
+    }
+}
+
+/// Incubation 子配置。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncubationConfig {
+    #[serde(default = "default_max_concurrent_incubation")]
+    pub max_concurrent: u32,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+fn default_max_concurrent_incubation() -> u32 { 1 }
+
+impl Default for IncubationConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent: 1,
+            enabled: false,
+        }
+    }
+}
+
+/// 顶级 Idle 段配置。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdleConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub reflection: ReflectionConfig,
+    #[serde(default)]
+    pub personality: IdlePersonality,
+    #[serde(default)]
+    pub arousal: ArousalConfig,
+    #[serde(default)]
+    pub context: IdleContextConfig,
+    #[serde(default)]
+    pub sleep: SleepConfig,
+    #[serde(default)]
+    pub exploration: ExplorationConfig,
+    #[serde(default)]
+    pub incubation: IncubationConfig,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            reflection: ReflectionConfig::default(),
+            personality: IdlePersonality::default(),
+            arousal: ArousalConfig::default(),
+            context: IdleContextConfig::default(),
+            sleep: SleepConfig::default(),
+            exploration: ExplorationConfig::default(),
+            incubation: IncubationConfig::default(),
+        }
+    }
+}
+
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
@@ -143,6 +311,8 @@ pub struct AgentConfig {
     pub workflow: WorkflowConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    #[serde(default)]
+    pub idle: IdleConfig,
 }
 
 // ── Multi-Agent config (P1) ──────────────────────────────────────
@@ -316,7 +486,7 @@ pub struct ConfigSnapshotMeta {
     pub source_chain: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConfigLoadResult {
     pub config: AgentConfig,
     pub warnings: Vec<String>,
@@ -370,7 +540,7 @@ impl ConfigReloader {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartialAgentConfig {
     pub runtime: Option<PartialRuntimeConfig>,
     pub event_bus: Option<PartialEventBusConfig>,
@@ -378,6 +548,7 @@ pub struct PartialAgentConfig {
     pub source: Option<PartialSourceConfig>,
     pub workflow: Option<PartialWorkflowConfig>,
     pub security: Option<PartialSecurityConfig>,
+    pub idle: Option<PartialIdleConfig>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -418,6 +589,55 @@ pub struct PartialWorkflowConfig {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialSecurityConfig {
     pub risky_capabilities_enabled: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartialIdleConfig {
+    pub enabled: Option<bool>,
+    pub personality: Option<IdlePersonality>,
+    pub reflection: Option<PartialReflectionConfig>,
+    pub arousal: Option<PartialArousalConfig>,
+    pub context: Option<PartialIdleContextConfig>,
+    pub sleep: Option<PartialSleepConfig>,
+    pub exploration: Option<PartialExplorationConfig>,
+    pub incubation: Option<PartialIncubationConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialReflectionConfig {
+    pub enabled: Option<bool>,
+    pub timeout_secs: Option<u64>,
+    pub check_items: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartialArousalConfig {
+    pub initial_value: Option<f64>,
+    pub half_life_secs: Option<f64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialIdleContextConfig {
+    pub max_output_buffer: Option<usize>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialSleepConfig {
+    pub short_term_retention_days: Option<u64>,
+    pub cache_expiry_days: Option<u64>,
+    pub max_cpu_seconds: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialExplorationConfig {
+    pub api_rate_per_minute: Option<u32>,
+    pub on_quota_exhausted: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialIncubationConfig {
+    pub max_concurrent: Option<u32>,
+    pub enabled: Option<bool>,
 }
 
 pub struct ConfigLoader;
@@ -548,6 +768,66 @@ impl AgentConfig {
         {
             self.security.risky_capabilities_enabled = value;
         }
+
+        if let Some(idle) = patch.idle {
+            if let Some(v) = idle.enabled {
+                self.idle.enabled = v;
+            }
+            if let Some(v) = idle.personality {
+                self.idle.personality = v;
+            }
+            if let Some(reflection) = idle.reflection {
+                if let Some(v) = reflection.enabled {
+                    self.idle.reflection.enabled = v;
+                }
+                if let Some(v) = reflection.timeout_secs {
+                    self.idle.reflection.timeout_secs = v;
+                }
+                if let Some(v) = reflection.check_items {
+                    self.idle.reflection.check_items = v;
+                }
+            }
+            if let Some(arousal) = idle.arousal {
+                if let Some(v) = arousal.initial_value {
+                    self.idle.arousal.initial_value = v;
+                }
+                if let Some(v) = arousal.half_life_secs {
+                    self.idle.arousal.half_life_secs = v;
+                }
+            }
+            if let Some(context) = idle.context {
+                if let Some(v) = context.max_output_buffer {
+                    self.idle.context.max_output_buffer = v;
+                }
+            }
+            if let Some(sleep) = idle.sleep {
+                if let Some(v) = sleep.short_term_retention_days {
+                    self.idle.sleep.short_term_retention_days = v;
+                }
+                if let Some(v) = sleep.cache_expiry_days {
+                    self.idle.sleep.cache_expiry_days = v;
+                }
+                if let Some(v) = sleep.max_cpu_seconds {
+                    self.idle.sleep.max_cpu_seconds = v;
+                }
+            }
+            if let Some(exploration) = idle.exploration {
+                if let Some(v) = exploration.api_rate_per_minute {
+                    self.idle.exploration.api_rate_per_minute = v;
+                }
+                if let Some(v) = exploration.on_quota_exhausted {
+                    self.idle.exploration.on_quota_exhausted = v;
+                }
+            }
+            if let Some(incubation) = idle.incubation {
+                if let Some(v) = incubation.max_concurrent {
+                    self.idle.incubation.max_concurrent = v;
+                }
+                if let Some(v) = incubation.enabled {
+                    self.idle.incubation.enabled = v;
+                }
+            }
+        }
     }
 
     pub fn validate(&self) -> AmanResult<Vec<String>> {
@@ -567,6 +847,25 @@ impl AgentConfig {
             return Err(Error::config_invalid(
                 "source.notify_on_complete 与 source.watch_patterns 互斥",
             ));
+        }
+
+        // ── Idle config validation ──────────────────────────────
+        if self.idle.enabled {
+            // allowed_kinds ⊆ enabled_kinds
+            let personality = &self.idle.personality;
+            for allowed in &personality.chat_mode.allowed_kinds {
+                if !personality.enabled_kinds.contains(allowed) {
+                    return Err(Error::config_invalid(format!(
+                        "idle.personality.chat_mode.allowed_kinds 包含 {allowed:?}，但不在 enabled_kinds 中"
+                    )));
+                }
+            }
+            // reflection_breaker.max_consecutive >= 1
+            if personality.reflection_breaker.max_consecutive < 1 {
+                return Err(Error::config_invalid(
+                    "idle.personality.reflection_breaker.max_consecutive 必须 >= 1",
+                ));
+            }
         }
 
         let mut warnings = Vec::new();
@@ -1105,5 +1404,130 @@ agents:
         assert!(config.providers.is_empty());
         assert!(config.model.is_none());
         assert!(config.agents.is_empty());
+    }
+
+    // ── Idle config tests ───────────────────────────────────────
+
+    #[test]
+    fn idle_config_defaults() {
+        let mut config = AgentConfig::default();
+        config.runtime.drain_timeout_sec = 10;
+        config.runtime.tool_timeout_sec = 20;
+        let warnings = config.validate().expect("default idle config should validate");
+        assert!(
+            warnings.iter().all(|w| !w.contains("idle")),
+            "no idle-related warnings expected: {warnings:?}"
+        );
+        assert!(config.idle.enabled);
+        assert!((config.idle.arousal.initial_value - 1.0).abs() < f64::EPSILON);
+        assert!((config.idle.arousal.half_life_secs - 900.0).abs() < f64::EPSILON);
+        assert_eq!(config.idle.context.max_output_buffer, 10);
+        assert_eq!(config.idle.reflection.timeout_secs, 30);
+        assert_eq!(config.idle.sleep.short_term_retention_days, 7);
+        assert_eq!(config.idle.exploration.api_rate_per_minute, 10);
+    }
+
+    #[test]
+    fn idle_config_rejects_allowed_kinds_not_in_enabled() {
+        let yaml = r#"
+idle:
+  enabled: true
+  personality:
+    enabled_kinds: [daze, boredom]
+    depth_schedule:
+      - [0, daze]
+      - [1, boredom]
+    poll_interval:
+      interval_secs: 5.0
+    poll_relaxation: none
+    chat_mode:
+      allowed_kinds: [exploration]
+      grace_period_secs: 30
+      poll_interval:
+        interval_secs: 2.0
+    reflection_breaker:
+      max_consecutive: 5
+      cooldown_secs: 300
+    context_isolation:
+      pollute_chat_history: false
+      suspend_on_user_input: true
+runtime:
+  drain_timeout_sec: 10
+  tool_timeout_sec: 20
+"#;
+        let err = ConfigLoader::load(Some(&write_temp_file(yaml)), None)
+            .expect_err("should reject allowed_kinds not in enabled_kinds");
+        assert!(
+            err.to_string().contains("allowed_kinds"),
+            "expected validation error about allowed_kinds, got: {err}"
+        );
+    }
+
+    #[test]
+    fn idle_config_rejects_zero_max_consecutive() {
+        let yaml = r#"
+idle:
+  enabled: true
+  personality:
+    enabled_kinds: [daze, boredom]
+    depth_schedule:
+      - [0, daze]
+      - [1, boredom]
+    poll_interval:
+      interval_secs: 5.0
+    poll_relaxation: none
+    chat_mode:
+      allowed_kinds: [daze]
+      grace_period_secs: 30
+      poll_interval:
+        interval_secs: 2.0
+    reflection_breaker:
+      max_consecutive: 0
+      cooldown_secs: 300
+    context_isolation:
+      pollute_chat_history: false
+      suspend_on_user_input: true
+runtime:
+  drain_timeout_sec: 10
+  tool_timeout_sec: 20
+"#;
+        let err = ConfigLoader::load(Some(&write_temp_file(yaml)), None)
+            .expect_err("should reject max_consecutive=0");
+        assert!(
+            err.to_string().contains("max_consecutive"),
+            "expected validation error about max_consecutive, got: {err}"
+        );
+    }
+
+    #[test]
+    fn idle_config_disabled_skips_validation() {
+        let yaml = r#"
+idle:
+  enabled: false
+  personality:
+    enabled_kinds: [daze]
+    depth_schedule:
+      - [0, daze]
+    poll_interval:
+      interval_secs: 5.0
+    poll_relaxation: none
+    chat_mode:
+      allowed_kinds: [exploration]
+      grace_period_secs: 30
+      poll_interval:
+        interval_secs: 2.0
+    reflection_breaker:
+      max_consecutive: 0
+      cooldown_secs: 300
+    context_isolation:
+      pollute_chat_history: false
+      suspend_on_user_input: true
+runtime:
+  drain_timeout_sec: 10
+  tool_timeout_sec: 20
+"#;
+        // When idle is disabled, validation should pass despite bad allowed_kinds
+        let result = ConfigLoader::load(Some(&write_temp_file(yaml)), None);
+        assert!(result.is_ok(), "disabled idle config should validate: {:?}", result.err());
     }
 }

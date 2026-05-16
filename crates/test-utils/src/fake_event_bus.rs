@@ -127,6 +127,17 @@ impl EventBus for FakeEventBus {
     fn can_poll(&self) -> bool {
         true
     }
+
+    fn try_dequeue(&self) -> Option<Event> {
+        self.inner.try_dequeue()
+    }
+
+    async fn wait_for_event(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<Event, event_bus::WaitForEventTimeout> {
+        self.inner.wait_for_event(timeout).await
+    }
 }
 
 #[cfg(test)]

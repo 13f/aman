@@ -1,0 +1,9 @@
+name: idle-exploration
+version: "1.0.0"
+description: >
+  Idle state at depth 5. Engaged arousal decay (multiplier: 0.0) — paused attenuation.
+  Active exploration: queries external information sources, evaluates interesting signals.
+triggers:
+  - event_types: ["idle"]
+    sources: ["idle.system"]
+concurrency: serial

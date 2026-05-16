@@ -22,6 +22,10 @@ pub enum EventType {
     ConfigChanged,
     SecretRotated,
     InjectionDetected,
+    /// 空闲事件（由 IdleDetector 产生）
+    Idle,
+    /// 队列清空事件（由 Dispatcher 产生）
+    QueueDrained,
     Custom(String),
 }
 
@@ -44,8 +48,22 @@ impl EventType {
             Self::ConfigChanged => "config_changed",
             Self::SecretRotated => "secret_rotated",
             Self::InjectionDetected => "injection_detected",
+            Self::Idle => "idle",
+            Self::QueueDrained => "system.queue_drained",
             Self::Custom(value) => value.as_str(),
         }
+    }
+
+    /// Returns `true` if this is an idle event type.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        matches!(self, Self::Idle)
+    }
+
+    /// Returns `true` if this is a queue-drained event type.
+    #[must_use]
+    pub fn is_queue_drained(&self) -> bool {
+        matches!(self, Self::QueueDrained)
     }
 }
 
@@ -67,6 +85,8 @@ impl From<String> for EventType {
             "config_changed" => Self::ConfigChanged,
             "secret_rotated" => Self::SecretRotated,
             "injection_detected" => Self::InjectionDetected,
+            "idle" => Self::Idle,
+            "system.queue_drained" => Self::QueueDrained,
             _ => Self::Custom(value),
         }
     }
@@ -212,6 +232,42 @@ impl Event {
         }
 
         false
+    }
+
+    /// Returns `true` if this is an idle event (produced by IdleDetector).
+    #[must_use]
+    pub fn is_idle_event(&self) -> bool {
+        self.event_type.is_idle()
+    }
+
+    /// Returns `true` if this is a queue-drained event (produced by Dispatcher).
+    #[must_use]
+    pub fn is_queue_drained(&self) -> bool {
+        self.event_type.is_queue_drained()
+    }
+
+    /// Returns `true` if this event originates from an external EventSource
+    /// rather than an internal chain task.
+    ///
+    /// Internal events include idle and queue-drained events.
+    #[must_use]
+    pub fn is_from_external_source(&self) -> bool {
+        !self.is_idle_event() && !self.is_queue_drained()
+    }
+
+    /// Returns the source type classification based on the source identifier.
+    ///
+    /// Chat sources are identified by a "chat:" prefix in the source ID.
+    /// All other external sources are classified as `Custom`.
+    #[must_use]
+    pub fn source_type(&self) -> crate::types::SourceType {
+        if self.source.as_str().starts_with("chat:")
+            || self.source.as_str() == "chat"
+        {
+            crate::types::SourceType::Chat
+        } else {
+            crate::types::SourceType::Custom
+        }
     }
 }
 

@@ -357,6 +357,10 @@ async fn poll_loop(bus: Arc<dyn EventBus>, source: Arc<RegisteredSource>) {
                 sleep(Duration::from_millis(20)).await;
             }
         }
+
+        // Minimum delay to prevent tight-loop flooding from sources that
+        // always return events from poll() (e.g. the IdleDetector).
+        sleep(Duration::from_millis(10)).await;
     }
 }
 

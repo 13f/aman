@@ -1,6 +1,9 @@
 use chat_source::ChatPlatformSource;
 use config::{AgentConfig, BusMode};
 use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
+use idle::coordination::IdleCoordination;
+use idle::detector::IdleDetector;
+use idle::incubation::IncubationManager;
 use kernel::types::BackpressureLevel;
 use kernel::event::{Event, EventType};
 use kernel::skill::Skill;
@@ -164,6 +167,12 @@ impl AgentRuntimeBuilder {
         let dlq = Arc::new(InMemoryDeadLetterQueue::new(5));
         let audit = Arc::new(AuditLogger::new(2_000));
 
+        // Extract idle config before self.config is moved
+        let idle_enabled = self.config.idle.enabled;
+        let idle_arousal_initial = self.config.idle.arousal.initial_value;
+        let idle_arousal_half_life = self.config.idle.arousal.half_life_secs;
+        let idle_personality = self.config.idle.personality.clone();
+
         let config = resolve_secrets_in_config(self.config, &self.runtime_dir, &audit)?;
 
         let inflight_pipelines = Arc::new(AtomicUsize::new(0));
@@ -180,7 +189,12 @@ impl AgentRuntimeBuilder {
         let bus: Arc<dyn EventBus> = Arc::new(bus);
 
         let sources = Arc::new(SourceRegistry::new(Arc::clone(&bus)));
-        let skills_dir = self.runtime_dir.join("skills");
+
+        // Sync built-in skills from repo to ~/.aman/skills/ (preserves user modifications)
+        if let Err(e) = super::skill_sync::sync_builtin_skills() {
+            tracing::error!(error = %e, "failed to sync built-in skills");
+        }
+        let skills_dir = super::skill_sync::aman_data_dir().join("skills");
         let _ = std::fs::create_dir_all(&skills_dir);
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
@@ -390,8 +404,42 @@ impl AgentRuntimeBuilder {
             wasm_module_bytes: None,
         };
 
-        // Load the built-in LLM plugin (and any extra plugins from builder).
-        let mut all_candidates = vec![llm_candidate];
+        // Load the built-in idle system plugin (handles idle personality progression).
+        let idle_plugin = idle_system::IdleSystemPlugin::new();
+        let idle_candidate = PluginCandidate {
+            manifest: PluginManifest {
+                name: "idle-system".to_owned(),
+                version: idle_plugin.version().clone(),
+                depends_on: vec![],
+                lifecycle: PluginLifecycleConfig { auto_start: true },
+                exports: PluginExports {
+                    skills: vec![
+                        "idle-daze".to_owned(),
+                        "idle-boredom".to_owned(),
+                        "idle-sleep".to_owned(),
+                        "idle-exploration".to_owned(),
+                        "idle-meditation".to_owned(),
+                        "idle-waiting".to_owned(),
+                        "idle-incubation".to_owned(),
+                    ],
+                    tools: vec![],
+                    event_sources: vec![],
+                },
+                config_schema: None,
+                isolation: Some(PluginIsolationMode::InProcess),
+                subprocess: None,
+                wasm_path: None,
+                capabilities: vec![],
+                ui: None,
+            },
+            plugin: Box::new(idle_plugin),
+            isolation: PluginIsolationMode::InProcess,
+            subprocess: None,
+            wasm_module_bytes: None,
+        };
+
+        // Load the built-in LLM plugin, idle-system plugin (and any extra plugins from builder).
+        let mut all_candidates = vec![llm_candidate, idle_candidate];
         all_candidates.extend(self.extra_plugins);
         let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
@@ -411,32 +459,41 @@ impl AgentRuntimeBuilder {
         #[async_trait::async_trait]
         impl event_bus::EventHandler for SkillEventDispatcher {
             async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                // Guard: skip our own internal events to prevent infinite dispatch
+                // loops where message:dispatch or message:completed trigger another cycle.
+                if event.source.as_str() == "skill:dispatcher" {
+                    return Ok(());
+                }
                 let trace_id = event.metadata.trace_id;
+                let is_idle = event.event_type == EventType::Idle;
                 let ctx = SkillContext {
                     base: BaseContext::new(trace_id),
                     skill_name: None,
                     soul_name: None,
                 };
-                let _ = self.bus.publish(Event::new(
-                    "skill:dispatcher",
-                    EventType::Custom("message:dispatch".to_owned()),
-                    json!({
-                        "trace_id": trace_id.to_string(),
-                        "event_id": event.id.to_string(),
-                        "event_type": event.event_type.as_str(),
-                        "source": event.source.as_str(),
-                    }),
-                )).await;
                 let result = self.executor.execute_matching(event, ctx).await;
-                let _ = self.bus.publish(Event::new(
-                    "skill:dispatcher",
-                    EventType::Custom("message:completed".to_owned()),
-                    json!({
-                        "trace_id": trace_id.to_string(),
-                        "executed": result.executed,
-                        "failed": result.failed.iter().map(|f| json!({"name": f.skill_name, "error": f.message})).collect::<Vec<_>>(),
-                    }),
-                )).await;
+                // Only emit dispatch/completed signals for non-idle events.
+                // Idle ticks already flood the event store with triple patterns
+                // (idle → dispatch → completed) and the signals carry no useful
+                // information for other components.
+                if !result.executed.is_empty() && !is_idle {
+                    let _ = self.bus.publish(Event::new(
+                        "skill:dispatcher",
+                        EventType::Custom("message:dispatch".to_owned()),
+                        json!({
+                            "trace_id": trace_id.to_string(),
+                        }),
+                    )).await;
+                    let _ = self.bus.publish(Event::new(
+                        "skill:dispatcher",
+                        EventType::Custom("message:completed".to_owned()),
+                        json!({
+                            "trace_id": trace_id.to_string(),
+                            "executed": result.executed,
+                            "failed": result.failed.iter().map(|f| json!({"name": f.skill_name, "error": f.message})).collect::<Vec<_>>(),
+                        }),
+                    )).await;
+                }
                 Ok(())
             }
         }
@@ -465,6 +522,27 @@ impl AgentRuntimeBuilder {
             source::SourceMode::Push,
             source::TrustLevel::Untrusted,
         ));
+
+        // ── Idle system setup (M7) ──────────────────────────────
+        let (idle_coord, incubation_manager) = if idle_enabled {
+            let coord = Arc::new(IdleCoordination::new(
+                idle_arousal_initial,
+                idle_arousal_half_life,
+            ));
+            let detector = IdleDetector::new(
+                "idle:detector",
+                Arc::clone(&coord),
+                idle_personality,
+            );
+            let _ = pollster::block_on(sources.register(
+                Box::new(detector),
+                source::SourceMode::Pull,
+                source::TrustLevel::Untrusted,
+            ));
+            (Some(coord), Arc::new(IncubationManager::new()))
+        } else {
+            (None, Arc::new(IncubationManager::new()))
+        };
 
         Ok(Arc::new(AgentRuntime {
             config,
@@ -506,6 +584,8 @@ impl AgentRuntimeBuilder {
             metrics,
             capability_registry: Default::default(),
             chat_sender,
+            idle_coord,
+            incubation_manager,
         }))
     }
 }
@@ -515,11 +595,13 @@ impl AgentRuntimeBuilder {
 /// Used to wire `PipelineEngine` tool events when it is configured with an
 /// event bus. Currently `PipelineEngine` is not in the production tool path;
 /// this sink is infrastructure for future wiring.
+#[allow(dead_code)]
 pub struct BusToolEventSink {
     bus: Arc<dyn EventBus>,
 }
 
 impl BusToolEventSink {
+    #[allow(dead_code)]
     pub fn new(bus: Arc<dyn EventBus>) -> Self {
         Self { bus }
     }
@@ -606,6 +688,10 @@ pub struct AgentRuntime {
     metrics: super::metrics::MetricsRegistry,
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
     chat_sender: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
+    /// Idle system coordination state.
+    idle_coord: Option<Arc<IdleCoordination>>,
+    /// Incubation manager for background idle threads.
+    incubation_manager: Arc<IncubationManager>,
 }
 
 impl AgentRuntime {
@@ -730,7 +816,7 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn skills_dir(&self) -> PathBuf {
-        self.runtime_dir.join("skills")
+        super::skill_sync::aman_data_dir().join("skills")
     }
 
     pub fn reload_skills_now(&self) -> AmanResult<skill::HotReloadReport> {
@@ -833,8 +919,12 @@ impl AgentRuntime {
         let old_caps: Vec<String> = registry.keys().cloned().collect();
 
         let mut new_registry: HashMap<String, Vec<CapabilityEntry>> = HashMap::new();
-        let loader = self.plugin_loader.lock().await;
-        let raw_caps = loader.collect_capabilities();
+        let raw_caps = {
+            let loader = self.plugin_loader.lock().await;
+            let caps = loader.collect_capabilities();
+            drop(loader);
+            caps
+        };
         for (capability, plugins) in &raw_caps {
             let entries: Vec<CapabilityEntry> = plugins
                 .iter()
@@ -847,7 +937,6 @@ impl AgentRuntime {
                 .collect();
             new_registry.insert(capability.clone(), entries);
         }
-        drop(loader);
         // When the chat-platform source is configured, always register the
         // "chat" capability regardless of plugin declarations.
         if self.chat_sender.is_some() {
@@ -959,12 +1048,19 @@ impl AgentRuntime {
         *self.status.write().await = RuntimeStatus::Starting;
         self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
 
+        tracing::info!("runtime start: Phase0");
         self.bump_phase(RuntimePhase::Phase0).await?;
+        tracing::info!("runtime start: Phase05");
         self.bump_phase(RuntimePhase::Phase05).await?;
+        tracing::info!("runtime start: Phase1");
         self.bump_phase(RuntimePhase::Phase1).await?;
+        tracing::info!("runtime start: Phase2");
         self.bump_phase(RuntimePhase::Phase2).await?;
+        tracing::info!("runtime start: Phase3");
         self.bump_phase(RuntimePhase::Phase3).await?;
+        tracing::info!("runtime start: Phase4");
         self.bump_phase(RuntimePhase::Phase4).await?;
+        tracing::info!("runtime start: Phase5");
         self.bump_phase(RuntimePhase::Phase5).await?;
 
         *self.status.write().await = RuntimeStatus::Ready;
@@ -1187,6 +1283,7 @@ impl AgentRuntime {
             tokio::time::sleep(self.startup_pause).await;
         }
 
+        tracing::info!(?phase, "bump_phase enter");
         match phase {
             RuntimePhase::Phase0 => {
                 self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
@@ -1203,10 +1300,13 @@ impl AgentRuntime {
             }
             RuntimePhase::Phase2 => {
                 let _ = self.skill_hot_reload.reload_once()?;
+                tracing::info!("Phase2: plugin_loader.lock");
                 {
                     let _loader = self.plugin_loader.lock().await;
                 }
+                tracing::info!("Phase2: refresh_capabilities");
                 let _ = self.refresh_capabilities().await;
+                tracing::info!("Phase2: store");
                 self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);
             }
             RuntimePhase::Phase3 => {
@@ -1219,7 +1319,9 @@ impl AgentRuntime {
                     if self.shutdown_requested.load(Ordering::Acquire) {
                         break;
                     }
+                    tracing::info!(id = %source.id, "starting source");
                     self.sources.start(&source.id).await?;
+                    tracing::info!(id = %source.id, "source started");
                 }
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
@@ -1271,6 +1373,16 @@ impl AgentRuntime {
                 let drained = self.drain_llm_plugin("phase4_shutdown").await;
                 if drained > 0 {
                     tracing::info!(drained, "phase4.5: drained LLM plugin sessions");
+                }
+
+                // Phase 4.5: stop idle system (IncubationManager, cancel idle workflows)
+                let cancelled = self.incubation_manager.shutdown_all().await;
+                if cancelled > 0 {
+                    tracing::info!(cancelled, "phase4.5: cancelled idle incubation threads");
+                }
+                // Reset idle coordination if active (cancels any running idle workflow)
+                if let Some(coord) = &self.idle_coord {
+                    coord.reset_idle_signal().await;
                 }
 
                 let snapshots = self.sources.list().await;
@@ -1682,6 +1794,23 @@ impl EventBus for RuntimeBus {
         match self {
             Self::InMemory(bus) => bus.can_poll(),
             Self::Persistent { bus, .. } => bus.can_poll(),
+        }
+    }
+
+    fn try_dequeue(&self) -> Option<kernel::event::Event> {
+        match self {
+            Self::InMemory(bus) => bus.try_dequeue(),
+            Self::Persistent { bus, .. } => bus.try_dequeue(),
+        }
+    }
+
+    async fn wait_for_event(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<kernel::event::Event, event_bus::WaitForEventTimeout> {
+        match self {
+            Self::InMemory(bus) => bus.wait_for_event(timeout).await,
+            Self::Persistent { bus, .. } => bus.wait_for_event(timeout).await,
         }
     }
 }

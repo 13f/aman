@@ -1,0 +1,9 @@
+name: idle-meditation
+version: "1.0.0"
+description: >
+  Idle state at depth 10. Engaged arousal decay (multiplier: 0.0) — paused attenuation.
+  Deep introspection: reviews recent experience chain, extracts lessons, updates heuristics.
+triggers:
+  - event_types: ["idle"]
+    sources: ["idle.system"]
+concurrency: serial

@@ -1,0 +1,9 @@
+name: idle-boredom
+version: "1.0.0"
+description: >
+  Idle state at depth 1. Passive arousal decay — normal attenuation.
+  The agent senses inactivity and may seek pending tasks or chain deferred work.
+triggers:
+  - event_types: ["idle"]
+    sources: ["idle.system"]
+concurrency: serial

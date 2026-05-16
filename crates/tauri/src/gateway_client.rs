@@ -47,7 +47,7 @@ impl GatewayClient {
     pub async fn health(&self) -> Result<(), String> {
         let resp = self
             .client
-            .get(self.url("/health"))
+            .get(self.url("/health/live"))
             .send()
             .await
             .map_err(|e| format!("Gateway connection failed: {e}"))?;

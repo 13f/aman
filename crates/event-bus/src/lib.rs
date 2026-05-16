@@ -28,9 +28,15 @@ use std::path::PathBuf;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+use tokio::sync::Notify;
 
 /// Type of callback invoked when the bus discards an event due to backpressure.
 pub type DiscardHook = Arc<dyn Fn(&Event, BackpressureLevel, &str) + Send + Sync>;
+
+/// Error returned when [`InMemoryBus::wait_for_event`] times out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitForEventTimeout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SubscriptionId(u64);
@@ -130,6 +136,12 @@ pub struct BusMetrics {
     pub subscription_count: usize,
     pub backpressure_level: BackpressureLevel,
     pub pause_publishers: bool,
+    /// Number of idle events silently discarded under backpressure.
+    pub idle_events_discarded: u64,
+    /// Number of successful wait_for_event wakeups (event returned).
+    pub wait_for_event_wakeups: u64,
+    /// Number of wait_for_event false wakeups (stale notifications).
+    pub wait_for_event_false_wakeups: u64,
 }
 
 impl Default for BusMetrics {
@@ -144,6 +156,9 @@ impl Default for BusMetrics {
             subscription_count: 0,
             backpressure_level: BackpressureLevel::Normal,
             pause_publishers: false,
+            idle_events_discarded: 0,
+            wait_for_event_wakeups: 0,
+            wait_for_event_false_wakeups: 0,
         }
     }
 }
@@ -202,6 +217,16 @@ pub trait EventBus: Send + Sync {
     ) -> AmanResult<SubscriptionId>;
     async fn unsubscribe(&self, id: SubscriptionId);
 
+    /// Non-blocking attempt to dequeue the next event, if any.
+    /// Returns `None` if the queue is empty.
+    fn try_dequeue(&self) -> Option<Event>;
+
+    /// Block until an event arrives or the timeout elapses.
+    ///
+    /// Edge-triggered: only wakes when the queue transitions from
+    /// empty to non-empty. Returns the first available event.
+    async fn wait_for_event(&self, timeout: Duration) -> Result<Event, WaitForEventTimeout>;
+
     fn metrics(&self) -> BusMetrics;
     fn backpressure_level(&self) -> BackpressureLevel;
     fn can_poll(&self) -> bool;
@@ -230,6 +255,13 @@ struct BusState {
     throughput: u64,
     discarded_count: u64,
     duplicate_count: u64,
+    idle_discarded_count: u64,
+    wait_for_event_wakeups: u64,
+    wait_for_event_false_wakeups: u64,
+    /// Monotonically increasing counter — incremented each time the queue
+    /// transitions from empty to non-empty. Used to detect stale notifications
+    /// in `wait_for_event`.
+    wait_for_event_generation: u64,
     signal: BackpressureSignal,
 }
 
@@ -249,6 +281,10 @@ impl BusState {
             throughput: 0,
             discarded_count: 0,
             duplicate_count: 0,
+            idle_discarded_count: 0,
+            wait_for_event_wakeups: 0,
+            wait_for_event_false_wakeups: 0,
+            wait_for_event_generation: 0,
             signal: BackpressureSignal::default(),
         }
     }
@@ -264,6 +300,9 @@ impl BusState {
             subscription_count: self.subscriptions.len(),
             backpressure_level: self.signal.level,
             pause_publishers: self.signal.pause_publishers,
+            idle_events_discarded: self.idle_discarded_count,
+            wait_for_event_wakeups: self.wait_for_event_wakeups,
+            wait_for_event_false_wakeups: self.wait_for_event_false_wakeups,
         }
     }
 
@@ -359,6 +398,8 @@ pub struct InMemoryBus {
     draining: AtomicBool,
     overflow_dir: Option<OverflowDir>,
     discard_hook: Option<DiscardHook>,
+    /// Notifies `wait_for_event` when the queue transitions from empty → non-empty.
+    event_notify: Notify,
 }
 
 impl Default for InMemoryBus {
@@ -389,6 +430,7 @@ impl InMemoryBus {
             draining: AtomicBool::new(false),
             overflow_dir,
             discard_hook: None,
+            event_notify: Notify::new(),
         }
     }
 
@@ -437,6 +479,17 @@ impl InMemoryBus {
         event = self
             .backpressure
             .apply_degradation(event, state.signal.level);
+
+        // Idle events: silently discard at any backpressure level above Normal.
+        // These are internal bookkeeping events and should not consume queue
+        // capacity or overflow to disk when the system is under pressure.
+        if event.is_idle_event() && state.signal.level != BackpressureLevel::Normal {
+            state.idle_discarded_count += 1;
+            if let Some(ref hook) = self.discard_hook {
+                hook(&event, state.signal.level, "idle_backpressure");
+            }
+            return Ok(PublishAdmission::Drop);
+        }
 
         // Level 5 (Critical): stop low-priority event sources
         if backpressure::should_stop_low_priority(&event, state.signal.level) {
@@ -582,7 +635,12 @@ impl EventBus for InMemoryBus {
             let mut state = self.lock_state();
             match self.admit_event(event, &mut state)? {
                 PublishAdmission::Accept(event) => {
+                    let was_empty = state.queue.is_empty();
                     state.queue.push(event);
+                    if was_empty {
+                        state.wait_for_event_generation += 1;
+                        self.event_notify.notify_one();
+                    }
                     self.refresh_signal(&mut state);
                 }
                 PublishAdmission::Overflow(event) => {
@@ -637,6 +695,61 @@ impl EventBus for InMemoryBus {
     fn can_poll(&self) -> bool {
         Self::can_poll(self)
     }
+
+    fn try_dequeue(&self) -> Option<Event> {
+        let mut state = self.lock_state();
+        let event = state.queue.pop();
+        if let Some(ref _event) = event {
+            state.throughput += 1;
+            self.refresh_signal(&mut state);
+        }
+        event
+    }
+
+    async fn wait_for_event(&self, timeout: Duration) -> Result<Event, WaitForEventTimeout> {
+        loop {
+            // Fast path: pop immediately if queue has events
+            {
+                let mut state = self.lock_state();
+                if let Some(event) = state.queue.pop() {
+                    self.refresh_signal(&mut state);
+                    state.throughput += 1;
+                    state.wait_for_event_wakeups += 1;
+                    return Ok(event);
+                }
+            }
+
+            // Record generation before waiting
+            let generation = {
+                let state = self.lock_state();
+                state.wait_for_event_generation
+            };
+
+            // Wait for notification or timeout
+            let notified = self.event_notify.notified();
+            tokio::pin!(notified);
+
+            tokio::select! {
+                _ = &mut notified => {
+                    // Check if generation advanced (real event arrival)
+                    // vs. stale notification from a previous cycle
+                    let current_gen = {
+                        let state = self.lock_state();
+                        state.wait_for_event_generation
+                    };
+                    if current_gen <= generation {
+                        let mut state = self.lock_state();
+                        state.wait_for_event_false_wakeups += 1;
+                        // Stale notification — loop back and wait
+                    }
+                    // Generation advanced — loop back to try popping
+                }
+                _ = tokio::time::sleep(timeout) => {
+                    return Err(WaitForEventTimeout);
+                }
+            }
+        }
+    }
 }
 
 impl InMemoryBus {
@@ -670,7 +783,12 @@ impl InMemoryBus {
             let mut state = self.lock_state();
             match state.dedup.check(&event) {
                 DedupOutcome::Accepted => {
+                    let was_empty = state.queue.is_empty();
                     state.queue.push(event);
+                    if was_empty {
+                        state.wait_for_event_generation += 1;
+                        self.event_notify.notify_one();
+                    }
                     self.refresh_signal(&mut state);
                     if let Some(ref overflow) = self.overflow_dir {
                         let _ = overflow.remove_event(&event_id);
@@ -699,7 +817,7 @@ impl InMemoryBus {
 mod tests {
     use super::{
         BackpressureEventKind, EventBus, EventHandler, InMemoryBus, InMemoryBusConfig,
-        PublishAdmission, QueueDepth, RetryScheduleResult, SubscriptionFilter,
+        PublishAdmission, QueueDepth, RetryScheduleResult, SubscriptionFilter, WaitForEventTimeout,
     };
     use async_trait::async_trait;
     use kernel::event::{Event, EventType};
@@ -708,6 +826,7 @@ mod tests {
     use crate::overflow::OverflowDir;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[derive(Default)]
     struct RecordingHandler {
@@ -1580,6 +1699,255 @@ mod tests {
                 .enqueue_for_retry(event2, 5, None)
                 .expect("enqueue");
             assert!(matches!(exhausted, RetryScheduleResult::Exhausted { .. }));
+        });
+    }
+
+    // ── M3.1: wait_for_event tests ───────────────────────────────
+
+    #[tokio::test]
+    async fn wait_for_event_returns_immediately_if_queue_non_empty() {
+        let bus = InMemoryBus::default();
+        // Push directly to queue (bypass publish() which would drain it)
+        {
+            let mut state = bus.lock_state();
+            state.queue.push(Event::new(
+                "source:a",
+                EventType::TimerTick,
+                json!({"seq": 1}),
+            ));
+        }
+
+        let event = bus
+            .wait_for_event(Duration::from_millis(5000))
+            .await
+            .expect("should get event immediately");
+        assert_eq!(event.payload, json!({"seq": 1}));
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_blocks_until_event_arrives() {
+        let bus = Arc::new(InMemoryBus::default());
+        let bus_clone = Arc::clone(&bus);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut state = bus_clone.lock_state();
+            state.queue.push(Event::new(
+                "source:b",
+                EventType::TimerTick,
+                json!({"seq": 2}),
+            ));
+            state.wait_for_event_generation += 1;
+            bus_clone.event_notify.notify_one();
+        });
+
+        let event = bus
+            .wait_for_event(Duration::from_secs(5))
+            .await
+            .expect("should get event from spawn");
+        assert_eq!(event.payload, json!({"seq": 2}));
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_times_out_when_no_event() {
+        let bus = InMemoryBus::default();
+        let result = bus.wait_for_event(Duration::from_millis(10)).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), WaitForEventTimeout);
+    }
+
+    #[tokio::test]
+    async fn wait_for_event_wakeup_metrics_incremented() {
+        let bus = Arc::new(InMemoryBus::default());
+        let bus_clone = Arc::clone(&bus);
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut state = bus_clone.lock_state();
+            state.queue.push(Event::new(
+                "source:c",
+                EventType::MessageReceived,
+                json!({"seq": 3}),
+            ));
+            state.wait_for_event_generation += 1;
+            bus_clone.event_notify.notify_one();
+        });
+
+        let _event = bus
+            .wait_for_event(Duration::from_secs(5))
+            .await
+            .expect("should get event");
+
+        let metrics = bus.metrics();
+        assert_eq!(
+            metrics.wait_for_event_wakeups, 1,
+            "should record one successful wakeup"
+        );
+    }
+
+    // ── M3.2: Idle event backpressure tests ──────────────────────
+
+    #[test]
+    fn idle_event_discarded_at_l1_backpressure() {
+        pollster::block_on(async {
+            let bus = InMemoryBus::new(InMemoryBusConfig {
+                max_queue_size: 10,
+                level1_threshold: 0.80,
+                ..InMemoryBusConfig::default()
+            });
+
+            // Fill queue to L1 (8/10 = 80%)
+            {
+                let mut state = bus.lock_state();
+                for i in 0..8 {
+                    state
+                        .queue
+                        .push(Event::new("source:a", EventType::TimerTick, json!({"fill": i})));
+                }
+                bus.refresh_signal(&mut state);
+            }
+
+            // Idle event should be discarded at L1
+            let idle = Event::new("idle.system", EventType::Idle, json!({}));
+            let admission = {
+                let mut state = bus.lock_state();
+                bus.admit_event(idle, &mut state).expect("admit idle")
+            };
+            assert!(
+                matches!(admission, PublishAdmission::Drop),
+                "idle event should be dropped at L1 backpressure"
+            );
+            assert_eq!(
+                bus.metrics().idle_events_discarded, 1,
+                "idle_discarded_count should be 1"
+            );
+        });
+    }
+
+    #[test]
+    fn idle_event_not_discarded_at_normal_backpressure() {
+        pollster::block_on(async {
+            let bus = InMemoryBus::default();
+            let idle = Event::new("idle.system", EventType::Idle, json!({}));
+            let admission = {
+                let mut state = bus.lock_state();
+                bus.admit_event(idle, &mut state).expect("admit idle")
+            };
+            assert!(
+                matches!(admission, PublishAdmission::Accept(_)),
+                "idle event should be accepted at Normal backpressure"
+            );
+            assert_eq!(
+                bus.metrics().idle_events_discarded, 0,
+                "no idle events should be discarded at Normal"
+            );
+        });
+    }
+
+    #[test]
+    fn non_idle_event_not_affected_by_idle_discard() {
+        pollster::block_on(async {
+            let bus = InMemoryBus::new(InMemoryBusConfig {
+                max_queue_size: 10,
+                level1_threshold: 0.80,
+                ..InMemoryBusConfig::default()
+            });
+
+            // Fill queue to L1
+            {
+                let mut state = bus.lock_state();
+                for i in 0..8 {
+                    state
+                        .queue
+                        .push(Event::new("source:a", EventType::TimerTick, json!({"fill": i})));
+                }
+                bus.refresh_signal(&mut state);
+            }
+
+            // Non-idle, AtMostOnce event should still be dropped by normal backpressure
+            let mut normal = Event::new("source:b", EventType::Heartbeat, json!({}));
+            normal.delivery = DeliveryGuarantee::AtMostOnce;
+            let admission = {
+                let mut state = bus.lock_state();
+                bus.admit_event(normal, &mut state).expect("admit normal")
+            };
+            // At L1 with AtMostOnce: gets degraded priority but NOT dropped (L2+ threshold)
+            // Actually at L1 the apply_degradation() downgrades priority but doesn't drop
+            // Let's check: should_drop only at L2+
+            // So at L1, the event should be accepted (just degraded)
+            assert!(
+                matches!(admission, PublishAdmission::Accept(_)),
+                "non-idle event should not be caught by idle discard"
+            );
+        });
+    }
+
+    #[test]
+    fn idle_event_discarded_ignores_guaranteed_delivery() {
+        pollster::block_on(async {
+            let bus = InMemoryBus::new(InMemoryBusConfig {
+                max_queue_size: 10,
+                level1_threshold: 0.80,
+                ..InMemoryBusConfig::default()
+            });
+
+            // Fill queue to L2 (9/10 = 90%)
+            {
+                let mut state = bus.lock_state();
+                for i in 0..9 {
+                    state
+                        .queue
+                        .push(Event::new("source:a", EventType::TimerTick, json!({"fill": i})));
+                }
+                bus.refresh_signal(&mut state);
+            }
+
+            // Idle event with AtLeastOnce delivery should still be discarded
+            let mut idle = Event::new("idle.system", EventType::Idle, json!({}));
+            idle.delivery = DeliveryGuarantee::AtLeastOnce;
+            let admission = {
+                let mut state = bus.lock_state();
+                bus.admit_event(idle, &mut state).expect("admit idle")
+            };
+            assert!(
+                matches!(admission, PublishAdmission::Drop),
+                "idle event should be dropped regardless of delivery guarantee"
+            );
+        });
+    }
+
+    #[test]
+    fn idle_event_discarded_at_critical() {
+        pollster::block_on(async {
+            let bus = InMemoryBus::new(InMemoryBusConfig {
+                max_queue_size: 10,
+                ..InMemoryBusConfig::default()
+            });
+
+            // Fill to 100% → Critical
+            {
+                let mut state = bus.lock_state();
+                for i in 0..10 {
+                    state
+                        .queue
+                        .push(Event::new("source:a", EventType::TimerTick, json!({"fill": i})));
+                }
+                bus.refresh_signal(&mut state);
+            }
+
+            let idle = Event::new("idle.system", EventType::Idle, json!({}));
+            let admission = {
+                let mut state = bus.lock_state();
+                bus.admit_event(idle, &mut state).expect("admit idle")
+            };
+            assert!(
+                matches!(admission, PublishAdmission::Drop),
+                "idle event should be dropped at Critical"
+            );
+            assert_eq!(
+                bus.metrics().idle_events_discarded, 1,
+                "idle_discarded_count should be 1"
+            );
         });
     }
 }

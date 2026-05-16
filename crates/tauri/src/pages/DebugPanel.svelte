@@ -9,6 +9,7 @@
     session_id: string;
     trace_id?: string;
     channel_type?: string;
+    payload?: any;
   }
 
   interface MetricsSnapshot {
@@ -26,6 +27,7 @@
   let metrics = $state<MetricsSnapshot | null>(null);
   let showEventLog = $state(true);
   let showMetricsPanel = $state(true);
+  let selectedIdx = $state<number | null>(null);
   let unlisteners: (() => void)[] = [];
 
   const MAX_EVENT_LOG = 100;
@@ -39,7 +41,7 @@
   }
 
   function eventTypeClass(et: string): string {
-    if (et.startsWith("llm_")) return "llm";
+    if (et.startsWith("llm_") || et.startsWith("llm:")) return "llm";
     if (et.startsWith("tool_") || et.startsWith("TOOL_")) return "tool";
     if (et.startsWith("message")) return "msg";
     if (et.startsWith("capability") || et.startsWith("CAPABILITY")) return "cap";
@@ -48,13 +50,14 @@
     return "";
   }
 
-  function toEntry(payload: any): DebugEventEntry {
+  function toEntry(raw: any): DebugEventEntry {
     return {
       timestamp: new Date().toISOString(),
-      event_type: payload.event_type ?? "unknown",
-      session_id: payload.payload?.session_id ?? "",
-      trace_id: payload.trace_id ?? payload.payload?.trace_id,
-      channel_type: payload.payload?.channel_type,
+      event_type: raw.event_type ?? "unknown",
+      session_id: raw.payload?.session_id ?? "",
+      trace_id: raw.trace_id ?? raw.payload?.trace_id,
+      channel_type: raw.payload?.channel_type,
+      payload: raw.payload,
     };
   }
 
@@ -95,6 +98,7 @@
 
   function clearLog() {
     eventLog = [];
+    selectedIdx = null;
   }
 
   onMount(async () => {
@@ -178,9 +182,14 @@
                 <p class="dp-empty">No events yet.</p>
               {:else}
                 {#each eventLog as entry, i}
-                  <div class="dp-event-row" class:even={i % 2 === 0}>
+                  <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->
+                  <div class="dp-event-row" class:even={i % 2 === 0} class:selected={selectedIdx === i}
+                       onclick={() => selectedIdx = selectedIdx === i ? null : i}
+                       onkeydown={() => {}} role="button" tabindex="0">
                     <span class="dp-event-time">{formatTime(entry.timestamp)}</span>
-                    <span class="dp-event-type {eventTypeClass(entry.event_type)}">{entry.event_type}</span>
+                    <span class="dp-event-type {eventTypeClass(entry.event_type)}">
+                      {entry.event_type}{entry.payload?.kind ? ":" + entry.payload.kind : ""}
+                    </span>
                     {#if entry.channel_type}
                       <span class="dp-channel-tag">{entry.channel_type}</span>
                     {/if}
@@ -191,6 +200,11 @@
                       <span class="dp-event-trace" title="trace_id">#{entry.trace_id.slice(0, 12)}</span>
                     {/if}
                   </div>
+                  {#if selectedIdx === i && entry.payload}
+                    <div class="dp-event-detail" class:even={i % 2 === 0}>
+                      <pre class="dp-event-payload">{JSON.stringify(entry.payload, null, 2)}</pre>
+                    </div>
+                  {/if}
                 {/each}
               {/if}
             </div>
@@ -360,10 +374,49 @@
     padding: 3px 14px;
     font-size: 11px;
     line-height: 1.6;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+
+  .dp-event-row:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .dp-event-row.selected {
+    background: rgba(96, 165, 250, 0.1);
+    border-left: 2px solid #60a5fa;
+    padding-left: 12px;
   }
 
   .dp-event-row.even {
     background: rgba(255, 255, 255, 0.02);
+  }
+
+  .dp-event-row.even:hover {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .dp-event-row.even.selected {
+    background: rgba(96, 165, 250, 0.1);
+    border-left: 2px solid #60a5fa;
+    padding-left: 12px;
+  }
+
+  .dp-event-detail {
+    padding: 0 14px 6px;
+  }
+
+  .dp-event-payload {
+    margin: 0;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: 4px;
+    font-size: 10px;
+    line-height: 1.5;
+    color: #bbb;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 
   .dp-event-time {

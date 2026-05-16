@@ -1,0 +1,9 @@
+name: idle-daze
+version: "1.0.0"
+description: >
+  First idle state entered at depth 0. Passive arousal decay — normal attenuation.
+  Minimal cognitive load; the agent exists in a quiet baseline state.
+triggers:
+  - event_types: ["idle"]
+    sources: ["idle.system"]
+concurrency: serial

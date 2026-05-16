@@ -382,6 +382,8 @@ Event Bus {
     // === 核心功能 ===
     publish(event)                // 发布事件（异步非阻塞）
     subscribe(filter, handler)    // 订阅事件（按类型/来源/内容匹配）
+    wait_for_event()              // 异步等待新事件到达（不取走），用于 select! 并发模式
+                                  // 保证：仅队列从空→非空时触发通知（edge-triggered），无假唤醒
 
     // === 调度策略 ===
     priority_queue:               // 高优先级事件先处理
@@ -544,6 +546,21 @@ WAL 提交成功但内存队列投递失败时的处理：
 ### 3.4 Event Dispatcher（事件分发器）—— 路由与转换引擎
 
 Dispatcher 的核心职责：**决定一个事件应该交给哪些处理器**。
+
+次要职责：**在事件处理完毕、队列清空时产生 `system.queue_drained` 事件**，
+触发 Reflection 复盘（详见 idle-design.md）。Dispatcher 通过内部标志
+`recently_processed_real_event` 防止 QueueDrained 的无限循环：
+只有处理过真实事件（非 QueueDrained、非 IdleEvent）后才产生一次 QueueDrained。
+
+处理 QueueDrained 时使用 `select!` 并发模式：同时等待 Reflection Pipeline 完成和
+Event Bus 的新事件到达（通过 `wait_for_event()` 异步通知）。
+新事件抢先到达 → 取消 Reflection → 立即处理新事件。
+此机制依赖 Event Bus 提供异步的新事件到达通知（`wait_for_event()`），
+以及 IdleCoordination 共享状态（`busy_reflecting` AtomicBool）协调 IdleDetector。
+
+处理真实事件时，调用 `IdleCoordination.cancel_idle_workflows()` 中断所有正在运行的
+空闲 Workflow（Sleep/Exploration/Meditation），并通过 `last_source_type` 原子变量
+传递事件源类型，供 IdleDetector 的聊天模式检测使用。
 
 ```
 Dispatcher {

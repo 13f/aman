@@ -85,7 +85,7 @@
 </script>
 
 <div class="idle-widget" class:active>
-  <div class="idle-label">IDLE</div>
+  <div class="idle-label">IDLE{snapshot ? "/" + snapshot.kind : ""}</div>
   <div class="ring-wrapper">
     <svg viewBox="0 0 110 110" class="ring-svg">
       <!-- track rings -->
@@ -103,8 +103,8 @@
     <div class="ring-center" title={kindName}>{emoji}</div>
   </div>
   <div class="ring-labels">
-    <span class="pct depth">{Math.round(depthProgress)}%</span>
-    <span class="pct arousal">{arousalProgress}%</span>
+    <span class="pct depth">Depth: {Math.round(depthProgress)}%</span>
+    <span class="pct arousal">Arousal: {arousalProgress}%</span>
   </div>
 </div>
 
@@ -143,18 +143,20 @@
     align-items: center;
     justify-content: center;
     font-size: 30px;
-    pointer-events: none;
     user-select: none;
+    cursor: default;
   }
   .ring-labels {
     display: flex;
-    justify-content: center;
-    gap: 14px;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
     margin-top: 6px;
   }
   .pct {
     font-size: 10px;
     font-weight: 700;
+    line-height: 1.5;
   }
   .pct.depth {
     color: #6c8cff;

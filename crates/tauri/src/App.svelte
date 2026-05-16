@@ -10,6 +10,7 @@
   import Chat from "./pages/Chat.svelte";
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
+  import IdleStateWidget from "./pages/IdleStateWidget.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -94,7 +95,6 @@
 </script>
 
 <nav class="sidebar">
-  <h1>Aman</h1>
   {#each pages as page}
     {#if page.id === "chat" && !runtimeRunning}
       <span class="sidebar-link disabled" title="Start the runtime first">
@@ -112,6 +112,7 @@
       </a>
     {/if}
   {/each}
+  <IdleStateWidget {runtimeRunning} />
 </nav>
 
 <main class="main">

@@ -54,8 +54,12 @@ Defined in `crates/core/src/event.rs:146-158`:
 - The `EventBus` (InMemoryBus or PersistentBus) routes events to matching subscribers based on `SubscriptionFilter`.
 - Core subscribers:
   - **StoreAllEventsHandler** — subscribes to ALL events, records every event to the `EventStore` (in-memory ring buffer, indexed by trace_id)
-  - **SkillEventDispatcher** — subscribes to ALL events, routes to matching skills
-  - **LLMPlugin** — subscribes to `MessageReceived` events for chat processing
+  - **SkillEventDispatcher** — subscribes to ALL events, routes to matching skills; publishes `message:dispatch`/`message:completed` around each dispatch cycle
+  - **LLMPlugin** — subscribes to `MessageReceived` events for chat processing; publishes `llm:call_started`/`llm:call_ended` around each LLM provider call
+- Custom lifecycle events are published directly by runtime components:
+  - **Gateway daemon** (`main.rs`): `gateway:starting`/`gateway:ready`/`gateway:stopping` at startup/shutdown boundaries
+  - **HTTP handlers** (`http.rs`): `session:started`/`session:closed` on session create/close
+  - **PipelineEngine** (via `ToolEventSink`): `tool:invoke`/`tool:completed`/`tool:failed` around tool execution
 - The `EventStore` supports trace chain tracking via `trace_id` and `trace_prev` linking.
 - Events that fail delivery go to the **Dead Letter Queue (DLQ)** for manual retry/discard.
 
@@ -161,6 +165,20 @@ The following EventType variants are defined in the enum but have no production 
 
 These control events drive the chat-session workflow state machine. They are published via `workflow_engine.handle_event()` (for close/retry) or `runtime.publish_event()` (for stop/edit).
 
+### Session & Gateway Lifecycle Events
+
+| Literal Value | Producer | Purpose | Payload | File:Line |
+|---|---|---|---|---|
+| `session:started` | `http.rs::chat_session_create()` | Chat session created | `{"session_id":"...","session_type":"...","operator":"..."}` | `crates/gateway/src/runtime/http.rs:1665` |
+| `session:closed` | `http.rs::chat_session_close()` | Chat session closed | `{"session_id":"...","operator":"..."}` | `crates/gateway/src/runtime/http.rs:2003` |
+| `gateway:starting` | `main.rs` | Gateway daemon starting | `{"bind":"..."}` | `crates/gateway/src/main.rs:119-123` |
+| `gateway:ready` | `main.rs` | Gateway ready to serve | `{"bind":"...","addr":"..."}` | `crates/gateway/src/main.rs:134-138` |
+| `gateway:stopping` | `main.rs` | Gateway shutting down | `{}` | `crates/gateway/src/main.rs:162-166` |
+
+Published by the gateway daemon at lifecycle boundaries: before starting the runtime, after start succeeds, and before graceful shutdown. `session:started`/`session:closed` are published from HTTP handler endpoints and carry the `session_id` for trace chain correlation.
+
+> `session:timeout` is reserved in the milestone plan but deferred — production currently lacks a timeout polling loop for workflow instances.
+
 ### LLM Plugin Events
 
 | Literal Value | Purpose | Payload | File:Line |
@@ -168,11 +186,34 @@ These control events drive the chat-session workflow state machine. They are pub
 | `message_queued` | Message entered LLM processing queue | `{"session_id":"...", "queue_position":...}` | `crates/plugins/llm-plugin/src/lib.rs:216` |
 | `message_dropped` | Message dropped from queue (queue full) | `{"session_id":"...", "reason":"queue full"}` | `crates/plugins/llm-plugin/src/lib.rs:230` |
 | `history_trimmed` | Conversation history trimmed | `{"session_id":"...", "removed":...}` | `crates/plugins/llm-plugin/src/lib.rs:313` |
+| `llm:call_started` | LLM provider call initiated | `{"session_id":"...","model":"...","input_tokens_estimate":N,"original_message_id":"...","soul_name":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:342` |
+| `llm:call_ended` | LLM provider call completed successfully | `{"session_id":"...","model":"...","input_tokens_estimate":N,"output_tokens_estimate":N,"latency_ms":N,"original_message_id":"...","soul_name":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:384` |
 | `llm_error` | LLM call error | `{"session_id":"...", "error":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:351` |
 | `llm_reply_ready` | LLM response ready | `{"session_id":"...", "content":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:395` |
 | `output_blocked` | Output validator blocked content | `{"session_id":"...", "reason":"...", "matched_patterns":[...]}` | `crates/plugins/llm-plugin/src/lib.rs:416,435` |
 
-Published by the LLM plugin to track chat processing lifecycle. These are consumed by the chat-session workflow to drive state transitions (e.g., `LLM_REPLY_READY` → `IDLE`, `LLM_ERROR` → `ERROR`).
+Published by the LLM plugin to track chat processing lifecycle. `llm:call_started`/`llm:call_ended` bracket each LLM provider invocation with token estimates and latency. On failure, `llm:call_started` is published but `llm:call_ended` is not (only `llm_error` fires). These events are consumed by the chat-session workflow to drive state transitions (e.g., `LLM_REPLY_READY` → `IDLE`, `LLM_ERROR` → `ERROR`).
+
+### Message Dispatch Events
+
+| Literal Value | Producer | Purpose | Payload | File:Line |
+|---|---|---|---|---|
+| `message:dispatch` | `SkillEventDispatcher` | Event routed to skill(s) for processing | `{"trace_id":"...","event_id":"...","event_type":"...","source":"..."}` | `crates/gateway/src/runtime/agent_runtime.rs:422` |
+| `message:completed` | `SkillEventDispatcher` | Skill(s) finished processing | `{"trace_id":"...","executed":[...],"failed":[...]}` | `crates/gateway/src/runtime/agent_runtime.rs:433` |
+
+Published by the `SkillEventDispatcher` — a catch-all EventBus subscriber registered in the runtime builder. On every incoming event, `message:dispatch` fires before routing to matching skills and `message:completed` fires after all matching skills have executed (success or failure).
+
+### Tool Events
+
+| Literal Value | Producer | Purpose | Payload | File:Line |
+|---|---|---|---|---|
+| `tool:invoke` | `PipelineEngine` | Tool execution started | `{"tool_name":"...","pipeline_id":"...","instance_id":"..."}` | `crates/pipeline/src/lib.rs:591` |
+| `tool:completed` | `PipelineEngine` | Tool execution succeeded | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","duration_ms":N}` | `crates/pipeline/src/lib.rs:599` |
+| `tool:failed` | `PipelineEngine` | Tool execution failed | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","error":"..."}` | `crates/pipeline/src/lib.rs:605,612` |
+
+Defined via the `ToolEventSink` trait and wired into `PipelineEngine::execute_tool_with_retry()`. The `BusToolEventSink` implementation in the gateway crate (`crates/gateway/src/runtime/agent_runtime.rs:518-550`) converts these sink callbacks into EventBus publishes.
+
+> **Architecture note**: `PipelineEngine` is currently not in the production chat flow (the LLM plugin calls the provider directly via `rig::agent::prompt()`). Tool events fire from the `PipelineEngine` path used in tests and the dispatcher crate. Production tool events will be added when `PipelineEngine` or `ToolRunner` is wired into the production path.
 
 ### Capability Events
 

@@ -21,7 +21,7 @@ struct BuiltinSkill {
     content: &'static str,
 }
 
-/// Manifest file at `~/.aman/.aman-skills-manifest.json`.
+/// Manifest file at `~/.aman/.manifest.json`.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SkillManifest {
     version: u32,
@@ -126,7 +126,7 @@ fn sync_builtin_skills_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Err
     let skills_dir = data_dir.join("skills");
     std::fs::create_dir_all(&skills_dir)?;
 
-    let manifest_path = data_dir.join(".aman-skills-manifest.json");
+    let manifest_path = data_dir.join(".manifest.json");
     let prev_manifest = load_manifest(&manifest_path);
 
     let skills = builtin_skills();
@@ -220,7 +220,7 @@ mod tests {
         }
 
         // Manifest should exist
-        assert!(tmp.join(".aman-skills-manifest.json").exists());
+        assert!(tmp.join(".manifest.json").exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

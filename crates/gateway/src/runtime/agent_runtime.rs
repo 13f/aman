@@ -862,7 +862,7 @@ impl AgentRuntime {
             out.push_str(&format!("- {}: {}\n", s.name, s.description));
         }
         out.push_str(
-            "\nTo load a skill's complete instructions, use the `read_skill` mechanism. Respond with `read_skill(<skill_name>)` to request full SKILL.md details.\n",
+            "\nTo load a skill's complete instructions, use the `read_skill` tool. Call it with the skill name when you need the full instructions to answer the user's question.\n",
         );
         out
     }
@@ -876,28 +876,39 @@ impl AgentRuntime {
         std::fs::read_to_string(&path).ok()
     }
 
-    /// Use the cascade selector to find the best-matching skill for `text`.
+    /// Use the cascade selector to find matching skills for `text`.
     ///
-    /// Returns the full SKILL.md content of the top-ranked skill if its confidence
-    /// is `High` or `Definite`. Returns `None` when:
+    /// Returns the full SKILL.md content of ALL skills whose confidence is
+    /// `Medium` or higher. This is Level 2 of Progressive Disclosure — the
+    /// system pre-loads every relevant skill so the LLM doesn't need multiple
+    /// `read_skill` tool calls.
+    ///
+    /// Returns an empty vec when:
     /// - The selector is not initialized,
     /// - Selection fails,
-    /// - No skill exceeds the confidence threshold,
-    /// - The top result's confidence is `Medium` or lower (Level 1 progressive
-    ///   disclosure still lists the skill in the system prompt; the LLM can
-    ///   still request it explicitly via `read_skill()`).
+    /// - No skill exceeds the confidence threshold.
     #[must_use]
-    pub fn select_skill_for_text(&self, text: &str) -> Option<String> {
-        let registry = self.skill_registry.as_ref()?;
-        let selector = self.cascade_selector.as_ref()?;
+    pub fn select_skills_for_text(&self, text: &str) -> Vec<String> {
+        let registry = match self.skill_registry.as_ref() {
+            Some(r) => r,
+            None => return vec![],
+        };
+        let selector = match self.cascade_selector.as_ref() {
+            Some(s) => s,
+            None => return vec![],
+        };
         let ctx = skm_select::SelectionContext::new();
-        let outcome = pollster::block_on(selector.select(text, registry, &ctx)).ok()?;
-        let top = outcome.selected.into_iter().next()?;
-        if top.confidence >= skm_select::Confidence::High {
-            self.read_skill(top.skill.as_str())
-        } else {
-            None
-        }
+        let outcome = match pollster::block_on(selector.select(text, registry, &ctx)) {
+            Ok(o) => o,
+            Err(_) => return vec![],
+        };
+
+        outcome
+            .selected
+            .into_iter()
+            .filter(|r| r.confidence >= skm_select::Confidence::Medium)
+            .filter_map(|r| self.read_skill(r.skill.as_ref()))
+            .collect()
     }
 
     #[must_use]
@@ -1944,6 +1955,13 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                 base_url,
                 model: model.default.clone(),
                 sessions_dir,
+                skills_dir: Some(
+                    PathBuf::from(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+                        .join(".aman")
+                        .join("skills")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
             };
         }
 
@@ -1965,6 +1983,13 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                     base_url: provider_config.base_url.clone(),
                     model: agent.model.clone(),
                     sessions_dir,
+                    skills_dir: Some(
+                        PathBuf::from(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+                            .join(".aman")
+                            .join("skills")
+                            .to_string_lossy()
+                            .to_string(),
+                    ),
                 };
             }
             tracing::warn!(
@@ -1987,6 +2012,13 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned()),
         model: std::env::var("AMAN_DEFAULT_MODEL").unwrap_or_else(|_| "gpt-4o".to_owned()),
         sessions_dir,
+        skills_dir: Some(
+            PathBuf::from(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+                .join(".aman")
+                .join("skills")
+                .to_string_lossy()
+                .to_string(),
+        ),
     }
 }
 

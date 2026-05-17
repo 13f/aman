@@ -17,6 +17,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -33,6 +34,9 @@ pub struct LlmConfig {
     /// When `Some`, every LLM interaction is appended as JSONL:
     ///   `{sessions_dir}/{yyyy-MM}/{yyyy-MM-dd}-{session_id}.jsonl`
     pub sessions_dir: Option<String>,
+    /// Directory containing SKILL.md skill files, used for `read_skill` tool.
+    /// When `Some`, the `read_skill` tool is registered with the LLM via native function calling.
+    pub skills_dir: Option<String>,
 }
 
 // --- History trimming configuration (§15) ---
@@ -354,14 +358,15 @@ async fn process_session(
 
         let llm_started = std::time::Instant::now();
 
-        // Call LLM via rig.
-        let reply_text = match call_llm(text, soul_prompt, &llm_config).await {
+        // Call the LLM with the `read_skill` tool registered for native function
+        // calling. rig's multi-turn agent loop handles the tool call flow:
+        // LLM proposes read_skill tool_call → tool executes SKILL.md load →
+        // result fed back → LLM continues with the skill content to produce
+        // the final answer. No text-pattern parsing needed.
+        let reply_text = match call_llm(text, soul_prompt, &llm_config, Some(bus.clone()), Some(session_id.clone())).await {
             Ok(reply) => reply,
             Err(e) => {
                 tracing::error!(%session_id, error = %e, "llm-plugin: LLM call failed");
-                // Publish an error event so the frontend can display the failure.
-                // Note: llm:call_started is published above but call_ended is not — matches the
-                // convention that call_ended only appears on success (see events-milestones.md M3).
                 let error_payload = json!({
                     "session_id": session_id,
                     "original_message_id": msg.id.to_string(),
@@ -374,7 +379,7 @@ async fn process_session(
                     error_payload,
                 );
                 let _ = bus.publish(error_event).await;
-                continue;
+                String::new()
             }
         };
 
@@ -519,8 +524,10 @@ fn append_session_jsonl(sessions_dir: Option<&str>, session_id: &str, data: &ser
     }
 }
 
-/// Call the LLM via rig's OpenAI-compatible client.
-async fn call_llm(text: &str, soul_prompt: &str, config: &LlmConfig) -> Result<String, String> {
+/// Call the LLM via rig's OpenAI-compatible client with the `read_skill` tool
+/// registered for native function calling. rig handles the multi-turn loop:
+/// LLM proposes tool_call → tool executes → result fed back → LLM continues.
+async fn call_llm(text: &str, soul_prompt: &str, config: &LlmConfig, bus: Option<Arc<dyn EventBus>>, session_id: Option<String>) -> Result<String, String> {
     use rig_core::client::CompletionClient;
     use rig_core::completion::Prompt;
 
@@ -530,14 +537,25 @@ async fn call_llm(text: &str, soul_prompt: &str, config: &LlmConfig) -> Result<S
         .build()
         .map_err(|e| format!("failed to build rig client: {e}"))?;
 
-    let mut agent_builder = client.agent(&config.model);
-    if !soul_prompt.is_empty() {
-        agent_builder = agent_builder.preamble(soul_prompt);
-    }
+    let builder = client.agent(&config.model);
+    let builder = if soul_prompt.is_empty() {
+        builder
+    } else {
+        builder.preamble(soul_prompt)
+    };
 
-    let agent = agent_builder.build();
+    // Register the read_skill tool for native function calling.
+    // The LLM calls it via tool_calls; rig feeds the result back automatically.
+    let builder = builder.tool(ReadSkillTool {
+        skills_dir: config.skills_dir.clone(),
+        bus,
+        session_id,
+    });
+
+    let agent = builder.build();
     agent
         .prompt(text)
+        .max_turns(50)
         .await
         .map_err(|e| format!("LLM prompt failed: {e}"))
 }
@@ -552,6 +570,150 @@ fn spawn_session_processor(
     tokio::spawn(async move {
         process_session(rx, bus, session_id, validator, llm_config).await;
     });
+}
+
+/// Args for the `read_skill` tool registered with the LLM via rig's native tool API.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ReadSkillArgs {
+    name: String,
+}
+
+/// Error returned when the `read_skill` tool cannot load a skill.
+#[derive(Debug)]
+struct ReadSkillToolError(String);
+
+impl std::fmt::Display for ReadSkillToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "read_skill: {}", self.0)
+    }
+}
+
+impl std::error::Error for ReadSkillToolError {}
+
+/// Tool that loads SKILL.md content for the LLM via native function calling.
+///
+/// Registered with the rig agent builder when `skills_dir` is configured.
+/// The LLM calls this tool to request full skill instructions, replacing the
+/// old text-based `read_skill("name")` pattern parsing approach.
+struct ReadSkillTool {
+    skills_dir: Option<String>,
+    /// Event bus for publishing tool progress events to the frontend.
+    bus: Option<Arc<dyn EventBus>>,
+    /// Session ID scoping for progress events.
+    session_id: Option<String>,
+}
+
+/// Sequential counter for unique tool call IDs within the process lifetime.
+static TOOL_CALL_SEQ: AtomicU64 = AtomicU64::new(0);
+
+impl rig_core::tool::Tool for ReadSkillTool {
+    const NAME: &'static str = "read_skill";
+
+    type Error = ReadSkillToolError;
+    type Args = ReadSkillArgs;
+    type Output = String;
+
+    async fn definition(&self, _prompt: String) -> rig_core::completion::ToolDefinition {
+        use rig_core::completion::ToolDefinition;
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Load a skill's full instructions by name. Use this when the user asks about a topic that matches one of the available skills.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "The skill name to load (e.g. 'ipo-research')"
+                    }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: Self::Args) -> Result<String, Self::Error> {
+        let skills_dir = self.skills_dir.as_deref()
+            .ok_or_else(|| ReadSkillToolError("skills directory not configured".to_string()))?;
+
+        let call_id = format!("read_skill-{}", TOOL_CALL_SEQ.fetch_add(1, Ordering::Relaxed));
+        let args_json = serde_json::to_string(&args).unwrap_or_default();
+
+        // Emit tool_call progress event so the frontend shows live step updates.
+        if let (Some(bus), Some(sid)) = (self.bus.as_ref(), self.session_id.as_ref()) {
+            let _ = bus.publish(Event::new(
+                "plugin:llm",
+                EventType::Custom("llm_tool_call".to_owned()),
+                json!({
+                    "session_id": sid,
+                    "call_id": call_id,
+                    "tool_name": "read_skill",
+                    "arguments": args_json,
+                }),
+            )).await;
+        }
+
+        let result = load_skill_content(skills_dir, &args.name);
+
+        // Emit tool_result event after loading completes.
+        if let (Some(bus), Some(sid)) = (self.bus.as_ref(), self.session_id.as_ref()) {
+            match &result {
+                Some(content) => {
+                    let preview: String = content.chars().take(500).collect();
+                    let _ = bus.publish(Event::new(
+                        "plugin:llm",
+                        EventType::Custom("llm_tool_result".to_owned()),
+                        json!({
+                            "session_id": sid,
+                            "call_id": call_id,
+                            "status": "success",
+                            "result": preview,
+                        }),
+                    )).await;
+                }
+                None => {
+                    let _ = bus.publish(Event::new(
+                        "plugin:llm",
+                        EventType::Custom("llm_tool_result".to_owned()),
+                        json!({
+                            "session_id": sid,
+                            "call_id": call_id,
+                            "status": "failed",
+                            "error": format!("skill '{}' not found or unreadable", args.name),
+                        }),
+                    )).await;
+                }
+            }
+        }
+
+        result.ok_or_else(|| ReadSkillToolError(format!("skill '{}' not found or unreadable", args.name)))
+    }
+}
+
+/// Load SKILL.md content for a given skill name from the skills directory.
+///
+/// Skills may be organized in category subdirectories (e.g., `investment/ipo-research/SKILL.md`),
+/// so this performs a recursive directory walk to find `{skill_name}/SKILL.md`.
+fn load_skill_content(skills_dir: &str, skill_name: &str) -> Option<String> {
+    let root = std::path::Path::new(skills_dir);
+    let mut stack = vec![root.to_owned()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|n| n.to_str()) == Some(skill_name) {
+                    let skill_path = path.join("SKILL.md");
+                    if skill_path.exists() {
+                        return std::fs::read_to_string(&skill_path).ok();
+                    }
+                }
+                stack.push(path);
+            }
+        }
+    }
+    None
 }
 
 /// LLM Plugin — subscribes to MESSAGE_RECEIVED events and processes them
@@ -679,6 +841,7 @@ mod tests {
             base_url: "http://localhost:99999/nonexistent".to_owned(),
             model: "test-model".to_owned(),
             sessions_dir: None,
+            skills_dir: None,
         }
     }
 

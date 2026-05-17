@@ -1923,17 +1923,18 @@ async fn chat_session_send(
     let combined_prompt = if skills_prompt.is_empty() {
         soul_prompt
     } else {
-        // Level 2 of Progressive Disclosure: use cascade selector to find the
-        // best-matching skill and inject its full instructions when confidence
-        // is High or Definite.
-        let matched_skill: Option<String> = runtime.select_skill_for_text(&text);
-        if let Some(skill_content) = matched_skill {
+        // Level 2 of Progressive Disclosure: use cascade selector to find ALL
+        // matching skills and inject their full instructions. This avoids
+        // unnecessary `read_skill` tool calls by the LLM.
+        let matched_skills: Vec<String> = runtime.select_skills_for_text(&text);
+        if matched_skills.is_empty() {
+            format!("{}{}", soul_prompt, skills_prompt)
+        } else {
+            let skills_block = matched_skills.join("\n\n---\n\n");
             format!(
                 "{}\n\n{}\n\nThe following skill instructions have been loaded based on your request:\n\n{}",
-                soul_prompt, skills_prompt, skill_content
+                soul_prompt, skills_prompt, skills_block
             )
-        } else {
-            format!("{}{}", soul_prompt, skills_prompt)
         }
     };
 

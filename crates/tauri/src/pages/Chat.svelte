@@ -4,6 +4,7 @@
   import { onMount, onDestroy } from "svelte";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
+  import DepthPanel from "./DepthPanel.svelte";
   import DebugPanel from "./DebugPanel.svelte";
 
   type MessageType =
@@ -51,6 +52,19 @@
   let soulIntroShown = $state(false);
   let archivedMsgIds = $state<Set<string>>(new Set());
   let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
+
+  interface TurnStep {
+    id: string;
+    toolName: string;
+    arguments: string;
+    status: "running" | "success" | "failed";
+    result?: string;
+    error?: string;
+    timestamp: string;
+  }
+
+  let turnSteps = $state<TurnStep[]>([]);
+  let activeTab = $state<"sessions" | "steps">("sessions");
 
   const activeSession = $derived(sessions.find(s => s.id === activeSessionId));
   const isProcessing = $derived(
@@ -170,7 +184,7 @@
   // Loading timeout — force reset if no events arrive
   $effect(() => {
     if (isLoading) {
-      const timeout = setTimeout(() => { isLoading = false; }, 10000);
+      const timeout = setTimeout(() => { isLoading = false; }, 300000);
       return () => clearTimeout(timeout);
     }
   });
@@ -231,29 +245,39 @@
     }
   }
 
-  function handleLlmToolCall(data: any) {
-    // data = { session_id, call_id, tool_name, arguments }
-    const callId: string = data.call_id;
-    const channelType: string | undefined = data.channel_type;
-    const traceId: string | undefined = data.trace_id;
-    const toolCall: Message = {
-      id: callId,
-      type: "assistant_tool_call",
-      content: `Tool: ${data.tool_name}`,
-      timestamp: new Date().toISOString(),
-      sessionId: data.session_id,
-      status: "streaming",
-      channelType,
-      traceId,
-      toolCall: {
-        callId,
-        toolName: data.tool_name,
-        arguments: data.arguments ?? "{}",
-        status: "running",
-      },
-    };
-    messages = [...messages, toolCall];
-  }
+	  function handleLlmToolCall(data: any) {
+	    // data = { session_id, call_id, tool_name, arguments }
+	    const callId: string = data.call_id;
+	    const channelType: string | undefined = data.channel_type;
+	    const traceId: string | undefined = data.trace_id;
+	    const toolCall: Message = {
+	      id: callId,
+	      type: "assistant_tool_call",
+	      content: `Tool: ${data.tool_name}`,
+	      timestamp: new Date().toISOString(),
+	      sessionId: data.session_id,
+	      status: "streaming",
+	      channelType,
+	      traceId,
+	      toolCall: {
+	        callId,
+	        toolName: data.tool_name,
+	        arguments: data.arguments ?? "{}",
+	        status: "running",
+	      },
+	    };
+	    messages = [...messages, toolCall];
+
+	    // Track step in the depth panel.
+	    turnSteps = [...turnSteps, {
+	      id: callId,
+	      toolName: data.tool_name,
+	      arguments: data.arguments ?? "{}",
+	      status: "running" as const,
+	      timestamp: new Date().toISOString(),
+	    }];
+    if (activeTab !== "steps") activeTab = "steps";
+	  }
 
   function handleLlmToolResult(data: any) {
     // data = { session_id, call_id, status, result?, error? }
@@ -274,6 +298,13 @@
       m.id === callId
         ? { ...m, toolCall: updatedToolCall, status: newStatus === "success" ? "completed" : "error" }
         : m,
+    );
+
+    // Update step status in the depth panel.
+    turnSteps = turnSteps.map(s =>
+      s.id === callId
+        ? { ...s, status: newStatus, result: data.result, error: data.error }
+        : s,
     );
   }
 
@@ -366,6 +397,8 @@
         break;
       case "llm_reply_ready":
         handleLlmReplyReady(data);
+        // Force-complete any steps still running (results may have been reordered or lost).
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
         break;
       case "llm_tool_call":
         handleLlmToolCall(data);
@@ -375,9 +408,11 @@
         break;
       case "output_blocked":
         handleOutputBlocked(data);
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
         break;
       case "llm_error":
         handleLlmError(data);
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "failed" as const, error: "LLM processing ended" } : s);
         break;
       case "history_trimmed":
       case "HISTORY_TRIMMED":
@@ -891,6 +926,7 @@
       status: "pending",
     };
     messages = [...messages, userMsg];
+    turnSteps = [];
     isLoading = true;
     updateSessionStatus(activeSessionId, "processing");
 
@@ -961,24 +997,34 @@
 </script>
 
 <div class="chat-layout">
-  <!-- Session Panel -->
+  <!-- Left Sidebar with Tabs: Sessions / Steps -->
   <aside class="session-panel">
     <div class="panel-header">
-      <h2>Sessions</h2>
+      <h2>Chat</h2>
       <button class="new-btn" onclick={createSession} title="New chat">+</button>
     </div>
-    <div class="session-list">
-      {#each sessions as session}
-        <button
-          class="session-item"
-          class:active={session.id === activeSessionId}
-          onclick={() => selectSession(session.id)}
-        >
-          <span class="session-title">{session.title}</span>
-          <span class="session-meta">{session.messageCount} msgs &middot; {session.status}</span>
-        </button>
-      {/each}
+    <div class="sidebar-tabs">
+      <button class="tab-btn" class:active={activeTab === "sessions"} onclick={() => activeTab = "sessions"}>Sessions</button>
+      <button class="tab-btn" class:active={activeTab === "steps"} onclick={() => activeTab = "steps"}>Steps{isProcessing || turnSteps.length > 0 ? ` (${turnSteps.length})` : ''}</button>
     </div>
+    {#if activeTab === "sessions"}
+      <div class="session-list">
+        {#each sessions as session}
+          <button
+            class="session-item"
+            class:active={session.id === activeSessionId}
+            onclick={() => selectSession(session.id)}
+          >
+            <span class="session-title">{session.title}</span>
+            <span class="session-meta">{session.messageCount} msgs &middot; {session.status}</span>
+          </button>
+        {/each}
+      </div>
+    {:else}
+      <div class="sidebar-tab-content">
+        <DepthPanel steps={turnSteps} />
+      </div>
+    {/if}
   </aside>
 
   <!-- Main Chat Area -->
@@ -1111,6 +1157,7 @@
       {/if}
     </div>
   </div>
+
 </div>
 
 <!-- Toast notifications -->
@@ -1175,6 +1222,49 @@
 
   .new-btn:hover {
     background: var(--bg-hover);
+  }
+
+  .sidebar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .tab-btn {
+    flex: 1;
+    padding: 8px 4px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .tab-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .tab-btn.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  .sidebar-tab-content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .sidebar-tab-content :global(.depth-panel) {
+    width: auto;
+    min-width: 0;
+    border-left: none;
+    flex: 1;
   }
 
   .session-list {

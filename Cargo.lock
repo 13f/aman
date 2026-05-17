@@ -3401,7 +3401,9 @@ dependencies = [
  "test-utils",
  "thiserror 2.0.18",
  "tokio",
+ "tool",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7252,10 +7254,13 @@ dependencies = [
  "async-trait",
  "kernel",
  "pollster",
+ "regex",
  "reqwest 0.12.28",
  "rusqlite",
+ "secret",
  "serde",
  "serde_json",
+ "tokio",
  "uuid",
 ]
 

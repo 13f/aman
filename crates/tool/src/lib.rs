@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 #![doc = "Tool registry, runner, and builtin tools for the Aman agent framework."]
 
+pub mod auth;
+pub mod security;
+pub mod web_search;
+
+pub use auth::AuthRegistry;
+pub use web_search::WebSearchTool;
+
 use kernel::context::ToolContext;
 use kernel::schema::JsonSchema;
 use kernel::tool::Tool;
@@ -19,6 +26,14 @@ use uuid::Uuid;
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+}
+
+impl std::fmt::Debug for ToolRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolRegistry")
+            .field("tools", &self.list_tools())
+            .finish()
+    }
 }
 
 impl ToolRegistry {
@@ -56,6 +71,17 @@ impl ToolRegistry {
             .expect("tool registry read lock")
             .get(name)
             .cloned()
+    }
+
+    /// Return the names of all registered tools.
+    #[must_use]
+    pub fn list_tools(&self) -> Vec<String> {
+        self.tools
+            .read()
+            .expect("tool registry read lock")
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 
@@ -337,7 +363,8 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     registry.register(Arc::new(FileTool))?;
     registry.register(Arc::new(HttpTool))?;
     registry.register(Arc::new(ExecTool))?;
-    registry.register(Arc::new(DbTool))
+    registry.register(Arc::new(DbTool))?;
+    registry.register(Arc::new(WebSearchTool))
 }
 
 struct FileTool;

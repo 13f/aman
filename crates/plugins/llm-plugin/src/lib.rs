@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "LLM Plugin — processes MESSAGE_RECEIVED events with per-session serial queue."]
 
+pub mod llm_tool;
+
 use async_trait::async_trait;
 use event_bus::{EventBus, EventHandler, SubscriptionFilter, SubscriptionId};
 use kernel::context::PluginContext;
@@ -11,6 +13,7 @@ use kernel::source::EventSource;
 use kernel::tool::Tool;
 use kernel::validator::{OutputValidator, ValidationOutcome};
 use kernel::AmanResult;
+use llm_tool::LlmNativeTool;
 use serde::Serialize;
 use semver::Version;
 use serde_json::json;
@@ -24,7 +27,7 @@ use tokio::sync::mpsc;
 const DEFAULT_MAX_QUEUE_PER_SESSION: usize = 10;
 
 /// Configuration for the LLM provider connection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
     pub provider_key: String,
     pub api_key: String,
@@ -37,6 +40,14 @@ pub struct LlmConfig {
     /// Directory containing SKILL.md skill files, used for `read_skill` tool.
     /// When `Some`, the `read_skill` tool is registered with the LLM via native function calling.
     pub skills_dir: Option<String>,
+    /// Registry of native Aman tools (exec, file, http, db, web_search, etc.).
+    /// When `Some`, every registered tool is wrapped in `LlmNativeTool` and
+    /// exposed to the LLM via rig's function calling API.
+    pub tool_registry: Option<std::sync::Arc<tool::ToolRegistry>>,
+    /// Shared auth registry for user-approval of sensitive tool calls.
+    pub auth_registry: Option<std::sync::Arc<tool::auth::AuthRegistry>>,
+    /// Tool names that should skip user authorization (e.g. "web_search").
+    pub no_auth_tools: Vec<String>,
 }
 
 // --- History trimming configuration (§15) ---
@@ -524,10 +535,21 @@ fn append_session_jsonl(sessions_dir: Option<&str>, session_id: &str, data: &ser
     }
 }
 
-/// Call the LLM via rig's OpenAI-compatible client with the `read_skill` tool
-/// registered for native function calling. rig handles the multi-turn loop:
-/// LLM proposes tool_call → tool executes → result fed back → LLM continues.
-async fn call_llm(text: &str, soul_prompt: &str, config: &LlmConfig, bus: Option<Arc<dyn EventBus>>, session_id: Option<String>) -> Result<String, String> {
+/// Call the LLM via rig's OpenAI-compatible client with all registered tools.
+///
+/// Registers:
+/// - `read_skill` tool (for loading skill instructions)
+/// - All tools from `config.tool_registry` (exec, file, http, db, web_search, etc.)
+///
+/// rig handles the multi-turn loop: LLM proposes tool_call → tool executes →
+/// result fed back → LLM continues.
+async fn call_llm(
+    text: &str,
+    soul_prompt: &str,
+    config: &LlmConfig,
+    bus: Option<Arc<dyn EventBus>>,
+    session_id: Option<String>,
+) -> Result<String, String> {
     use rig_core::client::CompletionClient;
     use rig_core::completion::Prompt;
 
@@ -544,13 +566,36 @@ async fn call_llm(text: &str, soul_prompt: &str, config: &LlmConfig, bus: Option
         builder.preamble(soul_prompt)
     };
 
-    // Register the read_skill tool for native function calling.
-    // The LLM calls it via tool_calls; rig feeds the result back automatically.
-    let builder = builder.tool(ReadSkillTool {
-        skills_dir: config.skills_dir.clone(),
-        bus,
-        session_id,
-    });
+    // Build the tool collection for this LLM session.
+    let mut tools: Vec<Box<dyn rig_core::tool::ToolDyn>> = Vec::new();
+
+    // Register the read_skill tool if a skills directory is configured.
+    if config.skills_dir.is_some() {
+        tools.push(Box::new(ReadSkillTool {
+            skills_dir: config.skills_dir.clone(),
+            bus: bus.clone(),
+            session_id: session_id.clone(),
+        }));
+    }
+
+    // Register all native tools from the registry (exec, file, http, db, web_search, etc.).
+    if let Some(ref registry) = config.tool_registry {
+        for name in registry.list_tools() {
+            if let Some(tool) = registry.get(&name) {
+                let require_auth = !config.no_auth_tools.contains(&name);
+                tools.push(Box::new(LlmNativeTool {
+                    inner: tool,
+                    bus: bus.clone(),
+                    session_id: session_id.clone(),
+                    require_auth,
+                    auth_registry: config.auth_registry.clone(),
+                }));
+            }
+        }
+    }
+
+    // Register all tools at once via boxed dispatch.
+    let builder = builder.tools(tools);
 
     let agent = builder.build();
     agent
@@ -842,6 +887,9 @@ mod tests {
             model: "test-model".to_owned(),
             sessions_dir: None,
             skills_dir: None,
+            tool_registry: None,
+            auth_registry: None,
+            no_auth_tools: vec![],
         }
     }
 

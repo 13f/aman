@@ -11,6 +11,7 @@
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
+  import Settings from "./pages/Settings.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -26,6 +27,7 @@
     { id: "workflows", label: "Workflow Board" },
     { id: "plugins", label: "Plugin Manager" },
     { id: "dlq", label: "DLQ" },
+    { id: "settings", label: "Settings" },
   ];
 
   const providerPage: Page = { id: "providers", label: "Providers" };
@@ -132,5 +134,7 @@
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}
     <Chat />
+  {:else if currentPage === "settings"}
+    <Settings />
   {/if}
 </main>

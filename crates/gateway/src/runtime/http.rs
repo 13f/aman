@@ -122,6 +122,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/capabilities", get(capability_list))
         .route("/dlq/depth", get(dlq_depth))
         .route("/debug/metrics", get(debug_metrics))
+        .route("/tool-auth/respond", post(tool_auth_respond))
         .route_layer(middleware::from_fn_with_state(
             runtime.clone(),
             require_api_token,
@@ -1622,6 +1623,24 @@ struct DlqDepthResponse {
     depth: usize,
 }
 
+async fn tool_auth_respond(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Json(body): Json<ToolAuthRespondBody>,
+) -> Response {
+    let resolved = runtime
+        .auth_registry()
+        .resolve(&body.auth_id, body.approved);
+    if resolved {
+        (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "auth_id not found or already expired"})),
+        )
+            .into_response()
+    }
+}
+
 async fn dlq_depth(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     Json(DlqDepthResponse {
         depth: runtime.dlq().depth(),
@@ -1923,9 +1942,10 @@ async fn chat_session_send(
     let combined_prompt = if skills_prompt.is_empty() {
         soul_prompt
     } else {
-        // Level 2 of Progressive Disclosure: use cascade selector to find ALL
-        // matching skills and inject their full instructions. This avoids
-        // unnecessary `read_skill` tool calls by the LLM.
+        // Level 2 of Progressive Disclosure: use cascade selector to find the
+        // top-1 matching skill and inject its full instructions. This avoids
+        // `read_skill` tool calls while preventing conflicting instructions from
+        // multiple skills.
         let matched_skills: Vec<String> = runtime.select_skills_for_text(&text);
         if matched_skills.is_empty() {
             format!("{}{}", soul_prompt, skills_prompt)
@@ -2396,6 +2416,12 @@ fn error_response(error: kernel::Error) -> Response {
 #[derive(Debug, Clone, Serialize)]
 struct OkResponse {
     ok: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ToolAuthRespondBody {
+    auth_id: String,
+    approved: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

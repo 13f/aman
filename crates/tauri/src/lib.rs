@@ -106,6 +106,12 @@ pub fn run() {
             commands::has_any_provider,
             commands::has_any_agent,
             commands::get_default_model,
+            // Tool authorization
+            commands::show_tool_auth_dialog,
+            // Third-party service keys
+            commands::list_third_party_services,
+            commands::set_third_party_key,
+            commands::set_third_party_config,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar

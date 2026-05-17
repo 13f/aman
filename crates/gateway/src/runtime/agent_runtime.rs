@@ -208,6 +208,7 @@ impl AgentRuntimeBuilder {
         );
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
+        let _ = tool::install_builtin_tools(&tools);
         let skill_search = Arc::new(skill::SkillSearch::new());
         let skill_versions = Arc::new(skill::SkillVersionManager::from_root(
             self.runtime_dir.join("skill-history"),
@@ -386,7 +387,11 @@ impl AgentRuntimeBuilder {
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
         // Build LLM config for the built-in LLM plugin.
-        let llm_config = build_llm_config();
+        let auth_registry = Arc::new(tool::auth::AuthRegistry::new());
+        let mut llm_config = build_llm_config();
+        llm_config.tool_registry = Some(Arc::clone(&tools));
+        llm_config.auth_registry = Some(Arc::clone(&auth_registry));
+        llm_config.no_auth_tools = vec!["web_search".to_string()];
         let llm_plugin = llm_plugin::LlmPlugin::new(Arc::clone(&bus), llm_config);
 
         // Load the built-in LLM plugin via PluginLoader.
@@ -564,6 +569,7 @@ impl AgentRuntimeBuilder {
             sources,
             skills,
             tools,
+            auth_registry,
             skill_search,
             skill_versions,
             skill_hot_reload,
@@ -711,6 +717,8 @@ pub struct AgentRuntime {
     skill_registry: Option<skm_core::SkillRegistry>,
     /// Cascade selector for skill matching (None if init failed).
     cascade_selector: Option<skm_select::CascadeSelector>,
+    /// Registry for tool authorization requests (native macOS dialogs).
+    auth_registry: Arc<tool::auth::AuthRegistry>,
 }
 
 impl AgentRuntime {
@@ -727,6 +735,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn risky_capabilities_enabled(&self) -> bool {
         self.config.security.risky_capabilities_enabled
+    }
+
+    #[must_use]
+    pub fn auth_registry(&self) -> Arc<tool::auth::AuthRegistry> {
+        Arc::clone(&self.auth_registry)
     }
 
     #[must_use]
@@ -876,12 +889,13 @@ impl AgentRuntime {
         std::fs::read_to_string(&path).ok()
     }
 
-    /// Use the cascade selector to find matching skills for `text`.
+    /// Use the cascade selector to find the top-1 matching skill for `text`.
     ///
-    /// Returns the full SKILL.md content of ALL skills whose confidence is
-    /// `Medium` or higher. This is Level 2 of Progressive Disclosure — the
-    /// system pre-loads every relevant skill so the LLM doesn't need multiple
-    /// `read_skill` tool calls.
+    /// Returns the full SKILL.md content of the highest-confidence skill whose
+    /// confidence is `Medium` or higher. This is Level 2 of Progressive
+    /// Disclosure — the system pre-loads the best-matching skill so the LLM
+    /// doesn't need multiple `read_skill` tool calls while avoiding conflicting
+    /// instructions from multiple skills.
     ///
     /// Returns an empty vec when:
     /// - The selector is not initialized,
@@ -903,11 +917,15 @@ impl AgentRuntime {
             Err(_) => return vec![],
         };
 
+        // Top-1: only return the single highest-confidence skill at Medium+ level.
+        // Multiple skill instructions can conflict — the cascade already ranks them.
         outcome
             .selected
             .into_iter()
             .filter(|r| r.confidence >= skm_select::Confidence::Medium)
-            .filter_map(|r| self.read_skill(r.skill.as_ref()))
+            .max_by_key(|r| r.confidence as u8)
+            .and_then(|r| self.read_skill(r.skill.as_ref()))
+            .into_iter()
             .collect()
     }
 
@@ -1962,6 +1980,7 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                         .to_string_lossy()
                         .to_string(),
                 ),
+                ..Default::default()
             };
         }
 
@@ -1990,6 +2009,7 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                             .to_string_lossy()
                             .to_string(),
                     ),
+                    ..Default::default()
                 };
             }
             tracing::warn!(
@@ -2019,6 +2039,7 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                 .to_string_lossy()
                 .to_string(),
         ),
+        ..Default::default()
     }
 }
 

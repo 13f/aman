@@ -220,11 +220,14 @@ pub struct KeychainBackend;
 
 impl SecretBackend for KeychainBackend {
     fn get(&self, key: &str) -> AmanResult<Option<String>> {
+        // Use the key as the service name (`-s`) instead of the label (`-l`)
+        // because `security`'s `-l` does *fuzzy* matching and can return the
+        // wrong entry when multiple entries share the same service+account.
+        // The `-s` flag performs exact matching.
         let output = Command::new("security")
             .arg("find-generic-password")
             .arg("-a").arg("aman-desktop")
-            .arg("-s").arg("aman")
-            .arg("-l").arg(key)
+            .arg("-s").arg(key)
             .arg("-w")
             .output()?;
         if !output.status.success() {
@@ -235,11 +238,11 @@ impl SecretBackend for KeychainBackend {
     }
 
     fn set(&self, key: &str, value: &str) -> AmanResult<()> {
+        // Match the service-name scheme used by get().
         let output = Command::new("security")
             .arg("add-generic-password")
             .arg("-a").arg("aman-desktop")
-            .arg("-s").arg("aman")
-            .arg("-l").arg(key)
+            .arg("-s").arg(key)
             .arg("-w").arg(value)
             .arg("-U") // update existing item
             .arg("-A") // allow all apps access without warning
@@ -1316,12 +1319,11 @@ mod tests {
         let backend = super::KeychainBackend;
         let test_key = "aman.test.secret_crate_test";
 
-        // Ensure clean state
+        // Ensure clean state (service-name scheme matching the new backend)
         let _ = std::process::Command::new("security")
             .arg("delete-generic-password")
             .arg("-a").arg("aman-desktop")
-            .arg("-s").arg("aman")
-            .arg("-l").arg(test_key)
+            .arg("-s").arg(test_key)
             .output();
 
         // Initially should be None
@@ -1337,12 +1339,11 @@ mod tests {
         let result = backend.get(test_key).unwrap();
         assert_eq!(result, Some("updated_value".to_string()));
 
-        // Cleanup
+        // Cleanup (using service-name scheme matching the new backend)
         let _ = std::process::Command::new("security")
             .arg("delete-generic-password")
             .arg("-a").arg("aman-desktop")
-            .arg("-s").arg("aman")
-            .arg("-l").arg(test_key)
+            .arg("-s").arg(test_key)
             .output();
     }
 }

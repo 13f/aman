@@ -418,6 +418,9 @@
       case "HISTORY_TRIMMED":
         handleHistoryTrimmed(data);
         break;
+      case "tool_auth_required":
+        handleToolAuthRequired(data);
+        break;
     }
   }
 
@@ -436,6 +439,30 @@
       timestamp: new Date().toISOString(),
       sessionId: sid,
       status: "completed" as MessageStatus,
+    }];
+  }
+
+  async function handleToolAuthRequired(data: any) {
+    // data = { session_id, auth_id, tool_name, arguments_summary, call_id }
+    const { auth_id, tool_name, arguments_summary } = data;
+    if (!auth_id || !tool_name) return;
+
+    const result = await invoke("show_tool_auth_dialog", {
+      authId: auth_id,
+      toolName: tool_name,
+      argumentsSummary: arguments_summary ?? "",
+    }).catch((e: string) => {
+      console.error("Tool auth dialog failed:", e);
+      return "error";
+    });
+
+    // Add a step entry so the user can see the auth decision in the UI
+    turnSteps = [...turnSteps, {
+      id: `auth-${auth_id}`,
+      label: `Authorize ${tool_name}`,
+      tool: tool_name,
+      status: "success" as const,
+      result: result === "allow" ? "Approved" : "Denied",
     }];
   }
 

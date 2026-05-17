@@ -7,6 +7,7 @@ use crate::models::{
     SkillEntry, SoulInfo, WorkflowEntry,
 };
 use secret::{KeychainBackend, SecretBackend};
+use serde::Serialize;
 use std::time::Instant;
 use tauri::State;
 
@@ -637,6 +638,156 @@ pub async fn chat_trace_chain(
     }
     let client = require_gateway(&state).await?;
     client.event_trace(&trace_id).await
+}
+
+// ---------------------------------------------------------------------------
+// Tool authorization (native macOS dialog)
+// ---------------------------------------------------------------------------
+
+/// Show a native macOS dialog for tool authorization and POST the user's
+/// decision to the gateway's `/tool-auth/respond` endpoint.
+///
+/// This runs as a native shell command (`osascript`) outside the webview, so
+/// it cannot be bypassed by AI-driven UI manipulation.
+#[tauri::command]
+pub async fn show_tool_auth_dialog(
+    state: State<'_, AppState>,
+    auth_id: String,
+    tool_name: String,
+    arguments_summary: String,
+) -> Result<String, String> {
+    let base_url = {
+        let guard = state.gateway_client.lock().await;
+        guard
+            .as_ref()
+            .map(|c| c.base_url.clone())
+            .ok_or_else(|| "Gateway not connected".to_owned())?
+    };
+
+    let dialog_result = show_native_auth_dialog(&tool_name, &arguments_summary)?;
+
+    let approved = dialog_result == "allow";
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let resp = client
+        .post(format!("{base_url}/tool-auth/respond"))
+        .json(&serde_json::json!({
+            "auth_id": auth_id,
+            "approved": approved,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send auth response: {e}"))?;
+
+    if resp.status().is_success() {
+        Ok(dialog_result)
+    } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("Auth respond failed ({status}): {body}"))
+    }
+}
+
+/// Run a native macOS dialog via `osascript` and return "allow" or "deny".
+fn show_native_auth_dialog(tool_name: &str, arguments_summary: &str) -> Result<String, String> {
+    // Escape for AppleScript string literals: backslash, quote, and newlines.
+    let escaped_tool = tool_name.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_args = arguments_summary
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', " ");
+
+    let script = format!(
+        r#"display dialog "Tool "{escaped_tool}" wants to execute with the following arguments:
+
+{escaped_args}
+
+Allow this operation?" buttons {{"Deny", "Allow"}} default button "Allow" cancel button "Deny" with title "Aman — Tool Authorization" with icon caution"#
+    );
+
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("Failed to run osascript: {e}"))?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("Allow") || stdout.contains("button returned:Allow") {
+            Ok("allow".to_owned())
+        } else {
+            Ok("deny".to_owned())
+        }
+    } else {
+        // User pressed cancel or Esc
+        Ok("deny".to_owned())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Third-party service key management
+// ---------------------------------------------------------------------------
+
+static THIRD_PARTY_SERVICES: &[(&str, &str, bool)] = &[
+    ("tavily", "Tavily Search API", true),
+    ("brave", "Brave Search API", true),
+    ("duckduckgo", "DuckDuckGo Instant Answer", false),
+    ("google", "Google Custom Search", true),
+    ("x", "X (Twitter) API v2", true),
+];
+
+#[derive(Serialize)]
+pub struct ThirdPartyService {
+    pub id: String,
+    pub display_name: String,
+    pub requires_key: bool,
+    pub has_key: bool,
+    pub has_cx: bool,
+}
+
+#[tauri::command]
+pub async fn list_third_party_services() -> Result<Vec<ThirdPartyService>, String> {
+    let backend = KeychainBackend;
+    let mut services: Vec<ThirdPartyService> = Vec::new();
+    for (id, display_name, requires_key) in THIRD_PARTY_SERVICES {
+        let api_key = format!("aman.3rd.{id}.api_key");
+        let cx = format!("aman.3rd.{id}.cx");
+        services.push(ThirdPartyService {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            requires_key: *requires_key,
+            has_key: backend.get(&api_key).ok().flatten().is_some(),
+            has_cx: backend.get(&cx).ok().flatten().is_some(),
+        });
+    }
+    Ok(services)
+}
+
+#[tauri::command]
+pub async fn set_third_party_key(service: String, api_key: String) -> Result<String, String> {
+    let backend = KeychainBackend;
+    let key = format!("aman.3rd.{service}.api_key");
+    backend
+        .set(&key, &api_key)
+        .map_err(|e| format!("Failed to save to Keychain: {e}"))?;
+    Ok(format!("{service} API key saved to Keychain"))
+}
+
+#[tauri::command]
+pub async fn set_third_party_config(
+    service: String,
+    sub_key: String,
+    value: String,
+) -> Result<String, String> {
+    let backend = KeychainBackend;
+    let key = format!("aman.3rd.{service}.{sub_key}");
+    backend
+        .set(&key, &value)
+        .map_err(|e| format!("Failed to save to Keychain: {e}"))?;
+    Ok(format!("{service}.{sub_key} saved to Keychain"))
 }
 
 // ---------------------------------------------------------------------------

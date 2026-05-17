@@ -559,6 +559,25 @@ impl AgentRuntimeBuilder {
             (None, Arc::new(IncubationManager::new()))
         };
 
+        // ── Session store (SQLite index + JSONL cleanup) ────────────
+        let session_store = std::env::var("HOME").ok().and_then(|home| {
+            let aman_cfg = config::AmanConfig::from_default_path().ok()?;
+            let agent_key = aman_cfg.agents.keys().next()?;
+            let agents_dir = PathBuf::from(&home).join(".aman").join("agents").join(agent_key);
+            let db_path = agents_dir.join("sessions.db");
+            let sessions_dir = agents_dir.join("sessions");
+            match super::session_store::SessionStore::open(&db_path, &sessions_dir) {
+                Ok(store) => {
+                    tracing::info!(path = %db_path.display(), "session store opened");
+                    Some(store)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "session store init skipped");
+                    None
+                }
+            }
+        });
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,
@@ -605,6 +624,7 @@ impl AgentRuntimeBuilder {
             llm_skills: StdMutex::new(llm_skills),
             skill_registry,
             cascade_selector,
+            session_store,
         }))
     }
 }
@@ -719,6 +739,8 @@ pub struct AgentRuntime {
     cascade_selector: Option<skm_select::CascadeSelector>,
     /// Registry for tool authorization requests (native macOS dialogs).
     auth_registry: Arc<tool::auth::AuthRegistry>,
+    /// SQLite-backed session index (persists across restarts).
+    session_store: Option<super::session_store::SessionStore>,
 }
 
 impl AgentRuntime {
@@ -745,6 +767,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn runtime_dir(&self) -> &Path {
         &self.runtime_dir
+    }
+
+    #[must_use]
+    pub fn session_store(&self) -> Option<&super::session_store::SessionStore> {
+        self.session_store.as_ref()
     }
 
     #[must_use]

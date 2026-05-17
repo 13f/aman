@@ -105,6 +105,7 @@ version = "0.1.0"
 dependencies = [
  "config",
  "reqwest 0.12.28",
+ "rusqlite",
  "secret",
  "serde",
  "serde_json",
@@ -2092,6 +2093,7 @@ dependencies = [
  "plugin",
  "pollster",
  "prometheus",
+ "rusqlite",
  "secret",
  "serde",
  "serde_json",

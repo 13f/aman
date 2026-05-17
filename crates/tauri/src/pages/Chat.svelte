@@ -33,6 +33,8 @@
     title: string;
     messageCount: number;
     status: "idle" | "processing";
+    lastActiveAt?: number;
+    state?: string;
   }
 
   let sessions = $state<Session[]>([]);
@@ -53,6 +55,17 @@
   let archivedMsgIds = $state<Set<string>>(new Set());
   let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
 
+  // Pagination
+  let currentPage = $state(1);
+  let sessionsPerPage = 10;
+  let sessionsLoaded = $state(false);
+  let deletingSessionId = $state<string | null>(null);
+
+  const paginatedSessions = $derived(
+    sessions.slice((currentPage - 1) * sessionsPerPage, currentPage * sessionsPerPage)
+  );
+  const totalPages = $derived(Math.max(1, Math.ceil(sessions.length / sessionsPerPage)));
+
   interface TurnStep {
     id: string;
     toolName: string;
@@ -67,6 +80,7 @@
   let activeTab = $state<"sessions" | "steps">("sessions");
 
   const activeSession = $derived(sessions.find(s => s.id === activeSessionId));
+  const activeMessages = $derived(messages.filter(m => m.sessionId === activeSessionId));
   const isProcessing = $derived(
     isLoading || messages.some(m => m.sessionId === activeSessionId && (m.status === "pending" || m.status === "streaming"))
   );
@@ -120,6 +134,53 @@
     updateSession(id, { messageCount: count });
   }
 
+  async function loadSessions() {
+    try {
+      // Try reading from the local SQLite DB first (persists across restarts).
+      const list = await invoke<Array<{
+        id: string; state: string; message_count: number;
+        created_at: number; last_active_at: number | null;
+        session_type: string | null;
+      }>>("chat_session_list_db");
+      const loaded: Session[] = list.map((s, i) => ({
+        id: s.id,
+        title: s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`,
+        messageCount: s.message_count,
+        status: "idle" as const,
+        lastActiveAt: s.last_active_at ?? s.created_at,
+        state: s.state,
+      }));
+      sessions = loaded;
+      sessionsLoaded = true;
+      // Keep current active session if still in the list
+      if (activeSessionId && !loaded.some(s => s.id === activeSessionId)) {
+        activeSessionId = "";
+      }
+    } catch (_dbErr) {
+      // DB doesn't exist or no agents configured — fall back to gateway API.
+      try {
+        const list = await invoke<Array<{
+          id: string; state: string; message_count: number;
+          created_at: number; last_active_at: number | null;
+          session_type: string | null;
+        }>>("chat_session_list");
+        list.sort((a, b) => (b.last_active_at ?? b.created_at) - (a.last_active_at ?? a.created_at));
+        const loaded: Session[] = list.map((s, i) => ({
+          id: s.id,
+          title: s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`,
+          messageCount: s.message_count,
+          status: "idle" as const,
+          lastActiveAt: s.last_active_at ?? s.created_at,
+          state: s.state,
+        }));
+        sessions = loaded;
+      } catch (_gatewayErr) {
+        console.warn("No session source available");
+      }
+      sessionsLoaded = true;
+    }
+  }
+
   async function createSession() {
     let id: string;
     try {
@@ -132,6 +193,35 @@
     const count = sessions.length + 1;
     sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle" }];
     activeSessionId = id;
+    // Reset to last page for the new session
+    currentPage = totalPages;
+  }
+
+  async function deleteSession(id: string) {
+    const session = sessions.find(s => s.id === id);
+    if (!session) return;
+    try {
+      await invoke("chat_session_delete", { sessionId: id });
+      sessions = sessions.filter(s => s.id !== id);
+      messages = messages.filter(m => m.sessionId !== id);
+      if (activeSessionId === id) {
+        // Select the next available session, or create one
+        const next = sessions.length > 0 ? sessions[Math.min(currentPage - 1, sessions.length - 1)] : null;
+        if (next) {
+          activeSessionId = next.id;
+        } else {
+          await createSession();
+        }
+      }
+      // Adjust page if current page is now empty
+      if (paginatedSessions.length === 0 && currentPage > 1) {
+        currentPage = currentPage - 1;
+      }
+      showToast("success", "Session deleted");
+    } catch (e) {
+      showToast("error", `Failed to delete session: ${e}`);
+    }
+    deletingSessionId = null;
   }
 
   function handleScroll() {
@@ -1007,9 +1097,14 @@
       chatCapabilityAvailable = false;
     }
 
-    // Ensure there's at least one session. Try backend first, fall back to local.
+    // Load sessions from backend, sorted by last_active_at desc
+    await loadSessions();
+
+    // Ensure there's at least one session
     if (sessions.length === 0) {
       await createSession();
+    } else {
+      activeSessionId = sessions[0].id;
     }
 
     await loadSoulInfo();
@@ -1036,17 +1131,58 @@
     </div>
     {#if activeTab === "sessions"}
       <div class="session-list">
-        {#each sessions as session}
-          <button
-            class="session-item"
-            class:active={session.id === activeSessionId}
-            onclick={() => selectSession(session.id)}
-          >
-            <span class="session-title">{session.title}</span>
-            <span class="session-meta">{session.messageCount} msgs &middot; {session.status}</span>
-          </button>
+        {#each paginatedSessions as session}
+          <div class="session-row" class:active={session.id === activeSessionId}>
+            <button
+              class="session-item"
+              class:active={session.id === activeSessionId}
+              onclick={() => selectSession(session.id)}
+            >
+              <span class="session-title">{session.title}</span>
+              <span class="session-meta">{session.messageCount} msgs &middot; {session.status}</span>
+            </button>
+            <button
+              class="session-delete-btn"
+              title="Delete session"
+              onclick={(e) => { e.stopPropagation(); deletingSessionId = session.id; }}
+              disabled={deletingSessionId === session.id}
+            >&times;</button>
+          </div>
         {/each}
+        {#if sessions.length === 0 && sessionsLoaded}
+          <div class="session-empty">No sessions yet</div>
+        {:else if !sessionsLoaded}
+          <div class="session-empty">Loading...</div>
+        {/if}
       </div>
+      {#if totalPages > 1}
+        <div class="pagination">
+          <button
+            class="page-btn"
+            disabled={currentPage <= 1}
+            onclick={() => currentPage = Math.max(1, currentPage - 1)}
+          >&laquo;</button>
+          <span class="page-info">{currentPage} / {totalPages}</span>
+          <button
+            class="page-btn"
+            disabled={currentPage >= totalPages}
+            onclick={() => currentPage = Math.min(totalPages, currentPage + 1)}
+          >&raquo;</button>
+        </div>
+      {/if}
+      {#if deletingSessionId}
+        <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+        <div class="confirm-overlay" onclick={() => deletingSessionId = null} onkeydown={() => {}} role="button" tabindex="0">
+          <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+          <div class="confirm-dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="dialog" tabindex="-1">
+            <p>Delete this session?</p>
+            <div class="confirm-actions">
+              <button class="confirm-cancel" onclick={() => deletingSessionId = null}>Cancel</button>
+              <button class="confirm-delete" onclick={() => deleteSession(deletingSessionId!)}>Delete</button>
+            </div>
+          </div>
+        </div>
+      {/if}
     {:else}
       <div class="sidebar-tab-content">
         <DepthPanel steps={turnSteps} />
@@ -1096,7 +1232,7 @@
 
     <!-- Messages -->
     <div class="message-area" bind:this={messageAreaEl} onscroll={handleScroll}>
-      {#if messages.length === 0}
+      {#if activeMessages.length === 0}
         <div class="empty-state">
           <p>No messages yet. Start a conversation above.</p>
           {#if !chatCapabilityAvailable}
@@ -1106,7 +1242,7 @@
           {/if}
         </div>
       {:else}
-        {#each messages as msg (msg.id)}
+        {#each activeMessages as msg (msg.id)}
           {@const isUser = msg.type.startsWith("user")}
           {@const isAssistant = msg.type.startsWith("assistant") && !(msg.type === "assistant_tool_call" || msg.type === "assistant_tool_result")}
           {@const isSystem = msg.type.startsWith("system") || msg.type.startsWith("security")}
@@ -1306,20 +1442,175 @@
     width: 100%;
     padding: 8px 12px;
     border: none;
-    border-radius: 6px;
     background: transparent;
     text-align: left;
     cursor: pointer;
-    margin-bottom: 2px;
+    margin-bottom: 0;
   }
 
   .session-item:hover {
+    background: transparent;
+  }
+
+  .session-row {
+    display: flex;
+    align-items: stretch;
+    border-radius: 6px;
+    margin-bottom: 2px;
+  }
+
+  .session-row.active {
+    background: var(--bg-hover);
+    border-left: 2px solid var(--accent);
+  }
+
+  .session-row:hover {
     background: var(--bg-hover);
   }
 
-  .session-item.active {
+  .session-row .session-item {
+    flex: 1;
+    border-radius: 0;
+  }
+
+  .session-row.active .session-item {
+    background: transparent;
+    border-left: none;
+  }
+
+  .session-delete-btn {
+    width: 28px;
+    border: none;
+    background: transparent;
+    color: var(--fg-dim);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s;
+    border-radius: 0 6px 6px 0;
+  }
+
+  .session-row:hover .session-delete-btn {
+    opacity: 0.6;
+  }
+
+  .session-delete-btn:hover {
+    opacity: 1 !important;
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--red, #ef4444);
+  }
+
+  .session-delete-btn:disabled {
+    opacity: 0.3 !important;
+  }
+
+  .session-empty {
+    padding: 16px 12px;
+    text-align: center;
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 8px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .page-btn {
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 13px;
+    cursor: pointer;
+    line-height: 1.4;
+  }
+
+  .page-btn:hover:not(:disabled) {
     background: var(--bg-hover);
-    border-left: 2px solid var(--accent);
+  }
+
+  .page-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .page-info {
+    font-size: 11px;
+    color: var(--fg-dim);
+    min-width: 48px;
+    text-align: center;
+  }
+
+  .confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .confirm-dialog {
+    background: var(--bg-card, #1e1e2e);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 24px;
+    min-width: 240px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  .confirm-dialog p {
+    margin: 0 0 16px 0;
+    font-size: 14px;
+    font-weight: 500;
+    text-align: center;
+  }
+
+  .confirm-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
+
+  .confirm-cancel {
+    padding: 6px 16px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .confirm-cancel:hover {
+    background: var(--bg-hover);
+  }
+
+  .confirm-delete {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 6px;
+    background: var(--red, #ef4444);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .confirm-delete:hover {
+    background: #dc2626;
   }
 
   .session-title {

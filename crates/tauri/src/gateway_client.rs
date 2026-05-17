@@ -571,6 +571,22 @@ impl GatewayClient {
         }
     }
 
+    pub async fn chat_delete_session(&self, session_id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .delete(self.url(&format!("/chat/session/{session_id}")))
+            .send()
+            .await
+            .map_err(|e| format!("chat_delete_session: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else if resp.status().as_u16() == 404 {
+            Err(format!("Session not found: {session_id}"))
+        } else {
+            Err(status_error("chat_delete_session", resp.status()).await)
+        }
+    }
+
     pub async fn chat_stop_generation(&self, session_id: &str) -> Result<(), String> {
         let resp = self
             .client

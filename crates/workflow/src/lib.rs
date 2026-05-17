@@ -379,6 +379,11 @@ impl ActionRunner for NoopActionRunner {}
 pub trait WorkflowStateStore: Send + Sync {
     fn load(&self, instance_id: &str) -> AmanResult<Option<WorkflowInstance>>;
     fn save(&self, instance: &WorkflowInstance) -> AmanResult<()>;
+    /// Remove an instance from the store. Default no-op; in-memory stores
+    /// should override this.
+    fn delete(&self, _instance_id: &str) -> AmanResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -401,6 +406,14 @@ impl WorkflowStateStore for InMemoryStateStore {
             .lock()
             .expect("workflow state store lock")
             .insert(instance.id.clone(), instance.clone());
+        Ok(())
+    }
+
+    fn delete(&self, instance_id: &str) -> AmanResult<()> {
+        self.instances
+            .lock()
+            .expect("workflow state store lock")
+            .remove(instance_id);
         Ok(())
     }
 }
@@ -629,6 +642,23 @@ impl WorkflowEngine {
         updater(&mut instance.data);
         self.store.save(instance)?;
         Ok(())
+    }
+
+    /// Remove a workflow instance from both the in-memory map and the
+    /// persistent store. Returns `Ok(true)` if the instance existed and was
+    /// removed, `Ok(false)` if it did not exist.
+    pub fn delete_instance(&self, instance_id: &str) -> AmanResult<bool> {
+        let existed = self
+            .instances
+            .lock()
+            .expect("instances lock")
+            .remove(instance_id)
+            .is_some();
+        if existed {
+            // Best-effort removal from the persistent store.
+            let _ = self.store.delete(instance_id);
+        }
+        Ok(existed)
     }
 
     #[must_use]

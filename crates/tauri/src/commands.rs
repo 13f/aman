@@ -475,6 +475,57 @@ pub async fn chat_session_list(
     Ok(items)
 }
 
+/// Read sessions directly from the local SQLite DB, bypassing the gateway.
+///
+/// Falls back to `chat_session_list` (gateway API) when the DB doesn't
+/// exist or can't be opened — for example when the gateway was never
+/// started and no sessions have been persisted yet.
+#[tauri::command]
+pub async fn chat_session_list_db(
+) -> Result<Vec<ChatSessionInfo>, String> {
+    // Compute DB path: ~/.aman/agents/{first_key}/sessions.db
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
+    let aman_cfg = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("load config: {e}"))?;
+    let first_key = aman_cfg.agents.keys().next()
+        .ok_or_else(|| "no agents configured".to_owned())?;
+    let db_path = std::path::PathBuf::from(&home)
+        .join(".aman")
+        .join("agents")
+        .join(first_key)
+        .join("sessions.db");
+
+    let db = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("open sessions.db: {e}"))?;
+
+    let mut stmt = db.prepare(
+        "SELECT id, state, message_count, created_at, last_active_at, session_type
+         FROM sessions ORDER BY last_active_at DESC",
+    )
+    .map_err(|e| format!("query sessions.db: {e}"))?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(ChatSessionInfo {
+            id: row.get(0)?,
+            state: row.get(1)?,
+            message_count: row.get::<_, i64>(2)? as usize,
+            created_at: row.get(3)?,
+            last_active_at: Some(row.get(4)?),
+            session_type: row.get(5)?,
+            parent_session_id: None,
+            branch_message_id: None,
+            version: 0,
+        })
+    })
+    .map_err(|e| format!("read sessions.db: {e}"))?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|e| format!("session row: {e}"))?);
+    }
+    Ok(items)
+}
+
 #[tauri::command]
 pub async fn chat_session_create(
     state: State<'_, AppState>,
@@ -516,6 +567,18 @@ pub async fn chat_session_close(
     let client = require_gateway(&state).await?;
     client.chat_close_session(&session_id).await?;
     Ok(session_id)
+}
+
+#[tauri::command]
+pub async fn chat_session_delete(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+    let client = require_gateway(&state).await?;
+    client.chat_delete_session(&session_id).await
 }
 
 #[tauri::command]

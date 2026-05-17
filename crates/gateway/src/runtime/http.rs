@@ -1,11 +1,12 @@
 use super::agent_runtime::AgentRuntime;
+use super::session_store;
 use axum::extract::{Multipart, Path, State};
 use tracing::instrument;
 use axum::extract::Query;
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use kernel::event::{Event, EventType};
 use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
@@ -114,6 +115,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/chat/session/{id}/stop", post(chat_session_stop))
         .route("/chat/session/{id}/retry", post(chat_session_retry))
         .route("/chat/session/{id}/edit", post(chat_session_edit))
+        .route("/chat/session/{id}", delete(chat_session_delete))
         .route("/chat/validator-health", get(chat_validator_health))
         .route("/soul/info", get(soul_info))
         .route("/soul/raw", get(soul_raw))
@@ -1754,6 +1756,56 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     (StatusCode::OK, Json(json!({ "items": items }))).into_response()
 }
 
+async fn chat_session_delete(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    // Also remove from the persistent session store.
+    if let Some(store) = runtime.session_store() {
+        let _ = store.delete(&id);
+    }
+    match runtime.workflow_engine().delete_instance(&id) {
+        Ok(true) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.delete",
+                format!("session:{id}"),
+                "ok",
+                "",
+            );
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Ok(false) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.delete",
+                format!("session:{id}"),
+                "not_found",
+                "",
+            );
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    message: format!("session not found: {id}"),
+                }),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "chat.session.delete",
+                format!("session:{id}"),
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ChatSessionStateResponse {
     id: String,
@@ -2051,6 +2103,27 @@ async fn chat_session_close(
                     "operator": operator,
                 }),
             )).await;
+
+            // Persist session record to the SQLite store.
+            if let Some(store) = runtime.session_store() {
+                if let Some(inst) = runtime.workflow_engine().get_instance(&id) {
+                    let session_type = inst.data.get("session_type")
+                        .and_then(|v| v.as_str()).unwrap_or("persistent");
+                    let created_at = inst.data.get("created_at")
+                        .and_then(|v| v.as_i64()).unwrap_or(0);
+                    let last_active_at = inst.data.get("last_active_at")
+                        .and_then(|v| v.as_i64()).unwrap_or(0);
+                    let _ = store.upsert(&session_store::SessionRecord {
+                        id: inst.id,
+                        state: inst.current_state,
+                        message_count: 0,
+                        created_at,
+                        last_active_at,
+                        session_type: session_type.to_owned(),
+                    });
+                }
+            }
+
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
         }
         Err(error) => {

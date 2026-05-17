@@ -48,16 +48,16 @@
   const THRESHOLDS = [0, 5, 20, 50, 100, 200];
 
   const IDLE_EMOJI: Record<string, string> = {
-    Daze: "\u{1F636}", Boredom: "\u{1F612}", Sleep: "\u{1F634}",
-    Exploration: "\u{1F50D}", Meditation: "\u{1F9D8}",
-    Incubation: "\u{1F4A1}", Waiting: "\u{23F3}",
+    daze: "\u{1F636}", boredom: "\u{1F612}", sleep: "\u{1F634}",
+    exploration: "\u{1F50D}", meditation: "\u{1F9D8}",
+    incubation: "\u{1F4A1}", waiting: "\u{23F3}",
   };
 
   const IDLE_LABEL: Record<string, string> = {
-    Daze: "Daze — \u{76F2}\u{7136}", Boredom: "Boredom — \u{65E0}\u{804A}",
-    Sleep: "Sleep — \u{4F11}\u{7720}", Exploration: "Exploration — \u{63A2}\u{7D22}",
-    Meditation: "Meditation — \u{51A5}\u{60F3}",
-    Incubation: "Incubation — \u{5B75}\u{5316}", Waiting: "Waiting — \u{7B49}\u{5F85}",
+    daze: "Daze — \u{76F2}\u{7136}", boredom: "Boredom — \u{65E0}\u{804A}",
+    sleep: "Sleep — \u{4F11}\u{7720}", exploration: "Exploration — \u{63A2}\u{7D22}",
+    meditation: "Meditation — \u{51A5}\u{60F3}",
+    incubation: "Incubation — \u{5B75}\u{5316}", waiting: "Waiting — \u{7B49}\u{5F85}",
   };
 
   // Mode-specific ring colors
@@ -173,7 +173,7 @@
     if (et === "idle") {
       const d = p.payload ?? {};
       idleSnap = {
-        kind: d.kind ?? "Daze",
+        kind: d.kind ?? "daze",
         depth: d.depth ?? 0,
         arousal: d.context?.arousal_level ?? 0.5,
       };

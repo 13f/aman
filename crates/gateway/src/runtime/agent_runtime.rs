@@ -196,6 +196,16 @@ impl AgentRuntimeBuilder {
         }
         let skills_dir = super::skill_sync::aman_data_dir().join("skills");
         let _ = std::fs::create_dir_all(&skills_dir);
+        let llm_skills = skill::discover_llm_skills(&skills_dir);
+        tracing::info!(count = llm_skills.len(), "discovered LLM instruction skills");
+
+        // Build skm-core registry + cascade selector for intelligent skill matching.
+        let (skill_registry, cascade_selector) = build_skill_selector(&skills_dir);
+        tracing::info!(
+            has_registry = skill_registry.is_some(),
+            has_selector = cascade_selector.is_some(),
+            "cascade selector initialized"
+        );
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
         let skill_search = Arc::new(skill::SkillSearch::new());
@@ -586,6 +596,9 @@ impl AgentRuntimeBuilder {
             chat_sender,
             idle_coord,
             incubation_manager,
+            llm_skills: StdMutex::new(llm_skills),
+            skill_registry,
+            cascade_selector,
         }))
     }
 }
@@ -692,6 +705,12 @@ pub struct AgentRuntime {
     idle_coord: Option<Arc<IdleCoordination>>,
     /// Incubation manager for background idle threads.
     incubation_manager: Arc<IncubationManager>,
+    /// LLM-instruction skills (SKILL.md frontmatter, Agent Skills standard).
+    llm_skills: StdMutex<Vec<skill::LlmSkill>>,
+    /// skm-core registry for cascade selection (None if init failed).
+    skill_registry: Option<skm_core::SkillRegistry>,
+    /// Cascade selector for skill matching (None if init failed).
+    cascade_selector: Option<skm_select::CascadeSelector>,
 }
 
 impl AgentRuntime {
@@ -821,6 +840,64 @@ impl AgentRuntime {
 
     pub fn reload_skills_now(&self) -> AmanResult<skill::HotReloadReport> {
         self.skill_hot_reload.reload_once()
+    }
+
+    /// Returns all LLM-instruction skills discovered on disk.
+    #[must_use]
+    pub fn llm_skills(&self) -> Vec<skill::LlmSkill> {
+        self.llm_skills.lock().unwrap().clone()
+    }
+
+    /// Lightweight skill index for the LLM system prompt (Level 1 of Progressive
+    /// Disclosure — see agentskills.io). Only skill names and short descriptions
+    /// are listed. The LLM can load full instructions on demand.
+    #[must_use]
+    pub fn llm_skills_prompt(&self) -> String {
+        let skills = self.llm_skills.lock().unwrap();
+        if skills.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("\n\n## Available Skills\n\n");
+        for s in skills.iter() {
+            out.push_str(&format!("- {}: {}\n", s.name, s.description));
+        }
+        out.push_str(
+            "\nTo load a skill's complete instructions, use the `read_skill` mechanism. Respond with `read_skill(<skill_name>)` to request full SKILL.md details.\n",
+        );
+        out
+    }
+
+    /// Load a skill's full SKILL.md content by name (Level 2 of Progressive Disclosure).
+    /// Returns `None` if no skill with that name is installed.
+    #[must_use]
+    pub fn read_skill(&self, name: &str) -> Option<String> {
+        let skills = self.llm_skills.lock().unwrap();
+        let path = skills.iter().find(|s| s.name == name)?.path.clone();
+        std::fs::read_to_string(&path).ok()
+    }
+
+    /// Use the cascade selector to find the best-matching skill for `text`.
+    ///
+    /// Returns the full SKILL.md content of the top-ranked skill if its confidence
+    /// is `High` or `Definite`. Returns `None` when:
+    /// - The selector is not initialized,
+    /// - Selection fails,
+    /// - No skill exceeds the confidence threshold,
+    /// - The top result's confidence is `Medium` or lower (Level 1 progressive
+    ///   disclosure still lists the skill in the system prompt; the LLM can
+    ///   still request it explicitly via `read_skill()`).
+    #[must_use]
+    pub fn select_skill_for_text(&self, text: &str) -> Option<String> {
+        let registry = self.skill_registry.as_ref()?;
+        let selector = self.cascade_selector.as_ref()?;
+        let ctx = skm_select::SelectionContext::new();
+        let outcome = pollster::block_on(selector.select(text, registry, &ctx)).ok()?;
+        let top = outcome.selected.into_iter().next()?;
+        if top.confidence >= skm_select::Confidence::High {
+            self.read_skill(top.skill.as_str())
+        } else {
+            None
+        }
     }
 
     #[must_use]
@@ -1947,4 +2024,99 @@ fn get_llm_api_key_or_inline(
         }
     }
     String::new()
+}
+
+/// Build an optional skm-core registry + cascade selector for skill matching.
+///
+/// Uses trigger-only strategy (no embedding model needed). Returns `(None, None)`
+/// if the skills directory has no valid SKILL.md files or the registry fails to
+/// initialize. This is non-fatal — the runtime falls back to listing all skills
+/// in the prompt and letting the LLM decide.
+fn build_skill_selector(
+    skills_dir: &Path,
+) -> (Option<skm_core::SkillRegistry>, Option<skm_select::CascadeSelector>) {
+    let registry = match pollster::block_on(skm_core::SkillRegistry::new(&[skills_dir])) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to create skm-core SkillRegistry");
+            return (None, None);
+        }
+    };
+
+    let trigger = match pollster::block_on(skm_select::TriggerStrategy::from_registry(&registry)) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to build trigger strategy");
+            return (Some(registry), None);
+        }
+    };
+
+    let mut cascade_builder = skm_select::CascadeSelector::builder()
+        .with_triggers(trigger);
+
+    // Attempt to add semantic strategy (embedding similarity) as second cascade
+    // level. If the embedding model fails to initialize (e.g. first launch model
+    // download, OOM, unsupported platform), gracefully fall back to trigger-only.
+    if let Some(semantic) = build_semantic_strategy(&registry) {
+        tracing::info!("semantic cascade strategy initialized");
+        cascade_builder = cascade_builder.with_semantic(
+            semantic.0,
+            semantic.1,
+            semantic.2,
+        );
+    } else {
+        tracing::info!("semantic cascade strategy not available — trigger only");
+    }
+
+    (Some(registry), Some(cascade_builder.build()))
+}
+
+/// Attempt to build a [`SemanticStrategy`] for the cascade selector.
+///
+/// Uses BGE-M3 (fastembed ONNX, 1024-dim) for local embedding inference.
+/// The embedding index is cached to `~/.aman/cache/embeddings.bin` to avoid
+/// re-embedding all skills on every startup. Cache is invalidated automatically
+/// when skill content changes (tracked via content_hash in skm-core).
+///
+/// Returns `None` if:
+/// - The BGE-M3 model cannot be loaded (first launch downloads ~100MB)
+/// - The embedding index fails to build or load from cache
+/// - The platform does not support ONNX inference
+fn build_semantic_strategy(
+    registry: &skm_core::SkillRegistry,
+) -> Option<(
+    Arc<dyn skm_embed::EmbeddingProvider>,
+    skm_embed::EmbeddingIndex,
+    skm_select::SemanticConfig,
+)> {
+    let cache_dir = super::skill_sync::aman_data_dir().join("cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let cache_path = cache_dir.join("embeddings.bin");
+
+    let provider = Arc::new(skm_embed::BgeM3Provider::new().ok()?);
+
+    let index = match skm_embed::EmbeddingIndex::load_cached(&cache_path, registry) {
+        Ok(Some(cached)) => {
+            tracing::info!("loaded cached embedding index ({} skills)", cached.len());
+            cached
+        }
+        _ => {
+            tracing::info!("building embedding index from skill registry...");
+            let idx = pollster::block_on(
+                skm_embed::EmbeddingIndex::build(registry, provider.as_ref(), Default::default()),
+            )
+            .ok()?;
+            if let Err(e) = idx.save(&cache_path) {
+                tracing::warn!(error = %e, "failed to cache embedding index");
+            }
+            tracing::info!("embedding index built ({} skills)", idx.len());
+            idx
+        }
+    };
+
+    let config = skm_select::SemanticConfig::default()
+        .with_top_k(3)
+        .with_min_score(0.65);
+
+    Some((provider, index, config))
 }

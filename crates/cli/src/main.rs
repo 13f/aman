@@ -808,6 +808,15 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
     };
+
+    // Local commands (no running gateway needed)
+    match sub {
+        "validate" => return skill_validate_cmd(&args[1..]),
+        "export" => return skill_export_cmd(&args[1..]),
+        _ => {}
+    }
+
+    // Remote commands (require running gateway)
     let (opts, rest) = parse_api_opts(&args[1..])?;
     let client = build_client()?;
     match sub {
@@ -919,6 +928,100 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
             }
         }
         _ => Err(2),
+    }
+}
+
+/// `aman skills validate [path]` — validate SKILL.md files against the spec.
+fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
+    let root = if args.is_empty() {
+        // Default to ~/.aman/skills/
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+        std::path::PathBuf::from(home).join(".aman/skills")
+    } else {
+        std::path::PathBuf::from(&args[0])
+    };
+
+    if !root.exists() {
+        eprintln!("skill directory not found: {}", root.display());
+        return Err(1);
+    }
+
+    let report = if root.is_dir() {
+        if root.join("SKILL.md").exists() {
+            // Single-skill directory
+            skill::validate_one(&root)
+        } else {
+            // Skills root directory
+            skill::validate_all(&root)
+        }
+    } else {
+        // Direct path to SKILL.md or other file
+        skill::validate_one(&root)
+    };
+
+    if report.findings.is_empty() {
+        println!("✓ all skills passed validation");
+        Ok(())
+    } else {
+        for f in &report.findings {
+            let icon = match f.severity {
+                skill::Severity::Error => "✗",
+                skill::Severity::Warning => "⚠",
+            };
+            println!("{icon} {} {}: {} — {}", f.rule, f.skill_name.as_deref().unwrap_or("?"), f.path.display(), f.message);
+        }
+        let errors = report.error_count();
+        let warnings = report.warning_count();
+        if errors > 0 {
+            eprintln!("{errors} error(s), {warnings} warning(s)");
+            Err(1)
+        } else {
+            println!("{warnings} warning(s), 0 errors");
+            Ok(())
+        }
+    }
+}
+
+/// `aman skill export <out_dir>` — export skills to spec-compliant directory tree.
+fn skill_export_cmd(args: &[String]) -> Result<(), i32> {
+    let out_dir = match args.first() {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            eprintln!("usage: aman skill export <out_dir>");
+            return Err(2);
+        }
+    };
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+    let skills_root = std::path::PathBuf::from(home).join(".aman/skills");
+
+    if !skills_root.exists() {
+        eprintln!("skill directory not found: {}", skills_root.display());
+        return Err(1);
+    }
+
+    let report = skill::export_all(&skills_root, &out_dir);
+
+    for name in &report.exported {
+        println!("✓ {name}");
+    }
+    for (name, msg) in &report.errors {
+        eprintln!("✗ {name}: {msg}");
+    }
+    for (name, msg) in &report.skipped {
+        println!("⚠ {name}: {msg}");
+    }
+
+    println!(
+        "exported {} skill(s) to {}",
+        report.exported.len(),
+        out_dir.display()
+    );
+
+    if report.is_ok() {
+        Ok(())
+    } else {
+        Err(1)
     }
 }
 

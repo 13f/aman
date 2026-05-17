@@ -1,4 +1,7 @@
-# Aman Agent Framework
+# aman
+
+> a man. an agent man.
+
 
 [![CI](https://github.com/jerin/aman/actions/workflows/ci.yml/badge.svg)](https://github.com/jerin/aman/actions/workflows/ci.yml)
 
@@ -71,6 +74,42 @@ Aman is built around an **event-driven architecture**:
 
 ## Project Status
 
+v0.1.alpha.6
+
+complete skills using skm-core & skm-select
+
+skills-iteration.md
+
+v0.1.alpha.5
+
+complete & visualize idle
+
+idle-design -> idle-milestones
+
+v0.1.alpha.4
+
+complete events
+
+events-comparison -> events -> events-milestones
+
+v0.1.alpha.3
+
+profile/data directory
+
+multi-agents-refactor
+
+v0.1.alpha.2
+
+chat with LLM
+
+llm-chat-design -> llm-chat-architect -> llm-chat-milestones
+
+v0.1.alpha.1
+
+Core
+
+agent-design -> architect-design -> milestone
+
 | Milestone | Status |
 |---|---|
 | M1 Foundation | ✅ Done |
@@ -85,7 +124,7 @@ Aman is built around an **event-driven architecture**:
 | M10 Runtime + API | ✅ Done |
 | M11 Observability | ✅ Done |
 | M12 Tauri Desktop | ✅ Done |
-| M13 Integration & Polish | 🔄 In Progress |
+| M13 Integration & Polish | ✅ Done |
 
 ## License
 

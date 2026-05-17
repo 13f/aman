@@ -1914,6 +1914,29 @@ async fn chat_session_send(
         SanitizeResult::PassThrough => req.text.clone(),
     };
 
+    // Build system prompt: soul identity + lightweight skill index.
+    let soul_prompt = runtime
+        .soul_runtime()
+        .map(|sr| sr.current_soul().to_system_prompt())
+        .unwrap_or_default();
+    let skills_prompt = runtime.llm_skills_prompt();
+    let combined_prompt = if skills_prompt.is_empty() {
+        soul_prompt
+    } else {
+        // Level 2 of Progressive Disclosure: use cascade selector to find the
+        // best-matching skill and inject its full instructions when confidence
+        // is High or Definite.
+        let matched_skill: Option<String> = runtime.select_skill_for_text(&text);
+        if let Some(skill_content) = matched_skill {
+            format!(
+                "{}\n\n{}\n\nThe following skill instructions have been loaded based on your request:\n\n{}",
+                soul_prompt, skills_prompt, skill_content
+            )
+        } else {
+            format!("{}{}", soul_prompt, skills_prompt)
+        }
+    };
+
     // Publish the message event.
     let event = Event::new(
         "chat:platform",
@@ -1923,6 +1946,7 @@ async fn chat_session_send(
             "text": text,
             "sender": operator,
             "source": "tauri-desktop",
+            "soul_system_prompt": combined_prompt,
         }),
     );
     let event_id = event.id.to_string();

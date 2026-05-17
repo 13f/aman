@@ -550,6 +550,41 @@ impl SkillLoader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// LLM instruction skills (Agent Skills standard — SKILL.md with frontmatter)
+// ---------------------------------------------------------------------------
+
+/// An LLM-instruction skill loaded from a SKILL.md file (Agent Skills standard).
+///
+/// These are NOT event-driven. The LLM decides when to use them based on
+/// the `name` and `description` injected into its context.
+#[derive(Debug, Clone)]
+pub struct LlmSkill {
+    pub name: String,
+    pub description: String,
+    pub path: PathBuf,
+}
+
+pub mod skm_adapter;
+#[doc(inline)]
+pub use skm_adapter::SkmRegistry;
+
+pub mod validation;
+#[doc(inline)]
+pub use validation::*;
+
+pub mod export;
+#[doc(inline)]
+pub use export::*;
+
+/// Discover all LLM-instruction skills under a directory by walking recursively
+/// for SKILL.md files that contain YAML frontmatter (Agent Skills convention).
+///
+/// Delegates to [`SkmRegistry`] backed by skm-core's spec-compliant parser.
+pub fn discover_llm_skills(root: &Path) -> Vec<LlmSkill> {
+    skm_adapter::SkmRegistry::new(root).discover()
+}
+
 #[derive(Debug, Clone)]
 pub struct IndexedSkill {
     pub name: String,

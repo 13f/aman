@@ -1,0 +1,1 @@
+[chaotic-reasoning](https://github.com/taurenshaman/chaotic-reasoning-skill)

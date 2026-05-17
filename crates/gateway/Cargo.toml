@@ -10,6 +10,10 @@ description = "Aman Gateway Daemon — standalone background process for the age
 [lints]
 workspace = true
 
+[build-dependencies]
+blake3.workspace = true
+serde_json.workspace = true
+
 [dependencies]
 axum = { version = "0.8.6", features = ["multipart"] }
 async-trait.workspace = true

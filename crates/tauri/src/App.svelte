@@ -10,7 +10,7 @@
   import Chat from "./pages/Chat.svelte";
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
-  import IdleStateWidget from "./pages/IdleStateWidget.svelte";
+  import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -112,7 +112,7 @@
       </a>
     {/if}
   {/each}
-  <IdleStateWidget {runtimeRunning} />
+  <ActivityStateWidget {runtimeRunning} />
 </nav>
 
 <main class="main">

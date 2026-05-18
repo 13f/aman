@@ -203,56 +203,44 @@ impl SecretBackend for VaultCliBackend {
     }
 }
 
-/// macOS Keychain backend using the `security` CLI tool.
+/// Cross-platform OS-native credential store using the `keyring` crate.
 ///
-/// Stores secrets in the user's login keychain. This is the preferred storage
-/// for API keys on macOS — no plaintext file on disk.
+/// macOS → Security framework (no subprocess, no `security` CLI prompts)
+/// Windows → Win32 Credential Manager API
+/// Linux → libsecret (GNOME Keyring / KDE Wallet)
 ///
-/// The `key` parameter is used as the Keychain label directly (caller
-/// should include the full namespace such as `aman.providers.{name}.api_key`).
-///
-/// Keychain entry layout:
-///   service : "aman"
+/// Keychain entry layout (macOS):
+///   service : <key>         (e.g. "aman.3rd.tavily.api_key")
 ///   account : "aman-desktop"
-///   label   : <key>
+///
+/// This matches the layout previously written by the `security` CLI,
+/// so existing credentials are automatically forward-compatible.
 #[derive(Debug, Clone)]
 pub struct KeychainBackend;
 
 impl SecretBackend for KeychainBackend {
     fn get(&self, key: &str) -> AmanResult<Option<String>> {
-        // Use the key as the service name (`-s`) instead of the label (`-l`)
-        // because `security`'s `-l` does *fuzzy* matching and can return the
-        // wrong entry when multiple entries share the same service+account.
-        // The `-s` flag performs exact matching.
-        let output = Command::new("security")
-            .arg("find-generic-password")
-            .arg("-a").arg("aman-desktop")
-            .arg("-s").arg(key)
-            .arg("-w")
-            .output()?;
-        if !output.status.success() {
-            return Ok(None);
+        let entry = keyring::Entry::new(key, "aman-desktop")
+            .map_err(|e| Error::Unrecoverable {
+                message: format!("keychain entry create failed: {e}"),
+            })?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(Error::Unrecoverable {
+                message: format!("keychain read failed: {e}"),
+            }),
         }
-        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(if value.is_empty() { None } else { Some(value) })
     }
 
     fn set(&self, key: &str, value: &str) -> AmanResult<()> {
-        // Match the service-name scheme used by get().
-        let output = Command::new("security")
-            .arg("add-generic-password")
-            .arg("-a").arg("aman-desktop")
-            .arg("-s").arg(key)
-            .arg("-w").arg(value)
-            .arg("-U") // update existing item
-            .arg("-A") // allow all apps access without warning
-            .output()?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(Error::Unrecoverable {
-                message: format!("keychain write failed: {stderr}"),
-            });
-        }
+        let entry = keyring::Entry::new(key, "aman-desktop")
+            .map_err(|e| Error::Unrecoverable {
+                message: format!("keychain entry create failed: {e}"),
+            })?;
+        entry.set_password(value).map_err(|e| Error::Unrecoverable {
+            message: format!("keychain write failed: {e}"),
+        })?;
         Ok(())
     }
 
@@ -1314,17 +1302,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
     fn keychain_backend_roundtrip() {
         let backend = super::KeychainBackend;
         let test_key = "aman.test.secret_crate_test";
 
-        // Ensure clean state (service-name scheme matching the new backend)
-        let _ = std::process::Command::new("security")
-            .arg("delete-generic-password")
-            .arg("-a").arg("aman-desktop")
-            .arg("-s").arg(test_key)
-            .output();
+        // Ensure clean state
+        let _ = keyring::Entry::new(test_key, "aman-desktop")
+            .and_then(|e| e.delete_password());
 
         // Initially should be None
         assert_eq!(backend.get(test_key).unwrap(), None);
@@ -1339,11 +1323,8 @@ mod tests {
         let result = backend.get(test_key).unwrap();
         assert_eq!(result, Some("updated_value".to_string()));
 
-        // Cleanup (using service-name scheme matching the new backend)
-        let _ = std::process::Command::new("security")
-            .arg("delete-generic-password")
-            .arg("-a").arg("aman-desktop")
-            .arg("-s").arg(test_key)
-            .output();
+        // Cleanup
+        let _ = keyring::Entry::new(test_key, "aman-desktop")
+            .and_then(|e| e.delete_password());
     }
 }

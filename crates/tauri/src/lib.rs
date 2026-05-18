@@ -23,6 +23,7 @@ pub fn run() {
 
     let gc_for_metrics = app_state.gateway_client.clone();
     let gc_for_events = app_state.gateway_client.clone();
+    let gc_for_notifications = app_state.gateway_client.clone();
 
     // Create a Tokio runtime for background tasks. Must be created before
     // Tauri's event loop since `setup()` runs on the main thread which has
@@ -114,6 +115,12 @@ pub fn run() {
             commands::list_third_party_services,
             commands::set_third_party_key,
             commands::set_third_party_config,
+            // Notifications
+            commands::get_notifications,
+            commands::get_notifications_unread_count,
+            commands::notification_dismiss,
+            commands::notification_ack,
+            commands::notification_dismiss_all,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar
@@ -139,6 +146,7 @@ pub fn run() {
 
             let handle1 = app.handle().clone();
             let handle2 = app.handle().clone();
+            let handle3 = app.handle().clone();
 
             // Background task: emit `metrics:updated` every 2 s.
             rt.spawn(async move {
@@ -209,6 +217,33 @@ pub fn run() {
                                             }
                                         }
                                     }
+                                }
+                            }
+                            Err(_) => { drop(guard); }
+                        }
+                    } else {
+                        drop(guard);
+                    }
+                }
+            });
+
+            // Background task: emit `notification:updated` every 2 s (poll notification center).
+            rt.spawn(async move {
+                let mut tick = interval(Duration::from_secs(2));
+                let mut previous_count: i64 = 0;
+                loop {
+                    tick.tick().await;
+                    let guard = gc_for_notifications.lock().await;
+                    if let Some(client) = guard.as_ref() {
+                        match client.notifications_unread_count().await {
+                            Ok(count) => {
+                                drop(guard);
+                                if count != previous_count {
+                                    previous_count = count;
+                                    let _ = handle3.emit(
+                                        "notification:updated",
+                                        serde_json::json!({ "unread_count": count }),
+                                    );
                                 }
                             }
                             Err(_) => { drop(guard); }

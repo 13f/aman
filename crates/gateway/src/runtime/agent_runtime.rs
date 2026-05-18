@@ -559,6 +559,9 @@ impl AgentRuntimeBuilder {
             (None, Arc::new(IncubationManager::new()))
         };
 
+        // ── Notification store ─────────────────────────────────────
+        let notifications = Arc::new(notification::NotificationStore::new(500));
+
         // ── Session store (SQLite index + JSONL cleanup) ────────────
         let session_store = std::env::var("HOME").ok().and_then(|home| {
             let aman_cfg = config::AmanConfig::from_default_path().ok()?;
@@ -577,6 +580,13 @@ impl AgentRuntimeBuilder {
                 }
             }
         });
+
+        // ── Subscribe notification subscriber ─────────────────────
+        let notif_sub = notification::NotificationSubscriber::new(Arc::clone(&notifications));
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter::default(),
+            Box::new(notif_sub),
+        ));
 
         Ok(Arc::new(AgentRuntime {
             config,
@@ -625,6 +635,7 @@ impl AgentRuntimeBuilder {
             skill_registry,
             cascade_selector,
             session_store,
+            notifications,
         }))
     }
 }
@@ -741,6 +752,8 @@ pub struct AgentRuntime {
     auth_registry: Arc<tool::auth::AuthRegistry>,
     /// SQLite-backed session index (persists across restarts).
     session_store: Option<super::session_store::SessionStore>,
+    /// Notification center — user-facing alerts (critical/warning).
+    notifications: Arc<notification::NotificationStore>,
 }
 
 impl AgentRuntime {
@@ -787,6 +800,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn audit(&self) -> Arc<AuditLogger> {
         Arc::clone(&self.audit)
+    }
+
+    #[must_use]
+    pub fn notifications(&self) -> Arc<notification::NotificationStore> {
+        Arc::clone(&self.notifications)
     }
 
     #[must_use]

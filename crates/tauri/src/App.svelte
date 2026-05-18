@@ -11,6 +11,8 @@
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
+  import NotificationBell from "./pages/NotificationBell.svelte";
+  import NotificationOverlay from "./pages/NotificationOverlay.svelte";
   import Settings from "./pages/Settings.svelte";
 
   let currentPage = $state("dashboard");
@@ -114,8 +116,11 @@
       </a>
     {/if}
   {/each}
+  <NotificationBell onNavigate={(p) => navigateTo(p)} />
   <ActivityStateWidget {runtimeRunning} />
 </nav>
+
+<NotificationOverlay onNavigate={(p) => navigateTo(p)} />
 
 <main class="main">
   {#if currentPage === "dashboard"}

@@ -1265,6 +1265,41 @@ pub async fn get_default_model() -> Result<Option<config::DefaultModelConfig>, S
     Ok(config.model)
 }
 
+// ── Notifications ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_notifications(state: State<'_, AppState>, active_only: bool, severity: Option<String>) -> Result<Vec<crate::models::NotificationEntry>, String> {
+    let client = require_gateway(&state).await?;
+    let v = client.notifications(active_only, severity.as_deref(), 100).await?;
+    let items: Vec<crate::models::NotificationEntry> = serde_json::from_value(v).map_err(|e| format!("notifications decode: {e}"))?;
+    Ok(items)
+}
+
+#[tauri::command]
+pub async fn get_notifications_unread_count(state: State<'_, AppState>) -> Result<crate::models::UnreadCount, String> {
+    let client = require_gateway(&state).await?;
+    let count = client.notifications_unread_count().await?;
+    Ok(crate::models::UnreadCount { count: count as usize })
+}
+
+#[tauri::command]
+pub async fn notification_dismiss(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let client = require_gateway(&state).await?;
+    client.notification_dismiss(&id).await
+}
+
+#[tauri::command]
+pub async fn notification_ack(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let client = require_gateway(&state).await?;
+    client.notification_ack(&id).await
+}
+
+#[tauri::command]
+pub async fn notification_dismiss_all(state: State<'_, AppState>) -> Result<(), String> {
+    let client = require_gateway(&state).await?;
+    client.notification_dismiss_all().await
+}
+
 fn default_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".aman").join("config.yaml")

@@ -1,0 +1,19 @@
+[package]
+name = "notification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Notification center — severity-classed user-facing alerts"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+event-bus = { path = "../event-bus", version = "0.1.0" }
+kernel = { path = "../core", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

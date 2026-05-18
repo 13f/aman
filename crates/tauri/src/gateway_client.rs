@@ -433,6 +433,77 @@ impl GatewayClient {
         }
     }
 
+    // ── Notifications ─────────────────────────────────────────────────
+
+    pub async fn notifications(&self, active_only: bool, severity: Option<&str>, limit: usize) -> Result<Value, String> {
+        let mut path = format!("/notifications?active_only={active_only}&limit={limit}");
+        if let Some(sev) = severity {
+            path.push_str(&format!("&severity={sev}"));
+        }
+        let resp = self
+            .client
+            .get(self.url(&path))
+            .send()
+            .await
+            .map_err(|e| format!("notifications: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("notifications decode: {e}"))
+    }
+
+    pub async fn notifications_unread_count(&self) -> Result<i64, String> {
+        let resp = self
+            .client
+            .get(self.url("/notifications/unread-count"))
+            .send()
+            .await
+            .map_err(|e| format!("notifications_unread_count: {e}"))?;
+        let v: Value = resp.json().await.map_err(|e| format!("notifications_unread_count decode: {e}"))?;
+        Ok(v["count"].as_i64().unwrap_or(0))
+    }
+
+    pub async fn notification_dismiss(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/notifications/{id}/dismiss")))
+            .send()
+            .await
+            .map_err(|e| format!("notification_dismiss: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("notification_dismiss", resp.status()).await)
+        }
+    }
+
+    pub async fn notification_ack(&self, id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/notifications/{id}/ack")))
+            .send()
+            .await
+            .map_err(|e| format!("notification_ack: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("notification_ack", resp.status()).await)
+        }
+    }
+
+    pub async fn notification_dismiss_all(&self) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url("/notifications/dismiss-all"))
+            .send()
+            .await
+            .map_err(|e| format!("notification_dismiss_all: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("notification_dismiss_all", resp.status()).await)
+        }
+    }
+
     // ── Chat ────────────────────────────────────────────────────────────
 
     pub async fn chat_sessions(&self) -> Result<Value, String> {

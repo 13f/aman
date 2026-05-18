@@ -36,6 +36,7 @@ members = [
   "crates/plugins/idle-system",
   "crates/gateway",
   "crates/idle",
+  "crates/notification",
 ]
 default-members = [
   "crates/core",
@@ -64,6 +65,7 @@ default-members = [
   "crates/plugins/idle-system",
   "crates/gateway",
   "crates/idle",
+  "crates/notification",
 ]
 
 [workspace.package]

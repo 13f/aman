@@ -19,3 +19,6 @@ pub use metrics::MetricsRegistry;
 pub use session_store::{SessionRecord, SessionStore};
 pub use soul_runtime::SoulRuntime;
 pub use tracing_setup::init_tracing;
+
+/// Re-export the notification store type for use in HTTP handlers and Tauri bridge.
+pub use notification::NotificationStore;

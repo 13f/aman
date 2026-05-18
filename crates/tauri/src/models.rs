@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct QueueDepth {
@@ -188,6 +188,28 @@ pub struct ProviderEntry {
     pub display_name: String,
     pub base_url: String,
     pub has_api_key: bool,
+}
+
+/// A single notification entry for IPC responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationEntry {
+    pub id: String,
+    pub severity: String,
+    pub category: String,
+    pub created_at: i64,
+    pub title: String,
+    pub message: String,
+    pub dismissed: bool,
+    pub dismissible: bool,
+    pub action_label: Option<String>,
+    pub action_route: Option<String>,
+    pub event_id: Option<String>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnreadCount {
+    pub count: usize,
 }
 
 /// A single agent entry for IPC responses.

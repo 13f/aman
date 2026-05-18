@@ -11,6 +11,7 @@ use axum::{Json, Router};
 use kernel::event::{Event, EventType};
 use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
 use kernel::Error;
+use notification::{Notification as NotificationModel, Severity};
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
 use plugin::PluginManifest;
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,12 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/dlq", get(dlq_list))
         .route("/dlq/{id}/retry", post(dlq_retry))
         .route("/dlq/{id}/discard", post(dlq_discard))
+        .route("/notifications", get(notifications_list))
+        .route("/notifications/unread-count", get(notifications_unread_count))
+        .route("/notifications/{id}/dismiss", post(notification_dismiss))
+        .route("/notifications/{id}/ack", post(notification_ack))
+        .route("/notifications/dismiss-all", post(notifications_dismiss_all))
+        .route("/notifications/test", post(notifications_test))
         .route("/config/set", post(config_set))
         .route("/audit-log", get(audit_log))
         .route("/runtime/status", get(runtime_status))
@@ -1296,6 +1303,164 @@ async fn dlq_discard(
             error_response(error)
         }
     }
+}
+
+// ── Notification endpoints ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct NotificationsQuery {
+    active_only: Option<bool>,
+    severity: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct NotificationResponse {
+    id: String,
+    severity: String,
+    category: String,
+    created_at: i64,
+    title: String,
+    message: String,
+    dismissed: bool,
+    dismissible: bool,
+    action_label: Option<String>,
+    action_route: Option<String>,
+    event_id: Option<String>,
+    source: Option<String>,
+}
+
+impl From<NotificationModel> for NotificationResponse {
+    fn from(n: NotificationModel) -> Self {
+        Self {
+            id: n.id,
+            severity: serde_json::to_value(&n.severity)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            category: serde_json::to_value(&n.category)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            created_at: n.created_at,
+            title: n.title,
+            message: n.message,
+            dismissed: n.dismissed,
+            dismissible: n.dismissible,
+            action_label: n.action_label,
+            action_route: n.action_route,
+            event_id: n.event_id,
+            source: n.source,
+        }
+    }
+}
+
+#[instrument(skip(runtime, query))]
+async fn notifications_list(
+    State(runtime): State<Arc<AgentRuntime>>,
+    axum::extract::Query(query): axum::extract::Query<NotificationsQuery>,
+) -> Response {
+    let severity = query.severity.as_deref().and_then(|s| match s {
+        "critical" => Some(Severity::Critical),
+        "warning" => Some(Severity::Warning),
+        _ => None,
+    });
+    let items = runtime
+        .notifications()
+        .list(
+            query.active_only.unwrap_or(true),
+            severity,
+            query.limit.unwrap_or(50).min(500),
+            query.offset.unwrap_or(0),
+        )
+        .into_iter()
+        .map(NotificationResponse::from)
+        .collect::<Vec<_>>();
+    (StatusCode::OK, Json(items)).into_response()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UnreadCountResponse {
+    count: usize,
+}
+
+async fn notifications_unread_count(
+    State(runtime): State<Arc<AgentRuntime>>,
+) -> Response {
+    let count = runtime.notifications().unread_count();
+    (StatusCode::OK, Json(UnreadCountResponse { count })).into_response()
+}
+
+async fn notification_dismiss(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(id): Path<String>,
+) -> Response {
+    if runtime.notifications().dismiss(&id) {
+        StatusCode::OK.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "notification not found or not dismissible").into_response()
+    }
+}
+
+async fn notification_ack(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(id): Path<String>,
+) -> Response {
+    if runtime.notifications().acknowledge(&id) {
+        StatusCode::OK.into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "notification not found").into_response()
+    }
+}
+
+async fn notifications_dismiss_all(
+    State(runtime): State<Arc<AgentRuntime>>,
+) -> Response {
+    runtime.notifications().dismiss_all();
+    StatusCode::OK.into_response()
+}
+
+/// Dev-only: push a test notification. Only available when no API token is set
+/// (i.e. running in development mode).
+#[derive(Debug, Clone, Deserialize)]
+struct TestNotificationRequest {
+    severity: Option<String>,
+    title: Option<String>,
+    message: Option<String>,
+    action_label: Option<String>,
+    action_route: Option<String>,
+}
+
+async fn notifications_test(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Json(req): Json<TestNotificationRequest>,
+) -> Response {
+    if runtime.api_token().is_some() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let severity = req.severity.as_deref().unwrap_or("warning");
+    let title = req.title.unwrap_or_else(|| "测试通知".into());
+    let message = req.message.unwrap_or_else(|| "这是一条测试通知".into());
+
+    let mut n = match severity {
+        "critical" => notification::Notification::critical(
+            notification::Category::Gateway, title, message,
+        ),
+        _ => notification::Notification::warning(
+            notification::Category::Gateway, title, message,
+        ),
+    };
+
+    if let Some(label) = req.action_label {
+        if let Some(route) = req.action_route {
+            n = n.with_action(label, route);
+        }
+    }
+
+    runtime.notifications().push(n);
+    StatusCode::OK.into_response()
 }
 
 #[instrument(skip(runtime))]

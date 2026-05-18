@@ -36,6 +36,8 @@ Aman is built around an **event-driven architecture**:
 6. **Workflows** model long-running business processes as state machines with timeouts, guards, and error recovery
 7. **Plugins** extend functionality through shared libraries or WASM modules
 8. **DLQ** captures failed events for manual or automated retry
+9. **Notification Center** transforms system events into user-facing alerts (critical/warning) with a ring-buffer store, HTTP API, and Tauri bridge for desktop overlay and bell widgets
+10. **Tauri Desktop App** provides a cross-platform GUI with pages for dashboard, events, workflows, plugins, chat, and settings
 
 ## Architecture Overview
 
@@ -45,70 +47,67 @@ Aman is built around an **event-driven architecture**:
                      └────┬─────┘
                           │ injects context
                           ▼
-┌──────────┐    ┌──────────────────┐    ┌─────────────┐
-│ Sources  │───▶│  Event Bus       │───▶│ Dispatcher  │
-│ (cron,   │    │  (InMemory/      │    │ (rules,     │
-│  webhook,│    │   Persistent)    │    │  matching)  │
-│  fwatch) │    │  + Backpressure  │    └──────┬──────┘
-└──────────┘    │  + Dedup         │           │
-                │  + Retry Queue   │           ▼
-                └──────────────────┘    ┌──────────────┐
-                                        │  Pipeline    │
-                ┌──────────────┐        │  Engine      │
-                │  Workflow    │◀───────│  (Filter →   │
-                │  Engine      │        │   Transform →│
-                │  (state      │        │   Action)    │
-                │   machine)   │        └──────┬───────┘
-                └──────────────┘               │
-                                        ┌──────┴───────┐
-                                        │  DLQ / Retry  │
-                                        └──────────────┘
-
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  Plugins     │    │  Tool Runner │    │  Config      │
-│  (.wasm/so)  │    │  (built-in:  │    │  + Secret    │
-│              │    │   file, http,│    │  Resolver    │
-│              │    │   exec, db)  │    │              │
+┌──────────┐    ┌──────────────────┐    ┌─────────────┐      ┌──────────────────┐
+│ Sources  │───▶│  Event Bus       │───▶│ Dispatcher  │      │ Notification     │
+│ (cron,   │    │  (InMemory/      │    │ (rules,     │      │ Subscriber       │
+│  webhook,│    │   Persistent)    │    │  matching)  │      │ (critical/warn)  │
+│  fwatch) │    │  + Backpressure  │    └──────┬──────┘      └────────┬─────────┘
+└──────────┘    │  + Dedup         │           │                      │
+                │  + Retry Queue   │           ▼                      ▼
+                └──────────────────┘    ┌──────────────┐      ┌──────────────────┐
+                                        │  Pipeline    │      │ Notification     │
+                ┌──────────────┐        │  Engine      │      │ Store            │
+                │  Workflow    │◀───────│  (Filter →   │      │ (ring buffer)    │
+                │  Engine      │        │   Transform →│      └────────┬─────────┘
+                │  (state      │        │   Action)    │               │
+                │   machine)   │        └──────┬───────┘               │
+                └──────────────┘               │                       ▼
+                                        ┌──────┴───────┐      ┌──────────────────┐
+                                        │  DLQ / Retry │      │  HTTP API        │
+                                        └──────────────┘      │  (Gateway)       │
+                                                              └────────┬─────────┘
+                                                                       │
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐               ▼
+│  Plugins     │    │  Tool Runner │    │  Config      │      ┌──────────────────┐
+│  (.wasm/so)  │    │  (built-in:  │    │  + Secret    │      │  Tauri Desktop   │
+│              │    │   file, http,│    │  Resolver    │      │  (bell + overlay)│
+│              │    │   exec, db)  │    │              │      └──────────────────┘
 └──────────────┘    └──────────────┘    └──────────────┘
 ```
 
 ## Project Status
 
-v0.1.alpha.6
+v0.1.alpha.9 — Notification Center
 
-complete skills using skm-core & skm-select
+notification center with two-tier alerts (critical/warning), Tauri overlay popup + sidebar bell widget, EventBus subscriber → ring buffer → HTTP API → Tauri bridge
 
-skills-iteration.md
+v0.1.alpha.8 — Session Index & Native Tools
 
-v0.1.alpha.5
+SQLite session index with paginated session list UI, native tool execution (file/http/exec/db), web search, Keychain-backed secret management
 
-complete & visualize idle
+v0.1.alpha.7 — Skills 2.0
 
-idle-design -> idle-milestones
+Complete skills system using skm-core & skm-select, JSON manifest with build script, third-party skill source tracking
 
-v0.1.alpha.4
+v0.1.alpha.6 — Idle System
 
-complete events
+Two-axis depth-arousal idle model, sidebar visualization widget with tooltip, processing/reflection states
 
-events-comparison -> events -> events-milestones
+v0.1.alpha.5 — Events
 
-v0.1.alpha.3
+Structured event system with comparison analysis, typed payloads, trace IDs
 
-profile/data directory
+v0.1.alpha.4 — Multi-Agent & Profile
 
-multi-agents-refactor
+profile/data directory layout, multi-agent refactor
 
-v0.1.alpha.2
+v0.1.alpha.3 — LLM Chat
 
-chat with LLM
+chat with LLM, session management
 
-llm-chat-design -> llm-chat-architect -> llm-chat-milestones
+v0.1.alpha.2 — Core Foundation
 
-v0.1.alpha.1
-
-Core
-
-agent-design -> architect-design -> milestone
+agent-design → architect-design → milestone
 
 | Milestone | Status |
 |---|---|

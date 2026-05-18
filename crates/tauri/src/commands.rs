@@ -794,12 +794,12 @@ Allow this operation?" buttons {{"Deny", "Allow"}} default button "Allow" cancel
 // Third-party service key management
 // ---------------------------------------------------------------------------
 
-static THIRD_PARTY_SERVICES: &[(&str, &str, bool)] = &[
-    ("tavily", "Tavily Search API", true),
-    ("brave", "Brave Search API", true),
-    ("duckduckgo", "DuckDuckGo Instant Answer", false),
-    ("google", "Google Custom Search", true),
-    ("x", "X (Twitter) API v2", true),
+static THIRD_PARTY_SERVICES: &[(&str, &str, bool, &[&str])] = &[
+    ("tavily", "Tavily Search API", true, &["search"]),
+    ("brave", "Brave Search API", true, &["search"]),
+    ("duckduckgo", "DuckDuckGo Instant Answer", false, &["search"]),
+    ("google", "Google Custom Search", true, &["search"]),
+    ("x", "X (Twitter) API v2", true, &["search"]),
 ];
 
 #[derive(Serialize)]
@@ -809,13 +809,15 @@ pub struct ThirdPartyService {
     pub requires_key: bool,
     pub has_key: bool,
     pub has_cx: bool,
+    pub tags: Vec<String>,
+    pub disabled: bool,
 }
 
 #[tauri::command]
 pub async fn list_third_party_services() -> Result<Vec<ThirdPartyService>, String> {
     let backend = KeychainBackend;
     let mut services: Vec<ThirdPartyService> = Vec::new();
-    for (id, display_name, requires_key) in THIRD_PARTY_SERVICES {
+    for (id, display_name, requires_key, tags) in THIRD_PARTY_SERVICES {
         let api_key = format!("aman.3rd.{id}.api_key");
         let cx = format!("aman.3rd.{id}.cx");
         services.push(ThirdPartyService {
@@ -824,6 +826,8 @@ pub async fn list_third_party_services() -> Result<Vec<ThirdPartyService>, Strin
             requires_key: *requires_key,
             has_key: backend.get(&api_key).ok().flatten().is_some(),
             has_cx: backend.get(&cx).ok().flatten().is_some(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            disabled: false,
         });
     }
     Ok(services)

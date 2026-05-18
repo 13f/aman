@@ -8,6 +8,8 @@
     requires_key: boolean;
     has_key: boolean;
     has_cx: boolean;
+    tags: string[];
+    disabled: boolean;
   }
 
   let services = $state<Service[]>([]);
@@ -98,10 +100,15 @@
   {:else}
     <div class="service-list">
       {#each services as service (service.id)}
-        <div class="service-card">
+        <div class="service-card" class:disabled={service.disabled}>
           <div class="service-header">
             <span class="service-name">{service.display_name}</span>
             <span class="service-id">{service.id}</span>
+            <div class="tag-list">
+              {#each service.tags as tag}
+                <span class="tag">{tag}</span>
+              {/each}
+            </div>
           </div>
 
           <div class="service-config">
@@ -219,11 +226,17 @@
     background: var(--bg-secondary, #1a1a2e);
   }
 
+  .service-card.disabled {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+
   .service-header {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 12px;
+    flex-wrap: wrap;
   }
 
   .service-name {
@@ -237,6 +250,23 @@
     background: var(--bg-tertiary, #2a2a3e);
     padding: 2px 6px;
     border-radius: 4px;
+  }
+
+  .tag-list {
+    display: flex;
+    gap: 4px;
+    margin-left: auto;
+  }
+
+  .tag {
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #1a3a5a;
+    color: #6ab0ff;
   }
 
   .service-config {

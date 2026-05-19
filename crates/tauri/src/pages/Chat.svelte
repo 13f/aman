@@ -53,6 +53,8 @@
   let soulDetailExpanded = $state(false);
   let soulIntroShown = $state(false);
   let archivedMsgIds = $state<Set<string>>(new Set());
+  // Tracks sessions handled by AgentHarness to deduplicate with LLM Plugin events.
+  let agentHarnessSessions = $state<Set<string>>(new Set());
   let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
 
   // Pagination
@@ -302,6 +304,8 @@
   }
 
   function handleLlmReplyReady(data: any) {
+    // If AgentHarness already handled this session, skip LLM Plugin reply (Phase B dedup)
+    if (agentHarnessSessions.has(data.session_id)) return;
     const channelType: string | undefined = data.channel_type;
     const traceId: string | undefined = data.trace_id;
     const reply: Message = {
@@ -396,6 +400,118 @@
         ? { ...s, status: newStatus, result: data.result, error: data.error }
         : s,
     );
+  }
+
+  // ── AgentHarness event handlers (Phase B migration) ──
+
+  function handleAgentStreamStart(data: any) {
+    const sid: string = data.session_id;
+    const msgId = crypto.randomUUID();
+    activeStreamingMessageId = msgId;
+    const streamMsg: Message = {
+      id: msgId,
+      type: "assistant_streaming",
+      content: "",
+      timestamp: new Date().toISOString(),
+      sessionId: sid,
+      status: "streaming",
+    };
+    messages = [...messages, streamMsg];
+  }
+
+  function handleAgentChunk(data: any) {
+    const delta: string = data.extra?.delta ?? "";
+    if (!delta || !activeStreamingMessageId) return;
+    const current = messages.find(m => m.id === activeStreamingMessageId)?.content ?? "";
+    updateMessage(activeStreamingMessageId, { content: current + delta });
+  }
+
+  function handleAgentStreamDone(data: any) {
+    if (activeStreamingMessageId) {
+      updateMessage(activeStreamingMessageId, { status: "completed" });
+      activeStreamingMessageId = null;
+    }
+    agentHarnessSessions = new Set([...agentHarnessSessions, data.session_id]);
+    isLoading = false;
+    updateSessionStatus(data.session_id, "idle");
+  }
+
+  function handleAgentReplyReady(data: any) {
+    const sid: string = data.session_id;
+    // Dedup: if streaming already completed this session, skip
+    if (agentHarnessSessions.has(sid)) return;
+
+    const reply: Message = {
+      id: crypto.randomUUID(),
+      type: "assistant_text",
+      content: data.reply,
+      timestamp: new Date().toISOString(),
+      sessionId: sid,
+      status: "completed",
+    };
+    messages = [...messages, reply];
+    agentHarnessSessions = new Set([...agentHarnessSessions, sid]);
+    isLoading = false;
+    updateSessionStatus(sid, "idle");
+  }
+
+  function handleAgentToolCall(data: any) {
+    // data = { agent_id, session_id, tool_call_id, tool_name, args }
+    const callId: string = data.tool_call_id;
+    const toolCall: Message = {
+      id: callId,
+      type: "assistant_tool_call",
+      content: `Tool: ${data.tool_name}`,
+      timestamp: new Date().toISOString(),
+      sessionId: data.session_id,
+      status: "streaming",
+      toolCall: {
+        callId,
+        toolName: data.tool_name,
+        arguments: JSON.stringify(data.args ?? {}),
+        status: "running",
+      },
+    };
+    messages = [...messages, toolCall];
+
+    turnSteps = [...turnSteps, {
+      id: callId,
+      toolName: data.tool_name,
+      arguments: JSON.stringify(data.args ?? {}),
+      status: "running" as const,
+      timestamp: new Date().toISOString(),
+    }];
+    if (activeTab !== "steps") activeTab = "steps";
+  }
+
+  function handleAgentToolResult(data: any) {
+    // Map AgentHarness fields to what handleLlmToolResult expects
+    handleLlmToolResult({
+      session_id: data.session_id,
+      call_id: data.tool_call_id,
+      status: data.success === true ? "success" : "failed",
+      result: data.output,
+      error: data.success === false ? data.output : undefined,
+    });
+  }
+
+  function handleAgentStreamError(data: any) {
+    if (activeStreamingMessageId) {
+      updateMessage(activeStreamingMessageId, { status: "error" });
+      activeStreamingMessageId = null;
+    }
+    isLoading = false;
+    updateSessionStatus(data.session_id, "idle");
+  }
+
+  function handleAgentHistoryCompressed(data: any) {
+    // Map AgentHarness field names to what handleHistoryTrimmed expects
+    handleHistoryTrimmed({
+      session_id: data.session_id,
+      trimmed_count: data.messages_removed ?? 0,
+      remaining_count: data.remaining_count ?? "N/A",
+      strategy: data.strategy ?? "unknown",
+    });
   }
 
   async function handleEventProcessed(e: any) {
@@ -510,6 +626,42 @@
         break;
       case "tool_auth_required":
         handleToolAuthRequired(data);
+        break;
+      // ── AgentHarness events (Phase B migration) ──
+      case "agent:reply_stream_start":
+        handleAgentStreamStart(data);
+        break;
+      case "agent:reply_chunk":
+        handleAgentChunk(data);
+        break;
+      case "agent:reply_stream_done":
+        handleAgentStreamDone(data);
+        // Force-complete any steps still running.
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
+        break;
+      case "agent:reply_stream_error":
+        handleAgentStreamError(data);
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "failed" as const, error: "Stream error" } : s);
+        break;
+      case "agent:reply_ready":
+        handleAgentReplyReady(data);
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
+        break;
+      case "agent:reply_interrupted":
+        handleAgentReplyReady(data);
+        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "failed" as const, error: "Interrupted" } : s);
+        break;
+      case "tool:dispatched":
+        handleAgentToolCall(data);
+        break;
+      case "tool:completed":
+        handleAgentToolResult(data);
+        break;
+      case "tool:failed":
+        handleAgentToolResult(data);
+        break;
+      case "agent:history_compressed":
+        handleAgentHistoryCompressed(data);
         break;
     }
   }

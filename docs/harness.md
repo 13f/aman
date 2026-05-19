@@ -800,12 +800,11 @@ agent:message {
   - 未配置 `harness` 段的 Agent → 回退到 LLM Plugin（向后兼容）
 - 两者共享事件总线：`llm:call_started`/`llm:call_ended` 完全兼容
 
-**阶段 B（功能对等，M4 完成后）：**
-- AgentHarness 覆盖 LLM Plugin 的全部功能：
-  - History trimming（LLM Plugin 的 `SessionHistory` → Harness 的 `TokenBudget.trim()`）
-  - Per-session 串行队列（LLM Plugin 的 `mpsc queue` → Harness 内部互斥锁）
-  - Output blocking（LLM Plugin 的 `OutputValidator` → 复用现有验证器，Harness Phase 3 中调用）
-- 验收：所有现有集成测试在 Harness 路径下通过
+**阶段 B（前端迁移完成，Plugin 保留）：**
+- 前端 Chat.svelte 新增 AgentHarness 事件监听（`agent:reply_stream_start/chunk/done`、`tool:dispatched/completed/failed`、`agent:reply_ready`）
+- 流式输出支持：`assistant_streaming` 消息类型现已可用
+- 去重机制：AgentHarness 处理的 session 自动跳过 LLM Plugin 的 `llm_reply_ready`
+- LLM Plugin 后端仍在运行，Phase C 待测试后执行
 
 **阶段 C（移除 Plugin，M6 完成后）：**
 - LLM Plugin 从 workspace 中移除

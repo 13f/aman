@@ -591,6 +591,13 @@ impl AgentRuntimeBuilder {
         // ── Agent registry ──────────────────────────────────────────
         let agent_registry = Arc::new(super::AgentRegistry::new(Arc::clone(&bus)));
 
+        // ── Agent harness (ReAct loop orchestrator) ──────────────────
+        let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
+            Arc::clone(&agent_registry),
+            Arc::clone(&tools),
+            Arc::clone(&bus),
+        ));
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,
@@ -640,6 +647,7 @@ impl AgentRuntimeBuilder {
             session_store,
             notifications,
             agent_registry,
+            agent_harness,
         }))
     }
 }
@@ -760,6 +768,8 @@ pub struct AgentRuntime {
     notifications: Arc<notification::NotificationStore>,
     /// Agent runtime registry — manages agent instances and lifecycle.
     agent_registry: Arc<super::AgentRegistry>,
+    /// Agent harness — orchestrates the ReAct loop for agent message processing.
+    agent_harness: Arc<super::agent_harness::AgentHarness>,
 }
 
 impl AgentRuntime {
@@ -816,6 +826,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn agent_registry(&self) -> Arc<super::AgentRegistry> {
         Arc::clone(&self.agent_registry)
+    }
+
+    #[must_use]
+    pub fn agent_harness(&self) -> Arc<super::agent_harness::AgentHarness> {
+        Arc::clone(&self.agent_harness)
     }
 
     #[must_use]

@@ -11,6 +11,7 @@ pub mod hook;
 pub mod pipeline;
 pub mod plugin;
 pub mod prelude;
+pub mod react;
 pub mod retry;
 pub mod schema;
 pub mod skill;

@@ -431,6 +431,7 @@ impl AgentHarness {
         agent_id: &str,
         session_id: &str,
         user_text: &str,
+        model: &str,
         soul_snapshot: SoulSnapshot,
         interrupt: Option<&InterruptFlag>,
     ) -> AmanResult<String> {
@@ -474,7 +475,19 @@ impl AgentHarness {
         // 4. Build conversation history
         let history = vec![ChatMessage::user(user_text)];
 
-        // 5. Create ReAct context
+        // 5. Initialize model-aware token budget (M4)
+        let mut token_budget = crate::runtime::token_budget::TokenBudget::new(model);
+        // Estimate system prompt tokens
+        token_budget.set_system_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
+        // Estimate tool schema tokens
+        let tool_schema_text: String = available_tools
+            .iter()
+            .map(|t| format!("{}: {}", t.name, t.parameters))
+            .collect::<Vec<_>>()
+            .join("\n");
+        token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
+
+        // 6. Create ReAct context
         let mut ctx = ReActContext::new(
             agent_id.to_owned(),
             session_id.to_owned(),
@@ -485,8 +498,8 @@ impl AgentHarness {
             self.token_budget_limit,
         );
 
-        // 6. Execute ReAct loop
-        let final_reply = self.react_loop(&mut ctx, interrupt).await?;
+        // 7. Execute ReAct loop with token budget management
+        let final_reply = self.react_loop(&mut ctx, &mut token_budget, interrupt).await?;
 
         // 7. Publish agent:reply_ready
         let _ = self
@@ -526,23 +539,18 @@ impl AgentHarness {
         Ok(final_reply)
     }
 
-    /// The core think-act-observe loop.
+    /// The core think-act-observe loop with M4 token budget management.
     async fn react_loop(
         &self,
         ctx: &mut ReActContext,
+        token_budget: &mut crate::runtime::token_budget::TokenBudget,
         interrupt: Option<&InterruptFlag>,
     ) -> AmanResult<String> {
-        loop {
-            // Check budget
-            if ctx.token_budget.is_exceeded() {
-                return Err(Error::ConfigInvalid {
-                    message: format!(
-                        "token budget exceeded: {}/{}",
-                        ctx.token_budget.used, ctx.token_budget.limit
-                    ),
-                });
-            }
+        let compressor = crate::runtime::history_compressor::HistoryCompressor::new(
+            crate::runtime::history_compressor::CompressionStrategy::Truncate,
+        );
 
+        loop {
             // Check max turns
             if ctx.turn >= ctx.max_turns {
                 return Err(Error::ConfigInvalid {
@@ -559,19 +567,46 @@ impl AgentHarness {
                 }
             }
 
-            // Trim history if budget is tight (over 80%)
-            if ctx.token_budget.fraction_used() > 0.8 && ctx.history.len() > 5 {
-                // Keep system message + last 5 messages
-                let keep = ctx.history.len().min(5);
-                ctx.history = ctx.history.split_off(ctx.history.len() - keep);
+            // M4: Check token budget and compress history if needed
+            if token_budget.needs_trim() {
+                let result = compressor.compress(&mut ctx.history, token_budget, 3);
+                if result.messages_removed > 0 {
+                    let _ = self
+                        .bus
+                        .publish(Event::new(
+                            "agent:harness",
+                            EventType::Custom("agent:history_compressed".to_owned()),
+                            json!({
+                                "agent_id": ctx.agent_id,
+                                "session_id": ctx.session_id,
+                                "turn": ctx.turn,
+                                "messages_removed": result.messages_removed,
+                                "tokens_saved": result.tokens_saved,
+                                "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
+                            }),
+                        ))
+                        .await;
+                }
             }
 
             let turn_messages = ctx.history.clone();
+
+            // Estimate history tokens for budget tracking
+            let history_tokens: usize = ctx
+                .history
+                .iter()
+                .map(|m| crate::runtime::token_budget::TokenBudget::estimate_tokens(&m.content))
+                .sum();
+            token_budget.set_history_tokens(history_tokens);
 
             // Execute one ReAct turn
             match self.engine.execute_turn(ctx, turn_messages).await {
                 Ok(ReActTurn::Finished { content, .. }) => {
                     ctx.history.push(ChatMessage::assistant(&content));
+                    // Record token usage
+                    let completion_tokens =
+                        crate::runtime::token_budget::TokenBudget::estimate_tokens(&content);
+                    token_budget.record_usage(history_tokens, completion_tokens);
                     return Ok(content);
                 }
                 Ok(ReActTurn::ToolCalls(calls)) => {

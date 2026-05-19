@@ -4,6 +4,8 @@
 mod agent_harness;
 mod agent_registry;
 mod agent_runtime;
+mod history_compressor;
+mod token_budget;
 mod audit;
 mod event_store;
 mod http;

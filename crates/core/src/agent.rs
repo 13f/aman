@@ -1,0 +1,106 @@
+use crate::types::Timestamp;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Agent 运行时标识与配置。
+///
+/// 对应 config.yaml 中 agents 段的单个 Agent 条目。
+/// AgentRegistry 在 Phase 2 从配置加载后为每个条目创建一个 AgentInstance。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDescriptor {
+    /// config.yaml 中的 agent key（唯一标识）
+    pub agent_id: String,
+
+    /// UI 显示名
+    pub display_name: String,
+
+    /// provider key（必须存在于 providers 段）
+    pub provider: String,
+
+    /// 模型名
+    pub model: String,
+
+    /// SOUL 文件路径（可选，缺省使用框架级 SOUL）
+    pub soul_path: Option<PathBuf>,
+
+    /// 该 Agent 可用的 Tool 列表
+    /// None = 全部可用，Some(vec) = 白名单
+    pub allowed_tools: Option<Vec<String>>,
+
+    /// 该 Agent 显式拒绝的 Tool 列表（在黑名单之上进一步限制）
+    pub denied_tools: Vec<String>,
+
+    /// 配置中是否启用
+    pub enabled: bool,
+}
+
+/// Agent 运行时状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentStatus {
+    /// 配置中禁用
+    Disabled,
+    /// 已加载，无活跃会话
+    Idle,
+    /// 有活跃会话正在处理
+    Busy,
+    /// 初始化失败或运行时异常
+    Error,
+}
+
+/// Agent 运行时实例，由 AgentRegistry 管理。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInstance {
+    pub descriptor: AgentDescriptor,
+    pub status: AgentStatus,
+    /// 当前活跃的 session_id（Busy 状态时）
+    pub active_session_id: Option<String>,
+    /// 注册到 Registry 的时间
+    pub registered_at: Timestamp,
+}
+
+impl AgentInstance {
+    #[must_use]
+    pub fn new(descriptor: AgentDescriptor) -> Self {
+        let status = if descriptor.enabled {
+            AgentStatus::Idle
+        } else {
+            AgentStatus::Disabled
+        };
+        Self {
+            descriptor,
+            status,
+            active_session_id: None,
+            registered_at: Timestamp::now(),
+        }
+    }
+}
+
+/// Agent 级别的事件类型。
+///
+/// 这些事件由 AgentRegistry 和 AgentHarness 在关键操作点发布，
+/// 遵循 Aman "万物皆事件"的设计公理。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentEvent {
+    Registered(AgentDescriptor),
+    StatusChanged {
+        agent_id: String,
+        old_status: AgentStatus,
+        new_status: AgentStatus,
+    },
+    Removed {
+        agent_id: String,
+        reason: String,
+    },
+}
+
+impl AgentEvent {
+    /// 返回与此事件对应的 Custom EventType 字符串。
+    #[must_use]
+    pub fn event_type_str(&self) -> &'static str {
+        match self {
+            Self::Registered(_) => "agent:registered",
+            Self::StatusChanged { .. } => "agent:status_changed",
+            Self::Removed { .. } => "agent:removed",
+        }
+    }
+}

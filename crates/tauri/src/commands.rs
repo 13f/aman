@@ -1106,6 +1106,7 @@ pub async fn create_agent(
             provider,
             model,
             system_prompt_override: None,
+            enabled: true,
         },
     );
 
@@ -1302,6 +1303,59 @@ pub async fn notification_ack(state: State<'_, AppState>, id: String) -> Result<
 pub async fn notification_dismiss_all(state: State<'_, AppState>) -> Result<(), String> {
     let client = require_gateway(&state).await?;
     client.notification_dismiss_all().await
+}
+
+// ── Agent runtime (T1.4) — gateway RPC ──────────────────────────────
+
+#[tauri::command]
+pub async fn list_runtime_agents(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::AgentInstanceInfo>, String> {
+    let client = require_gateway(&state).await?;
+    let v = client.list_agents().await?;
+    let agents: Vec<crate::models::AgentInstanceInfo> = v
+        .as_array()
+        .ok_or_else(|| "invalid agents response".to_owned())?
+        .iter()
+        .map(|item| crate::models::AgentInstanceInfo {
+            agent_id: item["agent_id"].as_str().unwrap_or("").to_owned(),
+            display_name: item["display_name"].as_str().unwrap_or("").to_owned(),
+            provider: item["provider"].as_str().unwrap_or("").to_owned(),
+            model: item["model"].as_str().unwrap_or("").to_owned(),
+            status: item["status"].as_str().unwrap_or("").to_owned(),
+            enabled: item["descriptor"]["enabled"].as_bool().unwrap_or(false),
+            active_session_id: item["active_session_id"].as_str().map(String::from),
+        })
+        .collect();
+    Ok(agents)
+}
+
+#[tauri::command]
+pub async fn get_runtime_agent(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<crate::models::AgentInstanceInfo, String> {
+    let client = require_gateway(&state).await?;
+    let v = client.get_agent(&agent_id).await?;
+    Ok(crate::models::AgentInstanceInfo {
+        agent_id: v["agent_id"].as_str().unwrap_or("").to_owned(),
+        display_name: v["display_name"].as_str().unwrap_or("").to_owned(),
+        provider: v["provider"].as_str().unwrap_or("").to_owned(),
+        model: v["model"].as_str().unwrap_or("").to_owned(),
+        status: v["status"].as_str().unwrap_or("").to_owned(),
+        enabled: v["descriptor"]["enabled"].as_bool().unwrap_or(false),
+        active_session_id: v["active_session_id"].as_str().map(String::from),
+    })
+}
+
+#[tauri::command]
+pub async fn set_runtime_agent_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+    status: String,
+) -> Result<(), String> {
+    let client = require_gateway(&state).await?;
+    client.set_agent_status(&agent_id, &status).await
 }
 
 fn default_config_path() -> std::path::PathBuf {

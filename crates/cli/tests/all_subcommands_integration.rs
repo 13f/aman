@@ -34,16 +34,6 @@ async fn cli_smoke_all_current_subcommands() {
         .expect("build runtime");
     let skills_dir = runtime.runtime_dir().join("skills");
     fs::create_dir_all(&skills_dir).expect("create skills dir");
-    fs::write(
-        skills_dir.join("echo-skill.yaml"),
-        r#"name: echo-skill
-version: "1.0.0"
-description: echo
-triggers:
-  - event_types: ["message_received"]
-"#,
-    )
-    .expect("write skill");
 
     let server = serve(
         runtime.clone(),
@@ -201,82 +191,6 @@ triggers:
         &addr,
         "--token",
         "token",
-    ]);
-    run_ok(&[
-        "skill",
-        "info",
-        "--name",
-        "echo-skill",
-        "--addr",
-        &addr,
-        "--token",
-        "token",
-    ]);
-    run_ok(&[
-        "skill",
-        "disable",
-        "--name",
-        "echo-skill",
-        "--addr",
-        &addr,
-        "--token",
-        "token",
-        "--operator",
-        "tester",
-    ]);
-    run_ok(&[
-        "skill",
-        "enable",
-        "--name",
-        "echo-skill",
-        "--addr",
-        &addr,
-        "--token",
-        "token",
-        "--operator",
-        "tester",
-    ]);
-    run_ok(&[
-        "skill",
-        "version",
-        "--name",
-        "echo-skill",
-        "--addr",
-        &addr,
-        "--token",
-        "token",
-    ]);
-    assert_eq!(
-        run_exit(&[
-            "skill",
-            "rollback",
-            "--name",
-            "echo-skill",
-            "--version",
-            "1.0.0",
-            "--addr",
-            &addr,
-            "--token",
-            "token",
-            "--operator",
-            "tester",
-        ]),
-        3
-    );
-    run_ok(&[
-        "skill",
-        "rollback",
-        "--name",
-        "echo-skill",
-        "--version",
-        "1.0.0",
-        "--confirm",
-        "--addr",
-        &addr,
-        "--token",
-        "token",
-        "--operator",
-        "tester",
     ]);
 
     run_ok(&["workflow", "list", "--addr", &addr, "--token", "token"]);

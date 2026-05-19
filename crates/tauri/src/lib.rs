@@ -121,6 +121,10 @@ pub fn run() {
             commands::notification_dismiss,
             commands::notification_ack,
             commands::notification_dismiss_all,
+            // Agent runtime (M1)
+            commands::list_runtime_agents,
+            commands::get_runtime_agent,
+            commands::set_runtime_agent_status,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar

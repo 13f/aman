@@ -212,7 +212,7 @@ pub struct UnreadCount {
     pub count: usize,
 }
 
-/// A single agent entry for IPC responses.
+/// A single agent entry for IPC responses (filesystem-based).
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentEntry {
     pub key: String,
@@ -222,4 +222,16 @@ pub struct AgentEntry {
     pub soul_summary: String,
     pub session_count: u64,
     pub is_active: bool,
+}
+
+/// Agent runtime instance exposed via Tauri IPC.
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentInstanceInfo {
+    pub agent_id: String,
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    pub status: String,
+    pub enabled: bool,
+    pub active_session_id: Option<String>,
 }

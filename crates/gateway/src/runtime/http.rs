@@ -8,6 +8,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use kernel::agent::AgentStatus;
 use kernel::event::{Event, EventType};
 use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
 use kernel::Error;
@@ -132,6 +133,9 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/dlq/depth", get(dlq_depth))
         .route("/debug/metrics", get(debug_metrics))
         .route("/tool-auth/respond", post(tool_auth_respond))
+        .route("/agents", get(agent_list))
+        .route("/agent/{agent_id}", get(agent_get))
+        .route("/agent/{agent_id}/status", post(agent_set_status))
         .route_layer(middleware::from_fn_with_state(
             runtime.clone(),
             require_api_token,
@@ -2679,5 +2683,43 @@ impl From<kernel::Error> for ErrorBody {
         Self {
             message: error.to_string(),
         }
+    }
+}
+
+// ── Agent management ──────────────────────────────────────────────────
+
+async fn agent_list(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    Json(runtime.agent_registry().list().await).into_response()
+}
+
+async fn agent_get(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_id): Path<String>,
+) -> Response {
+    match runtime.agent_registry().get(&agent_id).await {
+        Some(instance) => Json(instance).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: format!("agent not found: {agent_id}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentSetStatusBody {
+    status: AgentStatus,
+}
+
+async fn agent_set_status(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<AgentSetStatusBody>,
+) -> Response {
+    match runtime.agent_registry().set_status(&agent_id, body.status).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
     }
 }

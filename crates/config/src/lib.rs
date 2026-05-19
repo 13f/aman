@@ -345,6 +345,13 @@ pub struct AgentEntryConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_prompt_override: Option<String>,
+    /// Whether this agent is enabled on startup. Default true.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 /// Top-level multi-agent configuration that wraps the existing runtime
@@ -1286,6 +1293,7 @@ runtime:
                 provider: "valid".to_string(),
                 model: "gpt-5".to_string(),
                 system_prompt_override: None,
+                enabled: true,
             },
         );
 
@@ -1308,6 +1316,7 @@ runtime:
                 provider: "nonexistent".to_string(),
                 model: "gpt-5".to_string(),
                 system_prompt_override: None,
+                enabled: true,
             },
         );
 
@@ -1343,6 +1352,7 @@ runtime:
                 provider: "openai".to_string(),
                 model: "gpt-5".to_string(),
                 system_prompt_override: None,
+                enabled: true,
             },
         );
 

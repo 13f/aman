@@ -730,6 +730,52 @@ impl GatewayClient {
             "fail_closed": true,
         }))
     }
+
+    // ── Agent Management ──────────────────────────────────────────────
+
+    pub async fn list_agents(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/agents"))
+            .send()
+            .await
+            .map_err(|e| format!("list_agents: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("list_agents decode: {e}"))
+    }
+
+    pub async fn get_agent(&self, agent_id: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/agent/{agent_id}")))
+            .send()
+            .await
+            .map_err(|e| format!("get_agent: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("get_agent decode: {e}"))
+        } else {
+            Err(status_error("get_agent", resp.status()).await)
+        }
+    }
+
+    pub async fn set_agent_status(&self, agent_id: &str, status: &str) -> Result<(), String> {
+        let body = serde_json::json!({ "status": status });
+        let resp = self
+            .client
+            .post(self.url(&format!("/agent/{agent_id}/status")))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("set_agent_status: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("set_agent_status", resp.status()).await)
+        }
+    }
 }
 
 async fn status_error(context: &str, status: reqwest::StatusCode) -> String {

@@ -588,6 +588,9 @@ impl AgentRuntimeBuilder {
             Box::new(notif_sub),
         ));
 
+        // ── Agent registry ──────────────────────────────────────────
+        let agent_registry = Arc::new(super::AgentRegistry::new(Arc::clone(&bus)));
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,
@@ -636,6 +639,7 @@ impl AgentRuntimeBuilder {
             cascade_selector,
             session_store,
             notifications,
+            agent_registry,
         }))
     }
 }
@@ -754,6 +758,8 @@ pub struct AgentRuntime {
     session_store: Option<super::session_store::SessionStore>,
     /// Notification center — user-facing alerts (critical/warning).
     notifications: Arc<notification::NotificationStore>,
+    /// Agent runtime registry — manages agent instances and lifecycle.
+    agent_registry: Arc<super::AgentRegistry>,
 }
 
 impl AgentRuntime {
@@ -805,6 +811,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn notifications(&self) -> Arc<notification::NotificationStore> {
         Arc::clone(&self.notifications)
+    }
+
+    #[must_use]
+    pub fn agent_registry(&self) -> Arc<super::AgentRegistry> {
+        Arc::clone(&self.agent_registry)
     }
 
     #[must_use]
@@ -1457,6 +1468,11 @@ impl AgentRuntime {
                 }
                 tracing::info!("Phase2: refresh_capabilities");
                 let _ = self.refresh_capabilities().await;
+                tracing::info!("Phase2: load agents from config");
+                if let Ok(aman_cfg) = config::AmanConfig::from_default_path() {
+                    let count = self.agent_registry.load_from_config(&aman_cfg).await;
+                    tracing::info!(count, "agents loaded from config");
+                }
                 tracing::info!("Phase2: store");
                 self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);
             }
@@ -1579,6 +1595,9 @@ impl AgentRuntime {
                         );
                     }
                 }
+                // Clear agent registry during shutdown
+                self.agent_registry.clear().await;
+                tracing::info!("Phase2 shutdown: agent registry cleared");
                 self.phase.store(RuntimePhase::Phase1 as u8, Ordering::Release);
             }
             RuntimePhase::Phase1 => {

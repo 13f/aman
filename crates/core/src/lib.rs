@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![doc = "Core types and traits for the Aman agent framework."]
 
+pub mod agent;
 pub mod context;
 pub mod error;
 pub mod event;

@@ -54,17 +54,17 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 
 | # | Harness 能力 | 定义 | Aman 已有组件 | 实现状态 | 差距 |
 |---|-------------|------|-------------|---------|------|
-| 1 | **Agent 身份与生命周期** | Agent 的注册、创建、销毁、配置管理 | `config.yaml` agents 段 + SOUL 系统 + `~/.aman/agents/` 目录 | ✅ 设计与部分实现 | 无运行时 `Agent` 类型；Agent 配置仅在启动时加载，无运行时动态创建/销毁 API |
-| 2 | **ReAct 循环引擎** | Think-Act-Observe 迭代：LLM 响应 → 解析 Tool Calls → 执行 → 反馈 → 继续 | LLM Plugin 的 Tool Calling 流程描述 | ⚠️ 仅设计描述 | 无正式的循环管理器；Tool Call 自动解析-执行-反馈链路未抽象为可复用的循环引擎 |
-| 3 | **Context 组装** | System Prompt + 历史会话 + Tools Schema + 用户消息组合与 Token 预算管理 | SOUL `to_system_prompt()` + LLM Skill 上下文组装 + Tool schema 注入 | ⚠️ 部分实现 | 无 Token 预算追踪与裁剪；Tools Schema 与 Agent 身份不绑定 |
-| 4 | **Tool Calling 调度** | 多 Tool Call 的调度策略（串行/并行/部分并行）、错误处理、结果聚合 | Pipeline 的 `concurrency` 模式（serial/parallel/limited） | ✅ 已有 Pipeline | 但 Pipeline 不是为 ReAct 循环设计的——缺少"执行 → 反馈 → 再次调用 LLM"的迭代语义 |
+| 1 | **Agent 身份与生命周期** | Agent 的注册、创建、销毁、配置管理 | `config.yaml` agents 段 + SOUL 系统 + `~/.aman/agents/` 目录 + `AgentRegistry` | ✅ 已实现 | 无运行时动态创建/销毁 API（仅通过 config 加载） |
+| 2 | **ReAct 循环引擎** | Think-Act-Observe 迭代：LLM 响应 → 解析 Tool Calls → 执行 → 反馈 → 继续 | `AgentHarness` + `LlmReActEngine` + `ToolExecutor` | ⚠️ 核心引擎已完成 | 未注册到 Dispatcher（MESSAGE_RECEIVED 仍由 LLM Plugin 处理）；无流式输出 |
+| 3 | **Context 组装** | System Prompt + 历史会话 + Tools Schema + 用户消息组合与 Token 预算管理 | `ContextAssembler` + SOUL + `TokenBudget` | ✅ 已实现 | — |
+| 4 | **Tool Calling 调度** | 多 Tool Call 的调度策略（串行/并行/部分并行）、错误处理、结果聚合 | Pipeline 的 `concurrency` 模式（serial/parallel/limited） | ⚠️ 部分实现 | Pipeline 不是为 ReAct 循环设计的——缺少"执行 → 反馈 → 再次调用 LLM"的迭代语义 |
 | 5 | **会话管理** | 会话创建/激活/处理/空闲/超时/关闭的状态管理 | Chat Session 状态机（ACTIVE/PROCESSING/IDLE/ERROR/TIMEOUT/CLOSED）+ SQLite sessions.db | ✅ 已实现 | 会话级 Tool 访问控制缺失；会话元数据缺少 Agent 绑定 |
-| 6 | **Agent 级 Tool 访问控制** | 不同 Agent 可访问不同 Tool 集合；Tool 调用受 Agent 身份约束 | ToolRegistry 全局注册，无 Agent 级隔离 | ❌ 未实现 | 需要 `Agent → [Tool]` 映射表，Dispatcher 或 Harness 层做权限校验 |
-| 7 | **Memory 集成** | 长期记忆的存储、检索与注入到 Context | `~/.aman/agents/*/memory/` 目录 + Memory trait | ✅ 已实现 | 需接入 ReAct 循环：每次 LLM 调用前自动检索相关记忆 |
+| 6 | **Agent 级 Tool 访问控制** | 不同 Agent 可访问不同 Tool 集合；Tool 调用受 Agent 身份约束 | `AgentRegistry::tool_allowed()` + `ToolExecutor::execute_for_agent()` | ✅ 已实现 | — |
+| 7 | **Memory 集成** | 长期记忆的存储、检索与注入到 Context | `MemoryStore` +  keyword-based 检索 + `[remember:]` 自动写入 | ✅ 已集成到 ReAct 循环 | — |
 | 8 | **流式输出** | LLM 回复的分块发布，页面逐步渲染 | LLM Plugin 内部处理流式响应，无独立的流事件发布 | ⚠️ 部分实现 | 需 Harness 在 ReAct 循环中统一管理流式事件的发布（`agent:reply_stream_start/chunk/done`） |
-| 9 | **中断与恢复** | 用户 /stop 终止当前处理，恢复前一个 IDLE 状态 | Session 状态机 TIMEOUT→IDLE 转移 + CancellationToken | ✅ 已实现 | 需 Agent 级 /stop（不仅仅是会话级）：中断当前 ReAct 循环，保留已处理的部分结果 |
+| 9 | **中断与恢复** | 用户 /stop 终止当前处理，恢复前一个 IDLE 状态 | `InterruptFlag` + `active_interrupts` 注册表 + `STOP_GENERATION` 事件订阅 | ✅ 已集成到 AgentHarness | — |
 | 10 | **多 Agent 协调** | Agent 之间的事件传递、任务委托、结果共享 | config.yaml agents 列表 + `~/.aman/agents/*/` 数据隔离 | ⚠️ 设计与目录结构完成 | 无运行时 Agent 间事件路由；无 Agent 间消息传递协议 |
-| 11 | **Token 预算与 Context Window 管理** | 跟踪每次 LLM 调用的 Token 消耗，在超限前做历史裁剪/摘要 | 无对应设计 | ❌ 未设计 | Agent Harness 层需管理累计 Token 消耗，在接近 Context Window 上限时自动压缩历史 |
+| 11 | **Token 预算与 Context Window 管理** | 跟踪每次 LLM 调用的 Token 消耗，在超限前做历史裁剪/摘要 | `TokenBudget` + `HistoryCompressor`（truncate/summarize） | ✅ 已实现 | — |
 | 12 | **Agent 可观测性** | Agent 级别的指标：LLM 延迟、Token 消耗、Tool 调用频率、错误率 | Event 层面 TraceID + `llm:call_started/ended` + `tool:invoke/completed/failed` | ⚠️ 部分实现 | 缺少 Agent 级聚合指标（一个会话内的所有 LLM 调用和 Tool 调用需关联到同一个 Agent） |
 
 ### 2.1 能力实现优先级
@@ -277,10 +277,12 @@ IDLE
 
 ## 4. 里程碑与任务拆分
 
-### M1：Agent 运行时类型 ⭐ P0
+### ✅ M1：Agent 运行时类型 ⭐ P0 — 已完成
 
 > 目标：定义 Agent 的运行时类型系统，使 Agent 成为框架的一等公民。
 > 验收：AgentRuntime 可以注册/查询/创建 Agent 实例。
+>
+> **实现**: `kernel::agent` 类型系统 + `AgentRegistry` + Phase 2 config 加载 + HTTP/Tauri 端点
 
 #### T1.1 — 定义 Agent 核心类型（core crate）
 
@@ -378,10 +380,13 @@ impl AgentRegistry {
 
 ---
 
-### M2：ReAct 循环引擎 ⭐ P0
+### 🚧 M2：ReAct 循环引擎 ⭐ P0 — 进行中
 
 > 目标：实现可复用的 Think-Act-Observe 循环引擎，统一管理 LLM 调用、Tool 执行、结果反馈的迭代过程。
 > 验收：AgentHarness 可以接收 MESSAGE_RECEIVED 事件，完整执行 ReAct 循环并输出最终回复。
+>
+> **已实现**: `ReActEngine` trait + `AgentHarness::process_message()` + `LlmReActEngine` + `ToolExecutor` + 完整事件发布
+> **剩余**: T2.3 Dispatcher 注册 + T2.4 流式输出
 
 #### T2.1 — 定义 ReAct 循环的核心 trait（core crate）
 
@@ -544,10 +549,12 @@ impl AgentHarness {
 
 ---
 
-### M3：Agent 级 Tool 访问控制 ⭐ P1
+### ✅ M3：Agent 级 Tool 访问控制 ⭐ P1 — 已完成
 
 > 目标：Tool 的可用性绑定到 Agent 身份，不同 Agent 可以使用不同的 Tool 集合。
 > 验收：Agent A 可以调用 tool-X，Agent B 调用 tool-X 时被拒绝。
+>
+> **实现**: `config::ToolsConfig`（allow/deny）+ `AgentRegistry::tool_allowed()` + `ToolExecutor::execute_for_agent()`
 
 #### T3.1 — 定义 Tool 权限模型
 
@@ -612,10 +619,12 @@ impl ToolExecutor {
 
 ---
 
-### M4：Token 预算与 Context Window 管理 ⭐ P1
+### ✅ M4：Token 预算与 Context Window 管理 ⭐ P1 — 已完成
 
 > 目标：追踪 Token 消耗，在超限前自动压缩历史，防止 Context Window 溢出。
 > 验收：长时间对话中，当累计 Token 接近上限时，最旧的历史被自动摘要/裁剪。
+>
+> **实现**: `TokenBudget`（model-aware context window）+ `HistoryCompressor`（truncate/summarize）+ 集成到 ReAct 循环
 
 #### T4.1 — 实现 TokenBudget 追踪器
 
@@ -677,10 +686,12 @@ impl TokenBudget {
 
 ---
 
-### M5：Memory 集成到 ReAct 循环 ⭐ P2
+### ✅ M5：Memory 集成到 ReAct 循环 ⭐ P2 — 已完成
 
 > 目标：在每次 LLM 调用前自动检索相关记忆，注入 Context。
 > 验收：Agent 可以在对话中回忆之前会话中存储的信息。
+>
+> **实现**: `MemoryStore`（keyword-based 检索）+ `process_message()` 中检索并注入 `ctx.memory_context` + `[remember:]` 自动写入
 
 #### T5.1 — MemoryStore 集成到 ContextAssembly
 
@@ -708,10 +719,12 @@ impl TokenBudget {
 
 ---
 
-### M6：中断与恢复增强 ⭐ P2
+### ✅ M6：中断与恢复增强 ⭐ P2 — 已完成
 
 > 目标：用户 /stop 可以中断当前 ReAct 循环并保留中间结果。
 > 验收：用户在 Tool Calling 循环中发送 /stop，Agent 输出已完成的部分。
+>
+> **实现**: `ReactOutcome` 枚举 + `active_interrupts` 注册表 + `STOP_GENERATION` 事件订阅 → `interrupt_session()` → `agent:reply_interrupted`
 
 #### T6.1 — 注册 InterruptFlag 到 AgentHarness
 
@@ -877,28 +890,29 @@ agents:
 ## 6. 依赖关系总览
 
 ```
-M1 (Agent Runtime 类型) ⭐ P0
+M1 (Agent Runtime 类型) ⭐ P0 ✅
 │
-├── M2 (ReAct 循环引擎) ⭐ P0
-│   ├── M2.1 (Core trait)
-│   ├── M2.2 (AgentHarness 实现)
-│   ├── M2.3 (Dispatcher 注册)
-│   └── M2.4 (流式输出集成)
+├── M2 (ReAct 循环引擎) ⭐ P0 🚧
+│   ├── M2.1 (Core trait) ✅
+│   ├── M2.2 (AgentHarness 实现) ✅
+│   ├── M2.3 (Dispatcher 注册) ⏳
+│   └── M2.4 (流式输出集成) ⏳
 │
-├── M3 (Tool 访问控制) ⭐ P1
-│   ├── M3.1 (权限模型)
-│   └── M3.2 (权限校验)
+├── M3 (Tool 访问控制) ⭐ P1 ✅
+│   ├── M3.1 (权限模型) ✅
+│   └── M3.2 (权限校验) ✅
 │
-├── M4 (Token 预算) ⭐ P1
-│   ├── M4.1 (TokenBudget)
-│   └── M4.2 (历史压缩)
+├── M4 (Token 预算) ⭐ P1 ✅
+│   ├── M4.1 (TokenBudget) ✅
+│   └── M4.2 (历史压缩) ✅
 │
-├── M5 (Memory 集成) ⭐ P2
-│   ├── M5.1 (检索集成)
-│   └── M5.2 (自动写入)
+├── M5 (Memory 集成) ⭐ P2 ✅
+│   ├── M5.1 (检索集成) ✅
+│   └── M5.2 (自动写入) ✅
 │
-├── M6 (中断/恢复) ⭐ P2
-│
+├── M6 (中断/恢复) ⭐ P2 ✅
+│   ├── M6.1 (InterruptFlag 注册) ✅
+│   └── M6.2 (中断恢复) ✅
 └── M7 (多 Agent 协调) ⭐ P3
     ├── M7.1 (事件路由)
     └── M7.2 (消息协议)

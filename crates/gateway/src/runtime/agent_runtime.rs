@@ -628,6 +628,74 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
+        // ── Subscribe MESSAGE_RECEIVED handler to route messages to AgentHarness (T2.3) ──
+        struct MessageReceivedHandler {
+            agent_registry: Arc<super::AgentRegistry>,
+            agent_harness: Arc<super::agent_harness::AgentHarness>,
+            soul_runtime: Option<SoulRuntime>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for MessageReceivedHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let session_id = event.payload.get("session_id")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                let text = event.payload.get("text")
+                    .and_then(|v| v.as_str()).unwrap_or("").to_owned();
+
+                if session_id.is_empty() || text.is_empty() {
+                    return Ok(());
+                }
+
+                // Resolve first enabled agent from the registry.
+                let agents = self.agent_registry.list().await;
+                let agent = match agents.into_iter().find(|a| a.descriptor.enabled) {
+                    Some(a) => a,
+                    None => {
+                        tracing::warn!("MessageReceivedHandler: no enabled agent found");
+                        return Ok(());
+                    }
+                };
+                let agent_id = agent.descriptor.agent_id.clone();
+                let model = agent.descriptor.model.clone();
+
+                // Build SoulSnapshot from the current SOUL (or fallback).
+                let soul_snapshot = self.soul_runtime.as_ref()
+                    .map(|sr| {
+                        let soul = sr.current_soul();
+                        kernel::react::SoulSnapshot::new(soul.name.clone(), soul.to_system_prompt())
+                    })
+                    .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""));
+
+                // Spawn async ReAct processing — do not block the bus drain loop.
+                let harness = Arc::clone(&self.agent_harness);
+                tokio::spawn(async move {
+                    if let Err(e) = harness.process_message(
+                        &agent_id, &session_id, &text, &model, soul_snapshot,
+                    ).await {
+                        tracing::error!(
+                            error = %e, session_id = %session_id,
+                            "MessageReceivedHandler: process_message failed"
+                        );
+                    }
+                });
+
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![kernel::event::EventType::MessageReceived]),
+                sources: None,
+                priorities: None,
+                payload_match: None,
+            },
+            Box::new(MessageReceivedHandler {
+                agent_registry: Arc::clone(&agent_registry),
+                agent_harness: Arc::clone(&agent_harness),
+                soul_runtime: soul_runtime.clone(),
+            }),
+        ));
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,

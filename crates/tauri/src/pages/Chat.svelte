@@ -6,6 +6,9 @@
   import type { ToolCallData } from "./ToolCallCard.svelte";
   import DepthPanel from "./DepthPanel.svelte";
   import DebugPanel from "./DebugPanel.svelte";
+  import { marked } from "marked";
+
+  marked.setOptions({ gfm: true, breaks: true });
 
   type MessageType =
     | "user_text" | "user_command"
@@ -1438,12 +1441,16 @@
                 class:streaming={msg.type === "assistant_streaming"}
                 class:status-error={msg.status === "error"}
               >
-                <p>
-                  {msg.content}
-                  {#if msg.type === "assistant_streaming"}
-                    <span class="cursor"></span>
-                  {/if}
-                </p>
+                {#if isAssistant}
+                  <div class="markdown-body">
+                    {@html marked.parse(msg.content)}
+                    {#if msg.type === "assistant_streaming"}
+                      <span class="cursor"></span>
+                    {/if}
+                  </div>
+                {:else}
+                  <p>{msg.content}</p>
+                {/if}
               </div>
             {/if}
             <span class="msg-time">
@@ -2230,5 +2237,90 @@
   .toast-msg {
     flex: 1;
     word-break: break-word;
+  }
+
+  /* ── Markdown body (assistant messages) ── */
+  .markdown-body {
+    line-height: 1.6;
+    word-break: break-word;
+  }
+  .markdown-body p {
+    margin: 0 0 0.5em 0;
+  }
+  .markdown-body p:last-child {
+    margin-bottom: 0;
+  }
+  .markdown-body ul, .markdown-body ol {
+    margin: 0.25em 0;
+    padding-left: 1.5em;
+  }
+  .markdown-body li {
+    margin: 0.15em 0;
+  }
+  .markdown-body code {
+    background: rgba(128,128,128,0.12);
+    border-radius: 3px;
+    padding: 0.15em 0.35em;
+    font-size: 0.88em;
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+  }
+  .markdown-body pre {
+    background: rgba(128,128,128,0.08);
+    border: 1px solid rgba(128,128,128,0.18);
+    border-radius: 6px;
+    padding: 0.75em 1em;
+    overflow-x: auto;
+    margin: 0.5em 0;
+  }
+  .markdown-body pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: 0.85em;
+  }
+  .markdown-body blockquote {
+    border-left: 3px solid rgba(128,128,128,0.3);
+    margin: 0.5em 0;
+    padding: 0.25em 0.75em;
+    color: #666;
+  }
+  .markdown-body table {
+    border-collapse: collapse;
+    margin: 0.5em 0;
+    font-size: 0.92em;
+  }
+  .markdown-body th, .markdown-body td {
+    border: 1px solid rgba(128,128,128,0.25);
+    padding: 0.4em 0.6em;
+    text-align: left;
+  }
+  .markdown-body th {
+    background: rgba(128,128,128,0.08);
+    font-weight: 600;
+  }
+  .markdown-body a {
+    color: #2563eb;
+    text-decoration: none;
+  }
+  .markdown-body a:hover {
+    text-decoration: underline;
+  }
+  .markdown-body hr {
+    border: none;
+    border-top: 1px solid rgba(128,128,128,0.2);
+    margin: 0.75em 0;
+  }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3,
+  .markdown-body h4, .markdown-body h5, .markdown-body h6 {
+    margin: 0.6em 0 0.3em 0;
+    line-height: 1.3;
+  }
+  .markdown-body h1 { font-size: 1.35em; }
+  .markdown-body h2 { font-size: 1.2em; }
+  .markdown-body h3 { font-size: 1.1em; }
+  .markdown-body h4, .markdown-body h5, .markdown-body h6 { font-size: 1em; }
+  .markdown-body img {
+    max-width: 100%;
+    border-radius: 4px;
   }
 </style>

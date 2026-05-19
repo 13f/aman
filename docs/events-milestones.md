@@ -97,7 +97,7 @@
 
 | 文件 | 改动 |
 |------|------|
-| `crates/plugins/llm-plugin/src/lib.rs` | `process_session()` 中，`call_llm()` 前发布 `llm:call_started`，成功后发布 `llm:call_ended`；失败时 publish `llm_error`（不出现 `call_ended`） |
+| `agent_harness.rs` | `call_llm()` 前发布 `llm:call_started`，成功后发布 `llm:call_ended`；失败时 publish `llm_error`（不出现 `call_ended`） |
 
 ### 不涉及改动
 
@@ -114,8 +114,8 @@
 
 ### 验证
 
-- [x] `cargo test -p llm-plugin` 全部通过（13 tests）
-- [x] `cargo check -p gateway -p llm-plugin -p pipeline` 全部通过，无新警告（仅 `BusToolEventSink` 的 dead-code 警告预期内）
+- [x] LLM Plugin removed from workspace (moved to AgentHarness)
+- [x] `cargo check -p gateway -p pipeline` 全部通过，无新警告
 - [ ] 端到端：聊天消息 → LLM 调用后 EventStore 中出现 `llm:call_started` + `llm:call_ended`
 - [ ] 模拟 LLM 调用失败 → EventStore 中出现 `llm:call_started` + `llm_error`（无 `call_ended`）
 
@@ -129,7 +129,7 @@ M1 ──→ M2 ──→ M3
 
 - **M1** 最独立、改动最小（现有代码路径加几行 publish），先完成可以快速验证事件扩展方案正确。
 - **M2** 改动涉及 `ToolRegistry` 和 skill dispatcher，影响面稍大，排第二。
-- **M3** 完全在 llm-plugin 内部，不涉及外部依赖，最可控，排最后。
+- **M3** 完全在 AgentHarness 内部，不涉及外部依赖，最可控，排最后。
 
 每个里程碑完成后都验证：
 1. `cargo test --workspace` 全部通过

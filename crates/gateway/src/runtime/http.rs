@@ -124,7 +124,6 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/chat/session/{id}/retry", post(chat_session_retry))
         .route("/chat/session/{id}/edit", post(chat_session_edit))
         .route("/chat/session/{id}", delete(chat_session_delete))
-        .route("/chat/validator-health", get(chat_validator_health))
         .route("/soul/info", get(soul_info))
         .route("/soul/raw", get(soul_raw))
         .route("/soul/update", post(soul_update))
@@ -2472,19 +2471,6 @@ async fn chat_session_edit(
         "",
     );
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-}
-
-async fn chat_validator_health(State(runtime): State<Arc<AgentRuntime>>) -> Response {
-    let loader = runtime.plugin_loader().await;
-    let healthy = loader
-        .state_of("llm-plugin")
-        .map(|s| s == plugin::PluginLifecycleState::Running)
-        .unwrap_or(false);
-    if healthy {
-        StatusCode::OK.into_response()
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE.into_response()
-    }
 }
 
 // ── Skills reload ──────────────────────────────────────────────────────

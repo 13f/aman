@@ -108,12 +108,13 @@ impl Tool for WebSearchTool {
             .unwrap_or(5)
             .min(10) as usize;
 
+        let default_backend = available_backends().first().copied().unwrap_or("duckduckgo");
         let backend = params
             .get("backend")
             .and_then(Value::as_str)
-            .unwrap_or("tavily");
+            .unwrap_or(default_backend);
 
-        Ok(execute_search(backend, query, count))
+        Ok(execute_search(backend, query, count).await)
     }
 }
 
@@ -127,14 +128,50 @@ fn kc_get(name: &str, sub: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Check which search backends have valid credentials configured.
+///
+/// Order determines default priority: configured backends first (they're more
+/// reliable), free/unreliable backends last.
+fn available_backends() -> Vec<&'static str> {
+    let mut available = Vec::new();
+    // Configured API backends first (most reliable)
+    if !kc_get("tavily", "api_key").is_empty() {
+        available.push("tavily");
+    }
+    if !kc_get("brave", "api_key").is_empty() {
+        available.push("brave");
+    }
+    if !kc_get("google", "api_key").is_empty() && !kc_get("google", "cx").is_empty() {
+        available.push("google");
+    }
+    if !kc_get("x", "api_key").is_empty() {
+        available.push("x");
+    }
+    // Free backends last (may be unreliable)
+    available.push("duckduckgo");
+    available
+}
+
 /// Dispatch to the appropriate search backend.
-fn execute_search(backend: &str, query: &str, count: usize) -> Value {
+async fn execute_search(backend: &str, query: &str, count: usize) -> Value {
+    let configured = available_backends();
+    if !configured.contains(&backend) {
+        return json!({
+            "results": [],
+            "error": format!(
+                "Backend '{backend}' is not configured. Available: {}.\
+                 Do not retry with a different backend — pick one from the available list or answer from your own knowledge.",
+                configured.join(", ")
+            ),
+        });
+    }
+
     match backend {
-        "tavily" => search_tavily(query, count),
-        "brave" => search_brave(query, count),
-        "duckduckgo" => search_duckduckgo(query, count),
-        "google" => search_google(query, count),
-        "x" => search_x(query, count),
+        "tavily" => search_tavily(query, count).await,
+        "brave" => search_brave(query, count).await,
+        "duckduckgo" => search_duckduckgo(query, count).await,
+        "google" => search_google(query, count).await,
+        "x" => search_x(query, count).await,
         other => json!({
             "results": [],
             "error": format!("unknown search backend: {other}")
@@ -142,18 +179,18 @@ fn execute_search(backend: &str, query: &str, count: usize) -> Value {
     }
 }
 
-/// Build a shared blocking HTTP client (15s timeout, no proxy).
-fn http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
+/// Build a shared async HTTP client (15s timeout, no proxy).
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .no_proxy()
         .build()
-        .expect("reqwest blocking client")
+        .expect("reqwest async client")
 }
 
 // ── Tavily ──────────────────────────────────────────────────────────────────
 
-fn search_tavily(query: &str, count: usize) -> Value {
+async fn search_tavily(query: &str, count: usize) -> Value {
     let api_key = kc_get("tavily", "api_key");
     if api_key.is_empty() {
         return no_key_error("tavily");
@@ -171,6 +208,7 @@ fn search_tavily(query: &str, count: usize) -> Value {
         .post("https://api.tavily.com/search")
         .json(&body)
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => return request_error("Tavily", &e),
@@ -178,13 +216,25 @@ fn search_tavily(query: &str, count: usize) -> Value {
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_else(|_| "unknown error".to_owned());
+        let body = response.text().await.unwrap_or_else(|_| "unknown error".to_owned());
         return http_error("Tavily", status, &body);
     }
 
-    let data: Value = match response.json() {
-        Ok(v) => v,
+    let body_text = match response.text().await {
+        Ok(t) => t,
         Err(e) => return parse_error("Tavily", &e),
+    };
+
+    let data: Value = match serde_json::from_str(&body_text) {
+        Ok(v) => v,
+        Err(e) => {
+            // Show the first 500 chars of the raw response for debugging
+            let preview = &body_text[..body_text.len().min(500)];
+            return json!({
+                "results": [],
+                "error": format!("Tavily response parse failed: {e}. Raw response: {preview}")
+            });
+        }
     };
 
     extract_tavily_results(data)
@@ -211,7 +261,7 @@ fn extract_tavily_results(data: Value) -> Value {
 
 // ── Brave ───────────────────────────────────────────────────────────────────
 
-fn search_brave(query: &str, count: usize) -> Value {
+async fn search_brave(query: &str, count: usize) -> Value {
     let api_key = kc_get("brave", "api_key");
     if api_key.is_empty() {
         return no_key_error("brave");
@@ -227,6 +277,7 @@ fn search_brave(query: &str, count: usize) -> Value {
             ("count", &count.to_string()),
         ])
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => return request_error("Brave", &e),
@@ -234,11 +285,11 @@ fn search_brave(query: &str, count: usize) -> Value {
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_else(|_| "unknown error".to_owned());
+        let body = response.text().await.unwrap_or_else(|_| "unknown error".to_owned());
         return http_error("Brave", status, &body);
     }
 
-    let data: Value = match response.json() {
+    let data: Value = match response.json().await {
         Ok(v) => v,
         Err(e) => return parse_error("Brave", &e),
     };
@@ -268,7 +319,7 @@ fn extract_brave_results(data: Value) -> Value {
 
 // ── DuckDuckGo (free Instant Answer API) ────────────────────────────────────
 
-fn search_duckduckgo(query: &str, _count: usize) -> Value {
+async fn search_duckduckgo(query: &str, _count: usize) -> Value {
     let client = http_client();
     let response = match client
         .get("https://api.duckduckgo.com/")
@@ -279,12 +330,13 @@ fn search_duckduckgo(query: &str, _count: usize) -> Value {
             ("skip_disambig", "1"),
         ])
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => return request_error("DuckDuckGo", &e),
     };
 
-    let data: Value = match response.json() {
+    let data: Value = match response.json().await {
         Ok(v) => v,
         Err(e) => return parse_error("DuckDuckGo", &e),
     };
@@ -347,7 +399,7 @@ fn extract_duckduckgo_results(data: Value) -> Value {
 
 // ── Google Custom Search ────────────────────────────────────────────────────
 
-fn search_google(query: &str, count: usize) -> Value {
+async fn search_google(query: &str, count: usize) -> Value {
     let api_key = kc_get("google", "api_key");
     let cx = kc_get("google", "cx");
     if api_key.is_empty() || cx.is_empty() {
@@ -367,6 +419,7 @@ fn search_google(query: &str, count: usize) -> Value {
             ("num", &count.min(10).to_string()),
         ])
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => return request_error("Google", &e),
@@ -374,11 +427,11 @@ fn search_google(query: &str, count: usize) -> Value {
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_else(|_| "unknown error".to_owned());
+        let body = response.text().await.unwrap_or_else(|_| "unknown error".to_owned());
         return http_error("Google", status, &body);
     }
 
-    let data: Value = match response.json() {
+    let data: Value = match response.json().await {
         Ok(v) => v,
         Err(e) => return parse_error("Google", &e),
     };
@@ -407,7 +460,7 @@ fn extract_google_results(data: Value) -> Value {
 
 // ── X (Twitter) API v2 ──────────────────────────────────────────────────────
 
-fn search_x(query: &str, count: usize) -> Value {
+async fn search_x(query: &str, count: usize) -> Value {
     let bearer = kc_get("x", "api_key");
     if bearer.is_empty() {
         return no_key_error("x (Twitter)");
@@ -424,6 +477,7 @@ fn search_x(query: &str, count: usize) -> Value {
             ("tweet.fields", "created_at,author_id"),
         ])
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => return request_error("X (Twitter)", &e),
@@ -431,11 +485,11 @@ fn search_x(query: &str, count: usize) -> Value {
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().unwrap_or_else(|_| "unknown error".to_owned());
+        let body = response.text().await.unwrap_or_else(|_| "unknown error".to_owned());
         return http_error("X", status, &body);
     }
 
-    let data: Value = match response.json() {
+    let data: Value = match response.json().await {
         Ok(v) => v,
         Err(e) => return parse_error("X", &e),
     };
@@ -536,30 +590,32 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_no_key_is_not_hard_error() {
+    #[tokio::test]
+    async fn test_no_key_is_not_hard_error() {
         // Without a key, the tool should return a result with an error field
         // rather than failing with a hard error.
-        let result = execute_search("tavily", "test", 3);
-        assert!(result.get("error").and_then(Value::as_str).is_some());
-        assert_eq!(
-            result.get("results").and_then(Value::as_array).map(Vec::len),
-            Some(0)
+        // With a key configured, the tool makes a real request and may succeed.
+        let result = execute_search("tavily", "test", 3).await;
+        // Either way, the result must contain a "results" array (never panic).
+        assert!(
+            result.get("results").and_then(Value::as_array).is_some(),
+            "execute_search should always return a results array"
         );
     }
 
     #[test]
     fn test_unknown_backend() {
-        let result = execute_search("nonexistent", "test", 3);
+        let result = pollster::block_on(execute_search("nonexistent", "test", 3));
+        // "nonexistent" matches the catch-all arm, no HTTP call made
         assert!(result.get("error").and_then(Value::as_str).is_some());
     }
 
-    #[test]
-    fn test_backend_dispatch_all_variants() {
+    #[tokio::test]
+    async fn test_backend_dispatch_all_variants() {
         // Verify each backend produces an error-acknowledging response
         // (either "not configured" or "request failed"), never a panic.
         for backend in &["tavily", "brave", "duckduckgo", "google", "x"] {
-            let result = execute_search(backend, "test", 3);
+            let result = execute_search(backend, "test", 3).await;
             // DuckDuckGo may succeed (free API) or return empty results
             // Other backends should say "not configured"
             let has_results = result.get("results").and_then(Value::as_array).is_some();
@@ -567,13 +623,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_count_is_clamped_to_max_10() {
+    #[tokio::test]
+    async fn test_count_is_clamped_to_max_10() {
         let tool = WebSearchTool;
-        let result = pollster::block_on(tool.execute(
+        let result = tool.execute(
             json!({"query": "test", "count": 100}),
             ToolContext::default(),
-        ));
+        ).await;
         // Should not error — count is clamped; result shape should be valid.
         assert!(result.is_ok());
         let val = result.unwrap();

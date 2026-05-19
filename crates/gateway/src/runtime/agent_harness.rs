@@ -8,8 +8,8 @@ use futures_util::StreamExt;
 use kernel::agent::AgentStatus;
 use kernel::event::{Event, EventType};
 use kernel::react::{
-    self, ChatMessage, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn, SoulSnapshot,
-    StreamEvent, ToolDescriptor,
+    self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
+    SoulSnapshot, StreamEvent, ToolDescriptor,
 };
 use kernel::tool::Tool;
 use kernel::{AmanResult, Error};
@@ -90,6 +90,7 @@ impl ToolExecutor {
         &self,
         call: &ParsedToolCall,
         agent_id: &str,
+        session_id: &str,
     ) -> react::ToolCallResult {
         let tool_name = &call.tool_name;
 
@@ -110,7 +111,7 @@ impl ToolExecutor {
             };
         }
 
-        self.execute(call, agent_id).await
+        self.execute(call, agent_id, session_id).await
     }
 
     /// Execute a tool call, publishing lifecycle events.
@@ -118,6 +119,7 @@ impl ToolExecutor {
         &self,
         call: &ParsedToolCall,
         agent_id: &str,
+        session_id: &str,
     ) -> react::ToolCallResult {
         let start = Instant::now();
         let tool_id = call.id.clone();
@@ -131,6 +133,7 @@ impl ToolExecutor {
                 EventType::Custom("tool:dispatched".to_owned()),
                 json!({
                     "agent_id": agent_id,
+                    "session_id": session_id,
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
                     "args": call.args,
@@ -164,6 +167,7 @@ impl ToolExecutor {
                 EventType::Custom(event_type.to_owned()),
                 json!({
                     "agent_id": agent_id,
+                    "session_id": session_id,
                     "tool_call_id": tool_id,
                     "tool_name": tool_name,
                     "success": success,
@@ -198,6 +202,9 @@ impl ContextAssembler {
         // SOUL system prompt
         parts.push(soul.system_prompt.clone());
 
+        // Inject current date so the LLM can interpret "recent", "today", etc. correctly
+        parts.push(format!("Current date: {}", crate::runtime::current_date_string()));
+
         // Available tools
         if !tools.is_empty() {
             let tool_list: Vec<String> = tools
@@ -211,6 +218,13 @@ impl ContextAssembler {
             parts.push(
                 "\nWhen you need to use a tool, respond with a JSON tool call in the format:\
                  \n```tool_call\n{\"name\": \"tool_name\", \"arguments\": {...}}\n```"
+                    .to_owned(),
+            );
+            parts.push(
+                "\nImportant: If the user asks about current events, recent data, prices, dates, \
+                 or any time-sensitive information, use the web_search tool first rather than \
+                 relying on your training data. For example, search for \"recent\" or \"today\" \
+                 queries instead of answering from memory."
                     .to_owned(),
             );
         }
@@ -275,10 +289,35 @@ impl LlmReActEngine {
         history: &[serde_json::Value],
         ctx: &ReActContext,
         cb: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Result<(String, String, Vec<ParsedToolCall>), kernel::Error> {
+    ) -> Result<(String, String, Vec<ParsedToolCall>, String), kernel::Error> {
         let mut request_messages: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 1);
         request_messages.push(json!({"role": "system", "content": system_prompt}));
         request_messages.extend(history.iter().cloned());
+
+        // Convert tool descriptors to OpenAI tools format for structured function calling
+        let openai_tools: Vec<serde_json::Value> = ctx.agent_tools.iter().map(|td| {
+            json!({
+                "type": "function",
+                "function": {
+                    "name": td.name,
+                    "description": td.description,
+                    "parameters": td.parameters,
+                }
+            })
+        }).collect();
+
+        let mut request_body = serde_json::json!({
+            "model": ctx.model,
+            "messages": request_messages,
+            "stream": true,
+            "temperature": 0.7,
+            "max_tokens": 4096,
+        });
+
+        if !openai_tools.is_empty() {
+            request_body["tools"] = serde_json::json!(openai_tools);
+            request_body["tool_choice"] = serde_json::json!("auto");
+        }
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
@@ -289,16 +328,11 @@ impl LlmReActEngine {
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&serde_json::json!({
-                "model": ctx.model,
-                "messages": request_messages,
-                "stream": true,
-                "temperature": 0.7,
-                "max_tokens": 4096,
-            }))
+            .json(&request_body)
             .send()
             .await
             .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+
 
         if !response.status().is_success() {
             let status = response.status();
@@ -310,6 +344,7 @@ impl LlmReActEngine {
 
         let mut stream = response.bytes_stream();
         let mut full_content = String::new();
+        let mut reasoning_content = String::new();
         let mut buffer = String::new();
         let mut finish_reason = "stop".to_owned();
         let mut tool_call_acc: HashMap<usize, serde_json::Value> = HashMap::new();
@@ -354,6 +389,13 @@ impl LlmReActEngine {
                         if !content.is_empty() {
                             full_content.push_str(content);
                             cb(StreamEvent::Chunk(content.to_owned()));
+                        }
+                    }
+
+                    // Capture reasoning_content (DeepSeek thinking mode)
+                    if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                        if !rc.is_empty() {
+                            reasoning_content.push_str(rc);
                         }
                     }
 
@@ -420,7 +462,7 @@ impl LlmReActEngine {
             })
             .collect();
 
-        Ok((full_content, finish_reason, tool_calls))
+        Ok((full_content, finish_reason, tool_calls, reasoning_content))
     }
 }
 
@@ -455,10 +497,24 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         let history: Vec<serde_json::Value> = messages
             .iter()
             .map(|m| {
-                json!({
-                    "role": format!("{:?}", m.role).to_lowercase(),
+                let role = format!("{:?}", m.role).to_lowercase();
+                let mut msg = json!({
+                    "role": role,
                     "content": m.content,
-                })
+                });
+                // OpenAI API requires tool_call_id for tool role messages
+                if let Some(ref id) = m.tool_call_id {
+                    msg["tool_call_id"] = json!(id);
+                }
+                // OpenAI API requires tool_calls for assistant messages that invoked tools
+                if let Some(ref calls) = m.tool_calls {
+                    msg["tool_calls"] = json!(calls);
+                }
+                // Echo back reasoning_content if present (DeepSeek thinking mode)
+                if !m.reasoning_content.is_empty() {
+                    msg["reasoning_content"] = json!(m.reasoning_content);
+                }
+                msg
             })
             .collect();
 
@@ -469,18 +525,26 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 .streaming_llm_call(&system_prompt, &history, ctx, cb)
                 .await
             {
-                Ok((content, finish_reason, tool_calls)) => {
+                Ok((content, finish_reason, tool_calls, reasoning_content)) => {
                     if tool_calls.is_empty() {
-                        Ok(json!({
+                        let mut resp = json!({
                             "content": content,
                             "finish_reason": finish_reason,
-                        }))
+                        });
+                        if !reasoning_content.is_empty() {
+                            resp["reasoning_content"] = json!(reasoning_content);
+                        }
+                        Ok(resp)
                     } else {
-                        Ok(json!({
+                        let mut resp = json!({
                             "content": content,
                             "finish_reason": finish_reason,
                             "tool_calls": tool_calls,
-                        }))
+                        });
+                        if !reasoning_content.is_empty() {
+                            resp["reasoning_content"] = json!(reasoning_content);
+                        }
+                        Ok(resp)
                     }
                 }
                 Err(e) => Err(e),
@@ -526,6 +590,11 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                     .get("tool_calls")
                     .and_then(|tc| serde_json::from_value::<Vec<ParsedToolCall>>(tc.clone()).ok())
                     .unwrap_or_default();
+                let reasoning_content = value
+                    .get("reasoning_content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_owned();
 
                 if tool_calls.is_empty() {
                     // Publish token usage estimate
@@ -553,7 +622,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                             .to_owned(),
                     })
                 } else {
-                    Ok(ReActTurn::ToolCalls(tool_calls))
+                    Ok(ReActTurn::ToolCalls { content, calls: tool_calls, reasoning_content })
                 }
             }
             Err(e) => Err(kernel::react::ReActError::LlmError(e.to_string())),
@@ -574,7 +643,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
 
         for call in calls {
             // Use execute_for_agent to enforce per-agent tool permissions (M3)
-            let result = executor.execute_for_agent(call, &ctx.agent_id).await;
+            let result = executor.execute_for_agent(call, &ctx.agent_id, &ctx.session_id).await;
             results.push(ChatMessage::tool_result(
                 &result.id,
                 &result.tool_name,
@@ -770,6 +839,19 @@ impl AgentHarness {
             Ok(ReactOutcome::Finished(reply)) => (reply, "agent:reply_ready"),
             Ok(ReactOutcome::Interrupted(reply)) => (reply, "agent:reply_interrupted"),
             Err(e) => {
+                // Publish fallback error event so the frontend doesn't hang
+                let _ = self
+                    .bus
+                    .publish(Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:reply_stream_error".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "error": e.to_string(),
+                        }),
+                    ))
+                    .await;
                 // Still go to Idle on error
                 let _ = self.registry.set_active_session(agent_id, None).await;
                 let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
@@ -947,7 +1029,7 @@ impl AgentHarness {
                     token_budget.record_usage(history_tokens, completion_tokens);
                     return Ok(ReactOutcome::Finished(content.clone()));
                 }
-                Ok(ReActTurn::ToolCalls(calls)) => {
+                Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {
                     // Clear streaming callback (will be reset next iteration)
                     ctx.stream_cb = None;
                     // Publish agent:got_tool_calls
@@ -964,6 +1046,26 @@ impl AgentHarness {
                             }),
                         ))
                         .await;
+
+                    // Record assistant message with tool calls in history (OpenAI format)
+                    let openai_tool_calls: Vec<serde_json::Value> = calls.iter().map(|tc| {
+                        json!({
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.tool_name,
+                                "arguments": serde_json::to_string(&tc.args).unwrap_or_default(),
+                            }
+                        })
+                    }).collect();
+                    ctx.history.push(ChatMessage {
+                        role: ChatMessageRole::Assistant,
+                        content: tool_text,
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: Some(openai_tool_calls),
+                        reasoning_content,
+                    });
 
                     // Execute tools
                     let results = self.engine.execute_tools(ctx, &calls).await.map_err(|e| {
@@ -998,7 +1100,7 @@ impl AgentHarness {
                         .bus
                         .publish(Event::new(
                             "agent:harness",
-                            EventType::Custom("llm:error".to_owned()),
+                            EventType::Custom("llm_error".to_owned()),
                             json!({
                                 "agent_id": ctx.agent_id,
                                 "session_id": ctx.session_id,
@@ -1017,7 +1119,7 @@ impl AgentHarness {
                         .bus
                         .publish(Event::new(
                             "agent:harness",
-                            EventType::Custom("llm:error".to_owned()),
+                            EventType::Custom("llm_error".to_owned()),
                             json!({
                                 "agent_id": ctx.agent_id,
                                 "session_id": ctx.session_id,

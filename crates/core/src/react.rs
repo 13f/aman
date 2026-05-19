@@ -22,6 +22,13 @@ pub struct ChatMessage {
     /// Optional tool name for Tool role messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// Structured tool calls for assistant messages that invoked tools (OpenAI format).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    /// Reasoning/thinking content (e.g. DeepSeek `reasoning_content`).
+    /// Must be echoed back to the API when present in the original response.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reasoning_content: String,
 }
 
 impl ChatMessage {
@@ -31,6 +38,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
+            tool_calls: None,
+            reasoning_content: String::new(),
         }
     }
 
@@ -40,6 +49,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
+            tool_calls: None,
+            reasoning_content: String::new(),
         }
     }
 
@@ -49,6 +60,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
+            tool_calls: None,
+            reasoning_content: String::new(),
         }
     }
 
@@ -58,6 +71,8 @@ impl ChatMessage {
             content: content.into(),
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
+            tool_calls: None,
+            reasoning_content: String::new(),
         }
     }
 }
@@ -118,7 +133,14 @@ pub enum ReActTurn {
         finish_reason: String,
     },
     /// LLM returned tool calls → loop continues.
-    ToolCalls(Vec<ParsedToolCall>),
+    ToolCalls {
+        /// Text content that accompanied the tool calls.
+        content: String,
+        /// The parsed tool calls.
+        calls: Vec<ParsedToolCall>,
+        /// Reasoning/thinking content from the LLM (e.g. DeepSeek reasoning_content).
+        reasoning_content: String,
+    },
     /// LLM call failed → loop terminates abnormally.
     Error(ReActError),
 }

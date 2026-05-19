@@ -386,41 +386,8 @@ impl AgentRuntimeBuilder {
         let plugin_installer = Arc::new(PluginInstaller::new(self.runtime_dir.join("plugins")));
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
-        // Build LLM config for the built-in LLM plugin.
         let auth_registry = Arc::new(tool::auth::AuthRegistry::new());
-        let mut llm_config = build_llm_config();
-        llm_config.tool_registry = Some(Arc::clone(&tools));
-        llm_config.auth_registry = Some(Arc::clone(&auth_registry));
-        llm_config.no_auth_tools = vec!["web_search".to_string()];
-        // Clone streaming config before llm_config is consumed by LlmPlugin.
-        let llm_api_key = llm_config.api_key.clone();
-        let llm_base_url = llm_config.base_url.clone();
-        let llm_plugin = llm_plugin::LlmPlugin::new(Arc::clone(&bus), llm_config);
-
-        // Load the built-in LLM plugin via PluginLoader.
-        let llm_candidate = PluginCandidate {
-            manifest: PluginManifest {
-                name: "llm-plugin".to_owned(),
-                version: llm_plugin.version().clone(),
-                depends_on: vec![],
-                lifecycle: PluginLifecycleConfig { auto_start: true },
-                exports: PluginExports {
-                    skills: vec![],
-                    tools: vec![],
-                    event_sources: vec![],
-                },
-                config_schema: None,
-                isolation: Some(PluginIsolationMode::InProcess),
-                subprocess: None,
-                wasm_path: None,
-                capabilities: vec!["chat".to_owned()],
-                ui: None,
-            },
-            plugin: Box::new(llm_plugin),
-            isolation: PluginIsolationMode::InProcess,
-            subprocess: None,
-            wasm_module_bytes: None,
-        };
+        let (llm_api_key, llm_base_url) = get_llm_api_key_and_base_url();
 
         // Load the built-in idle system plugin (handles idle personality progression).
         let idle_plugin = idle_system::IdleSystemPlugin::new();
@@ -457,14 +424,14 @@ impl AgentRuntimeBuilder {
         };
 
         // Load the built-in LLM plugin, idle-system plugin (and any extra plugins from builder).
-        let mut all_candidates = vec![llm_candidate, idle_candidate];
+        let mut all_candidates = vec![idle_candidate];
         all_candidates.extend(self.extra_plugins);
         let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
         )));
         if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
-            tracing::error!(error = %e, "failed to load built-in LLM plugin");
+            tracing::error!(error = %e, "failed to load built-in plugins");
         }
 
         // Subscribe a handler that dispatches every event to matching skills.
@@ -1723,12 +1690,6 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
-                // Phase 4.5: drain LLM plugin sessions before Event Bus drain
-                let drained = self.drain_llm_plugin("phase4_shutdown").await;
-                if drained > 0 {
-                    tracing::info!(drained, "phase4.5: drained LLM plugin sessions");
-                }
-
                 // Phase 4.5: stop idle system (IncubationManager, cancel idle workflows)
                 let cancelled = self.incubation_manager.shutdown_all().await;
                 if cancelled > 0 {
@@ -1857,44 +1818,14 @@ impl AgentRuntime {
     }
 
     pub async fn disable_plugin(&self, plugin_name: &str) -> AmanResult<()> {
-        // Phase 4.5 drain: drain LLM plugin sessions before disabling the plugin
-        self.drain_llm_plugin("plugin.disable").await;
         self.plugin_loader.lock().await.disable_plugin(plugin_name)
     }
 
     pub async fn uninstall_plugin(&self, plugin_name: &str) -> AmanResult<()> {
-        // Phase 4.5 drain: drain LLM plugin sessions before uninstalling the plugin
-        self.drain_llm_plugin("plugin.uninstall").await;
         let mut loader = self.plugin_loader.lock().await;
         self.plugin_installer
             .uninstall(Some(&mut loader), plugin_name)
             .await
-    }
-
-    /// Phase 4.5 drain: mark LLM capability as Degraded.
-    ///
-    /// The LLM plugin no longer uses the Skill system — its sessions are
-    /// drained in Phase 2 via `PluginLoader::unload_all` →
-    /// `LlmPlugin::on_unload` → `drain_sessions`. This function ensures the
-    /// "chat" capability is marked Degraded so the frontend refuses new
-    /// requests before the shutdown drains the event bus.
-    ///
-    /// Called during plugin disable/uninstall and Phase 4→3 shutdown.
-    pub async fn drain_llm_plugin(&self, action: &str) -> usize {
-        // Mark capability as Degraded (refuse new requests)
-        {
-            let mut registry = self.capability_registry.write().await;
-            for entries in registry.values_mut() {
-                for entry in entries.iter_mut() {
-                    if entry.plugin == "llm-plugin" || entry.capability == "chat" {
-                        entry.status = CapabilityStatus::Degraded;
-                    }
-                }
-            }
-        }
-
-        tracing::info!(action, "llm capability marked degraded");
-        0
     }
 }
 
@@ -2185,23 +2116,8 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
 /// configured agent (provider + model) so users who only configure agents
 /// (without a top-level `model:` in config.yaml) still get a working LLM config.
 /// If no agent is found either, falls back to environment variables.
-fn build_llm_config() -> llm_plugin::LlmConfig {
-    let mut sessions_dir = None;
+fn get_llm_api_key_and_base_url() -> (String, String) {
     if let Ok(aman) = config::AmanConfig::from_default_path() {
-        // Compute sessions dir from first configured agent.
-        if let Some(first_key) = aman.agents.keys().next() {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            sessions_dir = Some(
-                PathBuf::from(&home)
-                    .join(".aman")
-                    .join("agents")
-                    .join(first_key)
-                    .join("sessions")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-
         // Priority 1: default model config
         if let Some(model) = &aman.model {
             let provider_key = &model.provider;
@@ -2211,87 +2127,44 @@ fn build_llm_config() -> llm_plugin::LlmConfig {
                 .map(|p| p.base_url.clone())
                 .unwrap_or_else(|| model.base_url.clone());
             let api_key = get_llm_api_key_or_inline(provider_key, aman.providers.get(provider_key));
-            let key_len = api_key.len();
             tracing::info!(
                 provider = %provider_key,
                 model = %model.default,
-                api_key_len = key_len,
-                "build_llm_config: using default model config"
+                api_key_len = api_key.len(),
+                "get_llm_api_key_and_base_url: using default model config"
             );
-            return llm_plugin::LlmConfig {
-                provider_key: provider_key.clone(),
-                api_key,
-                base_url,
-                model: model.default.clone(),
-                sessions_dir,
-                skills_dir: Some(
-                    PathBuf::from(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
-                        .join(".aman")
-                        .join("skills")
-                        .to_string_lossy()
-                        .to_string(),
-                ),
-                ..Default::default()
-            };
+            return (api_key, base_url);
         }
 
         // Priority 2: first configured agent (provider + model)
         for (_key, agent) in &aman.agents {
             if let Some(provider_config) = aman.providers.get(&agent.provider) {
                 let api_key = get_llm_api_key_or_inline(&agent.provider, Some(provider_config));
-                let key_len = api_key.len();
                 tracing::info!(
                     agent_key = %_key,
                     provider = %agent.provider,
                     model = %agent.model,
-                    api_key_len = key_len,
-                    "build_llm_config: using agent config"
+                    api_key_len = api_key.len(),
+                    "get_llm_api_key_and_base_url: using agent config"
                 );
-                return llm_plugin::LlmConfig {
-                    provider_key: agent.provider.clone(),
-                    api_key,
-                    base_url: provider_config.base_url.clone(),
-                    model: agent.model.clone(),
-                    sessions_dir,
-                    skills_dir: Some(
-                        PathBuf::from(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
-                            .join(".aman")
-                            .join("skills")
-                            .to_string_lossy()
-                            .to_string(),
-                    ),
-                    ..Default::default()
-                };
+                return (api_key, provider_config.base_url.clone());
             }
             tracing::warn!(
                 agent_key = %_key,
                 provider = %agent.provider,
-                "build_llm_config: agent provider not found in config"
+                "get_llm_api_key_and_base_url: agent provider not found in config"
             );
         }
     }
     // Priority 3: environment variables
     let api_key = std::env::var("AMAN_DEFAULT_API_KEY").unwrap_or_default();
+    let base_url = std::env::var("AMAN_DEFAULT_BASE_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
     tracing::info!(
         api_key_len = api_key.len(),
-        "build_llm_config: using env var fallback"
+        "get_llm_api_key_and_base_url: using env var fallback"
     );
-    llm_plugin::LlmConfig {
-        provider_key: "default".to_owned(),
-        api_key,
-        base_url: std::env::var("AMAN_DEFAULT_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned()),
-        model: std::env::var("AMAN_DEFAULT_MODEL").unwrap_or_else(|_| "gpt-4o".to_owned()),
-        sessions_dir,
-        skills_dir: Some(
-            PathBuf::from(&std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
-                .join(".aman")
-                .join("skills")
-                .to_string_lossy()
-                .to_string(),
-        ),
-        ..Default::default()
-    }
+    (api_key, base_url)
 }
 
 /// Get API key for a provider from Keychain, falling back to env var.

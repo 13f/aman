@@ -179,20 +179,23 @@ Published by the gateway daemon at lifecycle boundaries: before starting the run
 
 > `session:timeout` is reserved in the milestone plan but deferred — production currently lacks a timeout polling loop for workflow instances.
 
-### LLM Plugin Events
+### LLM & Agent Events (Published by AgentHarness)
 
-| Literal Value | Purpose | Payload | File:Line |
+| Literal Value | Purpose | Payload | Producer |
 |---|---|---|---|
-| `message_queued` | Message entered LLM processing queue | `{"session_id":"...", "queue_position":...}` | `crates/plugins/llm-plugin/src/lib.rs:216` |
-| `message_dropped` | Message dropped from queue (queue full) | `{"session_id":"...", "reason":"queue full"}` | `crates/plugins/llm-plugin/src/lib.rs:230` |
-| `history_trimmed` | Conversation history trimmed | `{"session_id":"...", "removed":...}` | `crates/plugins/llm-plugin/src/lib.rs:313` |
-| `llm:call_started` | LLM provider call initiated | `{"session_id":"...","model":"...","input_tokens_estimate":N,"original_message_id":"...","soul_name":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:342` |
-| `llm:call_ended` | LLM provider call completed successfully | `{"session_id":"...","model":"...","input_tokens_estimate":N,"output_tokens_estimate":N,"latency_ms":N,"original_message_id":"...","soul_name":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:384` |
-| `llm_error` | LLM call error | `{"session_id":"...", "error":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:351` |
-| `llm_reply_ready` | LLM response ready | `{"session_id":"...", "content":"..."}` | `crates/plugins/llm-plugin/src/lib.rs:395` |
-| `output_blocked` | Output validator blocked content | `{"session_id":"...", "reason":"...", "matched_patterns":[...]}` | `crates/plugins/llm-plugin/src/lib.rs:416,435` |
+| `llm:call_started` | LLM provider call initiated | `{"session_id":"...","model":"...","input_tokens_estimate":N,"original_message_id":"...","soul_name":"..."}` | `agent_harness.rs` |
+| `llm:call_ended` | LLM provider call completed successfully | `{"session_id":"...","model":"...","input_tokens_estimate":N,"output_tokens_estimate":N,"latency_ms":N,"original_message_id":"...","soul_name":"..."}` | `agent_harness.rs` |
+| `llm_error` | LLM call error | `{"session_id":"...", "error":"..."}` | `agent_harness.rs` |
+| `agent:reply_ready` | Agent response ready (non-streaming fallback) | `{"session_id":"...", "reply":"..."}` | `agent_harness.rs` |
+| `agent:reply_stream_start` | Streaming response started | `{"session_id":"..."}` | `agent_harness.rs` |
+| `agent:reply_chunk` | Streaming response delta | `{"session_id":"...", "extra":{"delta":"..."}}` | `agent_harness.rs` |
+| `agent:reply_stream_done` | Streaming response complete | `{"session_id":"..."}` | `agent_harness.rs` |
+| `agent:reply_stream_error` | Streaming response error | `{"session_id":"...", "error":"..."}` | `agent_harness.rs` |
+| `tool:dispatched` | Tool call dispatched to agent | `{"session_id":"...","tool_call_id":"...","tool_name":"...","args":{...}}` | `agent_harness.rs` |
+| `tool:completed` | Tool call succeeded | `{"session_id":"...","tool_call_id":"...","output":"..."}` | `agent_harness.rs` |
+| `tool:failed` | Tool call failed | `{"session_id":"...","tool_call_id":"...","output":"..."}` | `agent_harness.rs` |
 
-Published by the LLM plugin to track chat processing lifecycle. `llm:call_started`/`llm:call_ended` bracket each LLM provider invocation with token estimates and latency. On failure, `llm:call_started` is published but `llm:call_ended` is not (only `llm_error` fires). These events are consumed by the chat-session workflow to drive state transitions (e.g., `LLM_REPLY_READY` → `IDLE`, `LLM_ERROR` → `ERROR`).
+Published by AgentHarness to track the ReAct loop lifecycle. `llm:call_started`/`llm:call_ended` bracket each LLM provider invocation. Streaming events (`agent:reply_stream_*`) deliver real-time response content. Tool events (`tool:dispatched/completed/failed`) track tool execution within the loop.
 
 ### Message Dispatch Events
 

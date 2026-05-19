@@ -82,34 +82,34 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 
 ### 3.1 当前链路（无 Harness）
 
-当前 `MESSAGE_RECEIVED` 事件由 **LLM Plugin**（`crates/plugins/llm-plugin/src/lib.rs`）
-处理。这是一个单体处理器，内部实现了完整的 chat 处理逻辑：
+当前 `MESSAGE_RECEIVED` 事件由 **AgentHarness**（`crates/gateway/src/runtime/agent_harness.rs`）
+处理。这是 Harness 化的 ReAct 循环处理器：
 
 ```
         MESSAGE_RECEIVED
                │
                ▼
-        ┌───────────────┐
-        │  LLM Plugin    │
-        │               │
-        │ 1. 加载 SOUL  │
-        │ 2. 加载历史    │
-        │ 3. 组装上下文  │
-        │ 4. 调用 LLM    │──── LLM 返回 text/tool_calls ────┐
-        │ 5. 如果是      │                                   │
-        │    tool_call   │── → 执行 Tool → 结果附加到消息列表 │
-        │ 6. 再次调用     │──────────────────────────────────┘
-        │    LLM         │
-        │ 7. 输出回复    │
-        └───────────────┘
+        ┌───────────────────┐
+        │   AgentHarness     │
+        │  (ReAct Loop)      │
+        │                    │
+        │ Phase 1: 初始化    │
+        │  - 加载 SOUL       │
+        │  - 加载历史        │
+        │  - 组装上下文      │
+        │                    │
+        │ Phase 2: ReAct 循环│── LLM 返回 text/tool_calls ─┐
+        │  - 调用 LLM        │                              │
+        │  - 执行 Tool       │←─────────────────────────────┘
+        │  - 迭代判断        │
+        │                    │
+        │ Phase 3: 输出      │
+        └───────────────────┘
                │
                ▼
-         llm_reply_ready
+    agent:reply_stream_start → chunk → done
+    (或 agent:reply_ready 兜底)
 ```
-
-**问题：**
-- LLM Plugin 兼任了"上下文组装 + 循环控制 + 工具调度 + 输出发布"多重职责
-- Tool Calling 循环的迭代控制逻辑硬编码在 Plugin 内部，不可复用
 - 没有 Token 预算追踪（仅有基于字符估算的简单历史裁剪，无 context window 感知）
 - 没有 Agent 级 Tool 访问控制（Plugin 能调用任何注册的 Tool）
 - 中断只能终止整个 Plugin 处理（通过 `STOP_GENERATION` → CancellationToken），不能终止当前 ReAct 循环后保留会话
@@ -271,7 +271,7 @@ IDLE
 | **中断路径** | `PROCESSING + agent:reply_interrupted → IDLE`。**新增转移规则**：用户 /stop 中断 ReAct 循环后，AgentHarness 发布 `agent:reply_interrupted`，Workflow 回到 IDLE 等待下一条消息。 |
 | **超时路径** | `STREAM_TIMEOUT (120s)` 和 `SESSION_TIMEOUT (300s)` 由 Workflow 超时管理器独立触发，不受 AgentHarness 管理——AgentHarness 的 ReAct 循环被 CancellationToken 中断时优雅退出。 |
 
-> **会话隔离**：同一 session_id 的消息在 Harness 内部串行处理（通过 per-session 互斥锁），跨 session 并发。这与现有 `LlmPlugin` 的 `per-session mpsc queue` 策略一致，Harness 在内部实现等价机制。
+> **会话隔离**：同一 session_id 的消息在 Harness 内部串行处理（通过 per-session 互斥锁），跨 session 并发。
 
 ---
 
@@ -790,26 +790,12 @@ agent:message {
 
 ### 5.0 LLM Plugin → AgentHarness 迁移策略
 
-当前的 `LlmPlugin`（`crates/plugins/llm-plugin/`）在 AgentHarness 完成后将被逐步替换。
-迁移分为三个阶段：
+LLM Plugin（`crates/plugins/llm-plugin/`）已被移除。AgentHarness 现在是唯一的消息处理者。
 
-**阶段 A（共存期，M2 完成后）：**
-- AgentHarness 和 LLM Plugin 同时加载
-- Dispatcher 通过 `agent_id` 路由决定谁处理 `MESSAGE_RECEIVED`：
-  - 配置了 `harness` 段的 Agent → AgentHarness 处理
-  - 未配置 `harness` 段的 Agent → 回退到 LLM Plugin（向后兼容）
-- 两者共享事件总线：`llm:call_started`/`llm:call_ended` 完全兼容
-
-**阶段 B（前端迁移完成，Plugin 保留）：**
-- 前端 Chat.svelte 新增 AgentHarness 事件监听（`agent:reply_stream_start/chunk/done`、`tool:dispatched/completed/failed`、`agent:reply_ready`）
-- 流式输出支持：`assistant_streaming` 消息类型现已可用
-- 去重机制：AgentHarness 处理的 session 自动跳过 LLM Plugin 的 `llm_reply_ready`
-- LLM Plugin 后端仍在运行，Phase C 待测试后执行
-
-**阶段 C（移除 Plugin，M6 完成后）：**
-- LLM Plugin 从 workspace 中移除
-- `LlmConfig.sessions_dir` / `skills_dir` / `tool_registry` 逻辑迁移到 AgentHarness + config.yaml
-- 事件名完全统一：不再有 `llm_reply_ready` 以外的 LLM Plugin 特有事件
+迁移历程：
+- **阶段 A — 共存期**：AgentHarness 和 LLM Plugin 同时加载，共享事件总线
+- **阶段 B — 前端迁移**：Chat.svelte 迁移到 AgentHarness 事件，LLM Plugin 订阅禁用（rig-core tokio runtime 冲突）
+- **阶段 C — 移除 Plugin**：LLM Plugin 从 workspace 移除，`build_llm_config` 替换为 `get_llm_api_key_and_base_url`，`chat_validator_health` 端点删除
 
 ### 5.1 符合 Aman 设计理念
 

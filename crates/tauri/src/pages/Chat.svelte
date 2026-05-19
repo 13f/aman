@@ -401,6 +401,7 @@
   // ── AgentHarness event handlers (Phase B migration) ──
   // Local accumulator avoids stale state reads when chunks arrive in rapid succession.
   let streamingContent = "";
+  let agentHarnessSessions = $state(new Set<string>());
 
   function handleAgentStreamStart(data: any) {
     const sid: string = data.session_id;
@@ -427,17 +428,25 @@
 
   function handleAgentStreamDone(data: any) {
     if (activeStreamingMessageId) {
-      // Change type to assistant_text to remove the blinking cursor
-      updateMessage(activeStreamingMessageId, { type: "assistant_text", status: "completed" });
+      if (streamingContent) {
+        // Stream produced content → keep the message
+        updateMessage(activeStreamingMessageId, { type: "assistant_text", status: "completed" });
+      } else {
+        // Empty stream (tool-only ReAct turn) → remove the bubble
+        messages = messages.filter(m => m.id !== activeStreamingMessageId);
+      }
       activeStreamingMessageId = null;
     }
     streamingContent = "";
+    agentHarnessSessions = new Set([...agentHarnessSessions, data.session_id]);
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");
   }
 
   function handleAgentReplyReady(data: any) {
     const sid: string = data.session_id;
+    // Dedup: if streaming already delivered the reply, skip the fallback
+    if (agentHarnessSessions.has(sid)) return;
     // Find existing streaming message for this session and replace its content.
     const streamingMsg = messages.find(m => m.sessionId === sid && m.type === "assistant_streaming");
     if (streamingMsg) {

@@ -537,7 +537,7 @@ impl Tool for HttpTool {
         })?;
 
         let timeout_ms = ctx.base.timeout_ms.unwrap_or(5_000);
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .no_proxy()
             .build()
@@ -561,7 +561,7 @@ impl Tool for HttpTool {
             request = request.body(body_text);
         }
 
-        let response = request.send().map_err(|error| Error::Unrecoverable {
+        let response = request.send().await.map_err(|error| Error::Unrecoverable {
             message: format!("http request failed: {error}"),
         })?;
         let status = response.status().as_u16();
@@ -572,7 +572,7 @@ impl Tool for HttpTool {
                 Value::String(value.to_str().unwrap_or_default().to_owned()),
             );
         }
-        let body = response.text().map_err(|error| Error::Unrecoverable {
+        let body = response.text().await.map_err(|error| Error::Unrecoverable {
             message: format!("failed to read http response body: {error}"),
         })?;
 
@@ -1128,9 +1128,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn builtin_http_tool_get_roundtrip() {
-        pollster::block_on(async {
+    #[tokio::test]
+    async fn builtin_http_tool_get_roundtrip() {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
             let address = listener.local_addr().expect("local addr");
             let server = thread::spawn(move || {
@@ -1170,7 +1169,6 @@ mod tests {
             assert_eq!(result.output["status"], json!(200));
             assert_eq!(result.output["json"]["ok"], json!(true));
             server.join().expect("server thread should join");
-        });
     }
 
     #[test]

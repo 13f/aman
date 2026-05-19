@@ -87,7 +87,6 @@ pub fn run() {
             commands::chat_session_state,
             commands::chat_retry_last,
             commands::chat_edit_message,
-            commands::chat_validator_health,
             commands::chat_trace_chain,
             // Multi-agent provider commands (P2)
             commands::list_providers,

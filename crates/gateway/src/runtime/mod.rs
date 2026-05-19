@@ -4,6 +4,7 @@
 mod agent_harness;
 mod agent_registry;
 mod agent_runtime;
+mod date_util;
 mod history_compressor;
 mod memory_store;
 mod token_budget;
@@ -17,6 +18,7 @@ mod soul_runtime;
 mod tracing_setup;
 
 pub use agent_registry::AgentRegistry;
+pub use date_util::current_date_string;
 pub use agent_runtime::{AgentRuntime, AgentRuntimeBuilder, RuntimePhase, RuntimeStatus};
 pub use audit::{AuditLogger, AuditRecord};
 pub use event_store::EventStore;

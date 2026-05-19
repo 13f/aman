@@ -714,23 +714,6 @@ impl GatewayClient {
         }
     }
 
-    pub async fn chat_validator_health(&self) -> Result<Value, String> {
-        let resp = self
-            .client
-            .get(self.url("/chat/validator-health"))
-            .send()
-            .await
-            .map_err(|e| format!("chat_validator_health: {e}"))?;
-        let healthy = resp.status().is_success();
-        Ok(serde_json::json!({
-            "ok": healthy,
-            "healthy": healthy,
-            "rule_count": if healthy { 7 } else { 0 },
-            "timeout_sec": 2,
-            "fail_closed": true,
-        }))
-    }
-
     // ── Agent Management ──────────────────────────────────────────────
 
     pub async fn list_agents(&self) -> Result<Value, String> {

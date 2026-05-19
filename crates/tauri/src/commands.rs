@@ -674,24 +674,6 @@ pub async fn chat_edit_message(
 }
 
 #[tauri::command]
-pub async fn chat_validator_health(
-    state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    let guard = state.gateway_client.lock().await;
-    match guard.as_ref() {
-        Some(client) => client.chat_validator_health().await,
-        None => Ok(serde_json::json!({
-            "ok": false,
-            "reason": "no_runtime",
-            "healthy": false,
-            "rule_count": 0,
-            "timeout_sec": 2,
-            "fail_closed": true,
-        })),
-    }
-}
-
-#[tauri::command]
 pub async fn chat_trace_chain(
     state: State<'_, AppState>,
     trace_id: String,

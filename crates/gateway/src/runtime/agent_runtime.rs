@@ -591,11 +591,41 @@ impl AgentRuntimeBuilder {
         // ── Agent registry ──────────────────────────────────────────
         let agent_registry = Arc::new(super::AgentRegistry::new(Arc::clone(&bus)));
 
+        // ── Memory store (M5) ──────────────────────────────────
+        let memory_store = Arc::new(super::memory_store::MemoryStore::new());
+
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
         let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
             Arc::clone(&bus),
+            Arc::clone(&memory_store),
+        ));
+
+        // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──
+        struct StopGenerationHandler {
+            agent_harness: Arc<super::agent_harness::AgentHarness>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for StopGenerationHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let session_id = event.payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                if !session_id.is_empty() {
+                    self.agent_harness.interrupt_session(session_id);
+                }
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![kernel::event::EventType::Custom("STOP_GENERATION".to_owned())]),
+                sources: None,
+                priorities: None,
+                payload_match: None,
+            },
+            Box::new(StopGenerationHandler {
+                agent_harness: Arc::clone(&agent_harness),
+            }),
         ));
 
         Ok(Arc::new(AgentRuntime {

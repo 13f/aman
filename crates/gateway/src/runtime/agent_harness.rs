@@ -1,5 +1,6 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use event_bus::EventBus;
@@ -14,6 +15,7 @@ use kernel::{AmanResult, Error};
 use serde_json::json;
 use tool::ToolRegistry;
 
+use super::memory_store::MemoryStore;
 use super::AgentRegistry;
 
 /// Default maximum ReAct loop iterations.
@@ -48,6 +50,15 @@ impl InterruptFlag {
     pub fn reset(&self) {
         self.interrupted.store(false, Ordering::Release);
     }
+}
+
+/// Outcome of the ReAct loop.
+#[derive(Debug)]
+pub enum ReactOutcome {
+    /// Normal completion with the final reply text.
+    Finished(String),
+    /// Loop was interrupted (user /stop), partial content if any.
+    Interrupted(String),
 }
 
 /// Wraps tool execution with permission checks and event publishing.
@@ -395,6 +406,10 @@ pub struct AgentHarness {
     tool_registry: Arc<ToolRegistry>,
     engine: LlmReActEngine,
     bus: Arc<dyn EventBus>,
+    /// Memory store for long-term recall (M5).
+    memory_store: Arc<MemoryStore>,
+    /// Per-session interrupt flags for external stop (M6).
+    active_interrupts: RwLock<HashMap<String, Arc<InterruptFlag>>>,
     /// Default max ReAct turns.
     max_react_turns: u32,
     /// Default token budget limit.
@@ -406,6 +421,7 @@ impl AgentHarness {
         registry: Arc<AgentRegistry>,
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
+        memory_store: Arc<MemoryStore>,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
@@ -417,8 +433,40 @@ impl AgentHarness {
             tool_registry,
             engine,
             bus,
+            memory_store,
+            active_interrupts: RwLock::new(HashMap::new()),
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
             token_budget_limit: DEFAULT_TOKEN_BUDGET_LIMIT,
+        }
+    }
+
+    /// Register an interrupt flag for an active session (M6).
+    pub fn register_interrupt(&self, session_id: &str, flag: Arc<InterruptFlag>) {
+        self.active_interrupts
+            .write()
+            .expect("interrupt lock")
+            .insert(session_id.to_owned(), flag);
+    }
+
+    /// Unregister an interrupt flag when processing completes (M6).
+    pub fn unregister_interrupt(&self, session_id: &str) {
+        self.active_interrupts
+            .write()
+            .expect("interrupt lock")
+            .remove(session_id);
+    }
+
+    /// Interrupt an active session by session_id (M6).
+    ///
+    /// Called from an event bus subscriber when a `STOP_GENERATION` event arrives.
+    pub fn interrupt_session(&self, session_id: &str) {
+        if let Some(flag) = self
+            .active_interrupts
+            .read()
+            .expect("interrupt lock")
+            .get(session_id)
+        {
+            flag.interrupt();
         }
     }
 
@@ -433,7 +481,6 @@ impl AgentHarness {
         user_text: &str,
         model: &str,
         soul_snapshot: SoulSnapshot,
-        interrupt: Option<&InterruptFlag>,
     ) -> AmanResult<String> {
         // 1. Get AgentInstance from registry
         let instance = self
@@ -487,7 +534,19 @@ impl AgentHarness {
             .join("\n");
         token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
 
-        // 6. Create ReAct context
+        // 6. Retrieve memories relevant to user input (M5 T5.1)
+        let memory_results = self.memory_store.retrieve(agent_id, user_text);
+        let memory_context = if memory_results.is_empty() {
+            None
+        } else {
+            let mem_text: Vec<String> = memory_results
+                .iter()
+                .map(|m| format!("- {} (tags: {})", m.content, m.tags.join(", ")))
+                .collect();
+            Some(mem_text.join("\n"))
+        };
+
+        // 7. Create ReAct context
         let mut ctx = ReActContext::new(
             agent_id.to_owned(),
             session_id.to_owned(),
@@ -497,25 +556,54 @@ impl AgentHarness {
             self.max_react_turns,
             self.token_budget_limit,
         );
+        ctx.memory_context = memory_context;
 
-        // 7. Execute ReAct loop with token budget management
-        let final_reply = self.react_loop(&mut ctx, &mut token_budget, interrupt).await?;
+        // M6: Register interrupt flag for this session
+        let interrupt_flag = Arc::new(InterruptFlag::new());
+        self.register_interrupt(session_id, Arc::clone(&interrupt_flag));
 
-        // 7. Publish agent:reply_ready
+        // 8. Execute ReAct loop with token budget management
+        let result = self
+            .react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag))
+            .await;
+
+        // M6: Unregister interrupt flag
+        self.unregister_interrupt(session_id);
+
+        // 9. Handle outcome — Finished, Interrupted, or Error
+        let (raw_reply, event_type): (String, &str) = match result {
+            Ok(ReactOutcome::Finished(reply)) => (reply, "agent:reply_ready"),
+            Ok(ReactOutcome::Interrupted(reply)) => (reply, "agent:reply_interrupted"),
+            Err(e) => {
+                // Still go to Idle on error
+                let _ = self.registry.set_active_session(agent_id, None).await;
+                let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+                return Err(e);
+            }
+        };
+
+        // 10. Auto-write memories from [remember: ...] patterns (M5 T5.2)
+        let (final_reply, remembered) = process_remember_commands(&raw_reply);
+        for content in &remembered {
+            self.memory_store.store(agent_id, content, vec!["auto".to_owned()]);
+        }
+
+        // 11. Publish reply event
         let _ = self
             .bus
             .publish(Event::new(
                 "agent:harness",
-                EventType::Custom("agent:reply_ready".to_owned()),
+                EventType::Custom(event_type.to_owned()),
                 json!({
                     "agent_id": agent_id,
                     "session_id": session_id,
                     "reply": final_reply,
+                    "turns_processed": ctx.turn,
                 }),
             ))
             .await;
 
-        // 8. Update status to Idle
+        // 12. Update status to Idle
         self.registry
             .set_active_session(agent_id, None)
             .await?;
@@ -545,7 +633,7 @@ impl AgentHarness {
         ctx: &mut ReActContext,
         token_budget: &mut crate::runtime::token_budget::TokenBudget,
         interrupt: Option<&InterruptFlag>,
-    ) -> AmanResult<String> {
+    ) -> Result<ReactOutcome, Error> {
         let compressor = crate::runtime::history_compressor::HistoryCompressor::new(
             crate::runtime::history_compressor::CompressionStrategy::Truncate,
         );
@@ -558,12 +646,22 @@ impl AgentHarness {
                 });
             }
 
-            // Check interrupt
+            // Check interrupt (M6)
             if let Some(flag) = interrupt {
                 if flag.is_interrupted() {
-                    return Err(Error::ConfigInvalid {
-                        message: "ReAct loop interrupted by user".to_owned(),
-                    });
+                    let _ = self
+                        .bus
+                        .publish(Event::new(
+                            "agent:harness",
+                            EventType::Custom("agent:reply_interrupted".to_owned()),
+                            json!({
+                                "agent_id": ctx.agent_id,
+                                "session_id": ctx.session_id,
+                                "turn": ctx.turn,
+                            }),
+                        ))
+                        .await;
+                    return Ok(ReactOutcome::Interrupted(String::new()));
                 }
             }
 
@@ -607,7 +705,7 @@ impl AgentHarness {
                     let completion_tokens =
                         crate::runtime::token_budget::TokenBudget::estimate_tokens(&content);
                     token_budget.record_usage(history_tokens, completion_tokens);
-                    return Ok(content);
+                    return Ok(ReactOutcome::Finished(content));
                 }
                 Ok(ReActTurn::ToolCalls(calls)) => {
                     // Publish agent:got_tool_calls
@@ -721,4 +819,40 @@ impl AgentHarness {
 
         descriptors
     }
+}
+
+/// Extract [remember: ...] commands from agent reply text.
+///
+/// Returns the cleaned text (with markers removed) and a list of
+/// content strings to store as memories.
+fn process_remember_commands(text: &str) -> (String, Vec<String>) {
+    let mut remembered = Vec::new();
+    let mut result = String::with_capacity(text.len());
+    let mut remaining = text;
+
+    while let Some(start) = remaining.find("[remember:") {
+        // Append everything before this marker
+        result.push_str(&remaining[..start]);
+        remaining = &remaining[start + "[remember:".len()..];
+
+        if let Some(end) = remaining.find(']') {
+            let content = remaining[..end].trim();
+            if !content.is_empty() && content.len() >= 2 {
+                remembered.push(content.to_owned());
+            }
+            remaining = &remaining[end + 1..];
+        } else {
+            // No closing bracket, treat as literal text
+            result.push_str("[remember:");
+            break;
+        }
+    }
+
+    // Append remaining text
+    result.push_str(remaining);
+
+    // Clean up whitespace artifacts
+    let cleaned = result.trim().to_owned();
+
+    (cleaned, remembered)
 }

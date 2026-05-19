@@ -49,3 +49,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 rusqlite = { version = "0.32.1", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["async-await"] }

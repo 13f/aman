@@ -392,6 +392,9 @@ impl AgentRuntimeBuilder {
         llm_config.tool_registry = Some(Arc::clone(&tools));
         llm_config.auth_registry = Some(Arc::clone(&auth_registry));
         llm_config.no_auth_tools = vec!["web_search".to_string()];
+        // Clone streaming config before llm_config is consumed by LlmPlugin.
+        let llm_api_key = llm_config.api_key.clone();
+        let llm_base_url = llm_config.base_url.clone();
         let llm_plugin = llm_plugin::LlmPlugin::new(Arc::clone(&bus), llm_config);
 
         // Load the built-in LLM plugin via PluginLoader.
@@ -600,6 +603,8 @@ impl AgentRuntimeBuilder {
             Arc::clone(&tools),
             Arc::clone(&bus),
             Arc::clone(&memory_store),
+            llm_api_key,
+            llm_base_url,
         ));
 
         // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──

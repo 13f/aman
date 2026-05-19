@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// Role of a chat message in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +186,7 @@ impl SoulSnapshot {
 }
 
 /// Context for a single ReAct loop execution.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ReActContext {
     pub agent_id: String,
     pub session_id: String,
@@ -203,6 +204,31 @@ pub struct ReActContext {
     pub memory_context: Option<String>,
     /// Token budget tracker.
     pub token_budget: TokenBudget,
+    /// The LLM model name for this context.
+    pub model: String,
+    /// Optional streaming callback (T2.4).
+    ///
+    /// When set, the ReAct engine will call this with `StreamEvent::Chunk`
+    /// as each delta arrives from the LLM, enabling real-time output.
+    pub stream_cb: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for ReActContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReActContext")
+            .field("agent_id", &self.agent_id)
+            .field("session_id", &self.session_id)
+            .field("turn", &self.turn)
+            .field("max_turns", &self.max_turns)
+            .field("soul_snapshot", &self.soul_snapshot)
+            .field("history", &self.history)
+            .field("agent_tools", &self.agent_tools)
+            .field("memory_context", &self.memory_context)
+            .field("token_budget", &self.token_budget)
+            .field("model", &self.model)
+            .field("stream_cb", &self.stream_cb.as_ref().map(|_| "Some(cb)"))
+            .finish()
+    }
 }
 
 impl ReActContext {
@@ -213,6 +239,7 @@ impl ReActContext {
         soul_snapshot: SoulSnapshot,
         history: Vec<ChatMessage>,
         agent_tools: Vec<ToolDescriptor>,
+        model: impl Into<String>,
         max_turns: u32,
         token_limit: u64,
     ) -> Self {
@@ -226,6 +253,8 @@ impl ReActContext {
             agent_tools,
             memory_context: None,
             token_budget: TokenBudget::new(token_limit),
+            model: model.into(),
+            stream_cb: None,
         }
     }
 }
@@ -236,6 +265,22 @@ pub struct ToolPermission {
     pub tool_name: String,
     pub allowed_agent_ids: Vec<String>,
     pub deny_agent_ids: Vec<String>,
+}
+
+/// Streaming event emitted during a streaming LLM response (T2.4).
+///
+/// The agent harness creates a callback that forwards these events
+/// to the event bus as `agent:reply_chunk` etc.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// Stream has started.
+    Start,
+    /// A text chunk was received.
+    Chunk(String),
+    /// Stream completed with a finish reason ("stop", "length", "tool_calls").
+    Done { finish_reason: String },
+    /// An error occurred during streaming.
+    Error(String),
 }
 
 /// The ReAct loop engine trait.

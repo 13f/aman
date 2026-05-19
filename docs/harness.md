@@ -55,13 +55,13 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 | # | Harness 能力 | 定义 | Aman 已有组件 | 实现状态 | 差距 |
 |---|-------------|------|-------------|---------|------|
 | 1 | **Agent 身份与生命周期** | Agent 的注册、创建、销毁、配置管理 | `config.yaml` agents 段 + SOUL 系统 + `~/.aman/agents/` 目录 + `AgentRegistry` | ✅ 已实现 | 无运行时动态创建/销毁 API（仅通过 config 加载） |
-| 2 | **ReAct 循环引擎** | Think-Act-Observe 迭代：LLM 响应 → 解析 Tool Calls → 执行 → 反馈 → 继续 | `AgentHarness` + `LlmReActEngine` + `ToolExecutor` | ⚠️ 核心引擎已完成 | 未注册到 Dispatcher（MESSAGE_RECEIVED 仍由 LLM Plugin 处理）；无流式输出 |
+| 2 | **ReAct 循环引擎** | Think-Act-Observe 迭代：LLM 响应 → 解析 Tool Calls → 执行 → 反馈 → 继续 | `AgentHarness` + `LlmReActEngine` + `ToolExecutor` | ✅ 已实现 | — |
 | 3 | **Context 组装** | System Prompt + 历史会话 + Tools Schema + 用户消息组合与 Token 预算管理 | `ContextAssembler` + SOUL + `TokenBudget` | ✅ 已实现 | — |
 | 4 | **Tool Calling 调度** | 多 Tool Call 的调度策略（串行/并行/部分并行）、错误处理、结果聚合 | Pipeline 的 `concurrency` 模式（serial/parallel/limited） | ⚠️ 部分实现 | Pipeline 不是为 ReAct 循环设计的——缺少"执行 → 反馈 → 再次调用 LLM"的迭代语义 |
 | 5 | **会话管理** | 会话创建/激活/处理/空闲/超时/关闭的状态管理 | Chat Session 状态机（ACTIVE/PROCESSING/IDLE/ERROR/TIMEOUT/CLOSED）+ SQLite sessions.db | ✅ 已实现 | 会话级 Tool 访问控制缺失；会话元数据缺少 Agent 绑定 |
 | 6 | **Agent 级 Tool 访问控制** | 不同 Agent 可访问不同 Tool 集合；Tool 调用受 Agent 身份约束 | `AgentRegistry::tool_allowed()` + `ToolExecutor::execute_for_agent()` | ✅ 已实现 | — |
 | 7 | **Memory 集成** | 长期记忆的存储、检索与注入到 Context | `MemoryStore` +  keyword-based 检索 + `[remember:]` 自动写入 | ✅ 已集成到 ReAct 循环 | — |
-| 8 | **流式输出** | LLM 回复的分块发布，页面逐步渲染 | LLM Plugin 内部处理流式响应，无独立的流事件发布 | ⚠️ 部分实现 | 需 Harness 在 ReAct 循环中统一管理流式事件的发布（`agent:reply_stream_start/chunk/done`） |
+| 8 | **流式输出** | LLM 回复的分块发布，页面逐步渲染 | `AgentHarness` ReAct 循环中 `agent:reply_stream_start/chunk/done` 事件发布 | ✅ 已实现 | — |
 | 9 | **中断与恢复** | 用户 /stop 终止当前处理，恢复前一个 IDLE 状态 | `InterruptFlag` + `active_interrupts` 注册表 + `STOP_GENERATION` 事件订阅 | ✅ 已集成到 AgentHarness | — |
 | 10 | **多 Agent 协调** | Agent 之间的事件传递、任务委托、结果共享 | config.yaml agents 列表 + `~/.aman/agents/*/` 数据隔离 | ⚠️ 设计与目录结构完成 | 无运行时 Agent 间事件路由；无 Agent 间消息传递协议 |
 | 11 | **Token 预算与 Context Window 管理** | 跟踪每次 LLM 调用的 Token 消耗，在超限前做历史裁剪/摘要 | `TokenBudget` + `HistoryCompressor`（truncate/summarize） | ✅ 已实现 | — |
@@ -380,13 +380,12 @@ impl AgentRegistry {
 
 ---
 
-### 🚧 M2：ReAct 循环引擎 ⭐ P0 — 进行中
+### ✅ M2：ReAct 循环引擎 ⭐ P0 — 已完成
 
 > 目标：实现可复用的 Think-Act-Observe 循环引擎，统一管理 LLM 调用、Tool 执行、结果反馈的迭代过程。
 > 验收：AgentHarness 可以接收 MESSAGE_RECEIVED 事件，完整执行 ReAct 循环并输出最终回复。
 >
-> **已实现**: `ReActEngine` trait + `AgentHarness::process_message()` + `LlmReActEngine` + `ToolExecutor` + 完整事件发布
-> **剩余**: T2.3 Dispatcher 注册 + T2.4 流式输出
+> **已实现**: `ReActEngine` trait + `AgentHarness::process_message()` + `LlmReActEngine` + `ToolExecutor` + 完整事件发布 + `MessageReceivedHandler`（MESSAGE_RECEIVED 订阅）+ 流式输出（SSE `agent:reply_chunk` 事件）
 
 #### T2.1 — 定义 ReAct 循环的核心 trait（core crate）
 
@@ -534,18 +533,20 @@ impl AgentHarness {
    - AgentHarness 在 Phase 1 中通过 session_id 恢复或创建会话上下文
    - 现有的 `session:timeout` 事件（由 Workflow 超时管理器触发）正确中断 Harness 的 ReAct 循环
 
-#### T2.4 — 集成流式输出
+#### ✅ T2.4 — 集成流式输出
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_harness.rs` |
+| 涉及 | `crates/core/src/react.rs` + `crates/gateway/src/runtime/agent_harness.rs` + `crates/gateway/src/runtime/agent_runtime.rs` |
 | 描述 | LLM Provider 返回流式响应时，Harness 实时发布 Stream 事件 |
 
-**子任务：**
-1. 支持流式 LLM Provider Tool 调用（`StreamingLLMProvider` trait）
-2. ReAct 循环的 Phase 2 Step 2 使用流式调用
-3. Agent 最终回复时按 chunk 发布 `agent:reply_chunk` 事件
-4. Tool Call 结果也在流中发布（`agent:tool_call_notification`）
+**实现：**
+- `StreamEvent` 枚举（Start / Chunk / Done / Error）+ `stream_cb` 回调字段添加到 `ReActContext`
+- `model` 字段添加到 `ReActContext`
+- `LlmReActEngine::streaming_llm_call()` — 直接对 LLM API 发起 streaming SSE 请求，逐 delta 通过回调发送
+- `react_loop()` — 创建 tokio mpsc channel，spawn consumer 任务将 `StreamEvent` 发布为 `agent:reply_stream_start/chunk/done` 事件
+- `LlmReActEngine` 持有 `api_key` / `base_url`，从 `build_llm_config()` 透传
+- 无 stream 回退：`stream_cb` 为 None 时走原有工具调用路径
 
 ---
 
@@ -892,11 +893,11 @@ agents:
 ```
 M1 (Agent Runtime 类型) ⭐ P0 ✅
 │
-├── M2 (ReAct 循环引擎) ⭐ P0 🚧
+├── M2 (ReAct 循环引擎) ⭐ P0 ✅
 │   ├── M2.1 (Core trait) ✅
 │   ├── M2.2 (AgentHarness 实现) ✅
-│   ├── M2.3 (Dispatcher 注册) ⏳
-│   └── M2.4 (流式输出集成) ⏳
+│   ├── M2.3 (Dispatcher 注册) ✅
+│   └── M2.4 (流式输出集成) ✅
 │
 ├── M3 (Tool 访问控制) ⭐ P1 ✅
 │   ├── M3.1 (权限模型) ✅

@@ -4,11 +4,12 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use event_bus::EventBus;
+use futures_util::StreamExt;
 use kernel::agent::AgentStatus;
 use kernel::event::{Event, EventType};
 use kernel::react::{
     self, ChatMessage, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn, SoulSnapshot,
-    ToolDescriptor,
+    StreamEvent, ToolDescriptor,
 };
 use kernel::tool::Tool;
 use kernel::{AmanResult, Error};
@@ -230,6 +231,10 @@ pub struct LlmReActEngine {
     tool_registry: Arc<ToolRegistry>,
     agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
+    /// API key for direct streaming HTTP calls to the LLM provider.
+    api_key: String,
+    /// Base URL for direct streaming HTTP calls to the LLM provider.
+    base_url: String,
 }
 
 impl LlmReActEngine {
@@ -237,11 +242,15 @@ impl LlmReActEngine {
         tool_registry: Arc<ToolRegistry>,
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
+        api_key: String,
+        base_url: String,
     ) -> Self {
         Self {
             tool_registry,
             agent_registry,
             bus,
+            api_key,
+            base_url,
         }
     }
 
@@ -255,6 +264,163 @@ impl LlmReActEngine {
             }
         }
         None
+    }
+
+    /// Execute a streaming LLM call via SSE, calling the callback for each delta.
+    ///
+    /// Returns (full_content, finish_reason, tool_calls_map).
+    async fn streaming_llm_call(
+        &self,
+        system_prompt: &str,
+        history: &[serde_json::Value],
+        ctx: &ReActContext,
+        cb: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+    ) -> Result<(String, String, Vec<ParsedToolCall>), kernel::Error> {
+        let mut request_messages: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 1);
+        request_messages.push(json!({"role": "system", "content": system_prompt}));
+        request_messages.extend(history.iter().cloned());
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+
+        let response = client
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::json!({
+                "model": ctx.model,
+                "messages": request_messages,
+                "stream": true,
+                "temperature": 0.7,
+                "max_tokens": 4096,
+            }))
+            .send()
+            .await
+            .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::ConfigInvalid {
+                message: format!("LLM API streaming error HTTP {status}: {body}"),
+            });
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut full_content = String::new();
+        let mut buffer = String::new();
+        let mut finish_reason = "stop".to_owned();
+        let mut tool_call_acc: HashMap<usize, serde_json::Value> = HashMap::new();
+
+        cb(StreamEvent::Start);
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result
+                .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk_str);
+
+            // Process complete lines in buffer
+            loop {
+                let newline_pos = match buffer.find('\n') {
+                    Some(p) => p,
+                    None => break,
+                };
+                let line = buffer[..newline_pos].to_string();
+                buffer = buffer[newline_pos + 1..].to_string();
+
+                if !line.starts_with("data: ") {
+                    continue;
+                }
+                let data = line[6..].trim();
+                if data == "[DONE]" {
+                    break;
+                }
+                let Ok(sse) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
+                let Some(choices) = sse.get("choices").and_then(|c| c.as_array()) else {
+                    continue;
+                };
+                let Some(choice) = choices.first() else {
+                    continue;
+                };
+
+                // Extract delta content (text)
+                if let Some(delta) = choice.get("delta") {
+                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                        if !content.is_empty() {
+                            full_content.push_str(content);
+                            cb(StreamEvent::Chunk(content.to_owned()));
+                        }
+                    }
+
+                    // Accumulate tool call deltas
+                    if let Some(tc_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                        for tc in tc_arr {
+                            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                            let entry = tool_call_acc.entry(idx).or_insert_with(|| {
+                                serde_json::json!({
+                                    "id": null,
+                                    "type": "function",
+                                    "function": {"name": null, "arguments": ""}
+                                })
+                            });
+                            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                                entry["id"] = serde_json::json!(id);
+                            }
+                            if let Some(name) = tc.get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                            {
+                                entry["function"]["name"] = serde_json::json!(name);
+                            }
+                            if let Some(args) = tc.get("function")
+                                .and_then(|f| f.get("arguments"))
+                                .and_then(|a| a.as_str())
+                            {
+                                let current = entry["function"]["arguments"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_owned();
+                                entry["function"]["arguments"] = serde_json::json!(current + args);
+                            }
+                        }
+                    }
+                }
+
+                // Check finish_reason
+                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                    if !reason.is_empty() && reason != "null" && reason != "null" {
+                        finish_reason = reason.to_owned();
+                        cb(StreamEvent::Done {
+                            finish_reason: finish_reason.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Convert accumulated tool calls to ParsedToolCall vec
+        let tool_calls: Vec<ParsedToolCall> = tool_call_acc
+            .into_values()
+            .filter_map(|tc| {
+                let id = tc.get("id")?.as_str()?.to_owned();
+                let name = tc.get("function")?.get("name")?.as_str()?.to_owned();
+                let args_str = tc.get("function")?.get("arguments")?.as_str()?.to_owned();
+                let args: serde_json::Value =
+                    serde_json::from_str(&args_str).unwrap_or(serde_json::Value::Object(Default::default()));
+                Some(ParsedToolCall {
+                    id,
+                    tool_name: name,
+                    args,
+                })
+            })
+            .collect();
+
+        Ok((full_content, finish_reason, tool_calls))
     }
 }
 
@@ -279,10 +445,6 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             ))
             .await;
 
-        let llm_tool = self.find_llm_tool().ok_or_else(|| {
-            kernel::react::ReActError::LlmError("no LLM provider tool registered".to_owned())
-        })?;
-
         // Build the payload: system prompt from soul + conversation history
         let system_prompt = ContextAssembler::assemble(
             &ctx.soul_snapshot,
@@ -300,14 +462,42 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             })
             .collect();
 
-        let params = json!({
-            "system_prompt": system_prompt,
-            "messages": history,
-            "max_turns": 1,
-        });
-
-        let tool_ctx = kernel::context::ToolContext::default();
-        let result = llm_tool.execute(params, tool_ctx).await;
+        let result = if let Some(ref cb) = ctx.stream_cb {
+            // ── Streaming path (T2.4): direct SSE HTTP call ──
+            let cb = Arc::clone(cb);
+            match self
+                .streaming_llm_call(&system_prompt, &history, ctx, cb)
+                .await
+            {
+                Ok((content, finish_reason, tool_calls)) => {
+                    if tool_calls.is_empty() {
+                        Ok(json!({
+                            "content": content,
+                            "finish_reason": finish_reason,
+                        }))
+                    } else {
+                        Ok(json!({
+                            "content": content,
+                            "finish_reason": finish_reason,
+                            "tool_calls": tool_calls,
+                        }))
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            // ── Non-streaming tool path ──
+            let llm_tool = self.find_llm_tool().ok_or_else(|| {
+                kernel::react::ReActError::LlmError("no LLM provider tool registered".to_owned())
+            })?;
+            let params = json!({
+                "system_prompt": system_prompt,
+                "messages": history,
+                "max_turns": 1,
+            });
+            let tool_ctx = kernel::context::ToolContext::default();
+            llm_tool.execute(params, tool_ctx).await
+        };
 
         // Publish llm:call_ended
         let _ = self
@@ -422,11 +612,15 @@ impl AgentHarness {
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
         memory_store: Arc<MemoryStore>,
+        api_key: String,
+        base_url: String,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
             Arc::clone(&registry),
             Arc::clone(&bus),
+            api_key,
+            base_url,
         );
         Self {
             registry,
@@ -553,6 +747,7 @@ impl AgentHarness {
             soul_snapshot,
             history,
             available_tools,
+            model,
             self.max_react_turns,
             self.token_budget_limit,
         );
@@ -697,17 +892,64 @@ impl AgentHarness {
                 .sum();
             token_budget.set_history_tokens(history_tokens);
 
-            // Execute one ReAct turn
+            // Execute one ReAct turn (T2.4: with streaming support)
+            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+            {
+                let tx = stream_tx.clone();
+                ctx.stream_cb = Some(Arc::new(move |event| {
+                    let _ = tx.send(event);
+                }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
+            }
+
+            // Spawn consumer to forward stream events to the event bus
+            let bus = Arc::clone(&self.bus);
+            let aid = ctx.agent_id.clone();
+            let sid = ctx.session_id.clone();
+            let t = ctx.turn;
+            tokio::spawn(async move {
+                while let Some(event) = stream_rx.recv().await {
+                    let (etype, extra) = match &event {
+                        StreamEvent::Start => ("agent:reply_stream_start", json!({})),
+                        StreamEvent::Chunk(delta) => {
+                            ("agent:reply_chunk", json!({"delta": delta}))
+                        }
+                        StreamEvent::Done { finish_reason } => {
+                            ("agent:reply_stream_done", json!({"finish_reason": finish_reason}))
+                        }
+                        StreamEvent::Error(err) => {
+                            ("agent:reply_stream_error", json!({"error": err}))
+                        }
+                    };
+                    let _ = bus
+                        .publish(Event::new(
+                            "agent:harness",
+                            EventType::Custom(etype.to_owned()),
+                            json!({
+                                "agent_id": aid,
+                                "session_id": sid,
+                                "turn": t,
+                                "event_type": etype,
+                                "extra": extra,
+                            }),
+                        ))
+                        .await;
+                }
+            });
+
             match self.engine.execute_turn(ctx, turn_messages).await {
-                Ok(ReActTurn::Finished { content, .. }) => {
-                    ctx.history.push(ChatMessage::assistant(&content));
+                Ok(ReActTurn::Finished { ref content, .. }) => {
+                    // Clear streaming callback so the consumer task drops
+                    ctx.stream_cb = None;
+                    ctx.history.push(ChatMessage::assistant(content.clone()));
                     // Record token usage
                     let completion_tokens =
-                        crate::runtime::token_budget::TokenBudget::estimate_tokens(&content);
+                        crate::runtime::token_budget::TokenBudget::estimate_tokens(content);
                     token_budget.record_usage(history_tokens, completion_tokens);
-                    return Ok(ReactOutcome::Finished(content));
+                    return Ok(ReactOutcome::Finished(content.clone()));
                 }
                 Ok(ReActTurn::ToolCalls(calls)) => {
+                    // Clear streaming callback (will be reset next iteration)
+                    ctx.stream_cb = None;
                     // Publish agent:got_tool_calls
                     let _ = self
                         .bus

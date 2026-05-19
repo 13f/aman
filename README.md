@@ -38,6 +38,7 @@ Aman is built around an **event-driven architecture**:
 8. **DLQ** captures failed events for manual or automated retry
 9. **Notification Center** transforms system events into user-facing alerts (critical/warning) with a ring-buffer store, HTTP API, and Tauri bridge for desktop overlay and bell widgets
 10. **Tauri Desktop App** provides a cross-platform GUI with pages for dashboard, events, workflows, plugins, chat, and settings
+11. **Agent Harness** is the ReAct (Think-Act-Observe) loop engine that orchestrates LLM calls, tool execution, and result feedback with streaming SSE support, token budget management, context assembly, and multi-turn iterations
 
 ## Architecture Overview
 
@@ -51,31 +52,97 @@ Aman is built around an **event-driven architecture**:
 │ Sources  │───▶│  Event Bus       │───▶│ Dispatcher  │      │ Notification     │
 │ (cron,   │    │  (InMemory/      │    │ (rules,     │      │ Subscriber       │
 │  webhook,│    │   Persistent)    │    │  matching)  │      │ (critical/warn)  │
-│  fwatch) │    │  + Backpressure  │    └──────┬──────┘      └────────┬─────────┘
-└──────────┘    │  + Dedup         │           │                      │
-                │  + Retry Queue   │           ▼                      ▼
-                └──────────────────┘    ┌──────────────┐      ┌──────────────────┐
-                                        │  Pipeline    │      │ Notification     │
-                ┌──────────────┐        │  Engine      │      │ Store            │
-                │  Workflow    │◀───────│  (Filter →   │      │ (ring buffer)    │
-                │  Engine      │        │   Transform →│      └────────┬─────────┘
-                │  (state      │        │   Action)    │               │
-                │   machine)   │        └──────┬───────┘               │
-                └──────────────┘               │                       ▼
-                                        ┌──────┴───────┐      ┌──────────────────┐
-                                        │  DLQ / Retry │      │  HTTP API        │
-                                        └──────────────┘      │  (Gateway)       │
-                                                              └────────┬─────────┘
-                                                                       │
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐               ▼
-│  Plugins     │    │  Tool Runner │    │  Config      │      ┌──────────────────┐
-│  (.wasm/so)  │    │  (built-in:  │    │  + Secret    │      │  Tauri Desktop   │
-│              │    │   file, http,│    │  Resolver    │      │  (bell + overlay)│
-│              │    │   exec, db)  │    │              │      └──────────────────┘
-└──────────────┘    └──────────────┘    └──────────────┘
+│  fwatch) │    │  + Backpressure  │    └──┬──────┬───┘      └────────┬─────────┘
+└──────────┘    │  + Dedup         │       │      │                   │
+                │  + Retry Queue   │       │      ▼                   ▼
+                └──────────────────┘       │  ┌──────────────┐  ┌──────────┐
+                                           │  │  Pipeline    │  │  Notif.  │
+                ┌──────────────┐            │  │  Engine      │  │  Store   │
+                │  Workflow    │◀───────────│  │  (Filter →   │  └────┬─────┘
+                │  Engine      │            │  │   Transform →│       │
+                │  (state      │            │  │   Action)    │       │
+                │   machine)   │            │  └──────┬───────┘       │
+                └──────────────┘            │         │               │
+                                           │  ┌──────┴───────┐      │
+                                           │  │  DLQ / Retry │      │
+                                           │  └──────────────┘      │
+                                           │                        │
+                ┌──────────────────┐        │                        │
+                │  AgentHarness    │◀───────┘                        │
+                │  (ReAct Loop)    │                                │
+                │                  │                                │
+                │  ┌─ LLM Call ──┐ │                                │
+                │  │ Tool Exec   │ │                                │
+                │  │ Context Asm │ │                                │
+                │  │ Token Budget│ │                                │
+                │  │ Interrupt   │ │                                │
+                │  └─────────────┘ │                                │
+                └────────┬─────────┘                                │
+                         │                                         │
+                         ▼                                         ▼
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐      ┌──────────────┐
+│  Plugins     │    │  Tool Runner │    │  Config      │      │  HTTP API    │
+│  (.wasm/so)  │    │  (built-in:  │    │  + Secret    │      │  (Gateway)   │
+│              │    │   file, http,│    │  Resolver    │      └──────┬───────┘
+│              │    │   exec, db)  │    │  + Secure    │             │
+│              │    │   web_search │    │    Cache     │             ▼
+└──────────────┘    └──────────────┘    │  (mlock+     │      ┌──────────────┐
+                                        │   zeroize)   │      │  Tauri       │
+                                        └──────────────┘      │  Desktop     │
+                                                              │  (bell +     │
+                                                              │   overlay)   │
+                                                              └──────────────┘
 ```
 
+## Secret Security
+
+API keys and credentials are stored in the OS-native credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service) via the `keyring` crate. Values are read **once at first access** and cached in secure memory for the application lifetime:
+
+- **`mlock(2)`** via the `secrets` crate locks cached secrets in physical RAM, preventing page-out to swap (disk)
+- **`zeroize`** on drop automatically zeroes memory when cache entries are removed or the process exits
+- **Guard pages and underflow canaries** detect out-of-bounds access to secret memory regions
+- **Core dump exclusion** is enabled by default in release builds
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Process Memory                                      │
+│                                                      │
+│  ┌──────────┐    first read     ┌─────────────────┐  │
+│  │ Keychain  │ ────────────────▶│  SecretVec<u8>   │  │
+│  │ (macOS /  │                  │  (mlocked,       │  │
+│  │  Windows/ │ ◀────────────────│   zeroized on    │  │
+│  │  Linux)   │    subsequent    │   drop/remove)   │  │
+│  │           │    reads from    └─────────────────┘  │
+│  │           │    cache only                         │
+│  └──────────┘                                        │
+└─────────────────────────────────────────────────────┘
+```
+
+## Agent Harness
+
+Agent Harness is the runtime engine that connects Aman's event infrastructure to LLM agent behaviors:
+
+**ReAct Loop** — Think-Act-Observe iteration:
+1. Assemble context (SOUL system prompt + conversation history + tool schemas + memory)
+2. Call LLM with tools parameter for structured function calling
+3. If the LLM returns tool calls → execute tools → append results → loop back to step 2
+4. If the LLM returns text → deliver final reply and exit
+
+**Streaming** — SSE-based real-time output with `agent:reply_stream_start`, `agent:reply_chunk`, `agent:reply_stream_done` events forwarded to the frontend via EventBus
+
+**Tool Execution** — Async tool dispatch with per-agent permission checks, lifecycle events (`tool:dispatched` / `tool:completed` / `tool:failed`), and result feedback into the conversation
+
+**Token Budget** — Model-aware budget tracking with automatic history compression when approaching limits
+
+**Interrupt Support** — Per-session interrupt flags for `/stop` support via a `STOP_GENERATION` event
+
+**Key Events** — `agent:reply_chunk` (delta text), `agent:reply_ready` (full reply), `tool:dispatched/completed/failed`, `agent:reply_stream_error`, `agent:history_compressed`
+
 ## Project Status
+
+v0.1.alpha.10 — Agent Harness & Secret Security
+
+Agent Harness with full ReAct loop (Think-Act-Observe), streaming SSE support, tool dispatch/completion events, token budget management, history compression, and interrupt handling. Process-wide secret cache using `mlock(2)` and auto `zeroize` via the `secrets` crate — keys are read once from the system keychain and stored in non-swappable protected memory.
 
 v0.1.alpha.9 — Notification Center
 

@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
@@ -22,6 +24,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use rand::rngs::OsRng;
 use rand::TryRngCore;
+use secrets::SecretVec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Secret {
@@ -218,14 +221,43 @@ impl SecretBackend for VaultCliBackend {
 #[derive(Debug, Clone)]
 pub struct KeychainBackend;
 
+/// Process-wide encrypted cache for keychain values.
+///
+/// Values are stored in `SecretVec<u8>` which provides:
+/// - `mlock(2)` to prevent swapping to disk
+/// - auto `zeroize` on drop / cache clear
+/// - guard pages and underflow canaries
+/// - core dump exclusion (in release builds)
+///
+/// Combined with one-time keychain access, this eliminates repeated
+/// OS authorization prompts while keeping secrets protected in memory.
+static KEYCHAIN_CACHE: LazyLock<Mutex<HashMap<String, SecretVec<u8>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 impl SecretBackend for KeychainBackend {
     fn get(&self, key: &str) -> AmanResult<Option<String>> {
+        // Check protected cache first — avoids repeated macOS authorization prompts
+        {
+            let cache = KEYCHAIN_CACHE.lock().unwrap();
+            if let Some(secret) = cache.get(key) {
+                return Ok(Some(String::from_utf8_lossy(&*secret.borrow()).to_string()));
+            }
+        }
+
         let entry = keyring::Entry::new(key, "aman-desktop")
             .map_err(|e| Error::Unrecoverable {
                 message: format!("keychain entry create failed: {e}"),
             })?;
         match entry.get_password() {
-            Ok(value) => Ok(Some(value)),
+            Ok(value) => {
+                let bytes = value.as_bytes();
+                let secret = SecretVec::<u8>::new(bytes.len(), |buf: &mut [u8]| {
+                    buf.copy_from_slice(bytes);
+                });
+                let mut cache = KEYCHAIN_CACHE.lock().unwrap();
+                cache.insert(key.to_owned(), secret);
+                Ok(Some(value))
+            }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(Error::Unrecoverable {
                 message: format!("keychain read failed: {e}"),
@@ -234,6 +266,13 @@ impl SecretBackend for KeychainBackend {
     }
 
     fn set(&self, key: &str, value: &str) -> AmanResult<()> {
+        // Invalidate cache so next read picks up the new value
+        {
+            let mut cache = KEYCHAIN_CACHE.lock().unwrap();
+            // Removing drops the SecretVec which zeroes the memory
+            cache.remove(key);
+        }
+
         let entry = keyring::Entry::new(key, "aman-desktop")
             .map_err(|e| Error::Unrecoverable {
                 message: format!("keychain entry create failed: {e}"),
@@ -241,6 +280,14 @@ impl SecretBackend for KeychainBackend {
         entry.set_password(value).map_err(|e| Error::Unrecoverable {
             message: format!("keychain write failed: {e}"),
         })?;
+
+        // Update protected cache with the new value
+        let bytes = value.as_bytes();
+        let secret = SecretVec::<u8>::new(bytes.len(), |buf: &mut [u8]| {
+            buf.copy_from_slice(bytes);
+        });
+        let mut cache = KEYCHAIN_CACHE.lock().unwrap();
+        cache.insert(key.to_owned(), secret);
         Ok(())
     }
 

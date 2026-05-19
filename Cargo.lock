@@ -3540,6 +3540,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsodium-sys"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b779387cd56adfbc02ea4a668e704f729be8d6a6abd2c27ca5ee537849a92fd"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "walkdir",
+]
+
+[[package]]
 name = "libsqlite3-sys"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4572,6 +4584,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3a059efb063b8f425b948e042e6b9bd85edfe60e913630ed727b23e2dfcc558"
 dependencies = [
  "stable_deref_trait",
+]
+
+[[package]]
+name = "page_size"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30d5b2194ed13191c1999ae0704b7839fb18384fa22e49b57eeaa97d79ce40da"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -5839,6 +5861,7 @@ dependencies = [
  "keyring",
  "rand 0.9.4",
  "regex",
+ "secrets",
  "serde",
  "serde_json",
  "uuid",
@@ -5861,6 +5884,19 @@ dependencies = [
  "serde",
  "sha2",
  "zbus",
+]
+
+[[package]]
+name = "secrets"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71f5325144404085953b8078fa4a0b4d224d13f17ee3854534260ad7ff3dfb5c"
+dependencies = [
+ "libc",
+ "libsodium-sys",
+ "page_size",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]

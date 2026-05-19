@@ -749,28 +749,28 @@ impl TokenBudget {
 
 ---
 
-### M7：多 Agent 运行时协调 ⭐ P3
+### ✅ M7：多 Agent 运行时协调 ⭐ P3 — 已完成
 
 > 目标：Agent 之间可以互相传递事件和任务。
 > 验收：Agent A 可以发布事件触发 Agent B 的处理。
 
-#### T7.1 — Agent 间事件路由
+#### ✅ T7.1 — Agent 间事件路由
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/dispatcher/src/` |
-| 描述 | Dispatcher 支持按目标 Agent 路由事件 |
+| 涉及 | `crates/core/src/event.rs`、`crates/gateway/src/runtime/agent_runtime.rs`、`crates/gateway/src/runtime/agent_harness.rs` |
+| 描述 | 通过 EventBus subscription 实现 Agent 间事件路由 |
 
 **子任务：**
-1. 新增事件类型 `agent:message`（`{ from_agent, to_agent, content }`）
-2. Dispatcher 增加按 `to_agent` 字段路由的规则
-3. AgentHarness 可以发布事件给其他 Agent
+1. ✅ 新增 `EventType::AgentMessage` variant（→ `"agent:message"`）
+2. ✅ `AgentMessageHandler` 订阅 `agent:message` 事件，按 `to_agent` 路由到目标 Agent
+3. ✅ `AgentHarness::publish_agent_message()` 方法发布事件给其他 Agent
 
-#### T7.2 — Agent 间消息协议
+#### ✅ T7.2 — Agent 间消息协议
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/` |
+| 涉及 | `crates/core/src/agent.rs` |
 | 描述 | 定义 Agent 间消息的标准格式 |
 
 ```
@@ -914,9 +914,9 @@ M1 (Agent Runtime 类型) ⭐ P0 ✅
 ├── M6 (中断/恢复) ⭐ P2 ✅
 │   ├── M6.1 (InterruptFlag 注册) ✅
 │   └── M6.2 (中断恢复) ✅
-└── M7 (多 Agent 协调) ⭐ P3
-    ├── M7.1 (事件路由)
-    └── M7.2 (消息协议)
+└── M7 (多 Agent 协调) ⭐ P3 ✅
+    ├── M7.1 (事件路由) ✅
+    └── M7.2 (消息协议) ✅
 ```
 
 | 依赖 | 说明 |
@@ -927,4 +927,4 @@ M1 (Agent Runtime 类型) ⭐ P0 ✅
 | M4 → M2 | TokenBudget 在 Context Assembly 中使用 |
 | M5 → M2 | Memory 在 Context Assembly 阶段注入 |
 | M6 → M2 | InterruptFlag 在 ReAct 循环中检查 |
-| M7 → M1 + 现有 Dispatcher | 依赖 Agent 身份和事件路由能力 |
+| M7 → M1 + EventBus Subscription | 依赖 Agent 身份和事件路由能力 |

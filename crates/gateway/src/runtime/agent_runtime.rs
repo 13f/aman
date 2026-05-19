@@ -701,6 +701,75 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
+        // ── Subscribe agent:message handler for agent-to-agent routing (M7) ──
+        struct AgentMessageHandler {
+            agent_registry: Arc<super::AgentRegistry>,
+            agent_harness: Arc<super::agent_harness::AgentHarness>,
+            soul_runtime: Option<SoulRuntime>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for AgentMessageHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let msg: kernel::agent::AgentMessage = match serde_json::from_value(event.payload) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!("AgentMessageHandler: failed to parse AgentMessage: {e}");
+                        return Ok(());
+                    }
+                };
+
+                let target = self.agent_registry.get(&msg.to_agent).await;
+                let agent = match target {
+                    Some(a) if a.descriptor.enabled => a,
+                    _ => {
+                        tracing::warn!("AgentMessageHandler: target agent '{}' not found or disabled", msg.to_agent);
+                        return Ok(());
+                    }
+                };
+                let model = agent.descriptor.model.clone();
+
+                // Build SoulSnapshot (same pattern as MessageReceivedHandler).
+                let soul_snapshot = self.soul_runtime.as_ref()
+                    .map(|sr| {
+                        let soul = sr.current_soul();
+                        kernel::react::SoulSnapshot::new(soul.name.clone(), soul.to_system_prompt())
+                    })
+                    .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""));
+
+                // Construct user-facing text from the agent message payload.
+                let text = format!(
+                    "[Message from agent '{}']\n{}",
+                    msg.from_agent,
+                    msg.payload.get("text").and_then(|v| v.as_str()).unwrap_or("")
+                );
+
+                let harness = Arc::clone(&self.agent_harness);
+                let aid = msg.to_agent.clone();
+                let sid = format!("agent:{}:{}", msg.from_agent, msg.message_id);
+                tokio::spawn(async move {
+                    if let Err(e) = harness.process_message(&aid, &sid, &text, &model, soul_snapshot).await {
+                        tracing::error!(error = %e, to_agent = %aid, from = %msg.from_agent,
+                            "AgentMessageHandler: process_message failed");
+                    }
+                });
+
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![kernel::event::EventType::AgentMessage]),
+                sources: None,
+                priorities: None,
+                payload_match: None,
+            },
+            Box::new(AgentMessageHandler {
+                agent_registry: Arc::clone(&agent_registry),
+                agent_harness: Arc::clone(&agent_harness),
+                soul_runtime: soul_runtime.clone(),
+            }),
+        ));
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,

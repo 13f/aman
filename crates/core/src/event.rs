@@ -26,6 +26,8 @@ pub enum EventType {
     Idle,
     /// 队列清空事件（由 Dispatcher 产生）
     QueueDrained,
+    /// Agent-to-agent message event (M7).
+    AgentMessage,
     Custom(String),
 }
 
@@ -50,6 +52,7 @@ impl EventType {
             Self::InjectionDetected => "injection_detected",
             Self::Idle => "idle",
             Self::QueueDrained => "system.queue_drained",
+            Self::AgentMessage => "agent:message",
             Self::Custom(value) => value.as_str(),
         }
     }
@@ -87,6 +90,7 @@ impl From<String> for EventType {
             "injection_detected" => Self::InjectionDetected,
             "idle" => Self::Idle,
             "system.queue_drained" => Self::QueueDrained,
+            "agent:message" => Self::AgentMessage,
             _ => Self::Custom(value),
         }
     }

@@ -1,6 +1,7 @@
 use crate::types::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use uuid::Uuid;
 
 /// Agent 运行时标识与配置。
 ///
@@ -103,4 +104,28 @@ impl AgentEvent {
             Self::Removed { .. } => "agent:removed",
         }
     }
+}
+
+/// Content type for agent-to-agent messages (T7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageType {
+    /// Delegate a task to another agent.
+    TaskDelegation,
+    /// Share results with another agent.
+    ResultSharing,
+    /// Query another agent's status.
+    StatusQuery,
+}
+
+/// Standard format for agent-to-agent communication (T7.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub message_id: Uuid,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub content_type: AgentMessageType,
+    pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<Uuid>,
 }

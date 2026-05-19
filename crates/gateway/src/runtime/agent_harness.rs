@@ -1061,6 +1061,32 @@ impl AgentHarness {
 
         descriptors
     }
+
+    /// Publish an agent-to-agent message to the event bus (M7).
+    pub async fn publish_agent_message(
+        &self,
+        from_agent: &str,
+        to_agent: &str,
+        content_type: kernel::agent::AgentMessageType,
+        payload: serde_json::Value,
+        reply_to: Option<uuid::Uuid>,
+    ) -> AmanResult<()> {
+        let msg = kernel::agent::AgentMessage {
+            message_id: uuid::Uuid::new_v4(),
+            from_agent: from_agent.to_owned(),
+            to_agent: to_agent.to_owned(),
+            content_type,
+            payload,
+            reply_to,
+        };
+        let payload = serde_json::to_value(msg)?;
+        self.bus.publish(Event::new(
+            "agent:harness",
+            EventType::AgentMessage,
+            payload,
+        )).await?;
+        Ok(())
+    }
 }
 
 /// Extract [remember: ...] commands from agent reply text.

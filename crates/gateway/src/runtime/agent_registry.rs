@@ -40,6 +40,12 @@ impl AgentRegistry {
             .agents
             .iter()
             .map(|(agent_id, entry)| {
+                // Resolve per-agent tool config
+                let (allowed_tools, denied_tools) = match &entry.tools {
+                    Some(tc) => (tc.allow.clone(), tc.deny.clone()),
+                    None => (None, vec![]),
+                };
+
                 AgentDescriptor {
                     agent_id: agent_id.clone(),
                     display_name: entry.display_name.clone(),
@@ -55,9 +61,8 @@ impl AgentRegistry {
                             .join(agent_id)
                             .join("SOUL.md")
                     }),
-                    // Tool allow/deny lists populated in M3 (config crate extension)
-                    allowed_tools: None,
-                    denied_tools: vec![],
+                    allowed_tools,
+                    denied_tools,
                     enabled: entry.enabled,
                 }
             })

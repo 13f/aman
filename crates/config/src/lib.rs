@@ -337,6 +337,19 @@ pub struct DefaultModelConfig {
     pub base_url: String,
 }
 
+/// Per-agent tool access configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ToolsConfig {
+    /// Allowed tool names. `["*"]` means all tools are allowed.
+    /// When None or empty, no tools are allowed unless `allow_all` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
+    /// Explicitly denied tool names (override `allow`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny: Vec<String>,
+}
+
 /// Single agent entry in the multi-agent config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEntryConfig {
@@ -348,6 +361,9 @@ pub struct AgentEntryConfig {
     /// Whether this agent is enabled on startup. Default true.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Per-agent tool access configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<ToolsConfig>,
 }
 
 const fn default_enabled() -> bool {
@@ -1294,6 +1310,7 @@ runtime:
                 model: "gpt-5".to_string(),
                 system_prompt_override: None,
                 enabled: true,
+                tools: None,
             },
         );
 
@@ -1317,6 +1334,7 @@ runtime:
                 model: "gpt-5".to_string(),
                 system_prompt_override: None,
                 enabled: true,
+                tools: None,
             },
         );
 
@@ -1353,6 +1371,7 @@ runtime:
                 model: "gpt-5".to_string(),
                 system_prompt_override: None,
                 enabled: true,
+                tools: None,
             },
         );
 

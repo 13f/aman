@@ -53,12 +53,52 @@ impl InterruptFlag {
 /// Wraps tool execution with permission checks and event publishing.
 pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
+    agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
 }
 
 impl ToolExecutor {
-    pub fn new(registry: Arc<ToolRegistry>, bus: Arc<dyn EventBus>) -> Self {
-        Self { registry, bus }
+    pub fn new(
+        registry: Arc<ToolRegistry>,
+        agent_registry: Arc<AgentRegistry>,
+        bus: Arc<dyn EventBus>,
+    ) -> Self {
+        Self {
+            registry,
+            agent_registry,
+            bus,
+        }
+    }
+
+    /// Execute a tool call for a specific agent, checking permissions first.
+    ///
+    /// Returns a structured result — permission denials are returned as
+    /// failed results so the LLM can adapt, rather than aborting the loop.
+    pub async fn execute_for_agent(
+        &self,
+        call: &ParsedToolCall,
+        agent_id: &str,
+    ) -> react::ToolCallResult {
+        let tool_name = &call.tool_name;
+
+        // Permission check: is this agent allowed to use this tool?
+        if !self
+            .agent_registry
+            .tool_allowed(agent_id, tool_name)
+            .await
+        {
+            return react::ToolCallResult {
+                id: call.id.clone(),
+                tool_name: tool_name.clone(),
+                success: false,
+                output: format!(
+                    "permission_denied: agent '{agent_id}' is not allowed to use tool '{tool_name}'"
+                ),
+                duration_ms: 0,
+            };
+        }
+
+        self.execute(call, agent_id).await
     }
 
     /// Execute a tool call, publishing lifecycle events.
@@ -177,12 +217,21 @@ impl ContextAssembler {
 /// Concrete ReAct engine that calls an LLM provider tool.
 pub struct LlmReActEngine {
     tool_registry: Arc<ToolRegistry>,
+    agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
 }
 
 impl LlmReActEngine {
-    pub fn new(tool_registry: Arc<ToolRegistry>, bus: Arc<dyn EventBus>) -> Self {
-        Self { tool_registry, bus }
+    pub fn new(
+        tool_registry: Arc<ToolRegistry>,
+        agent_registry: Arc<AgentRegistry>,
+        bus: Arc<dyn EventBus>,
+    ) -> Self {
+        Self {
+            tool_registry,
+            agent_registry,
+            bus,
+        }
     }
 
     /// Find the LLM provider tool from the registry.
@@ -312,14 +361,19 @@ impl kernel::react::ReActEngine for LlmReActEngine {
 
     async fn execute_tools(
         &self,
-        _ctx: &ReActContext,
+        ctx: &ReActContext,
         calls: &[ParsedToolCall],
     ) -> Result<Vec<ChatMessage>, kernel::react::ReActError> {
-        let executor = ToolExecutor::new(Arc::clone(&self.tool_registry), Arc::clone(&self.bus));
+        let executor = ToolExecutor::new(
+            Arc::clone(&self.tool_registry),
+            Arc::clone(&self.agent_registry),
+            Arc::clone(&self.bus),
+        );
         let mut results = Vec::with_capacity(calls.len());
 
         for call in calls {
-            let result = executor.execute(call, &_ctx.agent_id).await;
+            // Use execute_for_agent to enforce per-agent tool permissions (M3)
+            let result = executor.execute_for_agent(call, &ctx.agent_id).await;
             results.push(ChatMessage::tool_result(
                 &result.id,
                 &result.tool_name,
@@ -353,7 +407,11 @@ impl AgentHarness {
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
     ) -> Self {
-        let engine = LlmReActEngine::new(Arc::clone(&tool_registry), Arc::clone(&bus));
+        let engine = LlmReActEngine::new(
+            Arc::clone(&tool_registry),
+            Arc::clone(&registry),
+            Arc::clone(&bus),
+        );
         Self {
             registry,
             tool_registry,

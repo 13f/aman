@@ -1107,6 +1107,7 @@ pub async fn create_agent(
             model,
             system_prompt_override: None,
             enabled: true,
+            tools: None,
         },
     );
 

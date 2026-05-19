@@ -403,11 +403,14 @@
   }
 
   // ── AgentHarness event handlers (Phase B migration) ──
+  // Local accumulator avoids stale state reads when chunks arrive in rapid succession.
+  let streamingContent = "";
 
   function handleAgentStreamStart(data: any) {
     const sid: string = data.session_id;
     const msgId = crypto.randomUUID();
     activeStreamingMessageId = msgId;
+    streamingContent = "";
     const streamMsg: Message = {
       id: msgId,
       type: "assistant_streaming",
@@ -422,8 +425,8 @@
   function handleAgentChunk(data: any) {
     const delta: string = data.extra?.delta ?? "";
     if (!delta || !activeStreamingMessageId) return;
-    const current = messages.find(m => m.id === activeStreamingMessageId)?.content ?? "";
-    updateMessage(activeStreamingMessageId, { content: current + delta });
+    streamingContent += delta;
+    updateMessage(activeStreamingMessageId, { content: streamingContent });
   }
 
   function handleAgentStreamDone(data: any) {
@@ -431,6 +434,7 @@
       updateMessage(activeStreamingMessageId, { status: "completed" });
       activeStreamingMessageId = null;
     }
+    streamingContent = "";
     agentHarnessSessions = new Set([...agentHarnessSessions, data.session_id]);
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");

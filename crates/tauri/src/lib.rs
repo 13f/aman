@@ -214,7 +214,9 @@ pub fn run() {
                             Ok(v) => {
                                 drop(guard);
                                 if let Some(events) = v["events"].as_array() {
-                                    for event_val in events {
+                                    // Events are newest-first from EventStore::recent().
+                                    // Reverse to oldest-first so stream_start arrives before chunks.
+                                    for event_val in events.iter().rev() {
                                         if let Some(id) = event_val["id"].as_str() {
                                             if seen.insert(id.to_owned()) {
                                                 let _ = handle2.emit("event:processed", event_val.clone());

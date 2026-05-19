@@ -53,8 +53,6 @@
   let soulDetailExpanded = $state(false);
   let soulIntroShown = $state(false);
   let archivedMsgIds = $state<Set<string>>(new Set());
-  // Tracks sessions handled by AgentHarness to deduplicate with LLM Plugin events.
-  let agentHarnessSessions = $state<Set<string>>(new Set());
   let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
 
   // Pagination
@@ -304,8 +302,6 @@
   }
 
   function handleLlmReplyReady(data: any) {
-    // If AgentHarness already handled this session, skip LLM Plugin reply (Phase B dedup)
-    if (agentHarnessSessions.has(data.session_id)) return;
     const channelType: string | undefined = data.channel_type;
     const traceId: string | undefined = data.trace_id;
     const reply: Message = {
@@ -431,30 +427,39 @@
 
   function handleAgentStreamDone(data: any) {
     if (activeStreamingMessageId) {
-      updateMessage(activeStreamingMessageId, { status: "completed" });
+      // Change type to assistant_text to remove the blinking cursor
+      updateMessage(activeStreamingMessageId, { type: "assistant_text", status: "completed" });
       activeStreamingMessageId = null;
     }
     streamingContent = "";
-    agentHarnessSessions = new Set([...agentHarnessSessions, data.session_id]);
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");
   }
 
   function handleAgentReplyReady(data: any) {
     const sid: string = data.session_id;
-    // Dedup: if streaming already completed this session, skip
-    if (agentHarnessSessions.has(sid)) return;
-
-    const reply: Message = {
-      id: crypto.randomUUID(),
-      type: "assistant_text",
-      content: data.reply,
-      timestamp: new Date().toISOString(),
-      sessionId: sid,
-      status: "completed",
-    };
-    messages = [...messages, reply];
-    agentHarnessSessions = new Set([...agentHarnessSessions, sid]);
+    // Find existing streaming message for this session and replace its content.
+    const streamingMsg = messages.find(m => m.sessionId === sid && m.type === "assistant_streaming");
+    if (streamingMsg) {
+      updateMessage(streamingMsg.id, {
+        type: "assistant_text",
+        content: data.reply,
+        status: "completed",
+      });
+      if (activeStreamingMessageId === streamingMsg.id) {
+        activeStreamingMessageId = null;
+      }
+    } else {
+      const reply: Message = {
+        id: crypto.randomUUID(),
+        type: "assistant_text",
+        content: data.reply,
+        timestamp: new Date().toISOString(),
+        sessionId: sid,
+        status: "completed",
+      };
+      messages = [...messages, reply];
+    }
     isLoading = false;
     updateSessionStatus(sid, "idle");
   }

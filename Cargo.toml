@@ -36,6 +36,7 @@ members = [
   "crates/gateway",
   "crates/idle",
   "crates/notification",
+  "crates/skm-core-patched",
 ]
 default-members = [
   "crates/core",
@@ -96,3 +97,6 @@ trybuild = "1.0.112"
 uuid = { version = "1.18.1", features = ["serde", "v7"] }
 proptest = "1.6.0"
 rand = "0.8"
+
+[patch.crates-io]
+skm-core = { path = "crates/skm-core-patched" }

@@ -59,6 +59,7 @@ pub fn context_window_for_model(model: &str) -> usize {
 ///
 /// Tracks per-component token usage (system, tool schemas, history, outputs)
 /// and determines when history needs to be compressed.
+#[derive(Clone)]
 #[allow(dead_code)]
 pub struct TokenBudget {
     /// Model name used for context window lookup.
@@ -80,11 +81,11 @@ pub struct TokenBudget {
 
 impl TokenBudget {
     /// Create a new TokenBudget for the given model.
-    /// Uses a default max_output_tokens of 4096.
+    /// Uses a default max_output_tokens of 0 (must be set from config).
     pub fn new(model: impl Into<String>) -> Self {
         let model = model.into();
         let context_window = context_window_for_model(&model);
-        let max_output_tokens = 4096;
+        let max_output_tokens = 0;
         let max_prompt_tokens = context_window.saturating_sub(max_output_tokens);
         Self {
             model,
@@ -203,8 +204,8 @@ mod tests {
         let budget = TokenBudget::new("gpt-4o");
         assert_eq!(budget.model, "gpt-4o");
         assert_eq!(budget.context_window, 128_000);
-        assert_eq!(budget.max_output_tokens, 4096);
-        assert_eq!(budget.max_prompt_tokens, 128_000 - 4096);
+        assert_eq!(budget.max_output_tokens, 0);
+        assert_eq!(budget.max_prompt_tokens, 128_000);
     }
 
     #[test]

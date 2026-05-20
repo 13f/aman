@@ -1,6 +1,6 @@
 //! Adapter that wraps skm-core's `SkillParser` for SKILL.md discovery and loading.
 //!
-//! Produces the same [`LlmSkill`] type so all callers remain unchanged.
+//! Produces the same [`SkillInfo`] type so all callers remain unchanged.
 //!
 //! Phase 4 will upgrade this to use [`skm_core::SkillRegistry`] (async, with
 //! filesystem watching and lazy loading) for cascade selection support.
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use skm_core::SkillParser;
 
-use crate::LlmSkill;
+use crate::SkillInfo;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -41,9 +41,9 @@ impl SkmRegistry {
 
     /// Walk the root directory recursively and parse all `SKILL.md` files.
     ///
-    /// Returns a `Vec<LlmSkill>` compatible with all existing callers.
+    /// Returns a `Vec<SkillInfo>` compatible with all existing callers.
     /// Silently skips files that fail to parse (logged via skm-core errors).
-    pub fn discover(&self) -> Vec<LlmSkill> {
+    pub fn discover(&self) -> Vec<SkillInfo> {
         let mut skills = Vec::new();
         collect_skills(&self.parser, &self.root, &mut skills);
         skills
@@ -53,21 +53,26 @@ impl SkmRegistry {
     ///
     /// Returns `None` if no skill with that name exists or the file is unreadable.
     #[must_use]
-    pub fn load_content(&self, name: &str, known_skills: &[LlmSkill]) -> Option<String> {
+    pub fn load_content(&self, name: &str, known_skills: &[SkillInfo]) -> Option<String> {
         let path = known_skills.iter().find(|s| s.name == name)?.path.clone();
         std::fs::read_to_string(&path).ok()
     }
 
-    /// Parse a single `SKILL.md` file at `path` into an `LlmSkill`.
+    /// Parse a single `SKILL.md` file at `path` into an `SkillInfo`.
     ///
     /// Returns `None` if the file is missing, has invalid frontmatter, or fails
     /// validation (name too long, empty description, etc.).
     #[must_use]
-    pub fn parse_one(&self, path: &Path) -> Option<LlmSkill> {
+    pub fn parse_one(&self, path: &Path) -> Option<SkillInfo> {
         let meta = self.parser.parse_metadata(path).ok()?;
-        Some(LlmSkill {
+        // Extract Aman-specific fields (category, array-form triggers) from raw YAML
+        // since skm-core only exposes standard agentskills.io fields.
+        let (category, triggers) = extract_raw_fields(path);
+        Some(SkillInfo {
             name: meta.name.as_str().to_owned(),
             description: meta.description,
+            category,
+            triggers,
             path: meta.source_path,
         })
     }
@@ -77,7 +82,7 @@ impl SkmRegistry {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<LlmSkill>) {
+fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<SkillInfo>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -86,13 +91,16 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<LlmSkill>) 
         if path.is_dir() {
             collect_skills(parser, &path, skills);
         } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
+            let (category, triggers) = extract_raw_fields(&path);
             if let Ok(meta) = parser.parse_metadata(&path) {
-                skills.push(LlmSkill {
+                skills.push(SkillInfo {
                     name: meta.name.as_str().to_owned(),
                     description: meta.description,
+                    category,
+                    triggers,
                     path: meta.source_path,
                 });
-            } else if let Some(skill) = fallback_parse_skill(&path) {
+            } else if let Some(skill) = fallback_parse_skill(&path, category, triggers) {
                 // skm-core's RawFrontmatter uses HashMap<String, String> for metadata,
                 // which can't parse nested map values (e.g., metadata.hermes.tags).
                 // Fallback to flexible serde_yaml::Value parsing for these cases.
@@ -108,7 +116,7 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<LlmSkill>) 
 /// fails when metadata values are maps or arrays (e.g., `metadata.hermes.tags`).
 /// This parser uses flexible `serde_yaml::Value`-based extraction to handle
 /// those files without being strict about the metadata field type.
-fn fallback_parse_skill(path: &Path) -> Option<LlmSkill> {
+fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>) -> Option<SkillInfo> {
     let content = std::fs::read_to_string(path).ok()?;
 
     // Extract YAML frontmatter between --- delimiters
@@ -123,21 +131,101 @@ fn fallback_parse_skill(path: &Path) -> Option<LlmSkill> {
     let mapping = value.as_mapping()?;
 
     let name = mapping
-        .get(&serde_yaml::Value::String("name".to_owned()))?
+        .get(serde_yaml::Value::String("name".to_owned()))?
         .as_str()?
         .to_owned();
 
     let description = mapping
-        .get(&serde_yaml::Value::String("description".to_owned()))
+        .get(serde_yaml::Value::String("description".to_owned()))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
 
-    Some(LlmSkill {
+    Some(SkillInfo {
         name,
         description,
+        category,
+        triggers,
         path: path.to_owned(),
     })
+}
+
+/// Extract Aman-specific frontmatter fields (category, array-form triggers)
+/// that skm-core's standard schema doesn't support.
+///
+/// Checks both top-level `triggers` (Aman format) and `metadata.triggers`
+/// (agentskills.io standard format). Falls back from top-level to metadata
+/// for compatibility with skm-core-using tools (e.g. cascade selector).
+fn extract_raw_fields(path: &Path) -> (String, Vec<String>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (String::new(), vec![]),
+    };
+    let content = content.trim_start();
+    if !content.starts_with("---") {
+        return (String::new(), vec![]);
+    }
+    let end = match content[3..].find("\n---") {
+        Some(pos) => pos,
+        None => return (String::new(), vec![]),
+    };
+    let yaml_str = &content[3..3 + end];
+    let value: serde_yaml::Value = match serde_yaml::from_str(yaml_str) {
+        Ok(v) => v,
+        Err(_) => return (String::new(), vec![]),
+    };
+    let mapping = match value.as_mapping() {
+        Some(m) => m,
+        None => return (String::new(), vec![]),
+    };
+
+    let category = mapping
+        .get(serde_yaml::Value::String("category".to_owned()))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+
+    // Try top-level `triggers` first (Aman format: YAML array), fall back to
+    // `metadata.triggers` (agentskills.io standard: comma-separated string).
+    let triggers = extract_triggers_value(
+        mapping.get(serde_yaml::Value::String("triggers".to_owned())),
+    )
+    .or_else(|| {
+        mapping
+            .get(serde_yaml::Value::String("metadata".to_owned()))
+            .and_then(|v| v.as_mapping())
+            .and_then(|meta| meta.get(serde_yaml::Value::String("triggers".to_owned())))
+            .and_then(|v| match v {
+                serde_yaml::Value::String(s) => Some(
+                    s.split(',')
+                        .map(|t| t.trim().to_owned())
+                        .filter(|t| !t.is_empty())
+                        .collect(),
+                ),
+                _ => None,
+            })
+    })
+    .unwrap_or_default();
+
+    (category, triggers)
+}
+
+/// Extract triggers from a YAML value (array of strings or comma-separated string).
+fn extract_triggers_value(value: Option<&serde_yaml::Value>) -> Option<Vec<String>> {
+    match value? {
+        serde_yaml::Value::Sequence(seq) => Some(
+            seq.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_owned()))
+                .collect(),
+        ),
+        serde_yaml::Value::String(s) => Some(
+            s.split(',')
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +242,28 @@ mod tests {
         fs::create_dir_all(&skill_dir).unwrap();
         let content = format!(
             "---\nname: {name}\ndescription: \"{description}\"\n---\n\n# {name}\n\nInstructions here.\n"
+        );
+        let path = skill_dir.join("SKILL.md");
+        fs::write(&path, &content).unwrap();
+        path
+    }
+
+    fn create_categorized_skill_dir(
+        dir: &Path,
+        name: &str,
+        description: &str,
+        category: &str,
+        triggers: &[&str],
+    ) -> PathBuf {
+        let skill_dir = dir.join(name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        let trigger_list = triggers
+            .iter()
+            .map(|t| format!("  - \"{t}\""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "---\nname: {name}\ndescription: \"{description}\"\ncategory: {category}\ntriggers:\n{trigger_list}\n---\n\n# {name}\n\nInstructions here.\n"
         );
         let path = skill_dir.join("SKILL.md");
         fs::write(&path, &content).unwrap();
@@ -238,6 +348,33 @@ mod tests {
         assert_eq!(skill.name, "my-skill");
         assert_eq!(skill.description, "My skill description");
         assert_eq!(skill.path, path);
+        assert!(skill.category.is_empty());
+        assert!(skill.triggers.is_empty());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_one_extracts_category_and_triggers() {
+        let tmp = std::env::temp_dir().join(format!("skm-test-cat-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let path = create_categorized_skill_dir(
+            &tmp,
+            "ipo-research",
+            "IPO research skill",
+            "macro-investment-research",
+            &["打新", "IPO", "新股"],
+        );
+
+        let registry = SkmRegistry::new(&tmp);
+        let skill = registry.parse_one(&path).expect("should parse");
+        assert_eq!(skill.name, "ipo-research");
+        assert_eq!(skill.category, "macro-investment-research");
+        assert!(skill.triggers.contains(&"打新".to_owned()));
+        assert!(skill.triggers.contains(&"IPO".to_owned()));
+        assert!(skill.triggers.contains(&"新股".to_owned()));
 
         let _ = fs::remove_dir_all(&tmp);
     }
@@ -307,6 +444,11 @@ Instructions here.
             names
         );
         assert!(names.contains(&"regular-skill"), "regular skills still work");
+
+        // Verify fallback parsed skill gets category and triggers from raw YAML
+        let nested = skills.iter().find(|s| s.name == "nested-meta-skill").unwrap();
+        assert!(nested.triggers.contains(&"blog".to_owned()));
+        assert!(nested.triggers.contains(&"rss".to_owned()));
 
         let _ = fs::remove_dir_all(&tmp);
     }

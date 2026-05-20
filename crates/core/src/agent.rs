@@ -33,6 +33,14 @@ pub struct AgentDescriptor {
 
     /// 配置中是否启用
     pub enabled: bool,
+
+    /// Model max context window in tokens (from provider.models.<model>.max_context_tokens).
+    /// None = use hardcoded lookup in TokenBudget::new().
+    pub max_context_tokens: Option<usize>,
+
+    /// Model max output tokens per response.
+    /// None = default to 4096.
+    pub max_output_tokens: Option<usize>,
 }
 
 /// Agent 运行时状态。

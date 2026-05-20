@@ -140,10 +140,10 @@ impl EventSource for IdleDetector {
 
         // Throttle: respect the poll_interval between consecutive events.
         let delay_secs = effective.poll_interval.next_delay(self.idle_depth);
-        if let Some(last) = self.last_poll {
-            if last.elapsed().as_secs_f64() < delay_secs {
-                return Ok(Vec::new());
-            }
+        if let Some(last) = self.last_poll
+            && last.elapsed().as_secs_f64() < delay_secs
+        {
+            return Ok(Vec::new());
         }
 
         // T5.3: Resolve IdleKind from depth + arousal (two-axis model)

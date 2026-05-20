@@ -10,6 +10,19 @@
 
   marked.setOptions({ gfm: true, breaks: true });
 
+  // Escape standalone markdown structural elements that would eat content:
+  // - standalone `---` rendered as invisible <hr>
+  // - standalone `===` that can act as setext heading underlines
+  // This preserves inline formatting (bold, code, lists, tables) while
+  // preventing accidental content loss from LLM-generated section separators.
+  function escapeMarkdown(text: string): string {
+    return text
+      // Escape standalone --- lines (horizontal rules)
+      .replace(/^---+$/gm, "\\---")
+      // Escape standalone === lines (setext headings or HR-like)
+      .replace(/^====+$/gm, "\\===");
+  }
+
   type MessageType =
     | "user_text" | "user_command"
     | "assistant_text" | "assistant_streaming"
@@ -431,6 +444,11 @@
 
   function handleAgentStreamDone(data: any) {
     if (activeStreamingMessageId) {
+      // Log raw content before markdown rendering for debugging truncation
+      const rawPreview = streamingContent.length > 200
+        ? streamingContent.slice(0, 200) + "..."
+        : streamingContent;
+      console.log("[Chat] stream done, raw start:", rawPreview, "length:", streamingContent.length);
       if (streamingContent) {
         // Stream produced content → keep the message
         updateMessage(activeStreamingMessageId, { type: "assistant_text", status: "completed" });
@@ -1443,7 +1461,7 @@
               >
                 {#if isAssistant}
                   <div class="markdown-body">
-                    {@html marked.parse(msg.content)}
+                    {@html marked.parse(escapeMarkdown(msg.content))}
                     {#if msg.type === "assistant_streaming"}
                       <span class="cursor"></span>
                     {/if}
@@ -2239,32 +2257,26 @@
     word-break: break-word;
   }
 
-  /* ── Markdown body (assistant messages) ── */
+  /* ── Markdown body (assistant messages) ──
+     Child selectors use :global() because the HTML is injected via
+     {@html marked.parse(...)} — Svelte can't scope styles to it. */
   .markdown-body {
     line-height: 1.6;
     word-break: break-word;
   }
-  .markdown-body p {
-    margin: 0 0 0.5em 0;
-  }
-  .markdown-body p:last-child {
-    margin-bottom: 0;
-  }
-  .markdown-body ul, .markdown-body ol {
-    margin: 0.25em 0;
-    padding-left: 1.5em;
-  }
-  .markdown-body li {
-    margin: 0.15em 0;
-  }
-  .markdown-body code {
+  :global(.markdown-body p) { margin: 0 0 0.5em 0; }
+  :global(.markdown-body p:last-child) { margin-bottom: 0; }
+  :global(.markdown-body ul),
+  :global(.markdown-body ol) { margin: 0.25em 0; padding-left: 1.5em; }
+  :global(.markdown-body li) { margin: 0.15em 0; }
+  :global(.markdown-body code) {
     background: rgba(128,128,128,0.12);
     border-radius: 3px;
     padding: 0.15em 0.35em;
     font-size: 0.88em;
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
   }
-  .markdown-body pre {
+  :global(.markdown-body pre) {
     background: rgba(128,128,128,0.08);
     border: 1px solid rgba(128,128,128,0.18);
     border-radius: 6px;
@@ -2272,55 +2284,35 @@
     overflow-x: auto;
     margin: 0.5em 0;
   }
-  .markdown-body pre code {
-    background: none;
-    padding: 0;
-    border-radius: 0;
-    font-size: 0.85em;
-  }
-  .markdown-body blockquote {
+  :global(.markdown-body pre code) { background: none; padding: 0; border-radius: 0; font-size: 0.85em; }
+  :global(.markdown-body blockquote) {
     border-left: 3px solid rgba(128,128,128,0.3);
     margin: 0.5em 0;
     padding: 0.25em 0.75em;
     color: #666;
   }
-  .markdown-body table {
-    border-collapse: collapse;
-    margin: 0.5em 0;
-    font-size: 0.92em;
-  }
-  .markdown-body th, .markdown-body td {
+  :global(.markdown-body table) { border-collapse: collapse; margin: 0.5em 0; font-size: 0.92em; }
+  :global(.markdown-body th),
+  :global(.markdown-body td) {
     border: 1px solid rgba(128,128,128,0.25);
     padding: 0.4em 0.6em;
     text-align: left;
   }
-  .markdown-body th {
-    background: rgba(128,128,128,0.08);
-    font-weight: 600;
-  }
-  .markdown-body a {
-    color: #2563eb;
-    text-decoration: none;
-  }
-  .markdown-body a:hover {
-    text-decoration: underline;
-  }
-  .markdown-body hr {
-    border: none;
-    border-top: 1px solid rgba(128,128,128,0.2);
-    margin: 0.75em 0;
-  }
-  .markdown-body h1, .markdown-body h2, .markdown-body h3,
-  .markdown-body h4, .markdown-body h5, .markdown-body h6 {
-    margin: 0.6em 0 0.3em 0;
-    line-height: 1.3;
-  }
-  .markdown-body h1 { font-size: 1.35em; }
-  .markdown-body h2 { font-size: 1.2em; }
-  .markdown-body h3 { font-size: 1.1em; }
-  .markdown-body h4, .markdown-body h5, .markdown-body h6 { font-size: 1em; }
-  .markdown-body img {
-    max-width: 100%;
-    border-radius: 4px;
-  }
+  :global(.markdown-body th) { background: rgba(128,128,128,0.08); font-weight: 600; }
+  :global(.markdown-body a) { color: #2563eb; text-decoration: none; }
+  :global(.markdown-body a:hover) { text-decoration: underline; }
+  :global(.markdown-body hr) { border: none; border-top: 1px solid rgba(128,128,128,0.2); margin: 0.75em 0; }
+  :global(.markdown-body h1),
+  :global(.markdown-body h2),
+  :global(.markdown-body h3),
+  :global(.markdown-body h4),
+  :global(.markdown-body h5),
+  :global(.markdown-body h6) { margin: 0.6em 0 0.3em 0; line-height: 1.3; }
+  :global(.markdown-body h1) { font-size: 1.35em; }
+  :global(.markdown-body h2) { font-size: 1.2em; }
+  :global(.markdown-body h3) { font-size: 1.1em; }
+  :global(.markdown-body h4),
+  :global(.markdown-body h5),
+  :global(.markdown-body h6) { font-size: 1em; }
+  :global(.markdown-body img) { max-width: 100%; border-radius: 4px; }
 </style>

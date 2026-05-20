@@ -559,11 +559,15 @@ impl SkillLoader {
 /// These are NOT event-driven. The LLM decides when to use them based on
 /// the `name` and `description` injected into its context.
 #[derive(Debug, Clone)]
-pub struct LlmSkill {
+pub struct SkillInfo {
     pub name: String,
     pub description: String,
+    pub category: String,
+    pub triggers: Vec<String>,
     pub path: PathBuf,
 }
+
+pub mod formatting;
 
 pub mod skm_adapter;
 #[doc(inline)]
@@ -581,7 +585,7 @@ pub use export::*;
 /// for SKILL.md files that contain YAML frontmatter (Agent Skills convention).
 ///
 /// Delegates to [`SkmRegistry`] backed by skm-core's spec-compliant parser.
-pub fn discover_llm_skills(root: &Path) -> Vec<LlmSkill> {
+pub fn discover_llm_skills(root: &Path) -> Vec<SkillInfo> {
     skm_adapter::SkmRegistry::new(root).discover()
 }
 

@@ -4,11 +4,13 @@ use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
 use idle::coordination::IdleCoordination;
 use idle::detector::IdleDetector;
 use idle::incubation::IncubationManager;
-use kernel::types::BackpressureLevel;
+use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
+use kernel::schema::JsonSchema;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
+use kernel::types::{BackpressureLevel, ToolMode};
 use kernel::{AmanResult, Error};
 use persistence::{DeadLetterQueue, InMemoryDeadLetterQueue, PersistentBus, WalSync, WriteAheadLog};
 use kernel::plugin::Plugin;
@@ -29,6 +31,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -209,6 +212,8 @@ impl AgentRuntimeBuilder {
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
         let _ = tool::install_builtin_tools(&tools);
+        // Register read_skill tool so the LLM can load SKILL.md instructions on demand.
+        let _ = tools.register(Arc::new(ReadSkillTool { skills: llm_skills.clone() }));
         let skill_search = Arc::new(skill::SkillSearch::new());
         let skill_versions = Arc::new(skill::SkillVersionManager::from_root(
             self.runtime_dir.join("skill-history"),
@@ -602,7 +607,6 @@ impl AgentRuntimeBuilder {
 
         // ── Subscribe MESSAGE_RECEIVED handler to route messages to AgentHarness (T2.3) ──
         struct MessageReceivedHandler {
-            agent_registry: Arc<super::AgentRegistry>,
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
         }
@@ -618,9 +622,15 @@ impl AgentRuntimeBuilder {
                     return Ok(());
                 }
 
-                // Resolve first enabled agent from the registry.
-                let agents = self.agent_registry.list().await;
-                let agent = match agents.into_iter().find(|a| a.descriptor.enabled) {
+                // Prepend skill activation message if a skill was pre-selected by cascade.
+                let text = event.payload.get("skill_activation_message")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|activation| format!("{activation}\n\nUser query: {text}"))
+                    .unwrap_or(text);
+
+                // Resolve first enabled agent via the harness.
+                let agent = match self.agent_harness.resolve_first_enabled_agent().await {
                     Some(a) => a,
                     None => {
                         tracing::warn!("MessageReceivedHandler: no enabled agent found");
@@ -630,26 +640,30 @@ impl AgentRuntimeBuilder {
                 let agent_id = agent.descriptor.agent_id.clone();
                 let model = agent.descriptor.model.clone();
 
-                // Build SoulSnapshot from the current SOUL (or fallback).
-                let soul_snapshot = self.soul_runtime.as_ref()
-                    .map(|sr| {
-                        let soul = sr.current_soul();
-                        kernel::react::SoulSnapshot::new(soul.name.clone(), soul.to_system_prompt())
+                // Build SoulSnapshot from pre-built prompt in event payload, or fall back
+                // to current soul (which includes skill instructions from the HTTP handler).
+                let soul_snapshot = event.payload.get("soul_system_prompt")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|prompt| {
+                        let name = self.soul_runtime.as_ref()
+                            .map(|sr| sr.current_soul().name.clone())
+                            .unwrap_or_else(|| "assistant".to_owned());
+                        kernel::react::SoulSnapshot::new(name, prompt)
                     })
-                    .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""));
+                    .unwrap_or_else(|| {
+                        self.soul_runtime.as_ref()
+                            .map(|sr| {
+                                let soul = sr.current_soul();
+                                kernel::react::SoulSnapshot::new(soul.name.clone(), soul.to_system_prompt())
+                            })
+                            .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""))
+                    });
 
                 // Spawn async ReAct processing — do not block the bus drain loop.
-                let harness = Arc::clone(&self.agent_harness);
-                tokio::spawn(async move {
-                    if let Err(e) = harness.process_message(
-                        &agent_id, &session_id, &text, &model, soul_snapshot,
-                    ).await {
-                        tracing::error!(
-                            error = %e, session_id = %session_id,
-                            "MessageReceivedHandler: process_message failed"
-                        );
-                    }
-                });
+                self.agent_harness.spawn_process_message(
+                    agent_id, session_id, text, model, soul_snapshot,
+                );
 
                 Ok(())
             }
@@ -662,7 +676,6 @@ impl AgentRuntimeBuilder {
                 payload_match: None,
             },
             Box::new(MessageReceivedHandler {
-                agent_registry: Arc::clone(&agent_registry),
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
             }),
@@ -670,7 +683,6 @@ impl AgentRuntimeBuilder {
 
         // ── Subscribe agent:message handler for agent-to-agent routing (M7) ──
         struct AgentMessageHandler {
-            agent_registry: Arc<super::AgentRegistry>,
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
         }
@@ -685,17 +697,16 @@ impl AgentRuntimeBuilder {
                     }
                 };
 
-                let target = self.agent_registry.get(&msg.to_agent).await;
-                let agent = match target {
-                    Some(a) if a.descriptor.enabled => a,
-                    _ => {
+                let agent = match self.agent_harness.resolve_agent(&msg.to_agent).await {
+                    Some(a) => a,
+                    None => {
                         tracing::warn!("AgentMessageHandler: target agent '{}' not found or disabled", msg.to_agent);
                         return Ok(());
                     }
                 };
                 let model = agent.descriptor.model.clone();
 
-                // Build SoulSnapshot (same pattern as MessageReceivedHandler).
+                // Build SoulSnapshot from current soul.
                 let soul_snapshot = self.soul_runtime.as_ref()
                     .map(|sr| {
                         let soul = sr.current_soul();
@@ -710,15 +721,13 @@ impl AgentRuntimeBuilder {
                     msg.payload.get("text").and_then(|v| v.as_str()).unwrap_or("")
                 );
 
-                let harness = Arc::clone(&self.agent_harness);
-                let aid = msg.to_agent.clone();
-                let sid = format!("agent:{}:{}", msg.from_agent, msg.message_id);
-                tokio::spawn(async move {
-                    if let Err(e) = harness.process_message(&aid, &sid, &text, &model, soul_snapshot).await {
-                        tracing::error!(error = %e, to_agent = %aid, from = %msg.from_agent,
-                            "AgentMessageHandler: process_message failed");
-                    }
-                });
+                self.agent_harness.spawn_process_message(
+                    msg.to_agent.clone(),
+                    format!("agent:{}:{}", msg.from_agent, msg.message_id),
+                    text,
+                    model,
+                    soul_snapshot,
+                );
 
                 Ok(())
             }
@@ -731,7 +740,6 @@ impl AgentRuntimeBuilder {
                 payload_match: None,
             },
             Box::new(AgentMessageHandler {
-                agent_registry: Arc::clone(&agent_registry),
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
             }),
@@ -849,6 +857,86 @@ impl ToolEventSink for BusToolEventSink {
     }
 }
 
+/// Tool that allows the LLM to load a skill's full SKILL.md instructions on demand.
+///
+/// The system prompt instructs the LLM to use `read_skill` when it needs more
+/// than the skill name+description index. This tool resolves skill names to
+/// the on-disk SKILL.md file and returns the full content.
+struct ReadSkillTool {
+    skills: Vec<skill::SkillInfo>,
+}
+
+#[async_trait::async_trait]
+impl Tool for ReadSkillTool {
+    fn name(&self) -> &str {
+        "read_skill"
+    }
+
+    fn mode(&self) -> ToolMode {
+        ToolMode::Local
+    }
+
+    fn parameters(&self) -> &JsonSchema {
+        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "required": ["skill"],
+                "properties": {
+                    "skill": {
+                        "type": "string",
+                        "description": "The name of the skill to load (e.g. \"ipo-research\")"
+                    }
+                }
+            }))
+        });
+        &PARAMS
+    }
+
+    fn returns(&self) -> &JsonSchema {
+        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "content": {"type": "string"},
+                    "error": {"type": "string"}
+                }
+            }))
+        });
+        &RETURNS
+    }
+
+    async fn execute(&self, params: serde_json::Value, _ctx: ToolContext) -> kernel::AmanResult<serde_json::Value> {
+        let skill_name = match params.get("skill").and_then(|v| v.as_str()) {
+            Some(s) if !s.is_empty() => s,
+            _ => return Ok(serde_json::json!({
+                "name": "", "content": "", "error": "Missing required parameter: skill"
+            })),
+        };
+
+        let skill = match self.skills.iter().find(|s| s.name == skill_name) {
+            Some(s) => s,
+            None => {
+                let available: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
+                return Ok(serde_json::json!({
+                    "name": skill_name, "content": "",
+                    "error": format!("Skill '{skill_name}' not found. Available skills: [{}]", available.join(", "))
+                }));
+            }
+        };
+
+        match std::fs::read_to_string(&skill.path) {
+            Ok(content) => Ok(serde_json::json!({
+                "name": skill.name, "content": content,
+            })),
+            Err(e) => Ok(serde_json::json!({
+                "name": skill_name, "content": "",
+                "error": format!("Failed to read skill file: {e}")
+            })),
+        }
+    }
+}
+
 pub struct AgentRuntime {
     config: AgentConfig,
     runtime_dir: PathBuf,
@@ -894,7 +982,7 @@ pub struct AgentRuntime {
     /// Incubation manager for background idle threads.
     incubation_manager: Arc<IncubationManager>,
     /// LLM-instruction skills (SKILL.md frontmatter, Agent Skills standard).
-    llm_skills: StdMutex<Vec<skill::LlmSkill>>,
+    llm_skills: StdMutex<Vec<skill::SkillInfo>>,
     /// skm-core registry for cascade selection (None if init failed).
     skill_registry: Option<skm_core::SkillRegistry>,
     /// Cascade selector for skill matching (None if init failed).
@@ -1067,36 +1155,18 @@ impl AgentRuntime {
 
     /// Returns all LLM-instruction skills discovered on disk.
     #[must_use]
-    pub fn llm_skills(&self) -> Vec<skill::LlmSkill> {
+    pub fn llm_skills(&self) -> Vec<skill::SkillInfo> {
         self.llm_skills.lock().unwrap().clone()
     }
 
-    /// Lightweight skill index for the LLM system prompt (Level 1 of Progressive
-    /// Disclosure — see agentskills.io). Only skill names and short descriptions
-    /// are listed. The LLM can load full instructions on demand.
-    #[must_use]
-    pub fn llm_skills_prompt(&self) -> String {
-        let skills = self.llm_skills.lock().unwrap();
-        if skills.is_empty() {
-            return String::new();
-        }
-        let mut out = String::from("\n\n## Available Skills\n\n");
-        for s in skills.iter() {
-            out.push_str(&format!("- {}: {}\n", s.name, s.description));
-        }
-        out.push_str(
-            "\nTo load a skill's complete instructions, use the `read_skill` tool. Call it with the skill name when you need the full instructions to answer the user's question.\n",
-        );
-        out
-    }
-
-    /// Load a skill's full SKILL.md content by name (Level 2 of Progressive Disclosure).
+    /// Load a skill's full SKILL.md body content by name (Level 2 of Progressive Disclosure).
     /// Returns `None` if no skill with that name is installed.
     #[must_use]
     pub fn read_skill(&self, name: &str) -> Option<String> {
         let skills = self.llm_skills.lock().unwrap();
         let path = skills.iter().find(|s| s.name == name)?.path.clone();
-        std::fs::read_to_string(&path).ok()
+        let raw = std::fs::read_to_string(&path).ok()?;
+        Some(skill::formatting::strip_frontmatter(&raw).trim().to_owned())
     }
 
     /// Use the cascade selector to find the top-1 matching skill for `text`.
@@ -1115,28 +1185,76 @@ impl AgentRuntime {
     pub fn select_skills_for_text(&self, text: &str) -> Vec<String> {
         let registry = match self.skill_registry.as_ref() {
             Some(r) => r,
-            None => return vec![],
+            None => {
+                tracing::debug!("select_skills_for_text: no skill_registry (None)");
+                return vec![];
+            }
         };
         let selector = match self.cascade_selector.as_ref() {
             Some(s) => s,
-            None => return vec![],
+            None => {
+                tracing::debug!("select_skills_for_text: no cascade_selector (None)");
+                return vec![];
+            }
         };
+
+        // Log available skills in the registry for diagnostics
+        let catalog_len = pollster::block_on(registry.len());
+        tracing::debug!("select_skills_for_text: registry has {catalog_len} skills, query=\"{text}\"");
+
         let ctx = skm_select::SelectionContext::new();
         let outcome = match pollster::block_on(selector.select(text, registry, &ctx)) {
             Ok(o) => o,
-            Err(_) => return vec![],
+            Err(e) => {
+                tracing::warn!("select_skills_for_text: cascade select error: {e}");
+                return vec![];
+            }
         };
 
+        tracing::debug!(
+            "select_skills_for_text: cascade used {:?}, {} results, latency={:?}",
+            outcome.strategies_used,
+            outcome.selected.len(),
+            outcome.total_latency,
+        );
+        for r in &outcome.selected {
+            tracing::debug!(
+                "  -> skill={}, confidence={:?}, score={}, strategy={}",
+                r.skill.as_ref(),
+                r.confidence,
+                r.score,
+                r.strategy,
+            );
+        }
+
         // Top-1: only return the single highest-confidence skill at Medium+ level.
-        // Multiple skill instructions can conflict — the cascade already ranks them.
-        outcome
+        let result: Vec<String> = outcome
             .selected
             .into_iter()
             .filter(|r| r.confidence >= skm_select::Confidence::Medium)
             .max_by_key(|r| r.confidence as u8)
-            .and_then(|r| self.read_skill(r.skill.as_ref()))
+            .and_then(|r| {
+                let skill_name = r.skill.as_ref();
+                let skills = self.llm_skills.lock().unwrap();
+                let skill = skills.iter().find(|s| s.name == skill_name)?;
+                let msg = skill::formatting::build_skill_activation_message(skill);
+                if msg.is_none() {
+                    tracing::warn!(
+                        "select_skills_for_text: cascade matched \"{skill_name}\" but build_skill_activation_message returned None"
+                    );
+                }
+                msg
+            })
             .into_iter()
-            .collect()
+            .collect();
+
+        if result.is_empty() {
+            tracing::debug!("select_skills_for_text: no skill met Medium+ threshold");
+        } else {
+            tracing::info!("select_skills_for_text: activating skill");
+        }
+
+        result
     }
 
     #[must_use]

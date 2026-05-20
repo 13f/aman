@@ -107,7 +107,8 @@
       </span>
     {:else}
       <a
-        href="#"
+        href=""
+        role="button"
         class={currentPage === page.id ? "active" : ""}
         onclick={(e) => { e.preventDefault(); navigateTo(page.id); }}
       >

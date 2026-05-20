@@ -63,6 +63,11 @@ impl HistoryCompressor {
 
     /// Remove oldest messages until the target token savings are achieved
     /// and at least `min_messages` remain.
+    ///
+    /// Messages that start with `[ACTIVATED SKILL:` or `[The skill` are
+    /// protected (skill activation messages) and will be skipped rather than
+    /// removed — this prevents the LLM from losing the skill's output template
+    /// and instructions during long ReAct runs.
     fn truncate(
         &self,
         history: &mut Vec<ChatMessage>,
@@ -73,9 +78,20 @@ impl HistoryCompressor {
         let mut removed = 0usize;
         let mut tokens_saved = 0usize;
 
-        // Remove from the front (oldest first), keeping system messages.
-        // We remove user+assistant pairs, but individually count tokens.
+        // Remove from the front (oldest first), protecting skill activation
+        // messages and system messages from truncation.
         while history.len() > min_messages && tokens_saved < target_save {
+            let is_protected = is_skill_activation(&history[0].content);
+            if is_protected {
+                // Move protected messages to the end so they survive truncation.
+                // This keeps the skill template accessible for the final output.
+                let msg = history.remove(0);
+                history.push(msg);
+                if history.len() <= min_messages {
+                    break;
+                }
+                continue;
+            }
             let oldest = history.remove(0);
             let tokens = TokenBudget::estimate_tokens(&oldest.content);
             tokens_saved += tokens;
@@ -103,6 +119,17 @@ pub struct CompressResult {
     pub messages_removed: usize,
     pub tokens_saved: usize,
     pub strategy: CompressionStrategy,
+}
+
+/// Check if a message contains skill activation content that should survive truncation.
+///
+/// Skill activation messages carry the full SKILL.md template and instructions
+/// that the LLM needs to produce correctly formatted output. Truncating them
+/// causes the final report to lose structure.
+fn is_skill_activation(content: &str) -> bool {
+    content.starts_with("[ACTIVATED SKILL:")
+        || content.starts_with("[The skill \"")
+        || content.starts_with("[FORMAT INSTRUCTION]")
 }
 
 #[cfg(test)]
@@ -162,5 +189,29 @@ mod tests {
         // 3 messages with min=3 → nothing removed
         assert_eq!(result.messages_removed, 0);
         assert_eq!(history.len(), 3);
+    }
+
+    #[test]
+    fn test_skill_activation_survives_truncation() {
+        let mut history = vec![
+            ChatMessage::user("[ACTIVATED SKILL: \"ipo-research\"]\nThe user has indicated..."),
+            ChatMessage::assistant("I'll search for data".to_owned()),
+            ChatMessage::user("Search result 1...".to_owned()),
+            ChatMessage::assistant("Let me search more".to_owned()),
+            ChatMessage::user("Search result 2...".to_owned()),
+            ChatMessage::assistant("I need more data".to_owned()),
+            ChatMessage::user("Search result 3...".to_owned()),
+        ];
+        let mut budget = TokenBudget::with_window("test", 1000, 200);
+        budget.set_history_tokens(2000);
+
+        let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
+        let result = compressor.compress(&mut history, &mut budget, 2);
+
+        assert!(result.messages_removed > 0);
+        // The skill activation message should still be present
+        assert!(history.iter().any(|m| m.content.starts_with("[ACTIVATED SKILL:")));
+        // At least min_messages remain
+        assert!(history.len() >= 2);
     }
 }

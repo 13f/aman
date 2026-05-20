@@ -327,6 +327,33 @@ pub struct ProviderConfig {
     /// `$ENV:AMAN_PROVIDER_<PROVIDER>_API_KEY` for secret management.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Models offered by this provider.
+    /// Each entry maps a global model ID to a provider-specific API model name.
+    #[serde(default)]
+    pub models: Vec<ProviderModelEntry>,
+}
+
+/// Maps a global model ID to a provider-specific API model name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModelEntry {
+    /// Global model ID (referenced by agents and the `models` section).
+    pub id: String,
+    /// Provider-specific model name sent in API calls.
+    pub model_id: String,
+}
+
+/// Parameters for a single model (owned by the global `models` section).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelParams {
+    /// Maximum total context window in tokens (input + output).
+    pub max_context_tokens: usize,
+    /// Maximum tokens per response.
+    #[serde(default = "default_max_output_tokens")]
+    pub max_output_tokens: usize,
+}
+
+fn default_max_output_tokens() -> usize {
+    0
 }
 
 /// Default LLM model configuration.
@@ -398,6 +425,11 @@ pub struct AmanConfig {
     #[serde(default, deserialize_with = "deserialize_null_map")]
     pub providers: HashMap<String, ProviderConfig>,
     pub model: Option<DefaultModelConfig>,
+    /// Global model definitions keyed by model ID.
+    /// Each model's capabilities (context window, max output) are intrinsic
+    /// to the model, regardless of which provider serves it.
+    #[serde(default)]
+    pub models: HashMap<String, ModelParams>,
     #[serde(default, deserialize_with = "deserialize_null_map")]
     pub agents: HashMap<String, AgentEntryConfig>,
 }
@@ -1279,10 +1311,15 @@ runtime:
                 display_name: "Bad".to_string(),
                 base_url: "https://example.com".to_string(),
                 api_key: None,
+                models: Vec::new(),
             },
         );
 
         let error = config.validate_full().expect_err("should fail");
+        assert!(
+            error.to_string().contains("只能包含英文字母"),
+            "unexpected error: {error}"
+        );
         assert!(
             error.to_string().contains("只能包含英文字母"),
             "unexpected error: {error}"
@@ -1300,6 +1337,7 @@ runtime:
                 display_name: "Valid".to_string(),
                 base_url: "https://example.com".to_string(),
                 api_key: None,
+                models: Vec::new(),
             },
         );
         config.agents.insert(
@@ -1356,6 +1394,7 @@ runtime:
                 display_name: "OpenAI".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
                 api_key: None,
+                models: Vec::new(),
             },
         );
         config.model = Some(super::DefaultModelConfig {

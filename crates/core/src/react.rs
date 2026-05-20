@@ -152,11 +152,18 @@ pub struct TokenBudget {
     pub used: u64,
     /// Maximum allowed tokens.
     pub limit: u64,
+    /// Maximum output tokens per LLM call (sent as `max_tokens` parameter).
+    pub max_output_tokens: u64,
 }
 
 impl TokenBudget {
     pub fn new(limit: u64) -> Self {
-        Self { used: 0, limit }
+        Self { used: 0, limit, max_output_tokens: 0 }
+    }
+
+    /// Create with explicit max_output_tokens for the LLM `max_tokens` parameter.
+    pub fn with_output_limit(limit: u64, max_output_tokens: u64) -> Self {
+        Self { used: 0, limit, max_output_tokens }
     }
 
     /// Check if the budget has been exceeded.
@@ -255,6 +262,7 @@ impl std::fmt::Debug for ReActContext {
 
 impl ReActContext {
     /// Create a new ReActContext with default budget.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agent_id: impl Into<String>,
         session_id: impl Into<String>,
@@ -264,6 +272,7 @@ impl ReActContext {
         model: impl Into<String>,
         max_turns: u32,
         token_limit: u64,
+        max_output_tokens: u64,
     ) -> Self {
         Self {
             agent_id: agent_id.into(),
@@ -274,7 +283,7 @@ impl ReActContext {
             history,
             agent_tools,
             memory_context: None,
-            token_budget: TokenBudget::new(token_limit),
+            token_budget: TokenBudget::with_output_limit(token_limit, max_output_tokens),
             model: model.into(),
             stream_cb: None,
         }

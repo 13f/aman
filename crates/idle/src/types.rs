@@ -276,18 +276,13 @@ impl PollInterval {
 }
 
 /// Poll 间隔松弛系数——空闲越久，poll 越不频繁。
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PollRelaxation {
+    #[default]
     None,
     Linear { slope: f64 },
     Exponential { factor: f64 },
-}
-
-impl Default for PollRelaxation {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 /// Reflection 熔断器配置。

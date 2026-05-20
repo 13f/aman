@@ -208,7 +208,8 @@ impl SleepWorkflow {
         self,
         cancel_token: &CancellationToken,
     ) -> WorkflowResult<Vec<String>> {
-        let steps: Vec<Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send>> = vec![
+        type Step = Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send>;
+        let steps: Vec<Step> = vec![
             Box::new(|| Box::pin(async {
                 time::sleep(Duration::from_millis(10)).await;
                 Ok("[sleep] step 1/3: short-term memory scan complete".to_owned())
@@ -255,7 +256,8 @@ impl ExplorationWorkflow {
         self,
         cancel_token: &CancellationToken,
     ) -> WorkflowResult<Vec<String>> {
-        let steps: Vec<Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send>> = vec![
+        type Step = Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send>;
+        let steps: Vec<Step> = vec![
             Box::new(|| Box::pin(async {
                 time::sleep(Duration::from_millis(10)).await;
                 Ok("[exploration] step 1/3: memory gap analysis complete".to_owned())
@@ -303,7 +305,8 @@ impl MeditationWorkflow {
         self,
         cancel_token: &CancellationToken,
     ) -> WorkflowResult<Vec<String>> {
-        let steps: Vec<Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send>> = vec![
+        type Step = Box<dyn FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>> + Send>;
+        let steps: Vec<Step> = vec![
             Box::new(|| Box::pin(async {
                 time::sleep(Duration::from_millis(10)).await;
                 Ok("[meditation] step 1/3: collected recent events".to_owned())

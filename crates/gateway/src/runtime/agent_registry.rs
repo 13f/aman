@@ -46,14 +46,23 @@ impl AgentRegistry {
                     None => (None, vec![]),
                 };
 
+                // Resolve API model name from provider's model list.
+                let api_model_id = config
+                    .providers
+                    .get(&entry.provider)
+                    .and_then(|p| p.models.iter().find(|m| m.id == entry.model))
+                    .map(|m| m.model_id.clone())
+                    .unwrap_or_else(|| entry.model.clone());
+
+                // Resolve model capabilities from the global models section.
+                let model_params = config.models.get(&entry.model);
+
                 AgentDescriptor {
                     agent_id: agent_id.clone(),
                     display_name: entry.display_name.clone(),
                     provider: entry.provider.clone(),
-                    model: entry.model.clone(),
+                    model: api_model_id,
                     soul_path: entry.system_prompt_override.as_ref().map(|_| {
-                        // SOUL override file logic: if system_prompt_override is set,
-                        // use it as a filename relative to the agent's data dir.
                         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
                         std::path::PathBuf::from(&home)
                             .join(".aman")
@@ -64,6 +73,8 @@ impl AgentRegistry {
                     allowed_tools,
                     denied_tools,
                     enabled: entry.enabled,
+                    max_context_tokens: model_params.map(|m| m.max_context_tokens),
+                    max_output_tokens: model_params.map(|m| m.max_output_tokens),
                 }
             })
             .collect();

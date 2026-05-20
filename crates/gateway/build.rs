@@ -27,7 +27,7 @@ fn main() {
 
     for skill in skills {
         let name = skill["name"].as_str().unwrap();
-        out.push_str(&format!("        BuiltinSkill {{\n"));
+        out.push_str("        BuiltinSkill {\n");
         out.push_str(&format!("            name: \"{name}\",\n"));
         out.push_str("            files: vec![\n");
 

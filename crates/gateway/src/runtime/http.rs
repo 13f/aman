@@ -2154,29 +2154,21 @@ async fn chat_session_send(
     };
 
     // Build system prompt: soul identity + lightweight skill index.
+    // Skill content is NOT embedded here — it goes as a separate
+    // `skill_activation_message` field so the handler can inject it as a
+    // User message (matching Hermes' approach where the skill content IS
+    // part of the conversational input, not buried in system context).
     let soul_prompt = runtime
         .soul_runtime()
         .map(|sr| sr.current_soul().to_system_prompt())
         .unwrap_or_default();
-    let skills_prompt = runtime.llm_skills_prompt();
+    let skills_prompt = skill::formatting::build_skills_system_prompt(&runtime.llm_skills());
     let combined_prompt = if skills_prompt.is_empty() {
         soul_prompt
     } else {
-        // Level 2 of Progressive Disclosure: use cascade selector to find the
-        // top-1 matching skill and inject its full instructions. This avoids
-        // `read_skill` tool calls while preventing conflicting instructions from
-        // multiple skills.
-        let matched_skills: Vec<String> = runtime.select_skills_for_text(&text);
-        if matched_skills.is_empty() {
-            format!("{}{}", soul_prompt, skills_prompt)
-        } else {
-            let skills_block = matched_skills.join("\n\n---\n\n");
-            format!(
-                "{}\n\n{}\n\nThe following skill instructions have been loaded based on your request:\n\n{}",
-                soul_prompt, skills_prompt, skills_block
-            )
-        }
+        format!("{}{}", soul_prompt, skills_prompt)
     };
+    let matched_skills: Vec<String> = runtime.select_skills_for_text(&text);
 
     // Publish the message event.
     let event = Event::new(
@@ -2188,6 +2180,7 @@ async fn chat_session_send(
             "sender": operator,
             "source": "tauri-desktop",
             "soul_system_prompt": combined_prompt,
+            "skill_activation_message": matched_skills.join("\n\n---\n\n"),
         }),
     );
     let event_id = event.id.to_string();

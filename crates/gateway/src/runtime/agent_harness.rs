@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use event_bus::EventBus;
 use futures_util::StreamExt;
-use kernel::agent::AgentStatus;
+use kernel::agent::{AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
@@ -311,8 +311,13 @@ impl LlmReActEngine {
             "messages": request_messages,
             "stream": true,
             "temperature": 0.7,
-            "max_tokens": 4096,
+            "max_tokens": ctx.token_budget.max_output_tokens,
         });
+        tracing::info!(
+            model = %ctx.model,
+            max_tokens = ctx.token_budget.max_output_tokens,
+            "api request params"
+        );
 
         if !openai_tools.is_empty() {
             request_body["tools"] = serde_json::json!(openai_tools);
@@ -320,7 +325,7 @@ impl LlmReActEngine {
         }
 
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(600))
             .build()
             .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
 
@@ -343,6 +348,7 @@ impl LlmReActEngine {
         }
 
         let mut stream = response.bytes_stream();
+        let stream_start = std::time::Instant::now();
         let mut full_content = String::new();
         let mut reasoning_content = String::new();
         let mut buffer = String::new();
@@ -352,8 +358,13 @@ impl LlmReActEngine {
         cb(StreamEvent::Start);
 
         while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result
-                .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+            let chunk = match chunk_result {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::error!(error = %e, elapsed_ms = stream_start.elapsed().as_millis(), "llm stream error");
+                    return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
+                }
+            };
             let chunk_str = String::from_utf8_lossy(&chunk);
             buffer.push_str(&chunk_str);
 
@@ -461,6 +472,14 @@ impl LlmReActEngine {
                 })
             })
             .collect();
+
+        tracing::info!(
+            finish_reason = %finish_reason,
+            content_len = full_content.len(),
+            tool_call_count = tool_calls.len(),
+            elapsed_ms = stream_start.elapsed().as_millis(),
+            "llm response received"
+        );
 
         Ok((full_content, finish_reason, tool_calls, reasoning_content))
     }
@@ -733,6 +752,47 @@ impl AgentHarness {
         }
     }
 
+    /// Resolve the first enabled agent from the registry.
+    ///
+    /// Used by `MessageReceivedHandler` when no target agent is specified.
+    pub async fn resolve_first_enabled_agent(&self) -> Option<AgentInstance> {
+        let agents = self.registry.list().await;
+        agents.into_iter().find(|a| a.descriptor.enabled)
+    }
+
+    /// Resolve an agent by ID, returning `None` if not found or disabled.
+    pub async fn resolve_agent(&self, agent_id: &str) -> Option<AgentInstance> {
+        let instance = self.registry.get(agent_id).await?;
+        if instance.descriptor.enabled {
+            Some(instance)
+        } else {
+            None
+        }
+    }
+
+    /// Spawn a background task running `process_message`, with error logging.
+    pub fn spawn_process_message(
+        self: &Arc<Self>,
+        agent_id: String,
+        session_id: String,
+        user_text: String,
+        model: String,
+        soul_snapshot: SoulSnapshot,
+    ) -> tokio::task::JoinHandle<()> {
+        let harness = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(e) = harness
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot)
+                .await
+            {
+                tracing::error!(
+                    error = %e, session_id = %session_id, agent_id = %agent_id,
+                    "process_message failed"
+                );
+            }
+        })
+    }
+
     /// Process a user message through the full ReAct loop.
     ///
     /// This is the main entry point called when a `MESSAGE_RECEIVED` event arrives.
@@ -786,7 +846,17 @@ impl AgentHarness {
         let history = vec![ChatMessage::user(user_text)];
 
         // 5. Initialize model-aware token budget (M4)
-        let mut token_budget = crate::runtime::token_budget::TokenBudget::new(model);
+        // Use config-provided values if available (from provider.models.<model>),
+        // otherwise fall back to the hardcoded model lookup in TokenBudget::new().
+        let mut token_budget = match (instance.descriptor.max_context_tokens, instance.descriptor.max_output_tokens) {
+            (Some(ctx), Some(out)) => {
+                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, out)
+            }
+            (Some(ctx), None) => {
+                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, 0)
+            }
+            _ => crate::runtime::token_budget::TokenBudget::new(model),
+        };
         // Estimate system prompt tokens
         token_budget.set_system_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
         // Estimate tool schema tokens
@@ -809,7 +879,8 @@ impl AgentHarness {
             Some(mem_text.join("\n"))
         };
 
-        // 7. Create ReAct context
+        // 7. Create ReAct context with the config-correct max_output_tokens
+        let max_output_tokens = token_budget.max_output_tokens as u64;
         let mut ctx = ReActContext::new(
             agent_id.to_owned(),
             session_id.to_owned(),
@@ -819,6 +890,7 @@ impl AgentHarness {
             model,
             self.max_react_turns,
             self.token_budget_limit,
+            max_output_tokens,
         );
         ctx.memory_context = memory_context;
 
@@ -914,6 +986,9 @@ impl AgentHarness {
         let compressor = crate::runtime::history_compressor::HistoryCompressor::new(
             crate::runtime::history_compressor::CompressionStrategy::Truncate,
         );
+
+        // Track skill body so we can re-inject scoring methodology later (Task #18).
+        let mut loaded_skill_body: Option<String> = None;
 
         loop {
             // Check max turns
@@ -1089,8 +1164,48 @@ impl AgentHarness {
                         ))
                         .await;
 
-                    // Append tool results to history
+                    // If read_skill was called, save the skill body for later format reminders.
+                    // Extract before `results` is moved into `extend` below.
+                    let has_read_skill = calls.iter().any(|c| c.tool_name == "read_skill");
+                    if has_read_skill {
+                        loaded_skill_body = calls.iter()
+                            .position(|c| c.tool_name == "read_skill")
+                            .and_then(|idx| results.get(idx))
+                            .map(|r| r.content.clone());
+                    }
+
                     ctx.history.extend(results);
+
+                    // Inject activation note if read_skill was called
+                    if has_read_skill {
+                        if let Some(call) = calls.iter().find(|c| c.tool_name == "read_skill") {
+                            let skill_name = call.args.get("skill")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("skill");
+                            ctx.history.push(skill::formatting::build_read_skill_reinforcement(skill_name));
+                        }
+                    }
+
+                    // If a skill was loaded in a previous turn (via read_skill) and this
+                    // turn has finished gathering data, remind the LLM of the output format
+                    // template before it produces the final report. After many tool calls
+                    // the skill content drifts out of the LLM's immediate context window,
+                    // causing the final output to lose the prescribed template structure.
+                    if ctx.turn >= 2 && !calls.iter().any(|c| c.tool_name == "read_skill") {
+                        let skill_was_loaded = ctx.history.iter().any(|m| {
+                            m.tool_calls.as_ref().is_some_and(|tcs| {
+                                tcs.iter().any(|tc| {
+                                    tc.get("function")
+                                        .and_then(|f| f.get("name"))
+                                        .and_then(|n| n.as_str())
+                                        == Some("read_skill")
+                                })
+                            })
+                        });
+                        if skill_was_loaded {
+                            ctx.history.push(skill::formatting::build_format_reminder(loaded_skill_body.as_deref()));
+                        }
+                    }
 
                     // Increment turn
                     ctx.turn += 1;

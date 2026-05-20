@@ -909,6 +909,7 @@ pub async fn create_provider(
             display_name,
             base_url,
             api_key: None,
+            models: Vec::new(),
         },
     );
 

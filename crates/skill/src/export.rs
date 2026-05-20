@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use crate::skm_adapter::SkmRegistry;
-use crate::LlmSkill;
+use crate::SkillInfo;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,7 +51,7 @@ pub fn export_all(skills_root: &Path, out_dir: &Path) -> ExportReport {
 ///
 /// Each skill is written as `{out_dir}/{skill.name}/SKILL.md`.
 /// Silently skips skills whose source file is missing.
-pub fn export_skills(skills: &[LlmSkill], out_dir: &Path) -> ExportReport {
+pub fn export_skills(skills: &[SkillInfo], out_dir: &Path) -> ExportReport {
     let mut report = ExportReport::default();
 
     for skill in skills {
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn create_test_skill(dir: &Path, name: &str) -> LlmSkill {
+    fn create_test_skill(dir: &Path, name: &str) -> SkillInfo {
         let skill_dir = dir.join(name);
         fs::create_dir_all(&skill_dir).unwrap();
         let content = format!(
@@ -111,9 +111,11 @@ mod tests {
         );
         let path = skill_dir.join("SKILL.md");
         fs::write(&path, &content).unwrap();
-        LlmSkill {
+        SkillInfo {
             name: name.to_owned(),
             description: format!("{name} description"),
+            category: String::new(),
+            triggers: vec![],
             path,
         }
     }
@@ -159,9 +161,11 @@ mod tests {
         fs::create_dir_all(&tmp).unwrap();
 
         let out = tmp.join("out");
-        let skills = vec![LlmSkill {
+        let skills = vec![SkillInfo {
             name: "ghost".to_owned(),
             description: "missing".to_owned(),
+            category: String::new(),
+            triggers: vec![],
             path: tmp.join("nonexistent/SKILL.md"),
         }];
 

@@ -20,6 +20,7 @@
   let chatAvailable = $state(false);
   let hasProvider = $state(false);
   let hasAgent = $state(false);
+  let gatewayLoading = $state(false);
 
   type Page = { id: string; label: string };
 
@@ -62,12 +63,11 @@
       hasProvider = hp;
       hasAgent = ha;
 
-      // Onboarding: if no providers, redirect to providers page
       if (!hp && currentPage === "dashboard") {
         currentPage = "providers";
       }
     } catch {
-      // Config may not exist yet — that's fine
+      // Config may not exist yet
     }
   }
 
@@ -81,7 +81,6 @@
   }
 
   function handlePageVisited(pageId: string) {
-    // Re-check onboarding state when providers or agents page is visited
     if (pageId === "providers" || pageId === "agents") {
       checkOnboarding();
     }
@@ -90,6 +89,46 @@
   function navigateTo(pageId: string) {
     currentPage = pageId;
     handlePageVisited(pageId);
+  }
+
+  async function startGateway() {
+    gatewayLoading = true;
+    try {
+      const msg = await invoke<string>("start_runtime", { gatewayUrl: "http://127.0.0.1:9999" });
+      console.log(msg);
+      onRuntimeStatusChange(true);
+    } catch (e: any) {
+      console.error("Failed to start gateway:", e);
+    } finally {
+      gatewayLoading = false;
+    }
+  }
+
+  async function stopGateway() {
+    gatewayLoading = true;
+    try {
+      const msg = await invoke<string>("stop_runtime");
+      console.log(msg);
+      onRuntimeStatusChange(false);
+    } catch (e: any) {
+      console.error("Failed to stop gateway:", e);
+    } finally {
+      gatewayLoading = false;
+    }
+  }
+
+  async function restartGateway() {
+    gatewayLoading = true;
+    try {
+      await invoke<string>("stop_runtime");
+      const msg = await invoke<string>("start_runtime", { gatewayUrl: "http://127.0.0.1:9999" });
+      console.log(msg);
+      onRuntimeStatusChange(true);
+    } catch (e: any) {
+      console.error("Failed to restart gateway:", e);
+    } finally {
+      gatewayLoading = false;
+    }
   }
 
   onMount(async () => {
@@ -115,6 +154,14 @@
       </button>
     {/if}
   {/each}
+  <div class="gateway-controls">
+    {#if runtimeRunning}
+      <button class="gw-btn" onclick={stopGateway} disabled={gatewayLoading}>停止</button>
+      <button class="gw-btn" onclick={restartGateway} disabled={gatewayLoading}>重启</button>
+    {:else}
+      <button class="gw-btn start" onclick={startGateway} disabled={gatewayLoading}>启动</button>
+    {/if}
+  </div>
   <NotificationBell onNavigate={(p) => navigateTo(p)} />
   <ActivityStateWidget {runtimeRunning} />
 </nav>

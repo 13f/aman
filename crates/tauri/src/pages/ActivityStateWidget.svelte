@@ -43,6 +43,17 @@
   let metrics = $state<MetricsData | null>(null);
   let unlisteners: (() => void)[] = [];
 
+  // Reset all state when the gateway stops so stale idle/metrics data
+  // doesn't linger after a stop/restart cycle.
+  $effect(() => {
+    if (!runtimeRunning) {
+      mode = "idle";
+      idleSnap = null;
+      reflectSnap = null;
+      metrics = null;
+    }
+  });
+
   // --- constants ---
 
   const THRESHOLDS = [0, 5, 20, 50, 100, 200];

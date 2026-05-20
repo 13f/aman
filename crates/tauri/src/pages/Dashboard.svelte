@@ -101,6 +101,14 @@
     }
   }
 
+  // Reset metrics display when the gateway is not running so stale values
+  // don't linger on the dashboard after a stop/restart cycle.
+  $effect(() => {
+    if (!status.running) {
+      metrics = null;
+    }
+  });
+
   onMount(async () => {
     await refreshStatus();
     try {

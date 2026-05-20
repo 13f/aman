@@ -21,6 +21,7 @@
   let hasProvider = $state(false);
   let hasAgent = $state(false);
   let gatewayLoading = $state(false);
+  let gatewayPort = $state(9999);
 
   type Page = { id: string; label: string };
 
@@ -91,10 +92,14 @@
     handlePageVisited(pageId);
   }
 
+  function gatewayUrl() {
+    return `http://127.0.0.1:${gatewayPort}`;
+  }
+
   async function startGateway() {
     gatewayLoading = true;
     try {
-      const msg = await invoke<string>("start_runtime", { gatewayUrl: "http://127.0.0.1:9999" });
+      const msg = await invoke<string>("start_runtime", { gatewayUrl: gatewayUrl() });
       console.log(msg);
       onRuntimeStatusChange(true);
     } catch (e: any) {
@@ -121,7 +126,7 @@
     gatewayLoading = true;
     try {
       await invoke<string>("stop_runtime");
-      const msg = await invoke<string>("start_runtime", { gatewayUrl: "http://127.0.0.1:9999" });
+      const msg = await invoke<string>("start_runtime", { gatewayUrl: gatewayUrl() });
       console.log(msg);
       onRuntimeStatusChange(true);
     } catch (e: any) {
@@ -133,6 +138,9 @@
 
   onMount(async () => {
     await checkOnboarding();
+    try {
+      gatewayPort = await invoke<number>("get_gateway_port");
+    } catch { /* use default */ }
     initialLoadDone = true;
   });
 </script>

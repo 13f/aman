@@ -52,6 +52,7 @@ pub fn run() {
             commands::get_runtime_config,
             commands::start_runtime,
             commands::stop_runtime,
+            commands::get_gateway_port,
             commands::get_metrics,
             commands::list_skills,
             commands::reload_skills,

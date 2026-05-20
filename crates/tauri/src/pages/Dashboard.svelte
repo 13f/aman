@@ -37,17 +37,13 @@
   let metrics = $state<MetricsSnapshot | null>(null);
   let status = $state<RuntimeStatus>({ phase: "stopped", ready: false, live: false, running: false });
   let config = $state<RuntimeConfig | null>(null);
-  let gatewayUrl = $state("http://127.0.0.1:9999");
-  let loading = $state(false);
-  let error = $state("");
-  let info = $state("");
   let unlisten: (() => void) | null = null;
 
   async function refreshStatus() {
     try {
       status = await invoke<RuntimeStatus>("get_runtime_status");
       onstatuschange(status.running);
-    } catch (e) {
+    } catch {
       status = { phase: "stopped", ready: false, live: false, running: false };
       onstatuschange(false);
     }
@@ -61,52 +57,8 @@
     }
   }
 
-  async function connectGateway() {
-    loading = true;
-    error = "";
-    info = "";
-    try {
-      const url = gatewayUrl.trim() || "http://127.0.0.1:9999";
-      const msg = await invoke<string>("start_runtime", { gatewayUrl: url });
-      info = msg;
-      await refreshStatus();
-      await refreshConfig();
-    } catch (e: any) {
-      error = String(e);
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function disconnectGateway() {
-    loading = true;
-    error = "";
-    info = "";
-    try {
-      const msg = await invoke<string>("stop_runtime");
-      info = msg;
-      await refreshStatus();
-      config = null;
-    } catch (e: any) {
-      error = String(e);
-    } finally {
-      loading = false;
-    }
-  }
-
   onMount(async () => {
     await refreshStatus();
-    // Try connecting to default gateway URL on startup
-    if (!status.running) {
-      try {
-        const msg = await invoke<string>("start_runtime", { gatewayUrl: "http://127.0.0.1:9999" });
-        info = msg;
-        await refreshStatus();
-        await refreshConfig();
-      } catch {
-        // Gateway not running — user can connect manually
-      }
-    }
     listen<MetricsSnapshot>("metrics:updated", (e) => {
       metrics = e.payload;
     }).then((fn) => { unlisten = fn; });
@@ -117,51 +69,14 @@
   });
 </script>
 
-<div class="card" style="display:flex; align-items:center; justify-content:space-between;">
-  <div>
-    <h2>Gateway Status</h2>
-    <p style="color:var(--fg-dim);margin-top:4px;">
-      Phase: <strong>{status.phase}</strong>
-      &middot; Ready: <strong class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</strong>
-      &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
-    </p>
-  </div>
-  <div style="display:flex;gap:8px;align-items:center;">
-    {#if status.running}
-      <button class="danger" onclick={disconnectGateway} disabled={loading}>Disconnect</button>
-    {:else}
-      <button onclick={connectGateway} disabled={loading}>Connect</button>
-    {/if}
-  </div>
+<div class="card">
+  <h2>Gateway Status</h2>
+  <p style="color:var(--fg-dim);margin-top:4px;">
+    Phase: <strong>{status.phase}</strong>
+    &middot; Ready: <strong class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</strong>
+    &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
+  </p>
 </div>
-
-<!-- Gateway URL input (only when disconnected) -->
-{#if !status.running}
-  <div class="card">
-    <div style="display:flex;gap:10px;align-items:center;">
-      <label for="gwurl" style="font-size:13px;white-space:nowrap;">Gateway URL:</label>
-      <input
-        id="gwurl"
-        type="text"
-        bind:value={gatewayUrl}
-        placeholder="http://127.0.0.1:9999"
-        style="flex:1;"
-      />
-    </div>
-  </div>
-{/if}
-
-{#if error}
-  <div class="card" style="border-color:var(--red);">
-    <p style="color:var(--red);font-size:13px;">{error}</p>
-  </div>
-{/if}
-
-{#if info}
-  <div class="card" style="border-color:var(--green);">
-    <p style="color:var(--green);font-size:13px;">{info}</p>
-  </div>
-{/if}
 
 <!-- Runtime config info -->
 {#if config}

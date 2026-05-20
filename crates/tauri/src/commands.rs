@@ -74,6 +74,13 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
     }
 }
 
+#[tauri::command]
+pub async fn get_gateway_port() -> Result<u16, String> {
+    let cfg = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("load config: {e}"))?;
+    Ok(cfg.runtime.gateway.port)
+}
+
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------

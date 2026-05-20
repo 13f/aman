@@ -226,10 +226,10 @@ pub struct IdleCoordination {
     /// Sleep/Exploration/Meditation Workflow 在每个 checkpoint 检查此 token。
     pub idle_cancel_token: Arc<RwLock<CancellationToken>>,
 
-    /// R4-3 fix: 真实事件已到达标志。
-    /// Dispatcher 在 is_real 分支中 store(true)。
-    /// IdleDetector 在 poll 时读取并清零，确保 depth 在事件处理后强制重置。
-    pub real_event_seen: Arc<AtomicBool>,
+    /// R7: pending_depth_reset — depth 重置不由 reset_idle_signal 触发，
+    /// 而是由 Dispatcher 在产生 QueueDrained 时单独设置（signal_queue_drained）。
+    /// 避免 idle poll 在事件仍在处理中时提前消费 depth 重置信号。
+    pub pending_depth_reset: Arc<AtomicBool>,
 }
 
 impl IdleCoordination {
@@ -239,23 +239,23 @@ impl IdleCoordination {
             arousal: Arc::new(ArousalTracker::default()),
             last_source_type: Arc::new(AtomicU8::new(SourceType::Unknown as u8)),
             idle_cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
-            real_event_seen: Arc::new(AtomicBool::new(false)),
+            pending_depth_reset: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// 信号：真实事件到达时通知空闲系统。
-    /// 做三件事：
-    /// ① 设置 real_event_seen 标志 → IdleDetector 下次 poll 重置 depth
-    /// ② 取消旧的 idle_cancel_token → 中断正在运行的 Sleep/Exploration/Meditation Workflow
-    /// ③ 替换为新 CancellationToken → 供下一轮空闲周期使用
-    ///
-    /// 注意：内部连锁任务（如 Reflection 产出的 lessons_learned）不需要 ②③，
-    /// 但调用此函数无害——没有 Workflow 运行时 token 操作是空操作。
+    /// 取消运行中的空闲 Workflow。
+    /// 注意：depth 重置不由这里触发，而是在 Dispatcher 产生 QueueDrained 时
+    /// 通过 signal_queue_drained() 设置。
     pub fn reset_idle_signal(&self) {
-        self.real_event_seen.store(true, Ordering::SeqCst);
         let mut token = self.idle_cancel_token.write().unwrap();
         token.cancel();
         *token = CancellationToken::new();
+    }
+
+    /// 标记 depth 需要在下次 idle poll 时重置。
+    /// Dispatcher 在队列清空（产生 QueueDrained）时调用。
+    pub fn signal_queue_drained(&self) {
+        self.pending_depth_reset.store(true, Ordering::SeqCst);
     }
 }
 ```
@@ -269,6 +269,7 @@ impl IdleCoordination {
 ```
                         ┌──────────────────────────────────────────────────────┐
                         │      (任何真实事件到达 → reset_idle_signal → Active) │
+                        │      (同时 arousal.boost(0.3) → 提升 engagement)   │
                         │      (Reflection 运行中 → select! 抢先 → 取消 Reflection) │
                         │                                                      │
                         ▼                                                      │
@@ -522,6 +523,9 @@ impl Dispatcher {
                         // R2-2: 取消所有正在运行的 idle Workflow
                         coord.reset_idle_signal();
 
+                        // R7: 真实事件提升 arousal
+                        coord.arousal.boost(0.3);
+
                         self.dispatch(event).await;
                     } else if event.is_queue_drained() {
                         coord.busy_reflecting.store(true, Ordering::SeqCst);
@@ -568,6 +572,9 @@ impl Dispatcher {
                             continue;
                         }
 
+                        // R7: 队列清空 → 标记 depth 重置（不再依赖 real_event_seen 的 race-prone 机制）
+                        coord.signal_queue_drained();
+
                         let drained = QueueDrained {
                             last_event_type: self.last_event_type.clone(),
                             last_trace_id: self.last_trace_id.clone(),
@@ -597,10 +604,10 @@ impl Dispatcher {
 /// - 从聊天模式退出到完整人格时，idle_depth 重置为 0
 /// - resolve() 的 fallback 返回 Daze
 ///
-/// R4-3 关键变更：
-/// - depth 重置不再仅依赖 pending_count() 的 timing window。
-/// - 新增 real_event_seen 检查：如果上次 poll 以来有真实事件到达
-///   （Dispatcher 在 reset_idle_signal 中设置），强制重置 depth。
+/// R7 关键变更：
+/// - depth 重置不再依赖 real_event_seen（在 idle poll 中被提前消费）。
+/// - 改用 pending_depth_reset，由 Dispatcher 在产生 QueueDrained 时设置，
+///   确保 depth 只在队列清空后才重置。
 #[async_trait]
 impl EventSource for IdleDetector {
     async fn poll(&mut self, ctx: &SourceContext) -> Result<Vec<Event>> {
@@ -608,12 +615,8 @@ impl EventSource for IdleDetector {
             return Ok(vec![]);
         }
 
-        // R4-3: 结合 real_event_seen 强制重置 depth
-        // 不依赖 timing window——即使事件在此次 poll 前已处理完，
-        // Dispatcher 已设置标志，depth 仍会重置。
-        let real_event_arrived = self.coord.real_event_seen.swap(false, Ordering::SeqCst);
-
-        if ctx.event_bus.pending_count() > 0 || real_event_arrived {
+        // R7: 检查 Dispatcher 是否已清空队列并标记 depth 重置
+        if self.coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
             self.idle_depth = 0;
             self.last_non_idle = Instant::now();
             return Ok(vec![]);
@@ -817,7 +820,7 @@ crates/idle/src/
 ├── personality.rs  # 人格解析：depth→kind + ChatMode.as_personality() + resolve()
 ├── coordination.rs # IdleCoordination: reset_idle_signal()
 ├── workflow.rs     # IdleWorkflowRunner: run_with_cancel()
-├── arousal.rs      # ArousalTracker: decay + Engaged/Passive
+├── arousal.rs      # ArousalTracker: decay + Engaged/Passive + boost(factor)
 ├── incubation.rs   # IncubationManager: CancellationToken + 线程
 └── config.rs       # 配置验证（含 allowed_kinds ⊆ enabled_kinds）
 ```
@@ -934,6 +937,8 @@ Phase 4.5:
 层级 5: select! + abort 先于 store(false)  — 竞态窗口关闭 (R2-9)
 层级 6: wait_for_event + 二次确认          — 假唤醒防护 (R2-11)
 层级 7: reset_idle_signal             — 真实事件时取消所有 idle Workflow (R2-2)
+层级 8: signal_queue_drained          — 队列清空时才重置 depth，避免 poll 时序偷跑 (R7)
+层级 9: arousal.boost                 — 真实事件提升 arousal，避免只衰减不回复 (R7)
 ```
 
 ---
@@ -945,7 +950,8 @@ Phase 4.5:
 | **Reflection 连锁任务覆盖 last_source_type** | **R5-1 P2** | **已修复** | `is_from_external_source()` 守卫——仅外部 Source 事件覆盖源类型 |
 | **Pipeline 空闲状态打断矩阵描述不准确** | R4-1 P2 | 已修复 | §4.4 表格新增"可被真实事件打断？"列 |
 | **from_chat_mode 序列化跨会话残留** | **R4-2 P3** | **已修复** | 设计约束：IdleEvent（priority=Low）在 overflow 时丢弃不持久化 |
-| **idle_depth 事件处理后不保证重置** | **R4-3 P3** | **已修复** | IdleCoordination.real_event_seen；Dispatcher 设置→IdleDetector swap 消费 |
+| **idle_depth 事件处理后不保证重置** | **R4-3 P3** | **R7 重修复** | 移除 real_event_seen，改用 pending_depth_reset（队列清空时 signal_queue_drained 设置）。解决 idle poll 提前消费 flag 的问题 |
+| **Arousal 只衰减不回复** | **R7 P2** | **已修复** | 新增 ArousalTracker::boost(factor)，Dispatcher 在真实事件处理时调用 arousal.boost(0.3) |
 | **Depth 重置条件在纯聊天场景下不触发** | R3-1 P1 | ~~高~~ 已修复 | 条件改为 `was_chat`（含超时+源变更） |
 | **聊天 Boredom no-op 信息不可达** | R3-2 P1 | ~~高~~ 已修复 | IdleEvent.from_chat_mode 字段 |
 | **Incubation 打断语义不一致** | **R3-3 P2** | **已修复** | 明确 Incubation 为纯后台，不因真实事件中断。仅 Phase 4.5 关闭时取消 |

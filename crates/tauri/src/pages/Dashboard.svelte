@@ -38,6 +38,7 @@
   let status = $state<RuntimeStatus>({ phase: "stopped", ready: false, live: false, running: false });
   let config = $state<RuntimeConfig | null>(null);
   let gatewayLoading = $state(false);
+  let gatewayStopping = $state(false);
   let gatewayError = $state("");
   let gatewayPort = $state(9999);
   let unlisten: (() => void) | null = null;
@@ -78,6 +79,28 @@
     }
   }
 
+  async function stopGateway() {
+    gatewayStopping = true;
+    gatewayError = "";
+    try {
+      const msg = await invoke<string>("stop_runtime");
+      console.log(msg);
+      await refreshStatus();
+      await refreshConfig();
+    } catch (e: any) {
+      gatewayError = String(e);
+    } finally {
+      gatewayStopping = false;
+    }
+  }
+
+  async function restartGateway() {
+    await stopGateway();
+    if (!gatewayError) {
+      await startGateway();
+    }
+  }
+
   onMount(async () => {
     await refreshStatus();
     try {
@@ -106,6 +129,15 @@
     <button class="start-btn" onclick={startGateway} disabled={gatewayLoading}>
       {gatewayLoading ? "连接中..." : "启动"}
     </button>
+  {:else}
+    <div style="display:flex;gap:8px;">
+      <button class="stop-btn" onclick={stopGateway} disabled={gatewayStopping}>
+        {gatewayStopping ? "停止中..." : "停止"}
+      </button>
+      <button class="restart-btn" onclick={restartGateway} disabled={gatewayStopping || gatewayLoading}>
+        重启
+      </button>
+    </div>
   {/if}
 </div>
 {#if gatewayError}

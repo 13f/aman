@@ -20,7 +20,7 @@ async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, S
 }
 
 // ---------------------------------------------------------------------------
-// Runtime lifecycle — now gateway lifecycle
+// Runtime lifecycle — gateway process management
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
@@ -48,29 +48,125 @@ pub async fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeCon
     })
 }
 
+/// Find the workspace root by searching upward for a Cargo.toml containing `[workspace]`.
+fn find_workspace_root() -> Result<std::path::PathBuf, String> {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    for ancestor in manifest_dir.ancestors() {
+        let candidate = ancestor.join("Cargo.toml");
+        if candidate.exists() {
+            let content = std::fs::read_to_string(&candidate)
+                .map_err(|e| format!("read {candidate:?}: {e}"))?;
+            if content.contains("[workspace]") {
+                return Ok(ancestor.to_owned());
+            }
+        }
+    }
+    Err("Cannot find workspace root (no Cargo.toml with [workspace] found)".to_owned())
+}
+
 #[tauri::command]
 pub async fn start_runtime(
     state: State<'_, AppState>,
     gateway_url: String,
 ) -> Result<String, String> {
-    let mut guard = state.gateway_client.lock().await;
-    if guard.is_some() {
-        return Err("Already connected to a gateway".to_owned());
+    // Check not already connected
+    {
+        let guard = state.gateway_client.lock().await;
+        if guard.is_some() {
+            return Err("Already connected to a gateway".to_owned());
+        }
     }
 
-    let client = GatewayClient::new(&gateway_url);
-    client.health().await?;
+    let project_root = find_workspace_root()?;
 
-    *guard = Some(client);
-    Ok(format!("Connected to gateway at {gateway_url}"))
+    // Spawn `cargo run --bin gateway` from the workspace root
+    let mut child = tokio::process::Command::new("cargo")
+        .args(["run", "--bin", "gateway"])
+        .current_dir(&project_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("Failed to spawn gateway process: {e}"))?;
+
+    // Poll health endpoint until the gateway is ready (up to 120 s)
+    let client = GatewayClient::new(&gateway_url);
+    let max_retries = 120u32;
+    let mut last_err = String::new();
+
+    for _ in 0..max_retries {
+        // Detect premature exit (e.g. cargo build failure)
+        if let Ok(Some(status)) = child.try_wait() {
+            use tokio::io::AsyncReadExt;
+            let stderr = match child.stderr.take() {
+                Some(mut s) => {
+                    let mut buf = String::new();
+                    let _ = s.read_to_string(&mut buf).await;
+                    buf
+                }
+                None => String::new(),
+            };
+            return Err(format!(
+                "Gateway process exited with status {status}:\n{stderr}"
+            ));
+        }
+
+        match client.health().await {
+            Ok(()) => {
+                let mut client_guard = state.gateway_client.lock().await;
+                *client_guard = Some(client);
+                let mut proc_guard = state.gateway_process.lock().await;
+                *proc_guard = Some(child);
+                return Ok(format!("Gateway started at {gateway_url}"));
+            }
+            Err(e) => {
+                last_err = e;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+    }
+
+    // Timeout — kill the process and report failure
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    Err(format!(
+        "Gateway failed to become healthy within {max_retries}s: {last_err}"
+    ))
 }
 
 #[tauri::command]
 pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> {
-    let mut guard = state.gateway_client.lock().await;
-    match guard.take() {
-        Some(_) => Ok("Disconnected from gateway".to_owned()),
-        None => Err("Not connected to any gateway".to_owned()),
+    // Best-effort call to the gateway's shutdown endpoint
+    let base_url = {
+        let guard = state.gateway_client.lock().await;
+        guard.as_ref().map(|c| c.base_url.clone())
+    };
+
+    if let Some(ref url) = base_url {
+        let http_client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .map_err(|e| format!("create http client: {e}"))?;
+        let _ = http_client
+            .post(format!("{url}/agent/shutdown"))
+            .send()
+            .await;
+    }
+
+    // Clear the client from state
+    {
+        let mut guard = state.gateway_client.lock().await;
+        *guard = None;
+    }
+
+    // Kill the child process if we own it
+    let mut proc_guard = state.gateway_process.lock().await;
+    if let Some(mut child) = proc_guard.take() {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        Ok("Gateway stopped".to_owned())
+    } else {
+        Ok("Disconnected from gateway".to_owned())
     }
 }
 

@@ -84,6 +84,32 @@ body { min-height: 100vh; }
 }
 .start-btn:hover { opacity: 0.85; }
 .start-btn:disabled { opacity: 0.4; cursor: default; }
+.stop-btn {
+  padding: 8px 20px;
+  font-size: 14px;
+  border: none;
+  border-radius: 6px;
+  background: var(--red);
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.stop-btn:hover { opacity: 0.85; }
+.stop-btn:disabled { opacity: 0.4; cursor: default; }
+.restart-btn {
+  padding: 8px 20px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--fg);
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+.restart-btn:hover { background: var(--border); }
+.restart-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* Main content */
 .main {

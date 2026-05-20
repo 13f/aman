@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::process::Child;
 use std::time::Duration;
 
 use crate::gateway_client::GatewayClient;
@@ -7,6 +8,8 @@ use crate::rate_limiter::SlidingWindowRateLimiter;
 
 pub struct AppState {
     pub gateway_client: Arc<Mutex<Option<GatewayClient>>>,
+    /// Handle to the spawned gateway child process.
+    pub gateway_process: Arc<Mutex<Option<Child>>>,
     pub rate_limiter: SlidingWindowRateLimiter,
     /// The currently active agent key (for multi-agent mode, P2+).
     pub active_agent_key: Arc<Mutex<Option<String>>>,
@@ -17,6 +20,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             gateway_client: Arc::new(Mutex::new(None)),
+            gateway_process: Arc::new(Mutex::new(None)),
             // User-level: 10 messages per 60-second sliding window (§4.5)
             rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 10),
             active_agent_key: Arc::new(Mutex::new(None)),

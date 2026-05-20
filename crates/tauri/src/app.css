@@ -35,7 +35,7 @@ body { min-height: 100vh; }
   padding: 16px 0;
   flex-shrink: 0;
 }
-.sidebar a {
+.sidebar a, .sidebar button {
   display: block;
   padding: 10px 20px;
   color: var(--fg-dim);
@@ -43,8 +43,12 @@ body { min-height: 100vh; }
   font-size: 14px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
 }
-.sidebar a:hover, .sidebar a.active {
+.sidebar a:hover, .sidebar a.active, .sidebar button:hover, .sidebar button.active {
   background: var(--bg-hover);
   color: var(--fg);
 }

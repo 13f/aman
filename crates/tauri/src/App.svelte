@@ -106,15 +106,13 @@
         {page.label}
       </span>
     {:else}
-      <a
-        href=""
-        role="button"
-        class={currentPage === page.id ? "active" : ""}
-        onclick={(e) => { e.preventDefault(); navigateTo(page.id); }}
+      <button
+        class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
+        onclick={() => navigateTo(page.id)}
       >
         <span class="status-dot {runtimeRunning ? 'running' : 'stopped'}"></span>
         {page.label}
-      </a>
+      </button>
     {/if}
   {/each}
   <NotificationBell onNavigate={(p) => navigateTo(p)} />

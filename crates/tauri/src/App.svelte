@@ -2,10 +2,9 @@
   import "./app.css";
   import { onMount } from "svelte";
   import Dashboard from "./pages/Dashboard.svelte";
-  import EventViewer from "./pages/EventViewer.svelte";
+  import Maintenance from "./pages/Maintenance.svelte";
   import WorkflowBoard from "./pages/WorkflowBoard.svelte";
   import PluginManager from "./pages/PluginManager.svelte";
-  import DLQ from "./pages/DLQ.svelte";
   import Chat from "./pages/Chat.svelte";
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
@@ -24,10 +23,9 @@
 
   const staticPages: Page[] = [
     { id: "dashboard", label: "Dashboard" },
-    { id: "events", label: "Event Viewer" },
+    { id: "maintenance", label: "Maintenance" },
     { id: "workflows", label: "Workflow Board" },
     { id: "plugins", label: "Plugin Manager" },
-    { id: "dlq", label: "DLQ" },
     { id: "settings", label: "Settings" },
   ];
 
@@ -121,14 +119,12 @@
 <main class="main">
   {#if currentPage === "dashboard"}
     <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
-  {:else if currentPage === "events"}
-    <EventViewer />
+  {:else if currentPage === "maintenance"}
+    <Maintenance />
   {:else if currentPage === "workflows"}
     <WorkflowBoard />
   {:else if currentPage === "plugins"}
     <PluginManager />
-  {:else if currentPage === "dlq"}
-    <DLQ />
   {:else if currentPage === "providers"}
     <Providers />
   {:else if currentPage === "agents"}

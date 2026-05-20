@@ -4,7 +4,6 @@
   import { onMount, onDestroy } from "svelte";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
-  import DebugPanel from "./DebugPanel.svelte";
   import { marked } from "marked";
 
   marked.setOptions({ gfm: true, breaks: true });
@@ -76,7 +75,6 @@
   let messageAreaEl: HTMLDivElement | undefined = $state();
   let autoScroll = $state(true);
   let chatCapabilityAvailable = $state(true);
-  let showDebugPanel = $state(false);
   let soulDescription = $state("");
   let soulDetailExpanded = $state(false);
   let soulIntroShown = $state(false);
@@ -853,7 +851,7 @@
       "  `/session list` — List all sessions",
       "  `/session rename <name>` — Rename current session",
       "  `/session switch <id>` — Switch to a session",
-      "  `/debug` — Show session debug info",
+      "  `/trace <id>` — Query trace chain (also see Maintenance page)",
       "  `/export` — Export conversation as text",
       "",
       "**LLM-dependent (queued):**",
@@ -1036,37 +1034,6 @@
     }
   }
 
-  async function handleDebug(args: string[]) {
-    // /debug toggle → show/hide debug panel
-    if (args[0] === "panel" || args[0] === "toggle") {
-      showDebugPanel = !showDebugPanel;
-      messages = [...messages, {
-        id: crypto.randomUUID(), type: "system_event",
-        content: `Debug panel ${showDebugPanel ? "opened" : "closed"}.`,
-        timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
-      }];
-      return;
-    }
-    const sessionMsgs = messages.filter(m => m.sessionId === activeSessionId);
-    const info = [
-      "**Debug info:**",
-      `  Active session: ${activeSessionId.slice(0, 8)}`,
-      `  Sessions total: ${sessions.length}`,
-      `  Messages in session: ${sessionMsgs.length}`,
-      `  Capability: ${chatCapabilityAvailable ? "available" : "unavailable"}`,
-      `  Loading: ${isLoading}`,
-      `  Processing: ${isProcessing}`,
-      `  Rate limit countdown: ${rateLimitCountdown}s`,
-      `  SOUL: ${currentSoulName || "none"}`,
-      `  Archived messages: ${archivedMsgIds.size}`,
-    ];
-    messages = [...messages, {
-      id: crypto.randomUUID(), type: "system_event",
-      content: info.join("\n"),
-      timestamp: new Date().toISOString(), sessionId: activeSessionId, status: "completed" as MessageStatus,
-    }];
-  }
-
   async function handleTraceQuery(args: string[]) {
     const traceId = args[0];
     if (!traceId) {
@@ -1182,7 +1149,6 @@
     }},
     { name: "retry", aliases: ["r"], category: "llm_dependent", usage: "/retry [--full]", description: "Retry last reply", handler: handleRetry },
     { name: "edit", aliases: ["e"], category: "llm_dependent", usage: "/edit <msg_index> <text>", description: "Edit and resend", handler: handleEdit },
-    { name: "debug", aliases: ["dbg"], category: "non_llm", usage: "/debug [panel|toggle]", description: "Show debug info or toggle panel", handler: handleDebug },
     { name: "export", aliases: [], category: "non_llm", usage: "/export", description: "Export conversation", handler: handleExport },
     { name: "trace", aliases: ["tc"], category: "non_llm", usage: "/trace <trace_id>", description: "Query trace chain", handler: handleTraceQuery },
     { name: "soul", aliases: [], category: "llm_dependent", usage: "/soul switch|info <name>", description: "Switch SOUL or show info", handler: async (args) => {
@@ -1307,10 +1273,10 @@
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // Ctrl+Shift+D or Meta+Shift+D: toggle debug panel
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "D") {
+    // Ctrl+Enter or Meta+Enter: send message
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
-      showDebugPanel = !showDebugPanel;
+      sendMessage();
     }
   }
 
@@ -1443,9 +1409,6 @@
         <span class="chat-status" class:loading={isProcessing}>
           {isProcessing ? "Processing..." : "Ready"}
         </span>
-        <button class="debug-toggle-btn" onclick={() => showDebugPanel = !showDebugPanel} title="Toggle Debug Panel (Ctrl+Shift+D)">
-          &#x2699;
-        </button>
       </div>
     </header>
 
@@ -1558,9 +1521,6 @@
     </div>
   {/each}
 </div>
-
-<!-- Debug Panel overlay -->
-<DebugPanel bind:visible={showDebugPanel} />
 
 <style>
   .chat-layout {
@@ -2125,22 +2085,6 @@
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-
-  .debug-toggle-btn {
-    padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--fg-dim);
-    font-size: 16px;
-    cursor: pointer;
-    line-height: 1.4;
-  }
-
-  .debug-toggle-btn:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
   }
 
   .soul-detail-popup {

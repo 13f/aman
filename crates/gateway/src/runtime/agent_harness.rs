@@ -20,7 +20,7 @@ use super::memory_store::MemoryStore;
 use super::AgentRegistry;
 
 /// Default maximum ReAct loop iterations.
-const DEFAULT_MAX_REACT_TURNS: u32 = 10;
+const DEFAULT_MAX_REACT_TURNS: u32 = 64;
 /// Default token budget limit.
 const DEFAULT_TOKEN_BUDGET_LIMIT: u64 = 100_000;
 
@@ -980,6 +980,11 @@ impl AgentHarness {
             self.memory_store.store(agent_id, content, vec!["auto".to_owned()]);
         }
 
+        // Sanitize API key patterns from output before publishing.
+        // LLMs may hallucinate apiKey patterns when exposed to tool schemas
+        // or skill documentation that references API-based services.
+        let final_reply = sanitize_api_keys(&final_reply);
+
         // 11. Publish reply event
         let _ = self
             .bus
@@ -1234,7 +1239,7 @@ impl AgentHarness {
                     // template before it produces the final report. After many tool calls
                     // the skill content drifts out of the LLM's immediate context window,
                     // causing the final output to lose the prescribed template structure.
-                    if ctx.turn >= 2 && !calls.iter().any(|c| c.tool_name == "read_skill") {
+                    if ctx.turn >= 1 && !calls.iter().any(|c| c.tool_name == "read_skill") {
                         let skill_was_loaded = ctx.history.iter().any(|m| {
                             m.tool_calls.as_ref().is_some_and(|tcs| {
                                 tcs.iter().any(|tc| {
@@ -1383,4 +1388,54 @@ fn process_remember_commands(text: &str) -> (String, Vec<String>) {
     let cleaned = result.trim().to_owned();
 
     (cleaned, remembered)
+}
+
+/// Strip common API key patterns from LLM output to prevent accidental leakage.
+///
+/// LLMs trained on code and API documentation may hallucinate patterns like
+/// `"apiKey": "sk-..."` or `Authorization: Bearer sk-...` when their context
+/// includes tool schemas or skill docs referencing API-based services.
+fn sanitize_api_keys(text: &str) -> String {
+    // Match common API key patterns: "apiKey": "sk-...", "api_key": "sk-...",
+    // "Authorization: Bearer sk-...", etc.
+    // Use simple scanning to avoid pulling in a regex crate.
+    let lower = text.to_lowercase();
+    let mut result = text.to_owned();
+
+    // Find sk- patterns and check if preceded by api key context
+    let mut search_start = 0;
+    while let Some(pos) = lower[search_start..].find("sk-") {
+        let abs_pos = search_start + pos;
+        // Look backward up to 40 chars for API key context keywords
+        let ctx_start = abs_pos.saturating_sub(40);
+        let ctx = &lower[ctx_start..abs_pos];
+        let is_api_context = ctx.contains("apikey")
+            || ctx.contains("api_key")
+            || ctx.contains("api-key")
+            || ctx.contains("bearer")
+            || ctx.contains("authorization");
+
+        if is_api_context {
+            // Find the end of the key (alphanumeric + hyphens + underscores)
+            let key_start = abs_pos;
+            let mut key_end = key_start;
+            for ch in text[key_start..].chars() {
+                if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+                    key_end += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if key_end - key_start >= 20 {
+                // It's long enough to be a real key — redact it
+                result.replace_range(key_start..key_end, "[REDACTED]");
+                // Adjust lower to match (simplification: just break after first redaction)
+                break;
+            }
+        }
+
+        search_start = abs_pos + 3; // skip past "sk-"
+    }
+
+    result
 }

@@ -117,73 +117,16 @@ pub fn build_format_reminder(skill_body: Option<&str>) -> ChatMessage {
          headers and template layout from the skill.",
     );
 
-    // Re-inject the skill's scoring methodology and report template so the LLM
-    // has them fresh in context after many turns of information gathering.
+    // Re-inject the FULL skill body so the LLM has the complete methodology,
+    // scoring rubrics, traps, and output template fresh in context after many
+    // turns of information gathering. Partial extraction misses critical
+    // sections (e.g. traps, sub-dimensions, market-specific rules).
     if let Some(body) = skill_body.filter(|b| !b.is_empty()) {
-        let relevant = extract_scoring_and_template_sections(body);
-        if !relevant.is_empty() {
-            msg.push_str("\n\n---\n## Skill Methodology (re-injected)\n\n");
-            msg.push_str(&relevant);
-            msg.push_str("\n\n---\n");
-            msg.push_str("Follow the sections, scoring dimensions, weights, and template exactly as shown above.");
-        }
+        msg.push_str("\n\n---\n## Skill Methodology (re-injected, FULL)\n\n");
+        msg.push_str(body);
+        msg.push_str("\n\n---\n");
+        msg.push_str("Follow ALL sections, scoring dimensions, weights, sub-dimensions, traps, and template exactly as shown above. Fill every section completely.");
     }
 
     ChatMessage::user(msg)
-}
-
-/// Extract the scoring criteria and report template sections from a skill body.
-/// Looks for common section headers to identify relevant portions.
-fn extract_scoring_and_template_sections(body: &str) -> String {
-    let mut parts = Vec::new();
-    let mut in_relevant = false;
-    let mut current = String::new();
-
-    for line in body.lines() {
-        let trimmed = line.trim();
-        // Detect scoring sections, output templates, report formats
-        if trimmed.starts_with("### ") || trimmed.starts_with("## ") {
-            let header_lower = trimmed.to_lowercase();
-            let is_score_section = header_lower.contains("评分")
-                || header_lower.contains("score")
-                || header_lower.contains("scoring")
-                || header_lower.contains("analys")
-                || header_lower.contains("分析")
-                || header_lower.contains("维度")
-                || header_lower.contains("dimension")
-                || header_lower.contains("阶段 2")
-                || header_lower.contains("stage 2")
-                || header_lower.contains("阶段 3")
-                || header_lower.contains("stage 3")
-                || header_lower.contains("输出")
-                || header_lower.contains("output")
-                || header_lower.contains("report")
-                || header_lower.contains("template")
-                || header_lower.contains("模板")
-                || header_lower.contains("格式");
-
-            if is_score_section {
-                // Flush previous section
-                if !current.is_empty() {
-                    parts.push(std::mem::take(&mut current));
-                }
-                in_relevant = true;
-                current.push_str(trimmed);
-                current.push('\n');
-                continue;
-            }
-        }
-
-        if in_relevant {
-            current.push_str(line);
-            current.push('\n');
-        }
-    }
-
-    // Flush last section
-    if !current.is_empty() {
-        parts.push(current);
-    }
-
-    parts.join("\n")
 }

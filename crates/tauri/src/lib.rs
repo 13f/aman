@@ -202,15 +202,17 @@ pub fn run() {
                 }
             });
 
-            // Background task: emit `event:processed` every 1 s (poll EventStore via gateway).
+            // Background task: emit `event:processed` every 500 ms (poll EventStore via gateway).
+            // Uses a high fetch limit (500) to avoid permanently losing events during streaming
+            // bursts where >20 events can be generated between 1 s polls.
             rt.spawn(async move {
-                let mut tick = interval(Duration::from_secs(1));
+                let mut tick = interval(Duration::from_millis(500));
                 let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 loop {
                     tick.tick().await;
                     let guard = gc_for_events.lock().await;
                     if let Some(client) = guard.as_ref() {
-                        match client.recent_events(20).await {
+                        match client.recent_events(500).await {
                             Ok(v) => {
                                 drop(guard);
                                 if let Some(events) = v["events"].as_array() {

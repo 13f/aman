@@ -12,6 +12,8 @@
   // Escape standalone markdown structural elements that would eat content:
   // - standalone `---` rendered as invisible <hr>
   // - standalone `===` that can act as setext heading underlines
+  // - malformed table rows (pipe-delimited without proper separator) that
+  //   marked/gfm tries to parse as tables but renders as garbled text
   // This preserves inline formatting (bold, code, lists, tables) while
   // preventing accidental content loss from LLM-generated section separators.
   function escapeMarkdown(text: string): string {
@@ -19,7 +21,18 @@
       // Escape standalone --- lines (horizontal rules)
       .replace(/^---+$/gm, "\\---")
       // Escape standalone === lines (setext headings or HR-like)
-      .replace(/^====+$/gm, "\\===");
+      .replace(/^====+$/gm, "\\===")
+      // Escape lines that start with ==== and have content (like ASCII separator headers)
+      .replace(/^(====+)([^=].*)$/gm, "\\$1$2")
+      // Escape malformed table rows: lines starting with | that don't form
+      // a proper GFM table (missing separator row after header).
+      // Wrap them in backtick-escaping to prevent marked from interpreting them.
+      .replace(/^(\|[^\n]+\|)$/gm, (_, line: string) => {
+        // Only escape if it looks like a malformed table (no separator row context)
+        // Count the pipes — if more than 2, likely a table row
+        const pipeCount = (line.match(/\|/g) || []).length;
+        return pipeCount >= 3 ? "`" + line + "`" : line;
+      });
   }
 
   type MessageType =

@@ -566,7 +566,7 @@ pub async fn chat_session_list(
         arr.iter().map(|item| ChatSessionInfo {
             id: item["id"].as_str().unwrap_or("").to_owned(),
             state: item["state"].as_str().unwrap_or("").to_owned(),
-            message_count: 0,
+            message_count: item["message_count"].as_u64().unwrap_or(0) as usize,
             created_at: item["created_at"].as_i64().unwrap_or(0),
             last_active_at: item["last_active_at"].as_i64(),
             session_type: item["session_type"].as_str().map(String::from),

@@ -547,7 +547,7 @@ impl AgentRuntimeBuilder {
             match super::session_store::SessionStore::open(&db_path, &sessions_dir) {
                 Ok(store) => {
                     tracing::info!(path = %db_path.display(), "session store opened");
-                    Some(store)
+                    Some(Arc::new(store))
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "session store init skipped");
@@ -994,7 +994,7 @@ pub struct AgentRuntime {
     /// Registry for tool authorization requests (native macOS dialogs).
     auth_registry: Arc<tool::auth::AuthRegistry>,
     /// SQLite-backed session index (persists across restarts).
-    session_store: Option<super::session_store::SessionStore>,
+    session_store: Option<Arc<super::session_store::SessionStore>>,
     /// Notification center — user-facing alerts (critical/warning).
     notifications: Arc<notification::NotificationStore>,
     /// Agent runtime registry — manages agent instances and lifecycle.
@@ -1031,7 +1031,7 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn session_store(&self) -> Option<&super::session_store::SessionStore> {
-        self.session_store.as_ref()
+        self.session_store.as_ref().map(|arc| arc.as_ref())
     }
 
     #[must_use]
@@ -1516,6 +1516,7 @@ impl AgentRuntime {
         let subscription_filter = event_bus::SubscriptionFilter::default();
         let handler = Box::new(StoreAllEventsHandler {
             store: Arc::clone(&self.event_store),
+            session_store: self.session_store.clone(),
         });
         let id = self.bus.subscribe(subscription_filter, handler).await?;
         *self.observer_subscription.lock().await = Some(id);
@@ -2004,11 +2005,28 @@ impl PluginExportRegistrar for RuntimePluginRegistrar {
 
 struct StoreAllEventsHandler {
     store: Arc<EventStore>,
+    session_store: Option<Arc<super::session_store::SessionStore>>,
 }
 
 #[async_trait::async_trait]
 impl event_bus::EventHandler for StoreAllEventsHandler {
     async fn handle(&self, event: kernel::event::Event) -> AmanResult<()> {
+        // Persist session-related events to JSONL so conversation history
+        // survives gateway restarts.
+        let session_id = event.payload.get("session_id").and_then(|v| v.as_str());
+        if let Some(sid) = session_id {
+            if let Some(ref store) = self.session_store {
+                let entry = serde_json::json!({
+                    "event_id": event.id.to_string(),
+                    "event_type": format!("{:?}", event.event_type),
+                    "source": event.source,
+                    "timestamp_ms": event.timestamp.as_millis(),
+                    "payload": event.payload,
+                });
+                let _ = store.append_session_event(sid, &entry);
+            }
+        }
+
         self.store.record(event);
         Ok(())
     }

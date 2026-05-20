@@ -1897,6 +1897,7 @@ struct ChatSessionItem {
     created_at: u64,
     last_active_at: u64,
     version: u64,
+    message_count: u64,
 }
 
 async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
@@ -1926,6 +1927,11 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
                 .get("version")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let message_count = inst
+                .data
+                .get("message_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             ChatSessionItem {
                 id: inst.id,
                 session_type,
@@ -1933,6 +1939,7 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
                 created_at,
                 last_active_at,
                 version,
+                message_count,
             }
         })
         .collect();
@@ -2002,43 +2009,53 @@ async fn chat_session_state(
     State(runtime): State<Arc<AgentRuntime>>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(instance) = runtime.workflow_engine().get_instance(&id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("session not found: {id}"),
-            }),
-        )
-            .into_response();
-    };
-    let version = instance
-        .data
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let messages = runtime
-        .event_store()
-        .recent(2000)
-        .into_iter()
-        .filter(|e| {
-            e.payload
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|sid| sid == id)
-        })
-        .map(|e| {
-            json!({
-                "event_id": e.id.to_string(),
-                "event_type": format!("{:?}", e.event_type),
-                "source": e.source,
-                "timestamp_ms": e.timestamp.as_millis(),
-                "payload": e.payload,
-            })
-        })
-        .collect::<Vec<_>>();
+    // Try to get the session from the WorkflowEngine (in-memory, running sessions).
+    let (state, version, messages) =
+        if let Some(instance) = runtime.workflow_engine().get_instance(&id) {
+            let version = instance
+                .data
+                .get("version")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let messages = runtime
+                .event_store()
+                .recent(2000)
+                .into_iter()
+                .filter(|e| {
+                    e.payload
+                        .get("session_id")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|sid| sid == id)
+                })
+                .map(|e| {
+                    json!({
+                        "event_id": e.id.to_string(),
+                        "event_type": format!("{:?}", e.event_type),
+                        "source": e.source,
+                        "timestamp_ms": e.timestamp.as_millis(),
+                        "payload": e.payload,
+                    })
+                })
+                .collect::<Vec<_>>();
+            (instance.current_state, version, messages)
+        } else if let Some(store) = runtime.session_store() {
+            // Not in memory — try to restore from persisted JSONL.
+            let stored = store.load_session_events(&id);
+            let version = stored.len() as u64;
+            ("closed".to_owned(), version, stored)
+        } else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    message: format!("session not found: {id}"),
+                }),
+            )
+                .into_response();
+        };
+
     Json(ChatSessionStateResponse {
         id,
-        state: instance.current_state,
+        state,
         version,
         messages,
     })
@@ -2049,26 +2066,37 @@ async fn chat_session_history(
     State(runtime): State<Arc<AgentRuntime>>,
     Path(id): Path<String>,
 ) -> Response {
-    let messages = runtime
-        .event_store()
-        .recent(2000)
-        .into_iter()
-        .filter(|e| {
-            e.payload
-                .get("session_id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|sid| sid == id)
-        })
-        .map(|e| {
-            json!({
-                "event_id": e.id.to_string(),
-                "event_type": format!("{:?}", e.event_type),
-                "source": e.source,
-                "timestamp_ms": e.timestamp.as_millis(),
-                "payload": e.payload,
+    let messages = {
+        let from_store = runtime
+            .event_store()
+            .recent(2000)
+            .into_iter()
+            .filter(|e| {
+                e.payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|sid| sid == id)
             })
-        })
-        .collect::<Vec<_>>();
+            .map(|e| {
+                json!({
+                    "event_id": e.id.to_string(),
+                    "event_type": format!("{:?}", e.event_type),
+                    "source": e.source,
+                    "timestamp_ms": e.timestamp.as_millis(),
+                    "payload": e.payload,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if !from_store.is_empty() {
+            from_store
+        } else if let Some(store) = runtime.session_store() {
+            store.load_session_events(&id)
+        } else {
+            from_store
+        }
+    };
+
     (StatusCode::OK, Json(json!({ "messages": messages }))).into_response()
 }
 
@@ -2232,7 +2260,30 @@ async fn chat_session_send(
         data["last_active_at"] = json!(now_ms);
         let v = data.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
         data["version"] = json!(v + 1);
+        let mc = data.get("message_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        data["message_count"] = json!(mc + 1);
     });
+
+    // Persist to SQLite store so the session list in the frontend shows
+    // the correct message count even while the session is still open.
+    if let Some(store) = runtime.session_store() {
+        if let Some(inst) = runtime.workflow_engine().get_instance(&id) {
+            let session_type = inst.data.get("session_type")
+                .and_then(|v| v.as_str()).unwrap_or("persistent");
+            let created_at = inst.data.get("created_at")
+                .and_then(|v| v.as_i64()).unwrap_or(0);
+            let message_count = inst.data.get("message_count")
+                .and_then(|v| v.as_i64()).unwrap_or(0);
+            let _ = store.upsert(&session_store::SessionRecord {
+                id: inst.id,
+                state: inst.current_state,
+                message_count,
+                created_at,
+                last_active_at: now_ms as i64,
+                session_type: session_type.to_owned(),
+            });
+        }
+    }
 
     runtime.audit().record(
         operator,
@@ -2302,10 +2353,12 @@ async fn chat_session_close(
                         .and_then(|v| v.as_i64()).unwrap_or(0);
                     let last_active_at = inst.data.get("last_active_at")
                         .and_then(|v| v.as_i64()).unwrap_or(0);
+                    let message_count = inst.data.get("message_count")
+                        .and_then(|v| v.as_i64()).unwrap_or(0);
                     let _ = store.upsert(&session_store::SessionRecord {
                         id: inst.id,
                         state: inst.current_state,
-                        message_count: 0,
+                        message_count,
                         created_at,
                         last_active_at,
                         session_type: session_type.to_owned(),

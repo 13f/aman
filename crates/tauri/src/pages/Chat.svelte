@@ -147,6 +147,86 @@
     activeSessionId = id;
     const count = messages.filter(m => m.sessionId === id).length;
     updateSession(id, { messageCount: count });
+    // Load session history from the backend.
+    loadSessionHistory(id);
+  }
+
+  async function loadSessionHistory(sessionId: string) {
+    try {
+      const state = await invoke<{
+        session_id: string;
+        messages: Array<{
+          event_id: string;
+          event_type: string;
+          payload: any;
+          timestamp_ms: number;
+        }>;
+      }>("chat_session_state", { sessionId });
+      if (!state.messages?.length) return;
+      // Build Message objects from persisted session events.
+      const historyMsgs: Message[] = [];
+      const seenIds = new Set(messages.map(m => m.id));
+      for (const evt of state.messages) {
+        const et = evt.event_type;
+        const p = evt.payload ?? {};
+        // Dedup against already-loaded messages.
+        if (seenIds.has(evt.event_id)) continue;
+        seenIds.add(evt.event_id);
+        let msg: Message | null = null;
+        if (et === "MessageReceived") {
+          // User message
+          msg = {
+            id: evt.event_id,
+            type: "user_text",
+            content: p.text ?? "",
+            timestamp: new Date(evt.timestamp_ms).toISOString(),
+            sessionId,
+            status: "completed",
+          };
+        } else if (et.includes("reply_ready") || et.includes("reply_stream_done") || et === "llm_reply_ready") {
+          // Assistant reply (exclude stream-start artifacts)
+          const replyText = p.reply ?? p.full_text ?? "";
+          if (replyText) {
+            msg = {
+              id: evt.event_id,
+              type: "assistant_text",
+              content: replyText,
+              timestamp: new Date(evt.timestamp_ms).toISOString(),
+              sessionId,
+              status: "completed",
+            };
+          }
+        } else if (et === "llm_tool_call" || et.includes("tool_call")) {
+          msg = {
+            id: evt.event_id,
+            type: "tool_call",
+            content: p.tool_name ?? p.name ?? "tool",
+            timestamp: new Date(evt.timestamp_ms).toISOString(),
+            sessionId,
+            status: "completed",
+            toolCall: p,
+          };
+        } else if (et === "history_trimmed" || et === "HISTORY_TRIMMED" || et.includes("config_warning")) {
+          // System event
+          msg = {
+            id: evt.event_id,
+            type: "system_event",
+            content: p.message ?? "",
+            timestamp: new Date(evt.timestamp_ms).toISOString(),
+            sessionId,
+            status: "completed",
+          };
+        }
+        if (msg) {
+          historyMsgs.push(msg);
+        }
+      }
+      if (historyMsgs.length > 0) {
+        messages = [...messages, ...historyMsgs];
+      }
+    } catch {
+      // Gateway not available or session not found — no history to load.
+    }
   }
 
   async function loadSessions() {

@@ -5,8 +5,13 @@
 //! Written by the gateway when sessions are closed; read by the Tauri
 //! frontend to display the session list without relying on the gateway's
 //! in-memory WorkflowEngine (which is lost on restart).
+//!
+//! Session events (conversation messages) are persisted as JSONL files
+//! under `sessions/{yyyy-MM}/{yyyy-MM-dd}-{id}.jsonl` so conversation
+//! history survives gateway restarts.
 
 use kernel::AmanResult;
+use std::io::Write;
 use std::path::Path;
 
 /// A single session record in the index.
@@ -83,32 +88,9 @@ impl SessionStore {
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store delete: {e}") })?;
         drop(db);
 
-        // 2. JSONL file(s): scan `{sessions_dir}/{yyyy-MM}/` for files
-        //    whose name contains the session id.
-        if self.sessions_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&self.sessions_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        if let Ok(files) = std::fs::read_dir(&path) {
-                            for file in files.flatten() {
-                                let fp = file.path();
-                                if fp.is_file()
-                                    && fp.extension().map_or(false, |e| e == "jsonl")
-                                {
-                                    if let Some(name) = fp.file_stem().and_then(|n| n.to_str())
-                                    {
-                                        if name.ends_with(id) {
-                                            let _ = std::fs::remove_file(&fp);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // 2. JSONL file: remove the session's event log
+        let jsonl = self.jsonl_path(id);
+        let _ = std::fs::remove_file(&jsonl);
 
         Ok(deleted)
     }
@@ -141,5 +123,51 @@ impl SessionStore {
             );
         }
         Ok(records)
+    }
+
+    /// JSONL file path for a session's persisted events.
+    fn jsonl_path(&self, session_id: &str) -> std::path::PathBuf {
+        let _ = std::fs::create_dir_all(&self.sessions_dir);
+        self.sessions_dir.join(format!("{session_id}.jsonl"))
+    }
+
+    /// Append a single event to the session's JSONL file.
+    ///
+    /// Each line is a JSON object with the fields needed for conversation
+    /// history display: `event_type`, `timestamp_ms`, `payload`, etc.
+    pub fn append_session_event(&self, session_id: &str, event: &serde_json::Value) -> AmanResult<()> {
+        let path = self.jsonl_path(session_id);
+        let line = serde_json::to_string(event)
+            .map_err(|e| kernel::Error::ConfigInvalid {
+                message: format!("serialize session event: {e}"),
+            })?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| kernel::Error::ConfigInvalid {
+                message: format!("open JSONL {path:?}: {e}"),
+            })?;
+        writeln!(file, "{line}").map_err(|e| kernel::Error::ConfigInvalid {
+            message: format!("write JSONL {path:?}: {e}"),
+        })?;
+        Ok(())
+    }
+
+    /// Load all persisted events for a session from its JSONL file.
+    ///
+    /// Events are returned in insertion order (oldest first).
+    pub fn load_session_events(&self, session_id: &str) -> Vec<serde_json::Value> {
+        let path = self.jsonl_path(session_id);
+        if !path.exists() {
+            return Vec::new();
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return Vec::new();
+        };
+        content
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect()
     }
 }

@@ -11,6 +11,9 @@ pub type ToolResult = AmanResult<Value>;
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn mode(&self) -> ToolMode;
+    /// Human-readable description of what this tool does.
+    /// Used when building tool schemas for the LLM.
+    fn description(&self) -> &str { "" }
     fn parameters(&self) -> &JsonSchema;
     fn returns(&self) -> &JsonSchema;
 

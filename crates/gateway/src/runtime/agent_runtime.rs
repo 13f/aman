@@ -876,6 +876,10 @@ impl Tool for ReadSkillTool {
         ToolMode::Local
     }
 
+    fn description(&self) -> &str {
+        "Load a skill's full SKILL.md instructions by name. Skills contain specialized knowledge, step-by-step methodologies, analysis frameworks, and output templates for specific tasks (e.g., IPO research, code review, data analysis). Call this with the skill name to get its complete instructions."
+    }
+
     fn parameters(&self) -> &JsonSchema {
         static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
             JsonSchema::from(serde_json::json!({

@@ -47,17 +47,15 @@ pub fn build_skills_system_prompt(skills: &[SkillInfo]) -> String {
     }
     let mut out = String::from("\n\n## Skills (mandatory)\n\n");
     out.push_str(
-        "IMPORTANT: When you see \"[ACTIVATED SKILL: ...]\" at the top of the user \
-         message, that skill's content IS the primary instruction for this conversation. \
-         The full skill methodology, framework, and output format below the header are \
-         authoritative — you MUST execute every prescribed stage in order instead of \
-         falling back to your default approach. Acknowledge by starting your response \
-         with \"[Skill: <name>]\", then follow the skill exactly.\n\n\
-         If no [ACTIVATED SKILL] header is present, scan the skills below. If a skill \
-         matches or is even partially relevant to your task, load it with \
-         `read_skill(skill: \"...\")` and follow its instructions. Err on the side of \
-         loading — it is always better to have context you don't need than to miss \
-         critical steps, pitfalls, or established workflows.\n\n",
+        "Before replying, scan the skills below. If a skill matches or is even \
+         partially relevant to your task, load it with `read_skill(skill: \"...\")` \
+         and follow its instructions. Err on the side of loading — it is always \
+         better to have context you don't need than to miss critical steps, pitfalls, \
+         or established workflows. Skills contain specialized knowledge, methodologies, \
+         and output templates that your default approach cannot replicate.\n\n\
+         Always start by calling read_skill for the matching skill before doing any \
+         other work — this ensures you have the full methodology and output format \
+         before gathering data or producing results.\n\n",
     );
 
     // Group skills by category

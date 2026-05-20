@@ -313,12 +313,6 @@ impl LlmReActEngine {
             "temperature": 0.7,
             "max_tokens": ctx.token_budget.max_output_tokens,
         });
-        tracing::info!(
-            model = %ctx.model,
-            max_tokens = ctx.token_budget.max_output_tokens,
-            "api request params"
-        );
-
         if !openai_tools.is_empty() {
             request_body["tools"] = serde_json::json!(openai_tools);
             request_body["tool_choice"] = serde_json::json!("auto");
@@ -472,14 +466,6 @@ impl LlmReActEngine {
                 })
             })
             .collect();
-
-        tracing::info!(
-            finish_reason = %finish_reason,
-            content_len = full_content.len(),
-            tool_call_count = tool_calls.len(),
-            elapsed_ms = stream_start.elapsed().as_millis(),
-            "llm response received"
-        );
 
         Ok((full_content, finish_reason, tool_calls, reasoning_content))
     }
@@ -688,6 +674,9 @@ pub struct AgentHarness {
     memory_store: Arc<MemoryStore>,
     /// Per-session interrupt flags for external stop (M6).
     active_interrupts: RwLock<HashMap<String, Arc<InterruptFlag>>>,
+    /// Per-session conversation history (user + assistant messages) for
+    /// continuity across turns in the same session.
+    session_histories: RwLock<HashMap<String, Vec<ChatMessage>>>,
     /// Default max ReAct turns.
     max_react_turns: u32,
     /// Default token budget limit.
@@ -717,6 +706,7 @@ impl AgentHarness {
             bus,
             memory_store,
             active_interrupts: RwLock::new(HashMap::new()),
+            session_histories: RwLock::new(HashMap::new()),
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
             token_budget_limit: DEFAULT_TOKEN_BUDGET_LIMIT,
         }
@@ -842,8 +832,19 @@ impl AgentHarness {
         // 3. Build tool descriptors from registered tools
         let available_tools = self.build_tool_descriptors(agent_id).await;
 
-        // 4. Build conversation history
-        let history = vec![ChatMessage::user(user_text)];
+        // 4. Build conversation history — load existing session history
+        // and append the new user message for cross-turn continuity.
+        let mut history = {
+            let histories = self.session_histories.read().expect("session_histories lock");
+            let mut stored = histories.get(session_id).cloned().unwrap_or_default();
+            // Cap at 100 messages to prevent unbounded memory growth.
+            // Keep the most recent messages for relevant conversation context.
+            if stored.len() > 100 {
+                stored = stored.split_off(stored.len() - 100);
+            }
+            stored
+        };
+        history.push(ChatMessage::user(user_text));
 
         // 5. Initialize model-aware token budget (M4)
         // Use config-provided values if available (from provider.models.<model>),
@@ -902,6 +903,13 @@ impl AgentHarness {
         let result = self
             .react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag))
             .await;
+
+        // Save conversation history for cross-turn continuity.
+        // Lock scope: write lock is dropped immediately after the insert.
+        {
+            let mut histories = self.session_histories.write().expect("session_histories lock");
+            histories.insert(session_id.to_owned(), ctx.history.clone());
+        }
 
         // M6: Unregister interrupt flag
         self.unregister_interrupt(session_id);
@@ -1270,7 +1278,7 @@ impl AgentHarness {
             if let Some(tool) = self.tool_registry.get(&name) {
                 descriptors.push(ToolDescriptor {
                     name: tool.name().to_owned(),
-                    description: format!("{:?}", tool.mode()),
+                    description: tool.description().to_owned(),
                     parameters: serde_json::to_value(tool.parameters()).unwrap_or_default(),
                 });
             }

@@ -17,9 +17,9 @@ use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
 use plugin::PluginManifest;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -2153,24 +2153,37 @@ async fn chat_session_send(
         SanitizeResult::PassThrough => req.text.clone(),
     };
 
-    // Build system prompt: soul identity + lightweight skill index.
-    // Skill content is NOT embedded here — it goes as a separate
-    // `skill_activation_message` field so the handler can inject it as a
-    // User message (matching Hermes' approach where the skill content IS
-    // part of the conversational input, not buried in system context).
-    let soul_prompt = runtime
-        .soul_runtime()
-        .map(|sr| sr.current_soul().to_system_prompt())
-        .unwrap_or_default();
-    let skills_prompt = skill::formatting::build_skills_system_prompt(&runtime.llm_skills());
-    let combined_prompt = if skills_prompt.is_empty() {
-        soul_prompt
-    } else {
-        format!("{}{}", soul_prompt, skills_prompt)
+    // Build system prompt: soul identity + skill index.
+    // Skills listed in the system prompt (name + description only) act as a
+    // lightweight index. The LLM discovers and loads the full skill content
+    // by calling `read_skill` — matching Hermes' progressive-disclosure model.
+    //
+    // Cache per session: same as Hermes' _cached_system_prompt / _restore_or_build_system_prompt.
+    // Built once on the first turn of a session; subsequent turns reuse it verbatim
+    // so prompt caching (Anthropic prefix cache, OpenAI prompt caching) stays effective.
+    static SYSTEM_PROMPT_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let combined_prompt = {
+        let mut cache = SYSTEM_PROMPT_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(&id) {
+            cached.clone()
+        } else {
+            let soul_prompt = runtime
+                .soul_runtime()
+                .map(|sr| sr.current_soul().to_system_prompt())
+                .unwrap_or_default();
+            let skills_prompt = skill::formatting::build_skills_system_prompt(&runtime.llm_skills());
+            let prompt = if skills_prompt.is_empty() {
+                soul_prompt
+            } else {
+                format!("{}{}", soul_prompt, skills_prompt)
+            };
+            cache.insert(id.clone(), prompt.clone());
+            prompt
+        }
     };
-    let matched_skills: Vec<String> = runtime.select_skills_for_text(&text);
 
-    // Publish the message event.
+    // Publish the message event (no pre-selected skill — LLM discovers via read_skill).
     let event = Event::new(
         "chat:platform",
         EventType::MessageReceived,
@@ -2180,7 +2193,6 @@ async fn chat_session_send(
             "sender": operator,
             "source": "tauri-desktop",
             "soul_system_prompt": combined_prompt,
-            "skill_activation_message": matched_skills.join("\n\n---\n\n"),
         }),
     );
     let event_id = event.id.to_string();

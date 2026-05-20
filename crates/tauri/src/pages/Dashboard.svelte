@@ -38,12 +38,14 @@
   let status = $state<RuntimeStatus>({ phase: "stopped", ready: false, live: false, running: false });
   let config = $state<RuntimeConfig | null>(null);
   let gatewayLoading = $state(false);
+  let gatewayError = $state("");
   let gatewayPort = $state(9999);
   let unlisten: (() => void) | null = null;
 
   async function refreshStatus() {
     try {
       status = await invoke<RuntimeStatus>("get_runtime_status");
+      gatewayError = "";
       onstatuschange(status.running);
     } catch {
       status = { phase: "stopped", ready: false, live: false, running: false };
@@ -61,6 +63,7 @@
 
   async function startGateway() {
     gatewayLoading = true;
+    gatewayError = "";
     try {
       const msg = await invoke<string>("start_runtime", {
         gatewayUrl: `http://127.0.0.1:${gatewayPort}`,
@@ -69,7 +72,7 @@
       await refreshStatus();
       await refreshConfig();
     } catch (e: any) {
-      console.error("Failed to start gateway:", e);
+      gatewayError = String(e);
     } finally {
       gatewayLoading = false;
     }
@@ -105,6 +108,11 @@
     </button>
   {/if}
 </div>
+{#if gatewayError}
+  <div class="card" style="border-color:var(--red);">
+    <p style="color:var(--red);font-size:13px;">{gatewayError}</p>
+  </div>
+{/if}
 
 <!-- Runtime config info -->
 {#if config}

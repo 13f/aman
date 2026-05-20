@@ -396,6 +396,9 @@ impl Dispatcher {
                         // T4.6: cancel running idle workflows
                         coord.reset_idle_signal().await;
 
+                        // Arousal boost: real events raise engagement
+                        coord.arousal.boost(0.3);
+
                         // Track event metadata for QueueDrained production
                         last_event_type = event.event_type.to_string();
                         last_trace_id = event.metadata.trace_id.to_string();
@@ -446,6 +449,7 @@ impl Dispatcher {
                                         );
                                     }
                                     coord.reset_idle_signal().await;
+                                    coord.arousal.boost(0.3);
                                     last_event_type = preempt_event.event_type.to_string();
                                     last_trace_id = preempt_event.metadata.trace_id.to_string();
                                     self.dispatch(preempt_event).await;
@@ -470,6 +474,9 @@ impl Dispatcher {
                             time::sleep(Duration::from_secs(breaker_config.cooldown_secs)).await;
                             continue;
                         }
+
+                        // R3-1: signal idle detector to reset depth
+                        coord.signal_queue_drained();
 
                         // T4.2: produce QueueDrained
                         #[allow(unused_variables)]

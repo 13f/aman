@@ -129,8 +129,8 @@ impl EventSource for IdleDetector {
             return Ok(Vec::new());
         }
 
-        // T5.4: Check if a real event was processed since last poll
-        if self.coord.real_event_seen.swap(false, Ordering::SeqCst) {
+        // T5.4: Check if the queue was recently drained (depth reset pending)
+        if self.coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
             self.idle_depth = 0;
             return Ok(Vec::new());
         }
@@ -296,10 +296,10 @@ mod tests {
         assert_eq!(events.len(), 1);
     }
 
-    // ── T5.4: real_event_seen reset ──────────────────────────────
+    // ── T5.4: pending_depth_reset (queue drained → reset depth) ──────
 
     #[tokio::test]
-    async fn real_event_seen_resets_depth() {
+    async fn queue_drained_resets_depth() {
         let coord = Arc::new(IdleCoordination::new(1.0, 900.0));
         let mut detector = IdleDetector::new("idle:detector", coord.clone(), test_personality());
         let ctx = make_source_context();
@@ -310,10 +310,10 @@ mod tests {
         }
         assert_eq!(detector.idle_depth, 3);
 
-        // Signal real event
-        coord.real_event_seen.store(true, Ordering::SeqCst);
+        // Signal queue drained (replaces old real_event_seen mechanism)
+        coord.pending_depth_reset.store(true, Ordering::SeqCst);
 
-        // Poll should reset depth and not produce an event (returns empty on same poll)
+        // Poll should reset depth and not produce an event
         let events = detector.poll(&ctx).await.expect("poll");
         assert!(events.is_empty());
         assert_eq!(detector.idle_depth, 0);

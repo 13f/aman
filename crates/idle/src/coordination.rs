@@ -17,8 +17,8 @@ pub struct IdleCoordination {
     pub last_source_type: Arc<AtomicU8>,
     /// 全局空闲取消令牌——真实事件到达时取消
     pub idle_cancel_token: Arc<RwLock<CancellationToken>>,
-    /// 有真实事件被处理（IdleDetector 应重置 depth）
-    pub real_event_seen: Arc<AtomicBool>,
+    /// 队列已清空，IdleDetector 应重置 depth（由 Dispatcher 在产生 QueueDrained 时设置）
+    pub pending_depth_reset: Arc<AtomicBool>,
 }
 
 impl IdleCoordination {
@@ -30,20 +30,23 @@ impl IdleCoordination {
             arousal: Arc::new(ArousalTracker::new(arousal_initial, arousal_half_life_secs)),
             last_source_type: Arc::new(AtomicU8::new(0)), // SourceType::Unknown = 0
             idle_cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
-            real_event_seen: Arc::new(AtomicBool::new(false)),
+            pending_depth_reset: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// 重置空闲信号——通知所有组件有真实事件到达。
+    /// 取消运行中的空闲 Workflow —— 真实事件到达时调用。
     ///
-    /// 1. 标记 real_event_seen
-    /// 2. 取消旧 idle_cancel_token → 中断运行中的 Workflow
-    /// 3. 替换为新 token
+    /// 注意：depth 重置不由这里触发，而是在 Dispatcher 产生 QueueDrained 时
+    /// 通过 [`signal_queue_drained`](Self::signal_queue_drained) 设置。
     pub async fn reset_idle_signal(&self) {
-        self.real_event_seen.store(true, Ordering::SeqCst);
         let mut token = self.idle_cancel_token.write().await;
         token.cancel();
         *token = CancellationToken::new();
+    }
+
+    /// 标记 depth 需要在下次 idle poll 时重置 —— Dispatcher 队列清空时调用。
+    pub fn signal_queue_drained(&self) {
+        self.pending_depth_reset.store(true, Ordering::SeqCst);
     }
 }
 
@@ -94,6 +97,19 @@ impl ArousalTracker {
         let elapsed = inner.last_update.elapsed().as_secs_f64();
         let decayed = inner.value * (0.5_f64).powf(elapsed * decay_multiplier / inner.half_life_secs);
         inner.value = decayed;
+        inner.last_update = Instant::now();
+    }
+
+    /// Boost arousal toward 1.0 by `factor` (0.0–1.0).
+    ///
+    /// Called when a real event arrives so that engagement raises arousal
+    /// instead of only decaying during idle. Formula:
+    /// `new_value = decayed_current + (1.0 - decayed_current) * factor`
+    pub fn boost(&self, factor: f64) {
+        let mut inner = self.current_value.lock().unwrap();
+        let elapsed = inner.last_update.elapsed().as_secs_f64();
+        let decayed = inner.value * (0.5_f64).powf(elapsed / inner.half_life_secs);
+        inner.value = decayed + (1.0 - decayed) * factor.clamp(0.0, 1.0);
         inner.last_update = Instant::now();
     }
 
@@ -171,18 +187,11 @@ mod tests {
     // ── IdleCoordination tests (T2.1) ───────────────────────────
 
     #[test]
-    fn coordination_new_sets_unknown_source_type() {
+    fn coordination_new_initial_state() {
         let coord = IdleCoordination::new(1.0, 900.0);
         assert_eq!(coord.last_source_type.load(Ordering::Relaxed), 0); // Unknown = 0
         assert!(!coord.busy_reflecting.load(Ordering::Relaxed));
-        assert!(!coord.real_event_seen.load(Ordering::Relaxed));
-    }
-
-    #[tokio::test]
-    async fn reset_idle_signal_sets_real_event_seen() {
-        let coord = IdleCoordination::new(1.0, 900.0);
-        coord.reset_idle_signal().await;
-        assert!(coord.real_event_seen.load(Ordering::SeqCst));
+        assert!(!coord.pending_depth_reset.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -200,6 +209,38 @@ mod tests {
         // New token should be uncancelled
         let new_token = coord.idle_cancel_token.read().await;
         assert!(!new_token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn reset_idle_signal_does_not_set_pending_depth_reset() {
+        let coord = IdleCoordination::new(1.0, 900.0);
+        coord.reset_idle_signal().await;
+        // depth reset 不由 reset_idle_signal 触发，而是由 signal_queue_drained 触发
+        assert!(!coord.pending_depth_reset.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn signal_queue_drained_sets_pending_depth_reset() {
+        let coord = IdleCoordination::new(1.0, 900.0);
+        coord.signal_queue_drained();
+        assert!(coord.pending_depth_reset.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn arousal_boost_moves_toward_one() {
+        let tracker = ArousalTracker::new(0.5, 900.0);
+        tracker.boost(0.5);
+        let val = tracker.current();
+        // 0.5 + (1.0 - 0.5) * 0.5 = 0.75
+        assert!((val - 0.75).abs() < 0.01, "value={val}");
+    }
+
+    #[test]
+    fn arousal_boost_zero_factor_no_change() {
+        let tracker = ArousalTracker::new(0.3, 900.0);
+        tracker.boost(0.0);
+        let val = tracker.current();
+        assert!((val - 0.3).abs() < 0.01, "value={val}");
     }
 
     #[tokio::test]

@@ -311,8 +311,13 @@ impl LlmReActEngine {
             "messages": request_messages,
             "stream": true,
             "temperature": 0.7,
-            "max_tokens": ctx.token_budget.max_output_tokens,
         });
+        // Only send max_tokens if configured (> 0). When 0, omit the field
+        // so the API uses its own default (typically 4096 or unlimited) instead
+        // of interpreting 0 as "generate nothing."
+        if ctx.token_budget.max_output_tokens > 0 {
+            request_body["max_tokens"] = serde_json::json!(ctx.token_budget.max_output_tokens);
+        }
         if !openai_tools.is_empty() {
             request_body["tools"] = serde_json::json!(openai_tools);
             request_body["tool_choice"] = serde_json::json!("auto");
@@ -847,8 +852,7 @@ impl AgentHarness {
         history.push(ChatMessage::user(user_text));
 
         // 5. Initialize model-aware token budget (M4)
-        // Use config-provided values if available (from provider.models.<model>),
-        // otherwise fall back to the hardcoded model lookup in TokenBudget::new().
+        // Values must come from config, never silently defaulted.
         let mut token_budget = match (instance.descriptor.max_context_tokens, instance.descriptor.max_output_tokens) {
             (Some(ctx), Some(out)) => {
                 crate::runtime::token_budget::TokenBudget::with_window(model, ctx, out)
@@ -858,6 +862,37 @@ impl AgentHarness {
             }
             _ => crate::runtime::token_budget::TokenBudget::new(model),
         };
+        // Emit config warning events when token budget values are 0 (not configured).
+        if token_budget.max_output_tokens == 0 {
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:config_warning".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "config_key": "max_output_tokens",
+                        "message": "max_output_tokens is 0 (not configured) — LLM API will use its provider default, which may truncate long responses",
+                    }),
+                ))
+                .await;
+        }
+        if token_budget.context_window == 0 {
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:config_warning".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "config_key": "max_context_tokens",
+                        "message": "max_context_tokens is 0 (not configured) — token budgeting is disabled",
+                    }),
+                ))
+                .await;
+        }
         // Estimate system prompt tokens
         token_budget.set_system_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
         // Estimate tool schema tokens

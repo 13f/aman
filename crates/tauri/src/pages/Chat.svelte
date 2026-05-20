@@ -4,7 +4,6 @@
   import { onMount, onDestroy } from "svelte";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
-  import DepthPanel from "./DepthPanel.svelte";
   import DebugPanel from "./DebugPanel.svelte";
   import { marked } from "marked";
 
@@ -81,19 +80,6 @@
     sessions.slice((currentPage - 1) * sessionsPerPage, currentPage * sessionsPerPage)
   );
   const totalPages = $derived(Math.max(1, Math.ceil(sessions.length / sessionsPerPage)));
-
-  interface TurnStep {
-    id: string;
-    toolName: string;
-    arguments: string;
-    status: "running" | "success" | "failed";
-    result?: string;
-    error?: string;
-    timestamp: string;
-  }
-
-  let turnSteps = $state<TurnStep[]>([]);
-  let activeTab = $state<"sessions" | "steps">("sessions");
 
   const activeSession = $derived(sessions.find(s => s.id === activeSessionId));
   const activeMessages = $derived(messages.filter(m => m.sessionId === activeSessionId));
@@ -374,15 +360,6 @@
 	    };
 	    messages = [...messages, toolCall];
 
-	    // Track step in the depth panel.
-	    turnSteps = [...turnSteps, {
-	      id: callId,
-	      toolName: data.tool_name,
-	      arguments: data.arguments ?? "{}",
-	      status: "running" as const,
-	      timestamp: new Date().toISOString(),
-	    }];
-    if (activeTab !== "steps") activeTab = "steps";
 	  }
 
   function handleLlmToolResult(data: any) {
@@ -406,12 +383,6 @@
         : m,
     );
 
-    // Update step status in the depth panel.
-    turnSteps = turnSteps.map(s =>
-      s.id === callId
-        ? { ...s, status: newStatus, result: data.result, error: data.error }
-        : s,
-    );
   }
 
   // ── AgentHarness event handlers (Phase B migration) ──
@@ -513,14 +484,6 @@
     };
     messages = [...messages, toolCall];
 
-    turnSteps = [...turnSteps, {
-      id: callId,
-      toolName: data.tool_name,
-      arguments: JSON.stringify(data.args ?? {}),
-      status: "running" as const,
-      timestamp: new Date().toISOString(),
-    }];
-    if (activeTab !== "steps") activeTab = "steps";
   }
 
   function handleAgentToolResult(data: any) {
@@ -642,8 +605,6 @@
         break;
       case "llm_reply_ready":
         handleLlmReplyReady(data);
-        // Force-complete any steps still running (results may have been reordered or lost).
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
         break;
       case "llm_tool_call":
         handleLlmToolCall(data);
@@ -653,11 +614,9 @@
         break;
       case "output_blocked":
         handleOutputBlocked(data);
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
         break;
       case "llm_error":
         handleLlmError(data);
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "failed" as const, error: "LLM processing ended" } : s);
         break;
       case "history_trimmed":
       case "HISTORY_TRIMMED":
@@ -675,20 +634,15 @@
         break;
       case "agent:reply_stream_done":
         handleAgentStreamDone(data);
-        // Force-complete any steps still running.
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
         break;
       case "agent:reply_stream_error":
         handleAgentStreamError(data);
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "failed" as const, error: "Stream error" } : s);
         break;
       case "agent:reply_ready":
         handleAgentReplyReady(data);
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "success" as const } : s);
         break;
       case "agent:reply_interrupted":
         handleAgentReplyReady(data);
-        turnSteps = turnSteps.map(s => s.status === "running" ? { ...s, status: "failed" as const, error: "Interrupted" } : s);
         break;
       case "tool:dispatched":
         handleAgentToolCall(data);
@@ -737,14 +691,6 @@
       return "error";
     });
 
-    // Add a step entry so the user can see the auth decision in the UI
-    turnSteps = [...turnSteps, {
-      id: `auth-${auth_id}`,
-      label: `Authorize ${tool_name}`,
-      tool: tool_name,
-      status: "success" as const,
-      result: result === "allow" ? "Approved" : "Denied",
-    }];
   }
 
   function handleLlmError(data: any) {
@@ -1234,7 +1180,6 @@
       status: "pending",
     };
     messages = [...messages, userMsg];
-    turnSteps = [];
     isLoading = true;
     updateSessionStatus(activeSessionId, "processing");
 
@@ -1316,11 +1261,6 @@
       <h2>Chat</h2>
       <button class="new-btn" onclick={createSession} title="New chat">+</button>
     </div>
-    <div class="sidebar-tabs">
-      <button class="tab-btn" class:active={activeTab === "sessions"} onclick={() => activeTab = "sessions"}>Sessions</button>
-      <button class="tab-btn" class:active={activeTab === "steps"} onclick={() => activeTab = "steps"}>Steps{isProcessing || turnSteps.length > 0 ? ` (${turnSteps.length})` : ''}</button>
-    </div>
-    {#if activeTab === "sessions"}
       <div class="session-list">
         {#each paginatedSessions as session}
           <div class="session-row" class:active={session.id === activeSessionId}>
@@ -1374,11 +1314,6 @@
           </div>
         </div>
       {/if}
-    {:else}
-      <div class="sidebar-tab-content">
-        <DepthPanel steps={turnSteps} />
-      </div>
-    {/if}
   </aside>
 
   <!-- Main Chat Area -->

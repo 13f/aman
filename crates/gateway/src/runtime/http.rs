@@ -1858,6 +1858,22 @@ async fn chat_session_create(
                     "operator": operator,
                 }),
             )).await;
+            // Persist to local DB immediately so the session appears in
+            // the frontend's session list even after a gateway restart.
+            let created_at = instance.data.get("created_at")
+                .and_then(|v| v.as_i64()).unwrap_or(0);
+            let last_active_at = instance.data.get("last_active_at")
+                .and_then(|v| v.as_i64()).unwrap_or(0);
+            if let Some(store) = runtime.session_store() {
+                let _ = store.upsert(&session_store::SessionRecord {
+                    id: instance.id.clone(),
+                    state: instance.current_state.clone(),
+                    message_count: 0,
+                    created_at,
+                    last_active_at,
+                    session_type: session_type.to_owned(),
+                });
+            }
             (StatusCode::OK, Json(json!({ "id": instance.id }))).into_response()
         }
         Err(error) => {

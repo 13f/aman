@@ -70,40 +70,20 @@ body { min-height: 100vh; }
 .sidebar .status-dot.running { background: var(--green); }
 .sidebar .status-dot.stopped { background: var(--red); }
 
-/* Gateway control buttons */
-.gateway-controls {
-  display: flex;
-  gap: 6px;
-  padding: 8px 16px;
-  flex-shrink: 0;
-}
-.gw-btn {
-  flex: 1;
-  padding: 6px 10px;
-  font-size: 12px;
-  border: 1px solid var(--border);
+/* Gateway start button in Dashboard */
+.start-btn {
+  padding: 8px 20px;
+  font-size: 14px;
+  border: none;
   border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg-dim);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-.gw-btn:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-.gw-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.gw-btn.start {
   background: var(--green);
   color: #fff;
-  border-color: var(--green);
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
 }
-.gw-btn.start:hover {
-  opacity: 0.85;
-}
+.start-btn:hover { opacity: 0.85; }
+.start-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* Main content */
 .main {

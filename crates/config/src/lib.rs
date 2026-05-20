@@ -42,6 +42,20 @@ impl Default for RuntimeConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayConfig {
+    #[serde(default = "default_gateway_port")]
+    pub port: u16,
+}
+
+fn default_gateway_port() -> u16 { 9999 }
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self { port: 9999 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistenceConfig {
     #[serde(default = "default_wal_sync")]
     pub wal_sync: String,
@@ -301,6 +315,8 @@ impl Default for IdleConfig {
 pub struct AgentConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub gateway: GatewayConfig,
     #[serde(default)]
     pub event_bus: EventBusConfig,
     #[serde(default)]
@@ -598,6 +614,7 @@ impl ConfigReloader {
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartialAgentConfig {
     pub runtime: Option<PartialRuntimeConfig>,
+    pub gateway: Option<PartialGatewayConfig>,
     pub event_bus: Option<PartialEventBusConfig>,
     pub plugin: Option<PartialPluginConfig>,
     pub source: Option<PartialSourceConfig>,
@@ -610,6 +627,11 @@ pub struct PartialAgentConfig {
 pub struct PartialRuntimeConfig {
     pub drain_timeout_sec: Option<u64>,
     pub tool_timeout_sec: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialGatewayConfig {
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

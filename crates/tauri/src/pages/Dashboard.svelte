@@ -37,6 +37,8 @@
   let metrics = $state<MetricsSnapshot | null>(null);
   let status = $state<RuntimeStatus>({ phase: "stopped", ready: false, live: false, running: false });
   let config = $state<RuntimeConfig | null>(null);
+  let gatewayLoading = $state(false);
+  let gatewayPort = $state(9999);
   let unlisten: (() => void) | null = null;
 
   async function refreshStatus() {
@@ -57,8 +59,27 @@
     }
   }
 
+  async function startGateway() {
+    gatewayLoading = true;
+    try {
+      const msg = await invoke<string>("start_runtime", {
+        gatewayUrl: `http://127.0.0.1:${gatewayPort}`,
+      });
+      console.log(msg);
+      await refreshStatus();
+      await refreshConfig();
+    } catch (e: any) {
+      console.error("Failed to start gateway:", e);
+    } finally {
+      gatewayLoading = false;
+    }
+  }
+
   onMount(async () => {
     await refreshStatus();
+    try {
+      gatewayPort = await invoke<number>("get_gateway_port");
+    } catch { /* use default */ }
     listen<MetricsSnapshot>("metrics:updated", (e) => {
       metrics = e.payload;
     }).then((fn) => { unlisten = fn; });
@@ -69,13 +90,20 @@
   });
 </script>
 
-<div class="card">
-  <h2>Gateway Status</h2>
-  <p style="color:var(--fg-dim);margin-top:4px;">
-    Phase: <strong>{status.phase}</strong>
-    &middot; Ready: <strong class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</strong>
-    &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
-  </p>
+<div class="card" style="display:flex; align-items:center; justify-content:space-between;">
+  <div>
+    <h2>Gateway Status</h2>
+    <p style="color:var(--fg-dim);margin-top:4px;">
+      Phase: <strong>{status.phase}</strong>
+      &middot; Ready: <strong class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</strong>
+      &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
+    </p>
+  </div>
+  {#if !status.running}
+    <button class="start-btn" onclick={startGateway} disabled={gatewayLoading}>
+      {gatewayLoading ? "连接中..." : "启动"}
+    </button>
+  {/if}
 </div>
 
 <!-- Runtime config info -->

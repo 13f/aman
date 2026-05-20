@@ -1,6 +1,5 @@
 <script lang="ts">
   import "./app.css";
-  import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import EventViewer from "./pages/EventViewer.svelte";
@@ -20,8 +19,6 @@
   let chatAvailable = $state(false);
   let hasProvider = $state(false);
   let hasAgent = $state(false);
-  let gatewayLoading = $state(false);
-  let gatewayPort = $state(9999);
 
   type Page = { id: string; label: string };
 
@@ -92,55 +89,8 @@
     handlePageVisited(pageId);
   }
 
-  function gatewayUrl() {
-    return `http://127.0.0.1:${gatewayPort}`;
-  }
-
-  async function startGateway() {
-    gatewayLoading = true;
-    try {
-      const msg = await invoke<string>("start_runtime", { gatewayUrl: gatewayUrl() });
-      console.log(msg);
-      onRuntimeStatusChange(true);
-    } catch (e: any) {
-      console.error("Failed to start gateway:", e);
-    } finally {
-      gatewayLoading = false;
-    }
-  }
-
-  async function stopGateway() {
-    gatewayLoading = true;
-    try {
-      const msg = await invoke<string>("stop_runtime");
-      console.log(msg);
-      onRuntimeStatusChange(false);
-    } catch (e: any) {
-      console.error("Failed to stop gateway:", e);
-    } finally {
-      gatewayLoading = false;
-    }
-  }
-
-  async function restartGateway() {
-    gatewayLoading = true;
-    try {
-      await invoke<string>("stop_runtime");
-      const msg = await invoke<string>("start_runtime", { gatewayUrl: gatewayUrl() });
-      console.log(msg);
-      onRuntimeStatusChange(true);
-    } catch (e: any) {
-      console.error("Failed to restart gateway:", e);
-    } finally {
-      gatewayLoading = false;
-    }
-  }
-
   onMount(async () => {
     await checkOnboarding();
-    try {
-      gatewayPort = await invoke<number>("get_gateway_port");
-    } catch { /* use default */ }
     initialLoadDone = true;
   });
 </script>
@@ -162,14 +112,6 @@
       </button>
     {/if}
   {/each}
-  <div class="gateway-controls">
-    {#if runtimeRunning}
-      <button class="gw-btn" onclick={stopGateway} disabled={gatewayLoading}>停止</button>
-      <button class="gw-btn" onclick={restartGateway} disabled={gatewayLoading}>重启</button>
-    {:else}
-      <button class="gw-btn start" onclick={startGateway} disabled={gatewayLoading}>启动</button>
-    {/if}
-  </div>
   <NotificationBell onNavigate={(p) => navigateTo(p)} />
   <ActivityStateWidget {runtimeRunning} />
 </nav>

@@ -794,7 +794,7 @@ impl AgentRuntimeBuilder {
                     };
                     hooks.push(hook::ScriptHook::new(
                         &cfg.name,
-                        &cfg.on,
+                        cfg.on.clone(),
                         script_path,
                         runtime,
                     ));

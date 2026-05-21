@@ -99,12 +99,12 @@ impl Default for HookRegistry {
 
 /// A hook backed by an external script (Python, Node, Shell, etc.).
 ///
-/// Fires on a named event type (e.g. `"agent:busy"`, `"tool:completed"`).
+/// Fires on one or more named event types (e.g. `"agent:busy"`, `"tool:completed"`).
 /// The script receives a JSON payload on stdin and may return a response on stdout.
 pub struct ScriptHook {
     name: String,
-    /// The event type string this hook listens to (e.g. "agent:busy").
-    event_type: String,
+    /// The event type strings this hook listens to (e.g. ["agent:busy", "tool:completed"]).
+    event_types: Vec<String>,
     /// Path to the script file.
     script_path: PathBuf,
     /// Reusable script runtime (interpreter + version check).
@@ -117,13 +117,13 @@ impl ScriptHook {
     /// Create a new script hook from configuration.
     pub fn new(
         name: impl Into<String>,
-        event_type: impl Into<String>,
+        event_types: Vec<String>,
         script_path: PathBuf,
         runtime: ScriptRuntime,
     ) -> Self {
         Self {
             name: name.into(),
-            event_type: event_type.into(),
+            event_types,
             script_path,
             runtime,
             priority: 0,
@@ -143,10 +143,16 @@ impl ScriptHook {
         &self.name
     }
 
-    /// The event type this hook listens to.
+    /// The event type strings this hook listens to.
     #[must_use]
-    pub fn event_type(&self) -> &str {
-        &self.event_type
+    pub fn event_types(&self) -> &[String] {
+        &self.event_types
+    }
+
+    /// Check if this hook fires on the given event type.
+    #[must_use]
+    pub fn matches(&self, event_type: &str) -> bool {
+        self.event_types.iter().any(|et| et == event_type)
     }
 
     /// The script path.
@@ -194,7 +200,7 @@ impl ScriptHookRunner {
 
         let mut errors = Vec::new();
         for hook in &self.hooks {
-            if hook.event_type() == event_type {
+            if hook.matches(event_type) {
                 if let Err(e) = hook.execute(&input) {
                     errors.push(e);
                 }

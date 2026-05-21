@@ -482,7 +482,7 @@ pub struct LlmConfig {
     pub api_type: String,
 }
 
-/// A single script-based hook that fires on a named event.
+/// A single script-based hook that fires on one or more named events.
 ///
 /// ```yaml
 /// hooks:
@@ -492,12 +492,21 @@ pub struct LlmConfig {
 ///     runtime: python3
 ///     min_version: ">=3.8"
 /// ```
+///
+/// For multiple event types:
+/// ```yaml
+///   - name: openpeon
+///     on: [session:started, agent:busy, tool:completed, tool:failed]
+///     script: ~/.aman/hooks/openpeon.sh
+///     runtime: bash
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookConfig {
     /// Unique hook name for registration and logging.
     pub name: String,
-    /// Event type string to trigger on (e.g. "agent:busy", "tool:completed").
-    pub on: String,
+    /// Event type string(s) to trigger on (e.g. "agent:busy" or ["tool:completed", "tool:failed"]).
+    #[serde(deserialize_with = "deserialize_one_or_many")]
+    pub on: Vec<String>,
     /// Path to the script file.
     pub script: PathBuf,
     /// Interpreter binary (e.g. "python3", "node", "deno").
@@ -505,6 +514,31 @@ pub struct HookConfig {
     /// Optional minimum version requirement for the runtime (e.g. ">=3.8").
     #[serde(default)]
     pub min_version: Option<String>,
+}
+
+fn deserialize_one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct OneOrManyVisitor;
+    impl<'de> de::Visitor<'de> for OneOrManyVisitor {
+        type Value = Vec<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string or a list of strings")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Vec<String>, E> {
+            Ok(vec![v.to_owned()])
+        }
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<String>, A::Error> {
+            let mut out = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                out.push(s);
+            }
+            Ok(out)
+        }
+    }
+    deserializer.deserialize_any(OneOrManyVisitor)
 }
 
 /// Deserialize a HashMap from a YAML map, treating null/absent as empty.

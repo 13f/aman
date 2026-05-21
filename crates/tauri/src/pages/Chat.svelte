@@ -1299,7 +1299,7 @@
     if (sessions.length === 0) {
       await createSession();
     } else {
-      activeSessionId = sessions[0].id;
+      selectSession(sessions[0].id);
     }
 
     await loadSoulInfo();

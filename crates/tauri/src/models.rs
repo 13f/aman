@@ -157,9 +157,11 @@ pub struct ChatSessionInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatMessageEntry {
+    #[serde(rename = "event_id")]
     pub id: String,
     pub event_type: String,
     pub payload: serde_json::Value,
+    #[serde(rename = "timestamp_ms")]
     pub timestamp: i64,
     pub trace_id: String,
 }

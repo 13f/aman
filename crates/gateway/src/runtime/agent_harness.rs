@@ -435,6 +435,49 @@ impl AgentHarness {
         }
     }
 
+    /// Rebuild session history from persisted JSONL events after a restart.
+    ///
+    /// Converts stored `MessageReceived` and `reply_ready` events into
+    /// `ChatMessage` objects so the agent's conversation context is restored.
+    pub fn restore_session_history(&self, session_id: &str, events: &[serde_json::Value]) {
+        for event in events {
+            let event_type = match event["event_type"].as_str() {
+                Some(et) => et,
+                None => continue,
+            };
+            let payload = &event["payload"];
+
+            if event_type == "MessageReceived" {
+                let text = payload["text"].as_str().unwrap_or("");
+                if !text.is_empty() {
+                    self.session_history.append(session_id, ChatMessage {
+                        role: ChatMessageRole::User,
+                        content: text.to_owned(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                        reasoning_content: String::new(),
+                    });
+                }
+            } else if event_type.contains("reply_ready") || event_type == "llm_reply_ready" {
+                let reply = payload["reply"]
+                    .as_str()
+                    .or_else(|| payload["full_text"].as_str())
+                    .unwrap_or("");
+                if !reply.is_empty() {
+                    self.session_history.append(session_id, ChatMessage {
+                        role: ChatMessageRole::Assistant,
+                        content: reply.to_owned(),
+                        tool_call_id: None,
+                        tool_name: None,
+                        tool_calls: None,
+                        reasoning_content: String::new(),
+                    });
+                }
+            }
+        }
+    }
+
     /// Resolve the first enabled agent from the registry.
     ///
     /// Used by `MessageReceivedHandler` when no target agent is specified.

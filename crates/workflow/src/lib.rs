@@ -614,6 +614,29 @@ impl WorkflowEngine {
         Ok(instance)
     }
 
+    /// Restore a previously-persisted workflow instance by its existing ID.
+    ///
+    /// Unlike `create_instance`, this does not generate a new ID — it uses
+    /// the provided `id` directly. Used when resuming a chat session that
+    /// was persisted across gateway restarts.
+    pub fn restore_instance(&self, id: &str, workflow_name: &str, data: Value) -> AmanResult<WorkflowInstance> {
+        let workflow = self.workflow(workflow_name)?;
+        let mut instance = WorkflowInstance::new(
+            id.to_owned(),
+            workflow.name.clone(),
+            workflow.initial_state.clone(),
+            data,
+        );
+        self.timeout_manager
+            .on_state_enter(&workflow, &mut instance, Timestamp::now());
+        self.store.save(&instance)?;
+        self.instances
+            .lock()
+            .expect("instances lock")
+            .insert(instance.id.clone(), instance.clone());
+        Ok(instance)
+    }
+
     #[must_use]
     pub fn get_instance(&self, instance_id: &str) -> Option<WorkflowInstance> {
         self.instances

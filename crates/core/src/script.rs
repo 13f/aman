@@ -158,6 +158,11 @@ fn extract_version(output: &Output) -> String {
 }
 
 /// Parse the first semver-looking token from a version string.
+///
+/// Handles common formats:
+/// - Clean semver: `3.8.0`, `1.34.0`
+/// - With prefix: `v18.0.0`, `Python 3.11.0`
+/// - Bash-style suffix: `3.2.57(1)-release` → extracts `3.2.57`
 fn parse_version(text: &str) -> Option<Version> {
     // Try the whole string first.
     if let Ok(v) = Version::parse(text) {
@@ -165,12 +170,20 @@ fn parse_version(text: &str) -> Option<Version> {
     }
     // Try each whitespace-separated token.
     for token in text.split_whitespace() {
-        // Strip common prefixes like "v", "Python", "Node.js", etc.
         let cleaned = token
             .trim_start_matches('v')
             .trim_start_matches('V');
         if let Ok(v) = Version::parse(cleaned) {
             return Some(v);
+        }
+        // Some runtimes (e.g. bash) append non-semver suffixes like
+        // "3.2.57(1)-release". Strip everything after the patch number.
+        let end = cleaned.find(|c: char| !c.is_ascii_digit() && c != '.');
+        if let Some(idx) = end {
+            let candidate = &cleaned[..idx];
+            if let Ok(v) = Version::parse(candidate) {
+                return Some(v);
+            }
         }
     }
     None
@@ -187,6 +200,11 @@ mod tests {
         assert_eq!(parse_version("Python 3.11.0"), Some(Version::new(3, 11, 0)));
         assert_eq!(parse_version("node v20.0.0"), Some(Version::new(20, 0, 0)));
         assert_eq!(parse_version("Deno 1.34.0"), Some(Version::new(1, 34, 0)));
+        assert_eq!(
+            parse_version("GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)"),
+            Some(Version::new(3, 2, 57))
+        );
+        assert_eq!(parse_version("3.2.57(1)-release"), Some(Version::new(3, 2, 57)));
     }
 
     #[test]

@@ -2119,13 +2119,19 @@ async fn chat_session_send(
     let instance = match runtime.workflow_engine().get_instance(&id) {
         Some(inst) => inst,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    message: format!("session not found: {id}"),
-                }),
-            )
-                .into_response();
+            // Session not in memory — try to restore from persisted JSONL.
+            match runtime.restore_chat_session(&id).await {
+                Some(()) => runtime.workflow_engine().get_instance(&id).expect("just restored"),
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorBody {
+                            message: format!("session not found: {id}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
     };
     let current_ver = instance

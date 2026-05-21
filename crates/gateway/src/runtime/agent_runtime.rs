@@ -1159,6 +1159,45 @@ impl AgentRuntime {
         self.session_store.as_ref().map(|arc| arc.as_ref())
     }
 
+    /// Restore a persisted chat session into the in-memory WorkflowEngine
+    /// and rebuild the agent's conversation history from JSONL events.
+    ///
+    /// Returns `None` when the session has no persisted events or the
+    /// session store is unavailable.
+    pub async fn restore_chat_session(&self, session_id: &str) -> Option<()> {
+        let store = self.session_store()?;
+        let events = store.load_session_events(session_id);
+        if events.is_empty() {
+            return None;
+        }
+
+        // Rebuild conversation history in the agent harness.
+        self.agent_harness.restore_session_history(session_id, &events);
+
+        // Determine session metadata from the first and last events.
+        let first_ts = events.first().and_then(|e| e["timestamp_ms"].as_i64()).unwrap_or(0);
+        let last_ts = events.last().and_then(|e| e["timestamp_ms"].as_i64()).unwrap_or(0);
+        let msg_count = events.iter().filter(|e| {
+            e["event_type"].as_str().map_or(false, |et| {
+                et == "MessageReceived" || et.contains("reply_ready") || et == "llm_reply_ready"
+            })
+        }).count() as u64;
+
+        let data = serde_json::json!({
+            "session_type": "persistent",
+            "version": events.len() as u64,
+            "message_count": msg_count,
+            "created_at": first_ts,
+            "last_active_at": last_ts,
+        });
+
+        self.workflow_engine
+            .restore_instance(session_id, "chat-session", data)
+            .ok()?;
+
+        Some(())
+    }
+
     #[must_use]
     pub fn plugin_installer(&self) -> Arc<PluginInstaller> {
         Arc::clone(&self.plugin_installer)

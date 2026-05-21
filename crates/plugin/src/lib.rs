@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use kernel::context::{BaseContext, PluginContext, PluginTrackedResources};
+use kernel::hook::Hook;
 use kernel::plugin::{Plugin, PluginDependency};
 use kernel::skill::Skill;
 use kernel::source::EventSource;
@@ -80,6 +81,8 @@ pub struct PluginExports {
     pub tools: Vec<String>,
     #[serde(default)]
     pub event_sources: Vec<String>,
+    #[serde(default)]
+    pub hooks: Vec<String>,
 }
 
 impl PluginManifest {
@@ -697,6 +700,7 @@ pub struct RegisteredExports {
     pub skills: Vec<String>,
     pub tools: Vec<String>,
     pub event_sources: Vec<String>,
+    pub hooks: Vec<String>,
 }
 
 enum LoadedPluginRuntime {
@@ -796,6 +800,9 @@ pub trait PluginExportRegistrar: Send + Sync {
 
     fn register_event_source(&self, source: Arc<dyn EventSource>) -> AmanResult<()>;
     fn unregister_event_source(&self, source_id: &str) -> AmanResult<()>;
+
+    fn register_hook(&self, hook: Arc<dyn Hook>) -> AmanResult<()>;
+    fn unregister_hook(&self, hook_name: &str) -> AmanResult<()>;
 }
 
 #[derive(Default)]
@@ -823,6 +830,14 @@ impl PluginExportRegistrar for NoopPluginRegistrar {
     }
 
     fn unregister_event_source(&self, _source_id: &str) -> AmanResult<()> {
+        Ok(())
+    }
+
+    fn register_hook(&self, _hook: Arc<dyn Hook>) -> AmanResult<()> {
+        Ok(())
+    }
+
+    fn unregister_hook(&self, _hook_name: &str) -> AmanResult<()> {
         Ok(())
     }
 }
@@ -1248,11 +1263,24 @@ impl PluginLoader {
                 return Err(error);
             }
         }
+        for hook in plugin.hooks() {
+            exports.hooks.push(hook.name().to_owned());
+            if let Err(error) = self.registrar.register_hook(hook) {
+                self.unregister_exports(&exports, plugin.name())?;
+                return Err(error);
+            }
+        }
         Ok(exports)
     }
 
     fn unregister_exports(&self, exports: &RegisteredExports, plugin_name: &str) -> AmanResult<()> {
         let mut first_error = None;
+        for hook_name in &exports.hooks {
+            if let Err(error) = self.registrar.unregister_hook(hook_name)
+                && first_error.is_none() {
+                    first_error = Some(error);
+                }
+        }
         for source_id in &exports.event_sources {
             if let Err(error) = self.registrar.unregister_event_source(source_id)
                 && first_error.is_none() {
@@ -1278,10 +1306,11 @@ impl PluginLoader {
             plugin_name,
             PluginAuditEventType::RollbackReleased,
             format!(
-                "released exports skills={}, tools={}, event_sources={}",
+                "released exports skills={}, tools={}, event_sources={}, hooks={}",
                 exports.skills.len(),
                 exports.tools.len(),
-                exports.event_sources.len()
+                exports.event_sources.len(),
+                exports.hooks.len()
             ),
         );
         Ok(())
@@ -1366,7 +1395,8 @@ fn release_tracked_resources(
 fn has_manifest_exports(manifest: &PluginManifest) -> bool {
     !(manifest.exports.skills.is_empty()
         && manifest.exports.tools.is_empty()
-        && manifest.exports.event_sources.is_empty())
+        && manifest.exports.event_sources.is_empty()
+        && manifest.exports.hooks.is_empty())
 }
 
 #[must_use]
@@ -1436,7 +1466,12 @@ pub fn validate_manifest_exports(manifest: &PluginManifest) -> bool {
         .event_sources
         .iter()
         .all(|name| all.insert(format!("e:{name}")));
-    unique_skills && unique_tools && unique_sources
+    let unique_hooks = manifest
+        .exports
+        .hooks
+        .iter()
+        .all(|name| all.insert(format!("h:{name}")));
+    unique_skills && unique_tools && unique_sources && unique_hooks
 }
 
 #[cfg(test)]
@@ -1453,6 +1488,7 @@ mod tests {
     use futures_timer::Delay;
     use kernel::context::{PluginContext, SkillContext, SourceContext, ToolContext};
     use kernel::event::{Event, EventType};
+    use kernel::hook::Hook;
     use kernel::plugin::{Plugin, PluginDependency};
     use kernel::schema::JsonSchema;
     use kernel::skill::{Skill, TriggerCondition};
@@ -1616,6 +1652,7 @@ mod tests {
         skills: Mutex<BTreeSet<String>>,
         tools: Mutex<BTreeSet<String>>,
         sources: Mutex<BTreeSet<String>>,
+        hooks: Mutex<BTreeSet<String>>,
         fail_skill: Mutex<Option<String>>,
     }
 
@@ -1676,6 +1713,19 @@ mod tests {
             self.sources.lock().expect("sources lock").remove(source_id);
             Ok(())
         }
+
+        fn register_hook(&self, hook: Arc<dyn Hook>) -> AmanResult<()> {
+            self.hooks
+                .lock()
+                .expect("hooks lock")
+                .insert(hook.name().to_owned());
+            Ok(())
+        }
+
+        fn unregister_hook(&self, hook_name: &str) -> AmanResult<()> {
+            self.hooks.lock().expect("hooks lock").remove(hook_name);
+            Ok(())
+        }
     }
 
     fn plugin_candidate(
@@ -1724,6 +1774,7 @@ mod tests {
                     skills: skills.iter().map(|item| item.name().to_owned()).collect(),
                     tools: tools.iter().map(|item| item.name().to_owned()).collect(),
                     event_sources: sources.iter().map(|item| item.id().to_owned()).collect(),
+                    hooks: vec![],
                 },
                 config_schema: None,
                 isolation: None,

@@ -6,6 +6,7 @@ use idle::detector::IdleDetector;
 use idle::incubation::IncubationManager;
 use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
+use kernel::hook::Hook;
 use kernel::llm::LlmProvider;
 use kernel::prompt::DefaultPromptPipeline;
 use kernel::session_history::InMemorySessionHistory;
@@ -417,6 +418,7 @@ impl AgentRuntimeBuilder {
                     ],
                     tools: vec![],
                     event_sources: vec![],
+                    hooks: vec![],
                 },
                 config_schema: None,
                 isolation: Some(PluginIsolationMode::InProcess),
@@ -434,9 +436,11 @@ impl AgentRuntimeBuilder {
         // Load the built-in LLM plugin, idle-system plugin (and any extra plugins from builder).
         let mut all_candidates = vec![idle_candidate];
         all_candidates.extend(self.extra_plugins);
+        let hook_registry = Arc::new(hook::HookRegistry::new());
         let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
+            Arc::clone(&hook_registry),
         )));
         if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
             tracing::error!(error = %e, "failed to load built-in plugins");
@@ -577,10 +581,12 @@ impl AgentRuntimeBuilder {
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
             Arc::clone(&bus),
-            Arc::clone(&memory_store),
+            Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryRetrieval>,
             llm_provider,
             Box::new(DefaultPromptPipeline),
             Box::new(InMemorySessionHistory::new()),
+            Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
+            Box::new(super::agent_harness::FirstEnabledAgentRouter),
         ));
 
         // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──
@@ -634,7 +640,7 @@ impl AgentRuntimeBuilder {
                     .unwrap_or(text);
 
                 // Resolve first enabled agent via the harness.
-                let agent = match self.agent_harness.resolve_first_enabled_agent().await {
+                let agent = match self.agent_harness.resolve_first_enabled_agent(&text).await {
                     Some(a) => a,
                     None => {
                         tracing::warn!("MessageReceivedHandler: no enabled agent found");
@@ -1960,14 +1966,20 @@ struct RuntimePluginRegistrar {
     skills: Arc<skill::SkillRegistry>,
     tools: Arc<tool::ToolRegistry>,
     source_ids: StdMutex<BTreeSet<String>>,
+    hooks: Arc<hook::HookRegistry>,
 }
 
 impl RuntimePluginRegistrar {
-    fn new(skills: Arc<skill::SkillRegistry>, tools: Arc<tool::ToolRegistry>) -> Self {
+    fn new(
+        skills: Arc<skill::SkillRegistry>,
+        tools: Arc<tool::ToolRegistry>,
+        hooks: Arc<hook::HookRegistry>,
+    ) -> Self {
         Self {
             skills,
             tools,
             source_ids: StdMutex::new(BTreeSet::new()),
+            hooks,
         }
     }
 }
@@ -2003,6 +2015,15 @@ impl PluginExportRegistrar for RuntimePluginRegistrar {
             .lock()
             .expect("plugin source ids lock")
             .remove(source_id);
+        Ok(())
+    }
+
+    fn register_hook(&self, hook: Arc<dyn Hook>) -> AmanResult<()> {
+        self.hooks.register(hook)
+    }
+
+    fn unregister_hook(&self, hook_name: &str) -> AmanResult<()> {
+        self.hooks.unregister(hook_name);
         Ok(())
     }
 }

@@ -5,25 +5,35 @@ use std::time::Instant;
 
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus};
+use kernel::budget::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest, LlmProvider};
+use kernel::memory::MemoryRetrieval;
 use kernel::prompt::PromptPipeline;
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
     SoulSnapshot, StreamEvent, ToolDescriptor,
 };
+use kernel::router::AgentRouter;
 use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
 use serde_json::json;
 use tool::ToolRegistry;
 
-use super::memory_store::MemoryStore;
 use super::AgentRegistry;
 
 /// Default maximum ReAct loop iterations.
 const DEFAULT_MAX_REACT_TURNS: u32 = 64;
-/// Default token budget limit.
-const DEFAULT_TOKEN_BUDGET_LIMIT: u64 = 100_000;
+
+/// Default agent router — selects the first enabled agent.
+pub struct FirstEnabledAgentRouter;
+
+#[async_trait::async_trait]
+impl AgentRouter for FirstEnabledAgentRouter {
+    async fn route(&self, _user_text: &str, agents: &[AgentInstance]) -> Option<AgentInstance> {
+        agents.iter().find(|a| a.descriptor.enabled).cloned()
+    }
+}
 
 /// Thread-safe flag for interrupting the ReAct loop.
 #[derive(Debug, Default)]
@@ -346,27 +356,32 @@ pub struct AgentHarness {
     tool_registry: Arc<ToolRegistry>,
     engine: LlmReActEngine,
     bus: Arc<dyn EventBus>,
-    /// Memory store for long-term recall (M5).
-    memory_store: Arc<MemoryStore>,
+    /// Pluggable memory retrieval for long-term recall.
+    memory_store: Arc<dyn MemoryRetrieval>,
     /// Per-session conversation history for cross-turn continuity.
     session_history: Box<dyn SessionHistoryStore>,
     /// Per-session interrupt flags for external stop (M6).
     active_interrupts: RwLock<HashMap<String, Arc<InterruptFlag>>>,
     /// Default max ReAct turns.
     max_react_turns: u32,
-    /// Default token budget limit.
-    token_budget_limit: u64,
+    /// Pluggable token budget policy.
+    budget_policy: Box<dyn TokenBudgetPolicy>,
+    /// Pluggable agent routing strategy.
+    agent_router: Box<dyn AgentRouter>,
 }
 
 impl AgentHarness {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         registry: Arc<AgentRegistry>,
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
-        memory_store: Arc<MemoryStore>,
+        memory_store: Arc<dyn MemoryRetrieval>,
         llm_provider: Arc<dyn LlmProvider>,
         prompt_pipeline: Box<dyn PromptPipeline>,
         session_history: Box<dyn SessionHistoryStore>,
+        budget_policy: Box<dyn TokenBudgetPolicy>,
+        agent_router: Box<dyn AgentRouter>,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
@@ -384,7 +399,8 @@ impl AgentHarness {
             session_history,
             active_interrupts: RwLock::new(HashMap::new()),
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
-            token_budget_limit: DEFAULT_TOKEN_BUDGET_LIMIT,
+            budget_policy,
+            agent_router,
         }
     }
 
@@ -421,9 +437,10 @@ impl AgentHarness {
     /// Resolve the first enabled agent from the registry.
     ///
     /// Used by `MessageReceivedHandler` when no target agent is specified.
-    pub async fn resolve_first_enabled_agent(&self) -> Option<AgentInstance> {
+    /// Delegates to the configured [`AgentRouter`] strategy.
+    pub async fn resolve_first_enabled_agent(&self, user_text: &str) -> Option<AgentInstance> {
         let agents = self.registry.list().await;
-        agents.into_iter().find(|a| a.descriptor.enabled)
+        self.agent_router.route(user_text, &agents).await
     }
 
     /// Resolve an agent by ID, returning `None` if not found or disabled.
@@ -520,9 +537,13 @@ impl AgentHarness {
                 crate::runtime::token_budget::TokenBudget::with_window(model, ctx, out)
             }
             (Some(ctx), None) => {
-                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, 0)
+                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, self.budget_policy.max_output_tokens(model, instance.descriptor.max_output_tokens))
             }
-            _ => crate::runtime::token_budget::TokenBudget::new(model),
+            _ => {
+                let ctx = self.budget_policy.context_window(model);
+                let out = self.budget_policy.max_output_tokens(model, None);
+                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, out)
+            }
         };
         // Emit config warning events when token budget values are 0 (not configured).
         if token_budget.max_output_tokens == 0 {
@@ -566,7 +587,7 @@ impl AgentHarness {
         token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
 
         // 6. Retrieve memories relevant to user input (M5 T5.1)
-        let memory_results = self.memory_store.retrieve(agent_id, user_text);
+        let memory_results = self.memory_store.retrieve(agent_id, user_text).await;
         let memory_context = if memory_results.is_empty() {
             None
         } else {
@@ -587,7 +608,7 @@ impl AgentHarness {
             available_tools,
             model,
             self.max_react_turns,
-            self.token_budget_limit,
+            self.budget_policy.session_token_limit(),
             max_output_tokens,
         );
         ctx.memory_context = memory_context;

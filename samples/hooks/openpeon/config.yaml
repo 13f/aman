@@ -1,0 +1,13 @@
+name: openpeon
+description: openpeon hooks for aman
+version: 0.1.0
+pack: peon
+min_version: "3.2"
+on:
+  - session:started
+  - agent:busy
+  - tool:completed
+  - tool:failed
+  - message:completed
+  - llm:call_started
+runtime: bash

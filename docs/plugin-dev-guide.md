@@ -1,0 +1,481 @@
+# Aman 插件 / 事件 / Hook 开发指南
+
+---
+
+## 目录
+
+1. [概述](#1-概述)
+2. [Hook 系统——最简单的扩展方式](#2-hook-系统最简单的扩展方式)
+3. [事件系统——核心数据流](#3-事件系统核心数据流)
+4. [Plugin 系统——完整的扩展能力](#4-plugin-系统完整的扩展能力)
+5. [实践指南](#5-实践指南)
+
+---
+
+## 1. 概述
+
+Aman 提供三层扩展机制，从简单到复杂依次为：
+
+| 机制 | 复杂度 | 用途 | 语言 |
+|------|--------|------|------|
+| **Hook** | 低 | 事件触发脚本，播放音效、通知、日志 | 任意脚本 (bash/python/node) |
+| **Event Source** | 中 | 定时器、文件监控、webhook 等自定义事件源 | Rust |
+| **Plugin** | 高 | 完整的工具/技能/事件源扩展包 | Rust / WASM / 子进程 |
+
+---
+
+## 2. Hook 系统——最简单的扩展方式
+
+### 2.1 工作原理
+
+Hook 是 Aman 中最轻量的扩展机制。每个 Hook 是一个可执行脚本，当特定事件发生时，Aman 将事件信息以 JSON 格式通过 stdin 传递给脚本。
+
+```
+事件发生 → ScriptHookRunner 匹配 → 脚本 stdin 收到 JSON → 脚本执行 → 完成
+```
+
+### 2.2 两种配置方式
+
+#### 方式一：内联配置（aman.yaml）
+
+```yaml
+hooks:
+  - name: webhook-alert
+    on: tool:completed
+    script: ./hooks/alert.py
+    runtime: python3
+    min_version: ">=3.8"
+```
+
+#### 方式二：目录自动发现（推荐）
+
+在 `~/.aman/hooks/` 下创建子目录，每个目录包含 `config.yaml` 和脚本文件：
+
+```
+~/.aman/hooks/
+└── openpeon/
+    ├── config.yaml
+    └── main.sh
+```
+
+项目 `samples/hooks/` 目录下提供了可直接使用的示例 Hook，复制到 `~/.aman/hooks/` 即可启用：
+
+**config.yaml 格式：**
+
+```yaml
+name: openpeon
+description: 描述信息
+on:
+  - session:started
+  - agent:busy
+  - tool:completed
+runtime: bash
+min_version: "3.2"          # 可选，版本约束
+```
+
+**字段说明：**
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `name` | 是 | Hook 名称，需唯一 |
+| `on` | 是 | 触发的事件类型，支持字符串或数组 |
+| `runtime` | 是 | 解释器名称（bash/python3/node/deno） |
+| `script` | 否 | 脚本路径，相对路径相对于 config.yaml 所在目录，默认为 `main.sh` |
+| `min_version` | 否 | 解释器最低版本约束（semver 格式） |
+
+### 2.3 脚本协议
+
+Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
+
+```json
+{
+  "event_type": "agent:busy",
+  "payload": {
+    "agent_id": "...",
+    "session_id": "..."
+  }
+}
+```
+
+- stdout 输出被收集（当前可忽略）
+- stderr 输出会打印到 Aman 日志中，可用于调试
+- 脚本退出码非零不会影响主流程
+
+### 2.4 支持的事件类型
+
+所有系统事件以 `EventType` Debug 格式序列化，常见的有：
+
+| 事件类型 | 触发时机 |
+|----------|----------|
+| `MessageReceived` | 收到用户消息 |
+| `session:started` | 会话开始 |
+| `agent:busy` | Agent 开始处理 |
+| `agent:reply_ready` | Agent 回复完成 |
+| `agent:reply_stream_start` | 流式回复开始 |
+| `agent:reply_stream_done` | 流式回复结束 |
+| `agent:reply_stream_error` | 流式回复出错 |
+| `agent:reply_interrupted` | 回复被中断 |
+| `tool:completed` | 工具执行完成 |
+| `tool:failed` | 工具执行失败 |
+| `llm:call_started` | LLM 调用开始 |
+| `llm:call_ended` | LLM 调用结束 |
+| `session:closed` | 会话关闭 |
+| `gateway:ready` | 网关就绪 |
+
+### 2.5 完整示例：openpeon 音效 Hook
+
+完整代码见 `samples/hooks/openpeon/`，包含两个文件：
+
+```
+samples/hooks/openpeon/
+├── config.yaml        # Hook 配置
+└── main.sh            # 脚本实现
+```
+
+**config.yaml** 定义了监听的事件类型和脚本 runtime：
+
+```yaml
+name: openpeon
+description: openpeon hooks for aman
+on:
+  - session:started
+  - agent:busy
+  - tool:completed
+  - tool:failed
+  - message:completed
+  - llm:call_started
+runtime: bash
+min_version: "3.2"
+```
+
+**main.sh** 从 stdin 读取事件 JSON，按类别映射到音效包，播放随机 WAV 文件：
+
+```bash
+INPUT=$(cat)
+EVENT_TYPE=$(echo "$INPUT" | jq -r '.event_type // empty' 2>/dev/null || exit 0)
+# ... 事件分类 → 音效播放
+```
+
+使用方式：将 `samples/hooks/openpeon` 复制到 `~/.aman/hooks/` 下即可启用：
+
+```bash
+cp -r samples/hooks/openpeon ~/.aman/hooks/
+```
+
+也可作为模板，修改 `config.yaml` 中的事件类型和脚本逻辑，快速创建自己的 Hook。
+
+### 2.6 版本检测机制
+
+`ScriptRuntime` 会检查解释器是否可用及版本是否满足要求：
+
+```rust
+// crates/core/src/script.rs
+pub fn check_available(&self) -> AmanResult<()> {
+    // 1. which bash（检查 PATH）
+    // 2. bash --version（获取版本）
+    // 3. 验证版本约束（如 >=3.2）
+}
+```
+
+版本号解析兼容多种格式：
+- `3.8.0`, `v18.0.0` — 标准 semver
+- `3.2.57(1)-release` — bash 风格（自动提取 `3.2.57`）
+
+---
+
+## 3. 事件系统——核心数据流
+
+### 3.1 事件结构
+
+```rust
+// crates/core/src/event.rs
+pub struct Event {
+    pub id: Uuid,                    // UUID v7
+    pub source: SourceId,            // 来源标识
+    pub event_type: EventType,       // 事件类型
+    pub timestamp: Timestamp,        // 毫秒时间戳
+    pub priority: Priority,          // High | Normal | Low
+    pub delivery: DeliveryGuarantee, // AtMostOnce | AtLeastOnce | ExactlyOnce
+    pub dedup_key: Option<DedupKey>,
+    pub payload: Value,              // 任意 JSON
+    pub metadata: EventMetadata,
+}
+```
+
+### 3.2 EventType 枚举
+
+```rust
+pub enum EventType {
+    // 系统事件
+    FileCreated, FileChanged, FileDeleted,
+    CronTick, TimerTick, Heartbeat,
+    MessageReceived, WebhookReceived, SystemSignal,
+    WorkflowStateChanged, SkillLoaded, SkillReloaded,
+    ConfigChanged, SecretRotated, InjectionDetected,
+    Idle, QueueDrained, AgentMessage,
+    // 自定义事件（推荐方式）
+    Custom(String),
+}
+```
+
+**创建事件：**
+
+```rust
+let event = Event::new(
+    "my_source",                                    // source
+    EventType::Custom("my_custom_event".to_owned()), // event_type
+    json!({"key": "value"}),                         // payload
+);
+```
+
+### 3.3 EventBus API
+
+```rust
+#[async_trait]
+pub trait EventBus: Send + Sync {
+    async fn publish(&self, event: Event) -> AmanResult<()>;
+    async fn subscribe(&self, filter: SubscriptionFilter, handler: Box<dyn EventHandler>) -> AmanResult<SubscriptionId>;
+    async fn unsubscribe(&self, id: SubscriptionId);
+    fn try_dequeue(&self) -> Option<Event>;
+    fn backpressure_level(&self) -> BackpressureLevel;
+}
+```
+
+**订阅事件：**
+
+```rust
+bus.subscribe(
+    SubscriptionFilter {
+        event_types: Some(vec![EventType::Custom("my_event".to_owned())]),
+        sources: None,
+        priorities: None,
+        payload_match: None,  // 可选：JSON 子集匹配
+    },
+    Box::new(MyEventHandler),
+).await?;
+```
+
+### 3.4 自定义事件源
+
+实现 `EventSource` trait 可以创建自定义事件源：
+
+```rust
+#[async_trait]
+pub trait EventSource: Send + Sync {
+    fn id(&self) -> &str;
+    fn source_type(&self) -> SourceType;
+    async fn init(&mut self, ctx: SourceContext) -> AmanResult<()>;
+    async fn poll(&mut self, ctx: &SourceContext) -> AmanResult<Vec<Event>>;
+    async fn shutdown(&mut self) -> AmanResult<()>;
+    async fn on_backpressure(&mut self, level: BackpressureLevel, ctx: &SourceContext) -> AmanResult<()>;
+    fn health(&self) -> HealthStatus;
+}
+```
+
+内置事件源参考：
+
+| 类型 | 文件 | 模式 | 说明 |
+|------|------|------|------|
+| `TimerSource` | `crates/source/src/timer.rs` | Pull | 定时触发 |
+| `CronSource` | `crates/source/src/cron.rs` | Pull | Cron 表达式触发 |
+| `FileWatchSource` | `crates/source/src/file_watch.rs` | Pull | 文件变化监控 |
+| `WebhookSource` | `crates/source/src/webhook.rs` | Push | HTTP Webhook |
+| `SocketSource` | `crates/source/src/socket.rs` | Push | TCP/UDP/Unix Socket |
+| `SignalSource` | `crates/source/src/signal.rs` | Pull | Unix 信号处理 |
+
+### 3.5 背压系统
+
+事件总线有 5 级背压机制，基于队列使用率：
+
+| 级别 | 阈值 | 行为 |
+|------|------|------|
+| Normal | <80% | 正常运行 |
+| L1 | >=80% | AtMostOnce 事件降级优先级 |
+| L2 | >=90% | 丢弃 AtMostOnce 事件 |
+| L3 | >=95% | 阻塞保证送达事件，暂停 Push 源 |
+| L4A | >=98% | 溢出保证事件到磁盘 |
+| L4B | >=98%+ | 紧急状态 |
+
+### 3.6 事件流向
+
+```
+Source → poll() → Event → publish(Event) → admit_event()
+  → 去重检查 → OrderedQueue.push()
+  → drain → 订阅过滤 → handler.handle(event)
+```
+
+---
+
+## 4. Plugin 系统——完整的扩展能力
+
+### 4.1 Plugin Trait
+
+所有 Plugin 必须实现的核心 trait：
+
+```rust
+// crates/core/src/plugin.rs
+#[async_trait]
+pub trait Plugin: Send + Sync {
+    fn name(&self) -> &str;
+    fn version(&self) -> &Version;
+    fn dependencies(&self) -> &[PluginDependency];
+
+    // 生命周期
+    async fn on_load(&mut self, ctx: PluginContext) -> AmanResult<()>;
+    async fn on_unload(&mut self) -> AmanResult<()>;
+
+    // 依赖通知
+    async fn on_dependency_unloading(&self, dep_name: &str) -> AmanResult<()>;
+
+    // 导出
+    fn event_sources(&self) -> Vec<Arc<dyn EventSource>>;
+    fn skills(&self) -> Vec<Arc<dyn Skill>>;
+    fn tools(&self) -> Vec<Arc<dyn Tool>>;
+    fn hooks(&self) -> Vec<Arc<dyn Hook>>;
+}
+```
+
+### 4.2 Plugin 清单（plugin.yaml）
+
+每个插件目录必须包含 `plugin.yaml`：
+
+```yaml
+name: my-plugin
+version: "1.0.0"
+description: 我的插件
+depends_on:
+  - name: core
+    version_range: ">=0.1.0"
+exports:
+  skills:
+    - my-skill
+  tools:
+    - my-tool
+  event_sources:
+    - my-source
+  hooks:
+    - my-hook
+lifecycle:
+  on_load: init
+  on_unload: shutdown
+isolation: inprocess    # inprocess | subprocess | wasm
+capabilities:
+  - chat
+```
+
+### 4.3 三种隔离模式
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **InProcess** | 同进程内 `Box<dyn Plugin>` | Rust 原生插件，性能最优 |
+| **Subprocess** | 子进程，JSON-RPC stdin/stdout 通信 | 多语言插件（Python/Node/Go） |
+| **WASM** | wasmtime 运行时 | 沙箱隔离，安全敏感场景 |
+
+**子进程插件配置：**
+
+```yaml
+isolation: subprocess
+subprocess:
+  command: python3
+  args: ["my_plugin_server.py"]
+  timeout_ms: 30000
+```
+
+**WASM 插件需要导出三个函数：**
+- `aman_skill_on_load` -> i32（返回 0 表示成功）
+- `aman_skill_on_unload` -> i32
+- `aman_skill_execute` -> i32
+
+### 4.4 依赖图与加载顺序
+
+Plugin 系统使用 `DependencyGraph` 进行拓扑排序加载：
+
+```rust
+pub struct PluginDependency {
+    pub name: String,
+    pub version_range: String,   // semver 约束，如 ">=1.0 <2.0"
+}
+```
+
+加载流程：
+1. 递归扫描所有 `plugin.yaml`
+2. 构建依赖图，检测循环依赖
+3. 拓扑排序
+4. 按序加载，失败时回滚已加载的插件
+
+### 4.5 生命周期状态机
+
+```
+Loaded → Enabled → Running ←→ Paused
+                      ↓
+                  Disabled → Shutdown
+```
+
+### 4.6 安装插件
+
+```bash
+# 通过 API 安装
+curl -X POST http://localhost:9999/plugin/install \
+  -F "file=@my-plugin.tar.gz"
+```
+
+插件目录结构（打包为 tar.gz）：
+
+```
+my-plugin.tar.gz
+└── my-plugin/
+    ├── plugin.yaml
+    ├── ... (插件代码)
+```
+
+---
+
+## 5. 实践指南
+
+### 5.1 如何选择扩展方式
+
+| 需求 | 推荐方式 | 原因 |
+|------|----------|------|
+| 事件触发外部脚本 | **Hook** | 零编译，任意脚本语言 |
+| 定时任务 / 轮询 | **Event Source** | 完整的事件生命周期管理 |
+| 提供新的 LLM Tool | **Plugin (InProcess)** | 需要访问 Rust Tool trait |
+| 多语言扩展 | **Plugin (Subprocess)** | 任意语言编写，JSON-RPC 通信 |
+| 安全沙箱 | **Plugin (WASM)** | 内存安全，资源隔离 |
+| 完整的 Agent 能力集 | **Plugin** | 可导出 skills+tools+events |
+
+### 5.2 Hook 开发步骤
+
+1. 在 `~/.aman/hooks/` 下创建目录
+2. 编写 `config.yaml`（配置事件类型和 runtime）
+3. 编写脚本（从 stdin 读 JSON）
+4. 重启 Aman 或等待热加载
+5. 查看调试日志确认触发
+
+### 5.3 Event Source 开发要点
+
+- Pull 模式：实现 `poll()` 方法，返回事件列表
+- Push 模式：启动服务器（HTTP/TCP），收到请求后通过 `SourceContext` 发布事件
+- 实现 `on_backpressure()`：在背压时降级或暂停，恢复正常后继续
+- 使用 `can_poll()` 检查是否应该轮询（背压 L3+ 时返回 false）
+
+### 5.4 Plugin 开发要点
+
+- 实现 `on_load()` 时注册资源，返回值表示成功/失败
+- 实现 `on_unload()` 时释放资源（关闭连接、停止 goroutine）
+- `on_dependency_unloading()` 在依赖即将卸载时调用，用于清理引用
+- 导出 `event_sources` / `skills` / `tools` 供系统注册
+- 使用 `capabilities` 声明所需能力（如 `chat`、`network`）
+
+### 5.5 事件命名约定
+
+- 使用 `EventType::Custom("namespace:action".to_owned())` 格式
+- 命名空间用小写字母命名，如 `agent:reply_ready`
+- 动作使用蛇形命名（snake_case）
+- 避免与内置事件类型冲突
+
+### 5.6 调试技巧
+
+- **Hook 未触发**：检查事件类型名称是否匹配、runtime 是否存在、版本是否满足
+- **Plugin 加载失败**：查看 `~/.aman/logs/` 下的日志，检查依赖图
+- **事件未到达**：检查背压级别、订阅过滤条件、事件优先级
+- **启用调试日志**：`RUST_LOG=debug cargo run --release --bin aman`

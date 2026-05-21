@@ -456,6 +456,22 @@ pub struct AmanConfig {
     pub models: HashMap<String, ModelParams>,
     #[serde(default, deserialize_with = "deserialize_null_map")]
     pub agents: HashMap<String, AgentEntryConfig>,
+    pub llm: Option<LlmConfig>,
+}
+
+/// Top-level LLM configuration (optional).
+///
+/// Allows selecting the LLM provider type independently of individual
+/// provider entries. When set, this is the primary source for `api_type`.
+///
+/// ```yaml
+/// llm:
+///   api_type: openai  # openai | claude
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmConfig {
+    #[serde(default = "default_api_type")]
+    pub api_type: String,
 }
 
 /// Deserialize a HashMap from a YAML map, treating null/absent as empty.

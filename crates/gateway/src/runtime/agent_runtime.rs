@@ -2263,6 +2263,9 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
 /// Uses `api_type` from the matching provider config to select the implementation.
 fn create_llm_provider() -> Arc<dyn LlmProvider> {
     if let Ok(aman) = config::AmanConfig::from_default_path() {
+        // Priority 0: top-level llm.api_type overrides per-provider api_type
+        let llm_api_type = aman.llm.as_ref().map(|l| l.api_type.as_str());
+
         // Priority 1: default model config
         if let Some(model) = &aman.model {
             let provider_key = &model.provider;
@@ -2270,28 +2273,35 @@ fn create_llm_provider() -> Arc<dyn LlmProvider> {
             let base_url = p.map(|p| p.base_url.clone())
                 .unwrap_or_else(|| model.base_url.clone());
             let api_key = get_llm_api_key_or_inline(provider_key, p);
-            let api_type = p.map(|p| p.api_type.clone()).unwrap_or_default();
+            let api_type = llm_api_type
+                .or_else(|| p.map(|p| p.api_type.as_str()))
+                .unwrap_or("openai");
             tracing::info!(
                 provider = %provider_key,
                 model = %model.default,
                 api_key_len = api_key.len(),
+                api_type = %api_type,
                 "create_llm_provider: using default model config"
             );
-            return build_provider(provider_key, &api_key, &base_url, &api_type);
+            return build_provider(provider_key, &api_key, &base_url, api_type);
         }
 
         // Priority 2: first configured agent (provider + model)
         for (_key, agent) in &aman.agents {
             if let Some(p) = aman.providers.get(&agent.provider) {
                 let api_key = get_llm_api_key_or_inline(&agent.provider, Some(p));
+                let api_type = llm_api_type
+                    .or_else(|| Some(p.api_type.as_str()))
+                    .unwrap_or("openai");
                 tracing::info!(
                     agent_key = %_key,
                     provider = %agent.provider,
                     model = %agent.model,
                     api_key_len = api_key.len(),
+                    api_type = %api_type,
                     "create_llm_provider: using agent config"
                 );
-                return build_provider(&agent.provider, &api_key, &p.base_url, &p.api_type);
+                return build_provider(&agent.provider, &api_key, &p.base_url, api_type);
             }
             tracing::warn!(
                 agent_key = %_key,

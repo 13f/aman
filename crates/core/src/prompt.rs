@@ -108,6 +108,16 @@ impl PromptPipeline for DefaultPromptPipeline {
                 tool_list.join("\n")
             ));
             parts.push(
+                "\n## File Operations (safe, no shell)\n\
+                 - read(path): read file contents\n\
+                 - write(path, content): write file (auto-creates parent dirs)\n\
+                 - edit(file_path, old_string, new_string): replace exact matching text in file\n\
+                 - list(path): list directory entries\n\
+                 - find(pattern, base): search files by name (recursive, case-insensitive)\n\
+                 - grep(pattern, path, glob?): search file contents via ripgrep (multi-threaded)"
+                    .to_owned(),
+            );
+            parts.push(
                 "\nWhen you need to use a tool, respond with a JSON tool call in the format:\
                  \n```tool_call\n{\"name\": \"tool_name\", \"arguments\": {...}}\n```"
                     .to_owned(),

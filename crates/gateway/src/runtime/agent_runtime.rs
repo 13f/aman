@@ -7,6 +7,8 @@ use idle::incubation::IncubationManager;
 use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
 use kernel::llm::LlmProvider;
+use kernel::prompt::DefaultPromptPipeline;
+use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
@@ -577,6 +579,8 @@ impl AgentRuntimeBuilder {
             Arc::clone(&bus),
             Arc::clone(&memory_store),
             llm_provider,
+            Box::new(DefaultPromptPipeline),
+            Box::new(InMemorySessionHistory::new()),
         ));
 
         // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──

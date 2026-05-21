@@ -1,6 +1,7 @@
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 use crate::Error;
 use async_trait::async_trait;
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// Streaming event emitted during a streaming LLM response.
@@ -54,4 +55,25 @@ pub trait LlmProvider: Send + Sync {
         req: LlmChatRequest,
         cb: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
     ) -> Result<LlmResponse, Error>;
+}
+
+/// Format [`ParsedToolCall`]s into the JSON format expected in
+/// conversation history for the next LLM turn.
+///
+/// Produces the OpenAI `tool_calls` structure so providers that
+/// follow that convention can echo tool calls back to the API.
+pub fn format_tool_calls_for_history(calls: &[ParsedToolCall]) -> Vec<Value> {
+    calls
+        .iter()
+        .map(|tc| {
+            json!({
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.tool_name,
+                    "arguments": serde_json::to_string(&tc.args).unwrap_or_default(),
+                }
+            })
+        })
+        .collect()
 }

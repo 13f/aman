@@ -6,11 +6,13 @@ use std::time::Instant;
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
-use kernel::llm::{LlmChatRequest, LlmProvider};
+use kernel::llm::{self, LlmChatRequest, LlmProvider};
+use kernel::prompt::PromptPipeline;
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
     SoulSnapshot, StreamEvent, ToolDescriptor,
 };
+use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
 use serde_json::json;
 use tool::ToolRegistry;
@@ -186,59 +188,6 @@ impl ToolExecutor {
     }
 }
 
-/// Assembles the context prompt from SOUL, history, memory, and tool schemas.
-pub struct ContextAssembler;
-
-impl ContextAssembler {
-    /// Build the system prompt for the LLM.
-    pub fn assemble(
-        soul: &SoulSnapshot,
-        tools: &[ToolDescriptor],
-        memory: Option<&str>,
-    ) -> String {
-        let mut parts: Vec<String> = Vec::new();
-
-        // SOUL system prompt
-        parts.push(soul.system_prompt.clone());
-
-        // Inject current date so the LLM can interpret "recent", "today", etc. correctly
-        parts.push(format!("Current date: {}", crate::runtime::current_date_string()));
-
-        // Available tools
-        if !tools.is_empty() {
-            let tool_list: Vec<String> = tools
-                .iter()
-                .map(|t| format!("- {}: {} (parameters: {})", t.name, t.description, t.parameters))
-                .collect();
-            parts.push(format!(
-                "\n## Available Tools\nYou can use these tools when responding:\n{}",
-                tool_list.join("\n")
-            ));
-            parts.push(
-                "\nWhen you need to use a tool, respond with a JSON tool call in the format:\
-                 \n```tool_call\n{\"name\": \"tool_name\", \"arguments\": {...}}\n```"
-                    .to_owned(),
-            );
-            parts.push(
-                "\nImportant: If the user asks about current events, recent data, prices, dates, \
-                 or any time-sensitive information, use the web_search tool first rather than \
-                 relying on your training data. For example, search for \"recent\" or \"today\" \
-                 queries instead of answering from memory."
-                    .to_owned(),
-            );
-        }
-
-        // Memory context
-        if let Some(mem) = memory {
-            if !mem.is_empty() {
-                parts.push(format!("\n## Retrieved Memories\n{mem}"));
-            }
-        }
-
-        parts.join("\n\n")
-    }
-}
-
 /// Concrete ReAct engine that calls an LLM provider.
 pub struct LlmReActEngine {
     tool_registry: Arc<ToolRegistry>,
@@ -246,6 +195,8 @@ pub struct LlmReActEngine {
     bus: Arc<dyn EventBus>,
     /// The LLM provider implementation (OpenAI, etc.).
     llm_provider: Arc<dyn LlmProvider>,
+    /// Prompt pipeline for building system prompts.
+    prompt_pipeline: Box<dyn PromptPipeline>,
 }
 
 impl LlmReActEngine {
@@ -254,12 +205,14 @@ impl LlmReActEngine {
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
         llm_provider: Arc<dyn LlmProvider>,
+        prompt_pipeline: Box<dyn PromptPipeline>,
     ) -> Self {
         Self {
             tool_registry,
             agent_registry,
             bus,
             llm_provider,
+            prompt_pipeline,
         }
     }
 }
@@ -286,11 +239,14 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             .await;
 
         // Build the system prompt from soul + conversation history
-        let system_prompt = ContextAssembler::assemble(
-            &ctx.soul_snapshot,
-            &ctx.agent_tools,
-            ctx.memory_context.as_deref(),
-        );
+        let system_prompt = self
+            .prompt_pipeline
+            .build_system_prompt(
+                &ctx.soul_snapshot,
+                &ctx.agent_tools,
+                ctx.memory_context.as_deref(),
+            )
+            .await;
 
         let cb = ctx.stream_cb.as_ref().map(Arc::clone);
 
@@ -392,11 +348,10 @@ pub struct AgentHarness {
     bus: Arc<dyn EventBus>,
     /// Memory store for long-term recall (M5).
     memory_store: Arc<MemoryStore>,
+    /// Per-session conversation history for cross-turn continuity.
+    session_history: Box<dyn SessionHistoryStore>,
     /// Per-session interrupt flags for external stop (M6).
     active_interrupts: RwLock<HashMap<String, Arc<InterruptFlag>>>,
-    /// Per-session conversation history (user + assistant messages) for
-    /// continuity across turns in the same session.
-    session_histories: RwLock<HashMap<String, Vec<ChatMessage>>>,
     /// Default max ReAct turns.
     max_react_turns: u32,
     /// Default token budget limit.
@@ -410,12 +365,15 @@ impl AgentHarness {
         bus: Arc<dyn EventBus>,
         memory_store: Arc<MemoryStore>,
         llm_provider: Arc<dyn LlmProvider>,
+        prompt_pipeline: Box<dyn PromptPipeline>,
+        session_history: Box<dyn SessionHistoryStore>,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
             Arc::clone(&registry),
             Arc::clone(&bus),
             llm_provider,
+            prompt_pipeline,
         );
         Self {
             registry,
@@ -423,8 +381,8 @@ impl AgentHarness {
             engine,
             bus,
             memory_store,
+            session_history,
             active_interrupts: RwLock::new(HashMap::new()),
-            session_histories: RwLock::new(HashMap::new()),
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
             token_budget_limit: DEFAULT_TOKEN_BUDGET_LIMIT,
         }
@@ -552,16 +510,7 @@ impl AgentHarness {
 
         // 4. Build conversation history — load existing session history
         // and append the new user message for cross-turn continuity.
-        let mut history = {
-            let histories = self.session_histories.read().expect("session_histories lock");
-            let mut stored = histories.get(session_id).cloned().unwrap_or_default();
-            // Cap at 100 messages to prevent unbounded memory growth.
-            // Keep the most recent messages for relevant conversation context.
-            if stored.len() > 100 {
-                stored = stored.split_off(stored.len() - 100);
-            }
-            stored
-        };
+        let mut history = self.session_history.get(session_id);
         history.push(ChatMessage::user(user_text));
 
         // 5. Initialize model-aware token budget (M4)
@@ -653,11 +602,8 @@ impl AgentHarness {
             .await;
 
         // Save conversation history for cross-turn continuity.
-        // Lock scope: write lock is dropped immediately after the insert.
-        {
-            let mut histories = self.session_histories.write().expect("session_histories lock");
-            histories.insert(session_id.to_owned(), ctx.history.clone());
-        }
+        self.session_history.clear(session_id);
+        self.session_history.extend(session_id, ctx.history.clone());
 
         // M6: Unregister interrupt flag
         self.unregister_interrupt(session_id);
@@ -811,48 +757,7 @@ impl AgentHarness {
             token_budget.set_history_tokens(history_tokens);
 
             // Execute one ReAct turn (T2.4: with streaming support)
-            let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
-            {
-                let tx = stream_tx.clone();
-                ctx.stream_cb = Some(Arc::new(move |event| {
-                    let _ = tx.send(event);
-                }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
-            }
-
-            // Spawn consumer to forward stream events to the event bus
-            let bus = Arc::clone(&self.bus);
-            let aid = ctx.agent_id.clone();
-            let sid = ctx.session_id.clone();
-            let t = ctx.turn;
-            tokio::spawn(async move {
-                while let Some(event) = stream_rx.recv().await {
-                    let (etype, extra) = match &event {
-                        StreamEvent::Start => ("agent:reply_stream_start", json!({})),
-                        StreamEvent::Chunk(delta) => {
-                            ("agent:reply_chunk", json!({"delta": delta}))
-                        }
-                        StreamEvent::Done { finish_reason } => {
-                            ("agent:reply_stream_done", json!({"finish_reason": finish_reason}))
-                        }
-                        StreamEvent::Error(err) => {
-                            ("agent:reply_stream_error", json!({"error": err}))
-                        }
-                    };
-                    let _ = bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom(etype.to_owned()),
-                            json!({
-                                "agent_id": aid,
-                                "session_id": sid,
-                                "turn": t,
-                                "event_type": etype,
-                                "extra": extra,
-                            }),
-                        ))
-                        .await;
-                }
-            });
+            self.spawn_stream_forwarder(ctx);
 
             match self.engine.execute_turn(ctx, turn_messages).await {
                 Ok(ReActTurn::Finished { ref content, .. }) => {
@@ -883,23 +788,14 @@ impl AgentHarness {
                         ))
                         .await;
 
-                    // Record assistant message with tool calls in history (OpenAI format)
-                    let openai_tool_calls: Vec<serde_json::Value> = calls.iter().map(|tc| {
-                        json!({
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.tool_name,
-                                "arguments": serde_json::to_string(&tc.args).unwrap_or_default(),
-                            }
-                        })
-                    }).collect();
+                    // Record assistant message with tool calls in history
+                    let formatted_calls = llm::format_tool_calls_for_history(&calls);
                     ctx.history.push(ChatMessage {
                         role: ChatMessageRole::Assistant,
                         content: tool_text,
                         tool_call_id: None,
                         tool_name: None,
-                        tool_calls: Some(openai_tool_calls),
+                        tool_calls: Some(formatted_calls),
                         reasoning_content,
                     });
 
@@ -1038,6 +934,52 @@ impl AgentHarness {
         }
 
         descriptors
+    }
+
+    /// Set up streaming for one ReAct turn: create an mpsc channel, attach it
+    /// as the streaming callback on the context, and spawn a task that forwards
+    /// each event to the event bus as `agent:reply_*` events.
+    fn spawn_stream_forwarder(&self, ctx: &mut ReActContext) {
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+        {
+            let tx = stream_tx.clone();
+            ctx.stream_cb = Some(Arc::new(move |event| {
+                let _ = tx.send(event);
+            }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
+        }
+        let bus = Arc::clone(&self.bus);
+        let aid = ctx.agent_id.clone();
+        let sid = ctx.session_id.clone();
+        let t = ctx.turn;
+        tokio::spawn(async move {
+            while let Some(event) = stream_rx.recv().await {
+                let (etype, extra) = match &event {
+                    StreamEvent::Start => ("agent:reply_stream_start", json!({})),
+                    StreamEvent::Chunk(delta) => {
+                        ("agent:reply_chunk", json!({"delta": delta}))
+                    }
+                    StreamEvent::Done { finish_reason } => {
+                        ("agent:reply_stream_done", json!({"finish_reason": finish_reason}))
+                    }
+                    StreamEvent::Error(err) => {
+                        ("agent:reply_stream_error", json!({"error": err}))
+                    }
+                };
+                let _ = bus
+                    .publish(Event::new(
+                        "agent:harness",
+                        EventType::Custom(etype.to_owned()),
+                        json!({
+                            "agent_id": aid,
+                            "session_id": sid,
+                            "turn": t,
+                            "event_type": etype,
+                            "extra": extra,
+                        }),
+                    ))
+                    .await;
+            }
+        });
     }
 
     /// Publish an agent-to-agent message to the event bus (M7).

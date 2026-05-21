@@ -114,7 +114,6 @@ static DELETE_FROM: LazyLock<Regex> = LazyLock::new(|| {
 pub fn check_hardline_block(tool_name: &str, args: &Value) -> Option<&'static str> {
     match tool_name {
         "exec" => check_exec_hardline(args),
-        "file" => check_file_hardline(args),
         "write" | "edit" => check_write_hardline(args),
         "db" => check_db_hardline(args),
         _ => None,
@@ -156,26 +155,6 @@ fn check_exec_hardline(args: &Value) -> Option<&'static str> {
     }
     if CHMOD_ROOT.is_match(&full_command) {
         return Some("chmod on root filesystem is blocked");
-    }
-
-    None
-}
-
-fn check_file_hardline(args: &Value) -> Option<&'static str> {
-    let operation = args.get("operation").and_then(Value::as_str)?;
-    if operation != "write" && operation != "move" && operation != "delete" {
-        return None;
-    }
-
-    let path = args
-        .get("path")
-        .or_else(|| args.get("to"))
-        .and_then(Value::as_str)?;
-
-    for denied in DENIED_WRITE_PATHS.iter() {
-        if path.contains(denied) {
-            return Some("write to sensitive path is blocked");
-        }
     }
 
     None
@@ -262,26 +241,22 @@ mod tests {
     }
 
     #[test]
-    fn block_file_write_to_ssh() {
+    fn block_write_to_ssh() {
         let result = check_hardline_block(
-            "file",
+            "write",
             &json!({
-                "operation": "write",
-                "path": "/Users/test/.ssh/authorized_keys",
-                "content": "ssh-rsa ..."
+                "path": "/Users/test/.ssh/authorized_keys"
             }),
         );
         assert!(result.is_some(), "write to .ssh/authorized_keys should be blocked");
     }
 
     #[test]
-    fn allow_file_write_to_temp() {
+    fn allow_write_to_temp() {
         let result = check_hardline_block(
-            "file",
+            "write",
             &json!({
-                "operation": "write",
-                "path": "/tmp/test.txt",
-                "content": "hello"
+                "path": "/tmp/test.txt"
             }),
         );
         assert!(result.is_none(), "write to /tmp should be allowed");

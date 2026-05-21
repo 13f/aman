@@ -363,124 +363,16 @@ fn path_within(candidate: &Path, base: &Path) -> bool {
 }
 
 pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
-    registry.register(Arc::new(FileTool))?;
     registry.register(Arc::new(fs_tools::ReadTool))?;
     registry.register(Arc::new(fs_tools::WriteTool))?;
     registry.register(Arc::new(fs_tools::EditTool))?;
     registry.register(Arc::new(fs_tools::ListTool))?;
     registry.register(Arc::new(fs_tools::FindTool))?;
+    registry.register(Arc::new(fs_tools::GrepTool))?;
     registry.register(Arc::new(HttpTool))?;
     registry.register(Arc::new(ExecTool))?;
     registry.register(Arc::new(DbTool))?;
     registry.register(Arc::new(WebSearchTool))
-}
-
-struct FileTool;
-
-#[async_trait::async_trait]
-impl Tool for FileTool {
-    fn name(&self) -> &str {
-        "file"
-    }
-
-    fn mode(&self) -> ToolMode {
-        ToolMode::Local
-    }
-
-    fn parameters(&self) -> &JsonSchema {
-        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
-            JsonSchema::from(json!({
-                "type": "object",
-                "required": ["operation", "path"],
-                "properties": {
-                    "operation": {"type": "string"},
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "to": {"type": "string"}
-                }
-            }))
-        });
-        &PARAMS
-    }
-
-    fn returns(&self) -> &JsonSchema {
-        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
-            JsonSchema::from(json!({
-                "type": "object",
-                "properties": {
-                    "ok": {"type": "boolean"}
-                }
-            }))
-        });
-        &RETURNS
-    }
-
-    async fn execute(&self, params: Value, _ctx: ToolContext) -> AmanResult<Value> {
-        let operation = params
-            .get("operation")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::ConfigInvalid {
-                message: "operation must be a string".to_owned(),
-            })?;
-        let path = params
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::ConfigInvalid {
-                message: "path must be a string".to_owned(),
-            })?;
-        let path = PathBuf::from(path);
-
-        match operation {
-            "read" => {
-                let content = fs::read_to_string(&path)?;
-                Ok(json!({
-                    "ok": true,
-                    "content": content,
-                    "bytes": content.len()
-                }))
-            }
-            "write" => {
-                let content = params
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Error::ConfigInvalid {
-                        message: "content must be a string for write operation".to_owned(),
-                    })?;
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&path, content)?;
-                Ok(json!({
-                    "ok": true,
-                    "written_bytes": content.len()
-                }))
-            }
-            "delete" => {
-                if path.is_dir() {
-                    fs::remove_dir_all(&path)?;
-                } else {
-                    fs::remove_file(&path)?;
-                }
-                Ok(json!({ "ok": true, "deleted": true }))
-            }
-            "move" => {
-                let to = params.get("to").and_then(Value::as_str).ok_or_else(|| {
-                    Error::ConfigInvalid {
-                        message: "to must be a string for move operation".to_owned(),
-                    }
-                })?;
-                let to = PathBuf::from(to);
-                if let Some(parent) = to.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::rename(&path, &to)?;
-                Ok(json!({ "ok": true, "moved": true }))
-            }
-            _ => Err(Error::ConfigInvalid {
-                message: format!("unsupported file operation: {operation}"),
-            }),
-        }
-    }
 }
 
 struct HttpTool;
@@ -1055,9 +947,8 @@ mod tests {
                 .to_string();
             let error = runner
                 .execute(
-                    "file",
+                    "write",
                     json!({
-                        "operation": "write",
                         "path": forbidden_path,
                         "content": "hello"
                     }),
@@ -1092,12 +983,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_file_tool_roundtrip() {
+    fn builtin_read_write_tool_roundtrip() {
         pollster::block_on(async {
             let registry = Arc::new(ToolRegistry::new());
             install_builtin_tools(&registry).expect("install builtin");
 
-            let sandbox = std::env::temp_dir().join(format!("aman-file-{}", TraceId::new()));
+            let sandbox = std::env::temp_dir().join(format!("aman-rw-{}", TraceId::new()));
             std::fs::create_dir_all(&sandbox).expect("create sandbox");
             let file_path = sandbox.join("note.txt");
 
@@ -1109,9 +1000,8 @@ mod tests {
 
             let write_result = runner
                 .execute(
-                    "file",
+                    "write",
                     json!({
-                        "operation": "write",
                         "path": file_path.display().to_string(),
                         "content": "aman"
                     }),
@@ -1119,13 +1009,12 @@ mod tests {
                 )
                 .await
                 .expect("write should succeed");
-            assert_eq!(write_result.output["ok"], json!(true));
+            assert_eq!(write_result.output["written_bytes"], json!(4));
 
             let read_result = runner
                 .execute(
-                    "file",
+                    "read",
                     json!({
-                        "operation": "read",
                         "path": file_path.display().to_string()
                     }),
                     base_context(),

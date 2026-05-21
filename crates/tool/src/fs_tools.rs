@@ -5,6 +5,7 @@ use kernel::types::ToolMode;
 use kernel::{AmanResult, Error};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::LazyLock;
 use std::{fs, io};
 
@@ -513,4 +514,202 @@ fn find_files(base: &str, pattern: &str, filter_type: Option<&str>) -> AmanResul
     results.sort_by(|a, b| a["path"].as_str().unwrap_or("").cmp(b["path"].as_str().unwrap_or("")));
 
     Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// GrepTool  —  wraps ripgrep for content search
+// ---------------------------------------------------------------------------
+
+pub struct GrepTool;
+
+/// Cached check that `rg` is on PATH.
+static RG_AVAILABLE: LazyLock<bool> = LazyLock::new(|| {
+    Command::new("rg")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+});
+
+#[async_trait::async_trait]
+impl Tool for GrepTool {
+    fn name(&self) -> &str {
+        "grep"
+    }
+
+    fn mode(&self) -> ToolMode {
+        ToolMode::Local
+    }
+
+    fn parameters(&self) -> &JsonSchema {
+        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(json!({
+                "type": "object",
+                "required": ["pattern", "path"],
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Search pattern (regex by default; use fixed_strings for literal)"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Base directory to search in"
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "Optional file glob filter, e.g. \"*.rs\", \"*.{ts,js}\""
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Max matching results (default 100, max 500)"
+                    },
+                    "fixed_strings": {
+                        "type": "boolean",
+                        "description": "Treat pattern as literal string, not regex"
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Lines of context before/after each match (default 0)"
+                    }
+                }
+            }))
+        });
+        &PARAMS
+    }
+
+    fn returns(&self) -> &JsonSchema {
+        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(json!({
+                "type": "object",
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "line_number": {"type": "integer"},
+                                "text": {"type": "string"}
+                            }
+                        }
+                    },
+                    "total_matches": {"type": "integer"},
+                    "matching_files": {"type": "integer"}
+                }
+            }))
+        });
+        &RETURNS
+    }
+
+    async fn execute(&self, params: Value, _ctx: ToolContext) -> AmanResult<Value> {
+        let pattern = params
+            .get("pattern")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::ConfigInvalid {
+                message: "pattern must be a string".to_owned(),
+            })?;
+        let path = params
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::ConfigInvalid {
+                message: "path must be a string".to_owned(),
+            })?;
+        let max_results = params
+            .get("max_results")
+            .and_then(Value::as_u64)
+            .unwrap_or(100)
+            .min(500);
+        let fixed_strings = params
+            .get("fixed_strings")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let context_lines = params
+            .get("context_lines")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let glob = params.get("glob").and_then(Value::as_str);
+
+        if !*RG_AVAILABLE {
+            return Err(Error::ConfigInvalid {
+                message: "ripgrep (rg) is not installed. Install with: brew install ripgrep".to_owned(),
+            });
+        }
+
+        let mut cmd = Command::new("rg");
+        cmd.arg("--json")
+            .arg("--no-heading")
+            .arg("--color")
+            .arg("never")
+            .arg("--max-count")
+            .arg(max_results.to_string());
+
+        if fixed_strings {
+            cmd.arg("--fixed-strings");
+        }
+        if context_lines > 0 {
+            cmd.arg("-C").arg(context_lines.to_string());
+        }
+        if let Some(g) = glob {
+            cmd.arg("-g").arg(g);
+        }
+
+        cmd.arg(pattern).arg(path);
+
+        let output = cmd.output().map_err(|e| Error::Unrecoverable {
+            message: format!("failed to run rg: {e}"),
+        })?;
+
+        let (results, matching_files) = parse_rg_json_output(&output.stdout, max_results);
+        let total_matches = results.len() as u64;
+
+        let mut result = json!({
+            "results": results,
+            "total_matches": total_matches,
+            "matching_files": matching_files,
+        });
+
+        // Attach stderr as warning if rg reported anything (e.g. binary file skips).
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            result["warning"] = json!(stderr.trim());
+        }
+
+        Ok(result)
+    }
+}
+
+/// Parse ripgrep `--json` output into structured results.
+fn parse_rg_json_output(output: &[u8], max_results: u64) -> (Vec<Value>, u64) {
+    let mut results = Vec::new();
+    let mut seen_files = std::collections::HashSet::new();
+
+    for line in output.split(|&b| b == b'\n') {
+        if line.is_empty() || results.len() as u64 >= max_results {
+            continue;
+        }
+
+        let parsed: Value = match serde_json::from_slice(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if parsed["type"] == "match" {
+            if let Some(data) = parsed.get("data") {
+                let file = data["path"]["text"].as_str().unwrap_or("");
+                let line_number = data["line_number"].as_u64().unwrap_or(0);
+                let raw_text = data["lines"]["text"].as_str().unwrap_or("");
+                let text = raw_text.trim_end_matches('\n').trim_end_matches('\r');
+
+                seen_files.insert(file.to_owned());
+                results.push(json!({
+                    "path": file,
+                    "line_number": line_number,
+                    "text": text,
+                }));
+            }
+        }
+    }
+
+    let matching_files = seen_files.len() as u64;
+    (results, matching_files)
 }

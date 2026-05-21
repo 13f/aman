@@ -1367,15 +1367,14 @@ mod tests {
         async fn execute(&self, _event: Event, ctx: SkillContext) -> AmanResult<()> {
             let mut tool_ctx = ToolContext {
                 base: ctx.base,
-                tool_name: Some("file".to_owned()),
+                tool_name: Some("write".to_owned()),
                 working_directory: None,
             };
             tool_ctx.base.timeout_ms = Some(500);
             self.runner
                 .execute(
-                    "file",
+                    "write",
                     json!({
-                        "operation": "write",
                         "path": self.target_file,
                         "content": "written by skill"
                     }),

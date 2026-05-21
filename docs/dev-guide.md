@@ -66,7 +66,7 @@ Aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
   - **多次匹配** → 报错，要求提供更多上下文使匹配唯一
   - **唯一匹配** → 替换为 `new_string` 并写回
 
-### 2.2 目录浏览工具
+### 2.2 搜索与目录浏览工具
 
 #### list — 列出目录
 
@@ -87,6 +87,22 @@ Aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
 }
 ```
 递归搜索目录树，匹配文件名（大小写不敏感子串匹配），返回结果按路径排序。
+
+#### grep — 内容搜索（包装 ripgrep）
+
+```json
+{
+  "pattern": "search_pattern",
+  "path": "/path/to/search",
+  "glob": "*.rs",           // 可选：文件 glob 过滤
+  "max_results": 100,       // 可选：最多返回结果（默认 100，最大 500）
+  "fixed_strings": false,   // 可选：纯文本搜索（不解释正则）
+  "context_lines": 0        // 可选：上下文行数
+}
+```
+包装 ripgrep（`rg`）实现多线程文件内容搜索，返回结构化结果，每条包含 `path`、`line_number`、`text`。支持大小写不敏感匹配、glob 过滤、上下文显示。**不经过 shell**，参数直接传递给 rg 子进程。
+
+需要系统已安装 ripgrep（`brew install ripgrep`）。
 
 ### 2.3 执行与网络工具
 
@@ -147,25 +163,15 @@ Aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
 ```
 加载并返回名为 `skill-name` 的完整 SKILL.md 指令。用于 Agent 的按需技能发现（Hermes 渐进式披露模型）。
 
-#### file — 通用文件操作（向后兼容）
-
-```json
-{
-  "operation": "read",    // read | write | delete | move
-  "path": "/path/to/file"
-}
-```
-既有单一文件工具，通过 `operation` 参数区分。新增的 `read`/`write`/`edit`/`list`/`find` 工具是其语法糖，建议新代码使用独立工具。
-
 ### 2.6 工具注册与扩展
 
 工具注册点在 `crates/tool/src/lib.rs`：
 
 ```rust
 pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
-    registry.register(Arc::new(FileTool))?;
     registry.register(Arc::new(fs_tools::ReadTool))?;
     registry.register(Arc::new(fs_tools::WriteTool))?;
+    registry.register(Arc::new(fs_tools::EditTool))?;
     // ...
 }
 ```

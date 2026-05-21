@@ -20,6 +20,7 @@ pub mod prelude;
 pub mod react;
 pub mod retry;
 pub mod schema;
+pub mod script;
 pub mod skill;
 pub mod source;
 pub mod tool;

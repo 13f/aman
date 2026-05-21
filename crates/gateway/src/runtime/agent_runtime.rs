@@ -755,6 +755,53 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
+        // ── Configured script hooks ──────────────────────────────
+        struct ScriptHookEventHandler {
+            runner: Arc<hook::ScriptHookRunner>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for ScriptHookEventHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let event_type = event.event_type.as_str().to_owned();
+                self.runner.run(&event_type, &event.payload).await
+            }
+        }
+
+        let script_hook_runner = {
+            let mut hooks = Vec::new();
+            if let Ok(aman_cfg) = config::AmanConfig::from_default_path() {
+                for cfg in &aman_cfg.hooks {
+                    let runtime = kernel::script::ScriptRuntime::new(
+                        &cfg.runtime,
+                        cfg.min_version.as_deref(),
+                    );
+                    if let Err(e) = runtime.check_available() {
+                        tracing::warn!(name = %cfg.name, error = %e, "script hook runtime unavailable, skipping");
+                        continue;
+                    }
+                    let script_path = if cfg.script.is_absolute() {
+                        cfg.script.clone()
+                    } else {
+                        std::env::current_dir().unwrap_or_default().join(&cfg.script)
+                    };
+                    hooks.push(hook::ScriptHook::new(
+                        &cfg.name,
+                        &cfg.on,
+                        script_path,
+                        runtime,
+                    ));
+                }
+            }
+            Arc::new(hook::ScriptHookRunner::new(hooks))
+        };
+
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter::default(),
+            Box::new(ScriptHookEventHandler {
+                runner: Arc::clone(&script_hook_runner),
+            }),
+        ));
+
         Ok(Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,

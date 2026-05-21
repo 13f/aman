@@ -4,7 +4,10 @@
 use kernel::context::HookContext;
 use kernel::error::AmanResult;
 use kernel::hook::{Hook, HookPoint};
+use kernel::script::ScriptRuntime;
+use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 /// Thread-safe registry for plugin-provided hooks.
@@ -89,6 +92,142 @@ impl HookRegistry {
 impl Default for HookRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Script-based hooks ─────────────────────────────────────────────
+
+/// A hook backed by an external script (Python, Node, Shell, etc.).
+///
+/// Fires on a named event type (e.g. `"agent:busy"`, `"tool:completed"`).
+/// The script receives a JSON payload on stdin and may return a response on stdout.
+pub struct ScriptHook {
+    name: String,
+    /// The event type string this hook listens to (e.g. "agent:busy").
+    event_type: String,
+    /// Path to the script file.
+    script_path: PathBuf,
+    /// Reusable script runtime (interpreter + version check).
+    runtime: ScriptRuntime,
+    /// Execution priority (higher runs first).
+    priority: i32,
+}
+
+impl ScriptHook {
+    /// Create a new script hook from configuration.
+    pub fn new(
+        name: impl Into<String>,
+        event_type: impl Into<String>,
+        script_path: PathBuf,
+        runtime: ScriptRuntime,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            event_type: event_type.into(),
+            script_path,
+            runtime,
+            priority: 0,
+        }
+    }
+
+    /// Set a custom priority.
+    #[must_use]
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    /// The hook name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The event type this hook listens to.
+    #[must_use]
+    pub fn event_type(&self) -> &str {
+        &self.event_type
+    }
+
+    /// The script path.
+    #[must_use]
+    pub fn script_path(&self) -> &PathBuf {
+        &self.script_path
+    }
+
+    /// The underlying script runtime.
+    #[must_use]
+    pub fn runtime(&self) -> &ScriptRuntime {
+        &self.runtime
+    }
+
+    /// Execute the hook script with the given JSON event payload.
+    ///
+    /// The script receives the event JSON on stdin. Returns the script's stdout.
+    pub fn execute(&self, input: &Value) -> AmanResult<String> {
+        self.runtime.execute(&self.script_path, input)
+    }
+}
+
+/// A runner that manages multiple configured script hooks and dispatches
+/// events to matching hooks.
+pub struct ScriptHookRunner {
+    hooks: Vec<ScriptHook>,
+}
+
+impl ScriptHookRunner {
+    /// Create a runner from a list of script hooks.
+    #[must_use]
+    pub fn new(hooks: Vec<ScriptHook>) -> Self {
+        Self { hooks }
+    }
+
+    /// Run all hooks whose event type matches the given event type string.
+    ///
+    /// Each hook receives the full event JSON on stdin.
+    /// Errors from individual hooks are collected and returned as a combined error.
+    pub async fn run(&self, event_type: &str, payload: &Value) -> AmanResult<()> {
+        let input = serde_json::json!({
+            "event_type": event_type,
+            "payload": payload,
+        });
+
+        let mut errors = Vec::new();
+        for hook in &self.hooks {
+            if hook.event_type() == event_type {
+                if let Err(e) = hook.execute(&input) {
+                    errors.push(e);
+                }
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(kernel::Error::Unrecoverable {
+                message: format!(
+                    "{} script hook(s) failed: {}",
+                    errors.len(),
+                    errors
+                        .into_iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            })
+        }
+    }
+
+    /// Return all hooks (for inspection).
+    #[must_use]
+    pub fn hooks(&self) -> &[ScriptHook] {
+        &self.hooks
+    }
+
+    /// Return true if no hooks are configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.hooks.is_empty()
     }
 }
 

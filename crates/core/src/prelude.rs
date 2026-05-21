@@ -12,6 +12,7 @@ pub use crate::plugin::{Plugin, PluginDependency};
 pub use crate::router::AgentRouter;
 pub use crate::retry::{CompensationContract, RetryBackoff, RetryPolicy};
 pub use crate::schema::JsonSchema;
+pub use crate::script::ScriptRuntime;
 pub use crate::skill::{Skill, TriggerCondition};
 pub use crate::source::EventSource;
 pub use crate::tool::{Tool, ToolResult};

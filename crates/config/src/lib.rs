@@ -457,6 +457,10 @@ pub struct AmanConfig {
     #[serde(default, deserialize_with = "deserialize_null_map")]
     pub agents: HashMap<String, AgentEntryConfig>,
     pub llm: Option<LlmConfig>,
+    /// Script hooks triggered on events.
+    /// Each hook runs a script via the specified runtime when its event fires.
+    #[serde(default)]
+    pub hooks: Vec<HookConfig>,
 }
 
 /// Top-level LLM configuration (optional).
@@ -472,6 +476,31 @@ pub struct AmanConfig {
 pub struct LlmConfig {
     #[serde(default = "default_api_type")]
     pub api_type: String,
+}
+
+/// A single script-based hook that fires on a named event.
+///
+/// ```yaml
+/// hooks:
+///   - name: webhook-alert
+///     on: agent:busy
+///     script: ./hooks/alert.py
+///     runtime: python3
+///     min_version: ">=3.8"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookConfig {
+    /// Unique hook name for registration and logging.
+    pub name: String,
+    /// Event type string to trigger on (e.g. "agent:busy", "tool:completed").
+    pub on: String,
+    /// Path to the script file.
+    pub script: PathBuf,
+    /// Interpreter binary (e.g. "python3", "node", "deno").
+    pub runtime: String,
+    /// Optional minimum version requirement for the runtime (e.g. ">=3.8").
+    #[serde(default)]
+    pub min_version: Option<String>,
 }
 
 /// Deserialize a HashMap from a YAML map, treating null/absent as empty.

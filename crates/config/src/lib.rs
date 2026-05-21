@@ -415,6 +415,10 @@ pub struct AgentEntryConfig {
     /// Per-agent tool access configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<ToolsConfig>,
+    /// Per-agent skill access configuration.
+    /// None = all global skills available, Some(list) = only these skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
 }
 
 const fn default_enabled() -> bool {
@@ -1426,6 +1430,7 @@ runtime:
                 system_prompt_override: None,
                 enabled: true,
                 tools: None,
+                skills: None,
             },
         );
 
@@ -1450,6 +1455,7 @@ runtime:
                 system_prompt_override: None,
                 enabled: true,
                 tools: None,
+                skills: None,
             },
         );
 
@@ -1489,6 +1495,7 @@ runtime:
                 system_prompt_override: None,
                 enabled: true,
                 tools: None,
+                skills: None,
             },
         );
 

@@ -1231,6 +1231,7 @@ pub async fn create_agent(
             system_prompt_override: None,
             enabled: true,
             tools: None,
+            skills: None,
         },
     );
 

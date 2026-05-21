@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use super::{AuditLogger, EventStore};
@@ -217,7 +218,12 @@ impl AgentRuntimeBuilder {
         let tools = Arc::new(tool::ToolRegistry::new());
         let _ = tool::install_builtin_tools(&tools);
         // Register read_skill tool so the LLM can load SKILL.md instructions on demand.
-        let _ = tools.register(Arc::new(ReadSkillTool { skills: llm_skills.clone() }));
+        // Store the Arc so we can wire agent_registry after its creation (line ~574+).
+        let read_skill_tool = Arc::new(ReadSkillTool {
+            skills: llm_skills.clone(),
+            agent_registry: OnceLock::new(),
+        });
+        let _ = tools.register(Arc::clone(&read_skill_tool) as Arc<dyn Tool>);
         let skill_search = Arc::new(skill::SkillSearch::new());
         let skill_versions = Arc::new(skill::SkillVersionManager::from_root(
             self.runtime_dir.join("skill-history"),
@@ -572,6 +578,8 @@ impl AgentRuntimeBuilder {
 
         // ── Agent registry ──────────────────────────────────────────
         let agent_registry = Arc::new(super::AgentRegistry::new(Arc::clone(&bus)));
+        // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
+        read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Memory store (M5) ──────────────────────────────────
         let memory_store = Arc::new(super::memory_store::MemoryStore::new());
@@ -921,6 +929,27 @@ impl ToolEventSink for BusToolEventSink {
 /// the on-disk SKILL.md file and returns the full content.
 struct ReadSkillTool {
     skills: Vec<skill::SkillInfo>,
+    agent_registry: OnceLock<Arc<super::AgentRegistry>>,
+}
+
+impl ReadSkillTool {
+    fn set_agent_registry(&self, registry: Arc<super::AgentRegistry>) {
+        let _ = self.agent_registry.set(registry);
+    }
+
+    /// Filter skills by the given agent's allowed_skills.
+    /// Returns all skills if the agent has no allowed_skills restriction.
+    fn skills_for_agent<'a>(&'a self, agent_id: &str) -> Vec<&'a skill::SkillInfo> {
+        let allowed = self
+            .agent_registry
+            .get()
+            .and_then(|reg| pollster::block_on(reg.get(agent_id)))
+            .and_then(|inst| inst.descriptor.allowed_skills);
+        match allowed {
+            Some(ref list) => self.skills.iter().filter(|s| list.contains(&s.name)).collect(),
+            None => self.skills.iter().collect(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -967,7 +996,7 @@ impl Tool for ReadSkillTool {
         &RETURNS
     }
 
-    async fn execute(&self, params: serde_json::Value, _ctx: ToolContext) -> kernel::AmanResult<serde_json::Value> {
+    async fn execute(&self, params: serde_json::Value, ctx: ToolContext) -> kernel::AmanResult<serde_json::Value> {
         let skill_name = match params.get("skill").and_then(|v| v.as_str()) {
             Some(s) if !s.is_empty() => s,
             _ => return Ok(serde_json::json!({
@@ -975,10 +1004,14 @@ impl Tool for ReadSkillTool {
             })),
         };
 
-        let skill = match self.skills.iter().find(|s| s.name == skill_name) {
+        // Determine which skills are visible to the calling agent.
+        let agent_id = ctx.base.extensions.get("agent_id").and_then(|v| v.as_str()).unwrap_or("");
+        let visible_skills = self.skills_for_agent(agent_id);
+
+        let skill = match visible_skills.iter().find(|s| s.name == skill_name) {
             Some(s) => s,
             None => {
-                let available: Vec<&str> = self.skills.iter().map(|s| s.name.as_str()).collect();
+                let available: Vec<&str> = visible_skills.iter().map(|s| s.name.as_str()).collect();
                 return Ok(serde_json::json!({
                     "name": skill_name, "content": "",
                     "error": format!("Skill '{skill_name}' not found. Available skills: [{}]", available.join(", "))
@@ -1238,12 +1271,14 @@ impl AgentRuntime {
     /// doesn't need multiple `read_skill` tool calls while avoiding conflicting
     /// instructions from multiple skills.
     ///
+    /// When `allowed_skills` is `Some`, only skills in that list are considered.
+    ///
     /// Returns an empty vec when:
     /// - The selector is not initialized,
     /// - Selection fails,
     /// - No skill exceeds the confidence threshold.
     #[must_use]
-    pub fn select_skills_for_text(&self, text: &str) -> Vec<String> {
+    pub fn select_skills_for_text(&self, text: &str, allowed_skills: Option<&[String]>) -> Vec<String> {
         let registry = match self.skill_registry.as_ref() {
             Some(r) => r,
             None => {
@@ -1308,6 +1343,17 @@ impl AgentRuntime {
             })
             .into_iter()
             .collect();
+
+        // Apply per-agent allowed_skills filter, if specified.
+        let result = match allowed_skills {
+            Some(allowed) => result.into_iter().filter(|name| {
+                // The result contains the skill activation message text; we need
+                // to match it against allowed names. Each message starts with
+                // the skill name, so we check containment.
+                allowed.iter().any(|s| name.contains(s.as_str()))
+            }).collect(),
+            None => result,
+        };
 
         if result.is_empty() {
             tracing::debug!("select_skills_for_text: no skill met Medium+ threshold");

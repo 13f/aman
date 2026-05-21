@@ -31,6 +31,10 @@ pub struct AgentDescriptor {
     /// 该 Agent 显式拒绝的 Tool 列表（在黑名单之上进一步限制）
     pub denied_tools: Vec<String>,
 
+    /// 该 Agent 可用的 Skill 列表
+    /// None = 全部可用，Some(vec) = 白名单
+    pub allowed_skills: Option<Vec<String>>,
+
     /// 配置中是否启用
     pub enabled: bool,
 

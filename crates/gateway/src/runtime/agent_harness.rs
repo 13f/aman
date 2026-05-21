@@ -155,7 +155,8 @@ impl ToolExecutor {
         let tool = self.registry.get(&tool_name);
         let (success, output) = match tool {
             Some(t) => {
-                let ctx = kernel::context::ToolContext::default();
+                let mut ctx = kernel::context::ToolContext::default();
+                ctx.base.extensions.insert("agent_id".to_owned(), serde_json::json!(agent_id));
                 match t.execute(call.args.clone(), ctx).await {
                     Ok(value) => (true, value.to_string()),
                     Err(e) => (false, format!("tool error: {e}")),

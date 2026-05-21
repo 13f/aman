@@ -72,6 +72,7 @@ impl AgentRegistry {
                     }),
                     allowed_tools,
                     denied_tools,
+                    allowed_skills: entry.skills.clone(),
                     enabled: entry.enabled,
                     max_context_tokens: model_params.map(|m| m.max_context_tokens),
                     max_output_tokens: model_params.map(|m| m.max_output_tokens),

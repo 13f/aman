@@ -5,10 +5,11 @@
 ## 目录
 
 1. [概述](#1-概述)
-2. [Hook 系统——最简单的扩展方式](#2-hook-系统最简单的扩展方式)
-3. [事件系统——核心数据流](#3-事件系统核心数据流)
-4. [Plugin 系统——完整的扩展能力](#4-plugin-系统完整的扩展能力)
-5. [实践指南](#5-实践指南)
+2. [内置工具参考](#2-内置工具参考)
+3. [Hook 系统——最简单的扩展方式](#3-hook-系统最简单的扩展方式)
+4. [事件系统——核心数据流](#4-事件系统核心数据流)
+5. [Plugin 系统——完整的扩展能力](#5-plugin-系统完整的扩展能力)
+6. [实践指南](#6-实践指南)
 
 ---
 
@@ -24,9 +25,158 @@ Aman 提供三层扩展机制，从简单到复杂依次为：
 
 ---
 
-## 2. Hook 系统——最简单的扩展方式
+## 2. 内置工具参考
 
-### 2.1 工作原理
+Aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
+
+### 2.1 文件操作工具
+
+#### read — 读取文件
+
+```json
+{
+  "path": "/path/to/file.txt"
+}
+```
+返回 `content`（文件内容）和 `bytes`（字节数）。
+
+#### write — 写入文件
+
+```json
+{
+  "path": "/path/to/file.txt",
+  "content": "文件内容"
+}
+```
+自动创建父目录。敏感路径（`.ssh/*`、`.env` 等）受安全规则保护。
+
+#### edit — 精确字符串替换
+
+```json
+{
+  "file_path": "/path/to/file.rs",
+  "old_string": "旧文本（必须唯一匹配）",
+  "new_string": "新文本"
+}
+```
+行为：
+- 读取文件全部内容
+- 查找 `old_string`：
+  - **0 次匹配** → 报错，提示文本可能已被编辑
+  - **多次匹配** → 报错，要求提供更多上下文使匹配唯一
+  - **唯一匹配** → 替换为 `new_string` 并写回
+
+### 2.2 目录浏览工具
+
+#### list — 列出目录
+
+```json
+{
+  "path": "/path/to/dir"
+}
+```
+返回排序后的条目列表，目录在前、文件在后，各分组内按字母序排列。每个条目包含 `name`、`type`（`file`/`dir`/`symlink`）和 `size`。
+
+#### find — 递归搜索文件
+
+```json
+{
+  "pattern": "keyword",
+  "base": "/path/to/search",
+  "type": "file"       // 可选过滤：file | dir
+}
+```
+递归搜索目录树，匹配文件名（大小写不敏感子串匹配），返回结果按路径排序。
+
+### 2.3 执行与网络工具
+
+#### exec — 执行 Shell 命令
+
+```json
+{
+  "command": "ls",
+  "args": ["-la", "/tmp"]
+}
+```
+通过 `SubprocessSandbox` 沙箱执行，有超时保护。高危命令（`rm -rf /`、fork 炸弹、关机等）被硬性拦截。
+
+#### http — HTTP 请求
+
+```json
+{
+  "url": "https://api.example.com/data",
+  "method": "GET",
+  "headers": {"Authorization": "Bearer ..."}
+}
+```
+支持 GET/POST/PUT/DELETE 等方法。网络访问可通过安全配置禁用。
+
+### 2.4 数据工具
+
+#### db — SQLite 查询
+
+```json
+{
+  "db_path": "/path/to/data.db",
+  "sql": "SELECT * FROM users WHERE id = ?",
+  "params": [1],
+  "operation": "query"    // query | execute
+}
+```
+`query` 返回行数组，`execute` 返回 `rows_affected`。DROP/TRUNCATE 和 DELETE 无 WHERE 被拦截。
+
+#### web_search — 网页搜索
+
+```json
+{
+  "query": "搜索关键词",
+  "backend": "duckduckgo",   // tavily | brave | duckduckgo | google | x
+  "count": 5
+}
+```
+支持 5 种搜索后端，API key 从 macOS Keychain 读取。
+
+### 2.5 知识工具
+
+#### read_skill — 读取 Skill 指令
+
+```json
+{
+  "skill": "skill-name"
+}
+```
+加载并返回名为 `skill-name` 的完整 SKILL.md 指令。用于 Agent 的按需技能发现（Hermes 渐进式披露模型）。
+
+#### file — 通用文件操作（向后兼容）
+
+```json
+{
+  "operation": "read",    // read | write | delete | move
+  "path": "/path/to/file"
+}
+```
+既有单一文件工具，通过 `operation` 参数区分。新增的 `read`/`write`/`edit`/`list`/`find` 工具是其语法糖，建议新代码使用独立工具。
+
+### 2.6 工具注册与扩展
+
+工具注册点在 `crates/tool/src/lib.rs`：
+
+```rust
+pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
+    registry.register(Arc::new(FileTool))?;
+    registry.register(Arc::new(fs_tools::ReadTool))?;
+    registry.register(Arc::new(fs_tools::WriteTool))?;
+    // ...
+}
+```
+
+Plugin 可以通过 `PluginExportRegistrar::register_tool()` 注册自定义工具，或通过 `Plugin::tools()` 声明。
+
+---
+
+## 3. Hook 系统——最简单的扩展方式
+
+### 3.1 工作原理
 
 Hook 是 Aman 中最轻量的扩展机制。每个 Hook 是一个可执行脚本，当特定事件发生时，Aman 将事件信息以 JSON 格式通过 stdin 传递给脚本。
 
@@ -34,7 +184,7 @@ Hook 是 Aman 中最轻量的扩展机制。每个 Hook 是一个可执行脚本
 事件发生 → ScriptHookRunner 匹配 → 脚本 stdin 收到 JSON → 脚本执行 → 完成
 ```
 
-### 2.2 两种配置方式
+### 3.2 两种配置方式
 
 #### 方式一：内联配置（aman.yaml）
 
@@ -83,7 +233,7 @@ min_version: "3.2"          # 可选，版本约束
 | `script` | 否 | 脚本路径，相对路径相对于 config.yaml 所在目录，默认为 `main.sh` |
 | `min_version` | 否 | 解释器最低版本约束（semver 格式） |
 
-### 2.3 脚本协议
+### 3.3 脚本协议
 
 Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 
@@ -101,7 +251,7 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 - stderr 输出会打印到 Aman 日志中，可用于调试
 - 脚本退出码非零不会影响主流程
 
-### 2.4 支持的事件类型
+### 3.4 支持的事件类型
 
 所有系统事件以 `EventType` Debug 格式序列化，常见的有：
 
@@ -122,7 +272,7 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 | `session:closed` | 会话关闭 |
 | `gateway:ready` | 网关就绪 |
 
-### 2.5 完整示例：openpeon 音效 Hook
+### 3.5 完整示例：openpeon 音效 Hook
 
 完整代码见 `samples/hooks/openpeon/`，包含两个文件：
 
@@ -164,7 +314,7 @@ cp -r samples/hooks/openpeon ~/.aman/hooks/
 
 也可作为模板，修改 `config.yaml` 中的事件类型和脚本逻辑，快速创建自己的 Hook。
 
-### 2.6 版本检测机制
+### 3.6 版本检测机制
 
 `ScriptRuntime` 会检查解释器是否可用及版本是否满足要求：
 
@@ -183,9 +333,9 @@ pub fn check_available(&self) -> AmanResult<()> {
 
 ---
 
-## 3. 事件系统——核心数据流
+## 4. 事件系统——核心数据流
 
-### 3.1 事件结构
+### 4.1 事件结构
 
 ```rust
 // crates/core/src/event.rs
@@ -202,7 +352,7 @@ pub struct Event {
 }
 ```
 
-### 3.2 EventType 枚举
+### 4.2 EventType 枚举
 
 ```rust
 pub enum EventType {
@@ -216,7 +366,6 @@ pub enum EventType {
     // 自定义事件（推荐方式）
     Custom(String),
 }
-```
 
 **创建事件：**
 
@@ -228,7 +377,7 @@ let event = Event::new(
 );
 ```
 
-### 3.3 EventBus API
+### 4.3 EventBus API
 
 ```rust
 #[async_trait]
@@ -255,7 +404,7 @@ bus.subscribe(
 ).await?;
 ```
 
-### 3.4 自定义事件源
+### 4.4 自定义事件源
 
 实现 `EventSource` trait 可以创建自定义事件源：
 
@@ -283,7 +432,7 @@ pub trait EventSource: Send + Sync {
 | `SocketSource` | `crates/source/src/socket.rs` | Push | TCP/UDP/Unix Socket |
 | `SignalSource` | `crates/source/src/signal.rs` | Pull | Unix 信号处理 |
 
-### 3.5 背压系统
+### 4.5 背压系统
 
 事件总线有 5 级背压机制，基于队列使用率：
 
@@ -296,7 +445,7 @@ pub trait EventSource: Send + Sync {
 | L4A | >=98% | 溢出保证事件到磁盘 |
 | L4B | >=98%+ | 紧急状态 |
 
-### 3.6 事件流向
+### 4.6 事件流向
 
 ```
 Source → poll() → Event → publish(Event) → admit_event()
@@ -306,9 +455,9 @@ Source → poll() → Event → publish(Event) → admit_event()
 
 ---
 
-## 4. Plugin 系统——完整的扩展能力
+## 5. Plugin 系统——完整的扩展能力
 
-### 4.1 Plugin Trait
+### 5.1 Plugin Trait
 
 所有 Plugin 必须实现的核心 trait：
 
@@ -335,7 +484,7 @@ pub trait Plugin: Send + Sync {
 }
 ```
 
-### 4.2 Plugin 清单（plugin.yaml）
+### 5.2 Plugin 清单（plugin.yaml）
 
 每个插件目录必须包含 `plugin.yaml`：
 
@@ -363,7 +512,7 @@ capabilities:
   - chat
 ```
 
-### 4.3 三种隔离模式
+### 5.3 三种隔离模式
 
 | 模式 | 说明 | 适用场景 |
 |------|------|----------|
@@ -386,7 +535,7 @@ subprocess:
 - `aman_skill_on_unload` -> i32
 - `aman_skill_execute` -> i32
 
-### 4.4 依赖图与加载顺序
+### 5.4 依赖图与加载顺序
 
 Plugin 系统使用 `DependencyGraph` 进行拓扑排序加载：
 
@@ -403,7 +552,7 @@ pub struct PluginDependency {
 3. 拓扑排序
 4. 按序加载，失败时回滚已加载的插件
 
-### 4.5 生命周期状态机
+### 5.5 生命周期状态机
 
 ```
 Loaded → Enabled → Running ←→ Paused
@@ -411,7 +560,7 @@ Loaded → Enabled → Running ←→ Paused
                   Disabled → Shutdown
 ```
 
-### 4.6 安装插件
+### 5.6 安装插件
 
 ```bash
 # 通过 API 安装
@@ -430,9 +579,9 @@ my-plugin.tar.gz
 
 ---
 
-## 5. 实践指南
+## 6. 实践指南
 
-### 5.1 如何选择扩展方式
+### 6.1 如何选择扩展方式
 
 | 需求 | 推荐方式 | 原因 |
 |------|----------|------|
@@ -443,7 +592,7 @@ my-plugin.tar.gz
 | 安全沙箱 | **Plugin (WASM)** | 内存安全，资源隔离 |
 | 完整的 Agent 能力集 | **Plugin** | 可导出 skills+tools+events |
 
-### 5.2 Hook 开发步骤
+### 6.2 Hook 开发步骤
 
 1. 在 `~/.aman/hooks/` 下创建目录
 2. 编写 `config.yaml`（配置事件类型和 runtime）
@@ -451,14 +600,14 @@ my-plugin.tar.gz
 4. 重启 Aman 或等待热加载
 5. 查看调试日志确认触发
 
-### 5.3 Event Source 开发要点
+### 6.3 Event Source 开发要点
 
 - Pull 模式：实现 `poll()` 方法，返回事件列表
 - Push 模式：启动服务器（HTTP/TCP），收到请求后通过 `SourceContext` 发布事件
 - 实现 `on_backpressure()`：在背压时降级或暂停，恢复正常后继续
 - 使用 `can_poll()` 检查是否应该轮询（背压 L3+ 时返回 false）
 
-### 5.4 Plugin 开发要点
+### 6.4 Plugin 开发要点
 
 - 实现 `on_load()` 时注册资源，返回值表示成功/失败
 - 实现 `on_unload()` 时释放资源（关闭连接、停止 goroutine）
@@ -466,14 +615,14 @@ my-plugin.tar.gz
 - 导出 `event_sources` / `skills` / `tools` 供系统注册
 - 使用 `capabilities` 声明所需能力（如 `chat`、`network`）
 
-### 5.5 事件命名约定
+### 6.5 事件命名约定
 
 - 使用 `EventType::Custom("namespace:action".to_owned())` 格式
 - 命名空间用小写字母命名，如 `agent:reply_ready`
 - 动作使用蛇形命名（snake_case）
 - 避免与内置事件类型冲突
 
-### 5.6 调试技巧
+### 6.6 调试技巧
 
 - **Hook 未触发**：检查事件类型名称是否匹配、runtime 是否存在、版本是否满足
 - **Plugin 加载失败**：查看 `~/.aman/logs/` 下的日志，检查依赖图

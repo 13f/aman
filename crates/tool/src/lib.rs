@@ -2,6 +2,7 @@
 #![doc = "Tool registry, runner, and builtin tools for the Aman agent framework."]
 
 pub mod auth;
+pub mod fs_tools;
 pub mod security;
 pub mod web_search;
 
@@ -193,9 +194,11 @@ impl ToolRunner {
 
     fn security_check(&self, params: &Value) -> AmanResult<()> {
         check_allowed_path(&self.security.allowed_paths, params.get("path"))?;
+        check_allowed_path(&self.security.allowed_paths, params.get("file_path"))?;
         check_allowed_path(&self.security.allowed_paths, params.get("from"))?;
         check_allowed_path(&self.security.allowed_paths, params.get("to"))?;
         check_allowed_path(&self.security.allowed_paths, params.get("cwd"))?;
+        check_allowed_path(&self.security.allowed_paths, params.get("base"))?;
         check_allowed_path(&self.security.allowed_paths, params.get("db_path"))?;
 
         if let Some(url) = params.get("url").and_then(Value::as_str)
@@ -361,6 +364,11 @@ fn path_within(candidate: &Path, base: &Path) -> bool {
 
 pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     registry.register(Arc::new(FileTool))?;
+    registry.register(Arc::new(fs_tools::ReadTool))?;
+    registry.register(Arc::new(fs_tools::WriteTool))?;
+    registry.register(Arc::new(fs_tools::EditTool))?;
+    registry.register(Arc::new(fs_tools::ListTool))?;
+    registry.register(Arc::new(fs_tools::FindTool))?;
     registry.register(Arc::new(HttpTool))?;
     registry.register(Arc::new(ExecTool))?;
     registry.register(Arc::new(DbTool))?;

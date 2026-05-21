@@ -115,6 +115,7 @@ pub fn check_hardline_block(tool_name: &str, args: &Value) -> Option<&'static st
     match tool_name {
         "exec" => check_exec_hardline(args),
         "file" => check_file_hardline(args),
+        "write" | "edit" => check_write_hardline(args),
         "db" => check_db_hardline(args),
         _ => None,
     }
@@ -169,6 +170,21 @@ fn check_file_hardline(args: &Value) -> Option<&'static str> {
     let path = args
         .get("path")
         .or_else(|| args.get("to"))
+        .and_then(Value::as_str)?;
+
+    for denied in DENIED_WRITE_PATHS.iter() {
+        if path.contains(denied) {
+            return Some("write to sensitive path is blocked");
+        }
+    }
+
+    None
+}
+
+fn check_write_hardline(args: &Value) -> Option<&'static str> {
+    let path = args
+        .get("path")
+        .or_else(|| args.get("file_path"))
         .and_then(Value::as_str)?;
 
     for denied in DENIED_WRITE_PATHS.iter() {

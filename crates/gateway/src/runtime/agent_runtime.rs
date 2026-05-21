@@ -777,14 +777,47 @@ impl AgentRuntimeBuilder {
 
         let script_hook_runner = {
             let mut hooks = Vec::new();
+
+            // 1. Auto-discover hooks from ~/.aman/hooks/<name>/config.yaml
+            let hooks_dir = super::skill_sync::aman_data_dir().join("hooks");
+            let _ = std::fs::create_dir_all(&hooks_dir);
+            let discovered = config::discover_hooks(&hooks_dir);
+            let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for cfg in &discovered {
+                seen_names.insert(cfg.name.clone());
+                let runtime = kernel::script::ScriptRuntime::new(
+                    &cfg.runtime,
+                    cfg.min_version.as_deref(),
+                );
+                if let Err(e) = runtime.check_available() {
+                    tracing::warn!(name = %cfg.name, error = %e, "discovered hook runtime unavailable, skipping");
+                    continue;
+                }
+                let script_path = if cfg.script.is_absolute() {
+                    cfg.script.clone()
+                } else {
+                    std::env::current_dir().unwrap_or_default().join(&cfg.script)
+                };
+                hooks.push(hook::ScriptHook::new(
+                    &cfg.name,
+                    cfg.on.clone(),
+                    script_path,
+                    runtime,
+                ));
+            }
+
+            // 2. Manually configured hooks from aman.yaml (same name overrides discovered).
             if let Ok(aman_cfg) = config::AmanConfig::from_default_path() {
                 for cfg in &aman_cfg.hooks {
+                    if seen_names.contains(&cfg.name) {
+                        tracing::info!(name = %cfg.name, "manual hook config overrides discovered hook");
+                    }
                     let runtime = kernel::script::ScriptRuntime::new(
                         &cfg.runtime,
                         cfg.min_version.as_deref(),
                     );
                     if let Err(e) = runtime.check_available() {
-                        tracing::warn!(name = %cfg.name, error = %e, "script hook runtime unavailable, skipping");
+                        tracing::warn!(name = %cfg.name, error = %e, "configured hook runtime unavailable, skipping");
                         continue;
                     }
                     let script_path = if cfg.script.is_absolute() {
@@ -800,6 +833,8 @@ impl AgentRuntimeBuilder {
                     ));
                 }
             }
+
+            tracing::info!(count = hooks.len(), "script hooks loaded");
             Arc::new(hook::ScriptHookRunner::new(hooks))
         };
 

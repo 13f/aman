@@ -497,7 +497,7 @@ pub struct LlmConfig {
 /// ```yaml
 ///   - name: openpeon
 ///     on: [session:started, agent:busy, tool:completed, tool:failed]
-///     script: ~/.aman/hooks/openpeon.sh
+///     script: ~/.aman/hooks/openpeon/main.sh
 ///     runtime: bash
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -514,6 +514,85 @@ pub struct HookConfig {
     /// Optional minimum version requirement for the runtime (e.g. ">=3.8").
     #[serde(default)]
     pub min_version: Option<String>,
+}
+
+/// Manifest inside a hook directory (hooks/<name>/config.yaml).
+///
+/// ```yaml
+/// name: openpeon
+/// description: Peon sound notifications
+/// on: [session:started, agent:busy, tool:completed]
+/// runtime: bash
+/// min_version: ">=4.0"
+/// ```
+///
+/// The `script` field is optional — when absent, defaults to `main.sh`
+/// in the same directory as the manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookManifest {
+    pub name: String,
+    #[serde(deserialize_with = "deserialize_one_or_many")]
+    pub on: Vec<String>,
+    /// Optional script path (relative to manifest directory).
+    /// Defaults to "main.sh" in the same directory.
+    #[serde(default)]
+    pub script: Option<PathBuf>,
+    pub runtime: String,
+    #[serde(default)]
+    pub min_version: Option<String>,
+}
+
+impl HookManifest {
+    /// Convert to a `HookConfig` with the given base directory for script resolution.
+    pub fn into_config(self, base_dir: &std::path::Path) -> HookConfig {
+        let script = self.script
+            .unwrap_or_else(|| std::path::PathBuf::from("main.sh"));
+        let script = if script.is_relative() {
+            base_dir.join(&script)
+        } else {
+            script
+        };
+        HookConfig {
+            name: self.name,
+            on: self.on,
+            script,
+            runtime: self.runtime,
+            min_version: self.min_version,
+        }
+    }
+}
+
+/// Auto-discover hooks by scanning subdirectories of `hooks_dir` for `config.yaml`.
+///
+/// Each subdirectory with a valid `config.yaml` produces one `HookConfig`.
+/// Missing or unreadable directories are silently skipped.
+pub fn discover_hooks(hooks_dir: &std::path::Path) -> Vec<HookConfig> {
+    let entries = match std::fs::read_dir(hooks_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut configs = Vec::new();
+    for entry in entries.flatten() {
+        let dir_path = entry.path();
+        if !dir_path.is_dir() {
+            continue;
+        }
+        let manifest_path = dir_path.join("config.yaml");
+        let content = match std::fs::read_to_string(&manifest_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let manifest: HookManifest = match serde_yaml::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("invalid hook manifest at {}: {e}", manifest_path.display());
+                continue;
+            }
+        };
+        configs.push(manifest.into_config(&dir_path));
+    }
+    configs
 }
 
 fn deserialize_one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>

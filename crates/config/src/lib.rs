@@ -419,6 +419,10 @@ pub struct AgentEntryConfig {
     /// None = all global skills available, Some(list) = only these skills.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
+    /// Per-agent event bus configuration (local bus overrides).
+    /// None = use defaults (max_queue_size: 1000).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_bus: Option<PartialEventBusConfig>,
 }
 
 const fn default_enabled() -> bool {
@@ -1544,6 +1548,7 @@ runtime:
                 enabled: true,
                 tools: None,
                 skills: None,
+                event_bus: None,
             },
         );
 
@@ -1569,6 +1574,7 @@ runtime:
                 enabled: true,
                 tools: None,
                 skills: None,
+                event_bus: None,
             },
         );
 
@@ -1609,6 +1615,7 @@ runtime:
                 enabled: true,
                 tools: None,
                 skills: None,
+                event_bus: None,
             },
         );
 

@@ -138,6 +138,18 @@ impl ToolExecutor {
         self.execute(call, agent_id, session_id).await
     }
 
+    /// Publish an event to the agent's local bus, falling back to the global bus.
+    async fn publish_to_agent_bus(
+        &self,
+        agent_id: &str,
+        event: Event,
+    ) -> AmanResult<()> {
+        match self.agent_registry.get_local_bus(agent_id).await {
+            Some(local_bus) => local_bus.publish(event).await,
+            None => self.bus.publish(event).await,
+        }
+    }
+
     /// Execute a tool call, publishing lifecycle events.
     pub async fn execute(
         &self,
@@ -149,20 +161,22 @@ impl ToolExecutor {
         let tool_id = call.id.clone();
         let tool_name = call.tool_name.clone();
 
-        // Publish tool:dispatched
+        // Publish tool:dispatched to local bus
         let _ = self
-            .bus
-            .publish(Event::new(
-                "agent:harness",
-                EventType::Custom("tool:dispatched".to_owned()),
-                json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "tool_call_id": tool_id,
-                    "tool_name": tool_name,
-                    "args": call.args,
-                }),
-            ))
+            .publish_to_agent_bus(
+                agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("tool:dispatched".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "args": call.args,
+                    }),
+                ),
+            )
             .await;
 
         // ── Security checks ──────────────────────────────────────────
@@ -175,39 +189,43 @@ impl ToolExecutor {
                 .map(|e| e.to_string())
         });
 
-        // Publish security denied events before proceeding.
+        // Publish security denied events to local bus.
         if let Some(reason) = hardline_blocked {
             let _ = self
-                .bus
-                .publish(Event::new(
-                    "agent:harness",
-                    EventType::Custom("tool:security_denied".to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                        "tool_call_id": tool_id,
-                        "tool_name": tool_name,
-                        "block_type": "hardline",
-                        "reason": reason,
-                    }),
-                ))
+                .publish_to_agent_bus(
+                    agent_id,
+                    Event::new(
+                        "agent:harness",
+                        EventType::Custom("tool:security_denied".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "tool_call_id": tool_id,
+                            "tool_name": tool_name,
+                            "block_type": "hardline",
+                            "reason": reason,
+                        }),
+                    ),
+                )
                 .await;
         }
         if let Some(ref reason) = config_blocked {
             let _ = self
-                .bus
-                .publish(Event::new(
-                    "agent:harness",
-                    EventType::Custom("tool:security_denied".to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                        "tool_call_id": tool_id,
-                        "tool_name": tool_name,
-                        "block_type": "path_denied",
-                        "reason": reason,
-                    }),
-                ))
+                .publish_to_agent_bus(
+                    agent_id,
+                    Event::new(
+                        "agent:harness",
+                        EventType::Custom("tool:security_denied".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "tool_call_id": tool_id,
+                            "tool_name": tool_name,
+                            "block_type": "path_denied",
+                            "reason": reason,
+                        }),
+                    ),
+                )
                 .await;
         }
 
@@ -246,20 +264,22 @@ impl ToolExecutor {
             "tool:failed"
         };
         let _ = self
-            .bus
-            .publish(Event::new(
-                "agent:harness",
-                EventType::Custom(event_type.to_owned()),
-                json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "tool_call_id": tool_id,
-                    "tool_name": tool_name,
-                    "success": success,
-                    "duration_ms": duration_ms,
-                    "output": output,
-                }),
-            ))
+            .publish_to_agent_bus(
+                agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom(event_type.to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "success": success,
+                        "duration_ms": duration_ms,
+                        "output": output,
+                    }),
+                ),
+            )
             .await;
 
         react::ToolCallResult {
@@ -299,6 +319,18 @@ impl LlmReActEngine {
             prompt_pipeline,
         }
     }
+
+    /// Publish an event to the agent's local bus, falling back to the global bus.
+    async fn publish_to_agent_bus(
+        &self,
+        agent_id: &str,
+        event: Event,
+    ) -> AmanResult<()> {
+        match self.agent_registry.get_local_bus(agent_id).await {
+            Some(local_bus) => local_bus.publish(event).await,
+            None => self.bus.publish(event).await,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -308,18 +340,20 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         ctx: &ReActContext,
         messages: Vec<ChatMessage>,
     ) -> Result<ReActTurn, kernel::react::ReActError> {
-        // Publish llm:call_started
+        // Publish llm:call_started to local bus
         let _ = self
-            .bus
-            .publish(Event::new(
-                "agent:harness",
-                EventType::Custom("llm:call_started".to_owned()),
-                json!({
-                    "agent_id": ctx.agent_id,
-                    "session_id": ctx.session_id,
-                    "turn": ctx.turn,
-                }),
-            ))
+            .publish_to_agent_bus(
+                &ctx.agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("llm:call_started".to_owned()),
+                    json!({
+                        "agent_id": ctx.agent_id,
+                        "session_id": ctx.session_id,
+                        "turn": ctx.turn,
+                    }),
+                ),
+            )
             .await;
 
         // Build the system prompt from soul + conversation history
@@ -344,38 +378,42 @@ impl kernel::react::ReActEngine for LlmReActEngine {
 
         let result = self.llm_provider.chat_completion(req, cb).await;
 
-        // Publish llm:call_ended
+        // Publish llm:call_ended to local bus
         let _ = self
-            .bus
-            .publish(Event::new(
-                "agent:harness",
-                EventType::Custom("llm:call_ended".to_owned()),
-                json!({
-                    "agent_id": ctx.agent_id,
-                    "session_id": ctx.session_id,
-                    "turn": ctx.turn,
-                    "success": result.is_ok(),
-                }),
-            ))
+            .publish_to_agent_bus(
+                &ctx.agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("llm:call_ended".to_owned()),
+                    json!({
+                        "agent_id": ctx.agent_id,
+                        "session_id": ctx.session_id,
+                        "turn": ctx.turn,
+                        "success": result.is_ok(),
+                    }),
+                ),
+            )
             .await;
 
         match result {
             Ok(response) => {
                 if response.tool_calls.is_empty() {
-                    // Publish token usage estimate
+                    // Publish token usage estimate to local bus
                     let estimated_tokens = (response.content.len() / 4) as u64;
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:token_used".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                                "tokens": estimated_tokens,
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("agent:token_used".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "tokens": estimated_tokens,
+                                }),
+                            ),
+                        )
                         .await;
 
                     Ok(ReActTurn::Finished {
@@ -475,6 +513,18 @@ impl AgentHarness {
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
             budget_policy,
             agent_router,
+        }
+    }
+
+    /// Publish an event to the agent's local bus, falling back to the global bus.
+    async fn publish_to_agent_bus(
+        &self,
+        agent_id: &str,
+        event: Event,
+    ) -> AmanResult<()> {
+        match self.registry.get_local_bus(agent_id).await {
+            Some(local_bus) => local_bus.publish(event).await,
+            None => self.bus.publish(event).await,
         }
     }
 
@@ -847,16 +897,18 @@ impl AgentHarness {
             if let Some(flag) = interrupt {
                 if flag.is_interrupted() {
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:reply_interrupted".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("agent:reply_interrupted".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                }),
+                            ),
+                        )
                         .await;
                     return Ok(ReactOutcome::Interrupted(String::new()));
                 }
@@ -867,19 +919,21 @@ impl AgentHarness {
                 let result = compressor.compress(&mut ctx.history, token_budget, 3);
                 if result.messages_removed > 0 {
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:history_compressed".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                                "messages_removed": result.messages_removed,
-                                "tokens_saved": result.tokens_saved,
-                                "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("agent:history_compressed".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "messages_removed": result.messages_removed,
+                                    "tokens_saved": result.tokens_saved,
+                                    "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
+                                }),
+                            ),
+                        )
                         .await;
                 }
             }
@@ -911,19 +965,21 @@ impl AgentHarness {
                 Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {
                     // Clear streaming callback (will be reset next iteration)
                     ctx.stream_cb = None;
-                    // Publish agent:got_tool_calls
+                    // Publish agent:got_tool_calls to local bus
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:got_tool_calls".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                                "tool_calls": calls.iter().map(|c| json!({"name": c.tool_name, "id": c.id})).collect::<Vec<_>>(),
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("agent:got_tool_calls".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "tool_calls": calls.iter().map(|c| json!({"name": c.tool_name, "id": c.id})).collect::<Vec<_>>(),
+                                }),
+                            ),
+                        )
                         .await;
 
                     // Record assistant message with tool calls in history
@@ -944,19 +1000,21 @@ impl AgentHarness {
                         }
                     })?;
 
-                    // Publish agent:tool_results_fed_back
+                    // Publish agent:tool_results_fed_back to local bus
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:tool_results_fed_back".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                                "result_count": results.len(),
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("agent:tool_results_fed_back".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "result_count": results.len(),
+                                }),
+                            ),
+                        )
                         .await;
 
                     // If read_skill was called, save the skill body for later format reminders.
@@ -1007,36 +1065,40 @@ impl AgentHarness {
                 }
                 Ok(ReActTurn::Error(react_err)) => {
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("llm_error".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                                "error": react_err.to_string(),
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("llm_error".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "error": react_err.to_string(),
+                                }),
+                            ),
+                        )
                         .await;
                     return Err(Error::ConfigInvalid {
                         message: format!("ReAct turn error at {}: {react_err}", ctx.turn),
                     });
                 }
                 Err(e) => {
-                    // Publish llm:error
+                    // Publish llm:error to local bus
                     let _ = self
-                        .bus
-                        .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("llm_error".to_owned()),
-                            json!({
-                                "agent_id": ctx.agent_id,
-                                "session_id": ctx.session_id,
-                                "turn": ctx.turn,
-                                "error": e.to_string(),
-                            }),
-                        ))
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("llm_error".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "error": e.to_string(),
+                                }),
+                            ),
+                        )
                         .await;
                     return Err(Error::ConfigInvalid {
                         message: format!("ReAct loop error at turn {}: {e}", ctx.turn),
@@ -1085,10 +1147,15 @@ impl AgentHarness {
                 let _ = tx.send(event);
             }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
         }
-        let bus = Arc::clone(&self.bus);
+        // Stream events are agent-internal → publish to local bus.
+        // The AgentHarness uses self.registry (AgentRegistry) to look up
+        // the correct Local Bus for each agent. The closure captures
+        // agent_id so it can route streaming events to the right bus.
         let aid = ctx.agent_id.clone();
         let sid = ctx.session_id.clone();
         let t = ctx.turn;
+        let registry = Arc::clone(&self.registry);
+        let global_bus = Arc::clone(&self.bus);
         tokio::spawn(async move {
             while let Some(event) = stream_rx.recv().await {
                 let (etype, extra) = match &event {
@@ -1103,19 +1170,21 @@ impl AgentHarness {
                         ("agent:reply_stream_error", json!({"error": err}))
                     }
                 };
-                let _ = bus
-                    .publish(Event::new(
-                        "agent:harness",
-                        EventType::Custom(etype.to_owned()),
-                        json!({
-                            "agent_id": aid,
-                            "session_id": sid,
-                            "turn": t,
-                            "event_type": etype,
-                            "extra": extra,
-                        }),
-                    ))
-                    .await;
+                let e = Event::new(
+                    "agent:harness",
+                    EventType::Custom(etype.to_owned()),
+                    json!({
+                        "agent_id": aid,
+                        "session_id": sid,
+                        "turn": t,
+                        "event_type": etype,
+                        "extra": extra,
+                    }),
+                );
+                match registry.get_local_bus(&aid).await {
+                    Some(ref local_bus) => { let _ = local_bus.publish(e).await; }
+                    None => { let _ = global_bus.publish(e).await; }
+                }
             }
         });
     }

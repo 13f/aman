@@ -1,4 +1,5 @@
 use config::AmanConfig;
+use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
 use kernel::AmanResult;
@@ -6,7 +7,6 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use event_bus::EventBus;
 
 /// Agent 运行时注册表。
 ///
@@ -22,6 +22,7 @@ use event_bus::EventBus;
 /// 所有方法都是非阻塞的（不涉及跨核锁），适合高频调用场景。
 pub struct AgentRegistry {
     agents: RwLock<HashMap<String, AgentInstance>>,
+    local_buses: RwLock<HashMap<String, Arc<dyn EventBus>>>,
     bus: Arc<dyn EventBus>,
 }
 
@@ -30,6 +31,7 @@ impl AgentRegistry {
     pub fn new(bus: Arc<dyn EventBus>) -> Self {
         Self {
             agents: RwLock::new(HashMap::new()),
+            local_buses: RwLock::new(HashMap::new()),
             bus,
         }
     }
@@ -100,6 +102,21 @@ impl AgentRegistry {
                     json!({ "agent_id": agent_id }),
                 ))
                 .await;
+        }
+
+        // Create per-agent local event buses
+        for (agent_id, entry) in &config.agents {
+            // Determine local bus config: per-agent override or default
+            let queue_size = entry
+                .event_bus
+                .as_ref()
+                .and_then(|b| b.max_queue_size)
+                .unwrap_or(1_000);
+            let local_bus: Arc<dyn EventBus> = Arc::new(InMemoryBus::new(InMemoryBusConfig {
+                max_queue_size: queue_size,
+                ..InMemoryBusConfig::default()
+            }));
+            self.set_local_bus(agent_id, local_bus).await;
         }
 
         count
@@ -241,5 +258,19 @@ impl AgentRegistry {
     pub async fn clear(&self) {
         let mut agents = self.agents.write().await;
         agents.clear();
+        let mut buses = self.local_buses.write().await;
+        buses.clear();
+    }
+
+    /// 设置 Agent 的 Local EventBus。
+    pub async fn set_local_bus(&self, agent_id: &str, local_bus: Arc<dyn EventBus>) {
+        let mut buses = self.local_buses.write().await;
+        buses.insert(agent_id.to_owned(), local_bus);
+    }
+
+    /// 获取 Agent 的 Local EventBus。
+    pub async fn get_local_bus(&self, agent_id: &str) -> Option<Arc<dyn EventBus>> {
+        let buses = self.local_buses.read().await;
+        buses.get(agent_id).cloned()
     }
 }

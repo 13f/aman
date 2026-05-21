@@ -1232,6 +1232,7 @@ pub async fn create_agent(
             enabled: true,
             tools: None,
             skills: None,
+            event_bus: None,
         },
     );
 

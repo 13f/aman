@@ -47,19 +47,130 @@ Defined in `crates/core/src/event.rs:146-158`:
 
 ---
 
+## Dual-Layer Event Bus Architecture
+
+Aman uses a **dual-layer event bus** design: one **Global Bus** for infrastructure events and cross-agent communication, plus a **Per-Agent Local Bus** for each agent's internal high-throughput events.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Global Event Bus                       │
+│  (infrastructure events: gateway:*, source:*,            │
+│   agent:lifecycle, agent:message, session:*)              │
+│  low throughput, high reliability, globally visible       │
+└────────────┬──────────────────────────────┬──────────────┘
+             │                              │
+    ┌────────▼────────┐            ┌───────▼────────┐
+    │ Agent "cortana" │            │ Agent "coder"   │
+    │   Local Bus     │            │   Local Bus     │
+    │                  │            │                 │
+    │ llm:call_started │            │ llm:call_started│
+    │ llm:call_ended   │            │ llm:call_ended  │
+    │ tool:dispatched  │            │ tool:dispatched │
+    │ tool:completed   │            │ tool:completed  │
+    │ agent:reply_*    │            │ agent:reply_*   │
+    │ (high throughput, isolated)   │ (high throughput, isolated)│
+    └──────────────────┘            └─────────────────┘
+```
+
+### Global Bus
+
+Responsible for low-throughput, globally-visible infrastructure events:
+
+| Category | Event Types |
+|----------|-------------|
+| Gateway lifecycle | `gateway:starting`, `gateway:ready`, `gateway:stopping` |
+| File system | `FileCreated`, `FileChanged`, `FileDeleted` |
+| Timer/Cron | `TimerTick`, `CronTick`, `Heartbeat` |
+| External input | `WebhookReceived`, `SystemSignal` |
+| Agent lifecycle | `agent:registered`, `agent:removed`, `agent:status_changed`, `agent:busy`, `agent:idle` |
+| Agent response | `agent:reply_ready`, `agent:reply_interrupted` (final response to frontend) |
+| Cross-agent | `agent:message` (routed by `to_agent` in payload) |
+| Config/Skill | `ConfigChanged`, `SkillReloaded`, `soul_changed` |
+| Session | `session:started`, `session:closed` |
+| Message dispatch | `message:dispatch`, `message:completed` |
+| Capability | `capability_available`, `capability_removed`, `capability_registry_updated` |
+
+### Local Bus (one per agent)
+
+Responsible for high-throughput, agent-internal events:
+
+| Category | Event Types |
+|----------|-------------|
+| LLM calls | `llm:call_started`, `llm:call_ended`, `llm_error` |
+| Streaming | `agent:reply_stream_start`, `agent:reply_chunk`, `agent:reply_stream_done`, `agent:reply_stream_error` |
+| Tool execution | `tool:dispatched`, `tool:completed`, `tool:failed`, `tool:security_denied` |
+| Token tracking | `agent:token_used` |
+| ReAct internal | `agent:got_tool_calls`, `agent:tool_results_fed_back`, `agent:history_compressed`, `agent:config_warning` |
+| Interrupt (internal) | `agent:reply_interrupted` (within `react_loop`) |
+
+### Why Two Layers?
+
+1. **Isolation** — Agent A's `llm:call_started` and `tool:dispatched` events are not visible to Agent B's subscribers
+2. **Independent backpressure** — Agent A's event flood only affects Agent A's Local Bus queue, not Agent B or the Global Bus
+3. **Cross-process ready** — Per-agent Local Bus is a prerequisite for running agents in separate processes/containers
+
+### Routing Logic
+
+When an agent-internal event is published, the publisher (ToolExecutor, LlmReActEngine, AgentHarness) resolves the target bus:
+
+```rust
+// Publish to local bus if available, fall back to global bus
+match agent_registry.get_local_bus(agent_id).await {
+    Some(local_bus) => local_bus.publish(event).await,
+    None => global_bus.publish(event).await,  // single-agent / migration path
+}
+```
+
+In single-agent configurations where no per-agent local bus is configured, all events flow through the Global Bus — preserving backwards compatibility.
+
+### Configuration
+
+Each agent can override its Local Bus config in `aman.yaml`:
+
+```yaml
+agents:
+  cortana:
+    display_name: Cortana
+    provider: openai
+    model: gpt-5.4-flash
+    event_bus:
+      max_queue_size: 2000   # override default (1000)
+  coder:
+    display_name: Coder
+    provider: deepseek
+    model: deepseek-v4-pro
+    # not configured → uses default (max_queue_size: 1000)
+```
+
+### Implementation
+
+| Component | File | Role |
+|-----------|------|------|
+| `AgentRegistry::set_local_bus()` | `crates/gateway/src/runtime/agent_registry.rs:251` | Stores per-agent Local Bus |
+| `AgentRegistry::get_local_bus()` | `crates/gateway/src/runtime/agent_registry.rs:257` | Lookup Local Bus by agent_id |
+| `AgentRegistry::load_from_config()` | `crates/gateway/src/runtime/agent_registry.rs:95-110` | Creates Local Bus for each agent at startup |
+| `AgentEntryConfig::event_bus` | `crates/config/src/lib.rs:422` | Per-agent `PartialEventBusConfig` |
+| `ToolExecutor::publish_to_agent_bus()` | `crates/gateway/src/runtime/agent_harness.rs:114` | Tool events → Local Bus |
+| `LlmReActEngine::publish_to_agent_bus()` | `crates/gateway/src/runtime/agent_harness.rs:298` | LLM events → Local Bus |
+| `AgentHarness::publish_to_agent_bus()` | `crates/gateway/src/runtime/agent_harness.rs:487` | Stream/harness events → Local Bus |
+
+---
+
 ## Event Flow Architecture
 
 - **Source components** (timer, cron, file_watch, webhook, socket, signal, chat-platform) produce `Event` objects.
-- Sources are registered with the `SourceRegistry`, which calls `poll()` to collect events and calls `bus.publish(event)` to push them onto the `EventBus`.
-- The `EventBus` (InMemoryBus or PersistentBus) routes events to matching subscribers based on `SubscriptionFilter`.
-- Core subscribers:
-  - **StoreAllEventsHandler** — subscribes to ALL events, records every event to the `EventStore` (in-memory ring buffer, indexed by trace_id)
-  - **SkillEventDispatcher** — subscribes to ALL events, routes to matching skills; publishes `message:dispatch`/`message:completed` around each dispatch cycle
-  - **LLMPlugin** — subscribes to `MessageReceived` events for chat processing; publishes `llm:call_started`/`llm:call_ended` around each LLM provider call
+- Sources are registered with the `SourceRegistry`, which calls `poll()` to collect events and calls `bus.publish(event)` to push them onto the **Global Event Bus**.
+- The **Global Bus** (InMemoryBus or PersistentBus) routes events to matching subscribers based on `SubscriptionFilter`.
+- **Agent-internal events** (LLM calls, tool execution, streaming) are published to the **agent's Local Bus**, which has independent queue depth and backpressure.
+  - When no Local Bus is configured (single-agent mode), agent-internal events fall back to the Global Bus.
+- Core subscribers (on Global Bus):
+  - **StoreAllEventsHandler** — subscribes to ALL events on Global Bus, records every event to the `EventStore` (in-memory ring buffer, indexed by trace_id)
+  - **SkillEventDispatcher** — subscribes to ALL events on Global Bus, routes to matching skills; publishes `message:dispatch`/`message:completed` around each dispatch cycle
+  - **MessageReceived handler** — subscribes to `MessageReceived` events on Global Bus, spawns ReAct processing via AgentHarness
 - Custom lifecycle events are published directly by runtime components:
-  - **Gateway daemon** (`main.rs`): `gateway:starting`/`gateway:ready`/`gateway:stopping` at startup/shutdown boundaries
-  - **HTTP handlers** (`http.rs`): `session:started`/`session:closed` on session create/close
-  - **PipelineEngine** (via `ToolEventSink`): `tool:invoke`/`tool:completed`/`tool:failed` around tool execution
+  - **Gateway daemon** (`main.rs`): `gateway:starting`/`gateway:ready`/`gateway:stopping` at startup/shutdown boundaries → Global Bus
+  - **HTTP handlers** (`http.rs`): `session:started`/`session:closed` on session create/close → Global Bus
+  - **PipelineEngine** (via `ToolEventSink`): `tool:invoke`/`tool:completed`/`tool:failed` around tool execution → Global Bus
 - The `EventStore` supports trace chain tracking via `trace_id` and `trace_prev` linking.
 - Events that fail delivery go to the **Dead Letter Queue (DLQ)** for manual retry/discard.
 
@@ -181,21 +292,30 @@ Published by the gateway daemon at lifecycle boundaries: before starting the run
 
 ### LLM & Agent Events (Published by AgentHarness)
 
-| Literal Value | Purpose | Payload | Producer |
-|---|---|---|---|
-| `llm:call_started` | LLM provider call initiated | `{"session_id":"...","model":"...","input_tokens_estimate":N,"original_message_id":"...","soul_name":"..."}` | `agent_harness.rs` |
-| `llm:call_ended` | LLM provider call completed successfully | `{"session_id":"...","model":"...","input_tokens_estimate":N,"output_tokens_estimate":N,"latency_ms":N,"original_message_id":"...","soul_name":"..."}` | `agent_harness.rs` |
-| `llm_error` | LLM call error | `{"session_id":"...", "error":"..."}` | `agent_harness.rs` |
-| `agent:reply_ready` | Agent response ready (non-streaming fallback) | `{"session_id":"...", "reply":"..."}` | `agent_harness.rs` |
-| `agent:reply_stream_start` | Streaming response started | `{"session_id":"..."}` | `agent_harness.rs` |
-| `agent:reply_chunk` | Streaming response delta | `{"session_id":"...", "extra":{"delta":"..."}}` | `agent_harness.rs` |
-| `agent:reply_stream_done` | Streaming response complete | `{"session_id":"..."}` | `agent_harness.rs` |
-| `agent:reply_stream_error` | Streaming response error | `{"session_id":"...", "error":"..."}` | `agent_harness.rs` |
-| `tool:dispatched` | Tool call dispatched to agent | `{"session_id":"...","tool_call_id":"...","tool_name":"...","args":{...}}` | `agent_harness.rs` |
-| `tool:completed` | Tool call succeeded | `{"session_id":"...","tool_call_id":"...","output":"..."}` | `agent_harness.rs` |
-| `tool:failed` | Tool call failed | `{"session_id":"...","tool_call_id":"...","output":"..."}` | `agent_harness.rs` |
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `llm:call_started` | **Local** | LLM provider call initiated | `{"agent_id":"...","session_id":"...","turn":N}` | `LlmReActEngine` |
+| `llm:call_ended` | **Local** | LLM provider call completed | `{"agent_id":"...","session_id":"...","turn":N,"success":bool}` | `LlmReActEngine` |
+| `llm_error` | **Local** | LLM call error | `{"agent_id":"...","session_id":"...","turn":N,"error":"..."}` | `LlmReActEngine` / `AgentHarness` |
+| `agent:token_used` | **Local** | Token usage estimate | `{"agent_id":"...","session_id":"...","turn":N,"tokens":N}` | `LlmReActEngine` |
+| `agent:reply_ready` | **Global** | Agent response ready | `{"agent_id":"...","session_id":"...","reply":"...","turns_processed":N}` | `AgentHarness` |
+| `agent:reply_interrupted` | **Global** | User stopped generation | `{"agent_id":"...","session_id":"..."}` | `AgentHarness` |
+| `agent:reply_stream_start` | **Local** | Streaming response started | `{"agent_id":"...","session_id":"...","turn":N,"extra":{}}` | `AgentHarness` (stream forwarder) |
+| `agent:reply_chunk` | **Local** | Streaming response delta | `{"agent_id":"...","session_id":"...","turn":N,"extra":{"delta":"..."}}` | `AgentHarness` (stream forwarder) |
+| `agent:reply_stream_done` | **Local** | Streaming response complete | `{"agent_id":"...","session_id":"...","turn":N,"extra":{"finish_reason":"..."}}` | `AgentHarness` (stream forwarder) |
+| `agent:reply_stream_error` | **Local** | Streaming error | `{"agent_id":"...","session_id":"...","error":"..."}` | `AgentHarness` (stream forwarder) |
+| `tool:dispatched` | **Local** | Tool call dispatched | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","args":{...}}` | `ToolExecutor` |
+| `tool:completed` | **Local** | Tool call succeeded | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","success":true,"duration_ms":N,"output":"..."}` | `ToolExecutor` |
+| `tool:failed` | **Local** | Tool call failed | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","success":false,"duration_ms":N,"output":"..."}` | `ToolExecutor` |
+| `tool:security_denied` | **Local** | Tool blocked by security | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","block_type":"hardline\|path_denied","reason":"..."}` | `ToolExecutor` |
+| `agent:got_tool_calls` | **Local** | LLM requested tool calls | `{"agent_id":"...","session_id":"...","turn":N,"tool_calls":[...]}` | `AgentHarness` |
+| `agent:tool_results_fed_back` | **Local** | Tool results fed to LLM | `{"agent_id":"...","session_id":"...","turn":N,"result_count":N}` | `AgentHarness` |
+| `agent:history_compressed` | **Local** | Context window trimmed | `{"agent_id":"...","session_id":"...","turn":N,"messages_removed":N,"tokens_saved":N,"strategy":"truncate\|summarize"}` | `AgentHarness` |
+| `agent:config_warning` | **Global** | Budget config not set | `{"agent_id":"...","session_id":"...","config_key":"...","message":"..."}` | `AgentHarness` |
 
 Published by AgentHarness to track the ReAct loop lifecycle. `llm:call_started`/`llm:call_ended` bracket each LLM provider invocation. Streaming events (`agent:reply_stream_*`) deliver real-time response content. Tool events (`tool:dispatched/completed/failed`) track tool execution within the loop.
+
+**Bus routing**: Agent-internal events (LLM calls, tool execution, streaming, token tracking, ReAct internals) are published to the **Local Bus** so that one agent's internal events don't pollute another agent's event stream or trigger global backpressure. Agent lifecycle events (`agent:reply_ready`, `agent:reply_interrupted`, `agent:config_warning`) remain on the **Global Bus** for frontend visibility. When no Local Bus is configured (single-agent mode), all events fall back to the Global Bus.
 
 ### Message Dispatch Events
 
@@ -308,16 +428,36 @@ The chat-session workflow (`crates/gateway/src/runtime/agent_runtime.rs:202-352`
 
 ## Event Bus Internals
 
+### Bus Components
+
 | Component | File | Purpose |
 |---|---|---|
-| `EventBus` trait | `crates/event-bus/src/lib.rs:197` | `publish()`, `subscribe()`, `unsubscribe()`, `metrics()` |
-| `InMemoryBus` | `crates/event-bus/src/lib.rs` | In-memory implementation with priority queues |
-| `InMemoryBusConfig` | `crates/event-bus/src/lib.rs` | Backpressure thresholds (L1:80%, L2:90%, L3:95%, L4A:98%) |
-| `SubscriptionFilter` | `crates/event-bus/src/lib.rs:52` | Filter by `event_types`, `sources`, `min_priority` |
-| `OverflowHandler` | `crates/event-bus/src/overflow.rs` | Disk overflow when queue is full |
-| `DedupHandler` | `crates/event-bus/src/dedup.rs` | Deduplication by `dedup_key` |
-| `RetryQueue` | `crates/event-bus/src/retry_queue.rs` | Retry for AtLeastOnce delivery |
-| `PersistentBus` | `crates/persistence/src/persistent_bus.rs` | WAL-backed persistent event bus |
+| `EventBus` trait | `crates/event-bus/src/lib.rs:211` | `publish()`, `subscribe()`, `unsubscribe()`, `metrics()`, `try_dequeue()`, `wait_for_event()` |
+| `InMemoryBus` | `crates/event-bus/src/lib.rs:394` | In-memory implementation with priority queues, used for both Global and Local buses |
+| `InMemoryBusConfig` | `crates/event-bus/src/lib.rs:167` | Backpressure thresholds (L1:80%, L2:90%, L3:95%, L4A:98%, L4B:Critical) |
+| `SubscriptionFilter` | `crates/event-bus/src/lib.rs:57` | Filter by `event_types`, `sources`, `priorities`, `payload_match` |
+| `OverflowDir` | `crates/event-bus/src/overflow.rs` | Disk overflow when queue is full (Level 4A) |
+| `BackpressureController` | `crates/event-bus/src/backpressure.rs` | 5-level backpressure (Normal → L1 → L2 → L3 → L4A → L4B → Critical) |
+| `DedupWindow` | `crates/event-bus/src/dedup.rs` | Deduplication by `dedup_key` (30s window default) |
+| `RetryQueue` | `crates/event-bus/src/retry_queue.rs` | Retry for AtLeastOnce delivery with exponential backoff |
+| `PersistentBus` | `crates/persistence/src/persistent_bus.rs` | WAL-backed persistent event bus (Global Bus only) |
+
+### Dual-Layer Configuration
+
+| Layer | Default `max_queue_size` | Backpressure Scope | Config Source |
+|---|---|---|---|
+| **Global Bus** | 10,000 | System-wide (all agents + sources share one queue) | `event_bus.max_queue_size` in `aman.yaml` |
+| **Local Bus** (per-agent) | 1,000 | Per-agent (agent's own events only) | `agents.<id>.event_bus.max_queue_size` in `aman.yaml` |
+
+Both buses use the same 5-level backpressure mechanism. When an agent's Local Bus queue fills, only that agent's publishers are affected — other agents continue unaffected. The Global Bus backpressure affects all sources and cross-agent communication.
+
+### AgentRegistry Bus Management
+
+`AgentRegistry` (`crates/gateway/src/runtime/agent_registry.rs`) stores per-agent Local Buses in a `RwLock<HashMap<String, Arc<dyn EventBus>>>`:
+
+- `set_local_bus(agent_id, bus)` — called during `load_from_config()` to create each agent's Local Bus
+- `get_local_bus(agent_id) -> Option<Arc<dyn EventBus>>` — called by `ToolExecutor`, `LlmReActEngine`, and `AgentHarness` to resolve the correct bus for each agent's internal events
+- `clear()` — removes all Local Buses alongside agent instances during shutdown
 
 ---
 

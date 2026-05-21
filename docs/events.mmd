@@ -1,5 +1,8 @@
 ---
-title: Aman Events System
+title: Aman Event System — Dual-Layer Bus Architecture
+config:
+  theme: neutral
+  look: handDrawn
 ---
 
 %% ============================================================================
@@ -37,22 +40,38 @@ mindmap
         gateway:starting
         gateway:ready
         gateway:stopping
-      LLM_Plugin
-        message_queued
-        message_dropped
-        history_trimmed
+      Agent_Lifecycle_["Agent Lifecycle (Global Bus)"]
+        agent:registered
+        agent:removed
+        agent:status_changed
+        agent:busy
+        agent:idle
+        agent:reply_ready
+        agent:reply_interrupted
+        agent:message
+        agent:config_warning
+      LLM_Plugin_["LLM & Agent (Local Bus)"]
         llm:call_started
         llm:call_ended
         llm_error
-        llm_reply_ready
-        output_blocked
+        agent:token_used
+        agent:reply_stream_start
+        agent:reply_chunk
+        agent:reply_stream_done
+        agent:reply_stream_error
+        agent:got_tool_calls
+        agent:tool_results_fed_back
+        agent:history_compressed
+      Tool_["Tool (Local Bus)"]
+        tool:dispatched
+        tool:completed
+        tool:failed
+        tool:security_denied
+      Pipeline_["Tool (Global Bus | PipelineEngine)"]
+        tool:invoke
       Dispatch
         message:dispatch
         message:completed
-      Tool
-        tool:invoke
-        tool:completed
-        tool:failed
       Capability
         capability_available
         capability_removed
@@ -64,96 +83,228 @@ mindmap
         cancel
 
 %% ============================================================================
-%% 2. Event Flow Architecture
+%% 2. Dual-Layer Event Bus Architecture
+%% ============================================================================
+
+flowchart TB
+    subgraph SOURCES["Event Sources"]
+        direction LR
+        S1["Timer / Cron"]:::source
+        S2["FileWatch"]:::source
+        S3["Webhook / Signal"]:::source
+        S4["Chat Platform"]:::source
+        S5["Config / HotReload"]:::source
+    end
+
+    subgraph GLOBAL["🌐 Global Event Bus"]
+        G1["max_queue_size: 10000<br/>5-level backpressure<br/>PersistentBus (WAL-backed)"]:::global
+    end
+
+    subgraph CORE["Core Subscribers (Global Bus)"]
+        direction TB
+        C1["StoreAllEventsHandler → EventStore"]:::subscriber
+        C2["SkillEventDispatcher → Skill matching"]:::subscriber
+        C3["ScriptHookEventHandler → Script Hooks"]:::subscriber
+        C4["NotificationSubscriber → Notifications"]:::subscriber
+        C5["StopGenerationHandler → STOP_GENERATION"]:::subscriber
+        C6["MessageReceivedHandler → AgentHarness"]:::subscriber
+        C7["AgentMessageHandler → agent:message routing"]:::subscriber
+    end
+
+    subgraph AGENTS[" "]
+        direction LR
+        subgraph AGENT_A["Agent 'cortana'"]
+            LA["🔒 Local Bus<br/>max_queue_size: 1000"]:::localbus
+            LA1["llm:call_started/ended<br/>llm_error"]:::local
+            LA2["tool:dispatched<br/>tool:completed/failed"]:::local
+            LA3["agent:reply_stream_*<br/>agent:reply_chunk"]:::local
+            LA4["agent:token_used<br/>agent:history_compressed"]:::local
+            LA --> LA1
+            LA --> LA2
+            LA --> LA3
+            LA --> LA4
+        end
+        subgraph AGENT_B["Agent 'coder'"]
+            LB["🔒 Local Bus<br/>max_queue_size: 1000"]:::localbus
+            LB1["llm:call_started/ended<br/>llm_error"]:::local
+            LB2["tool:dispatched<br/>tool:completed/failed"]:::local
+            LB3["agent:reply_stream_*<br/>agent:reply_chunk"]:::local
+            LB4["agent:token_used<br/>agent:history_compressed"]:::local
+            LB --> LB1
+            LB --> LB2
+            LB --> LB3
+            LB --> LB4
+        end
+    end
+
+    subgraph EXTERNAL["External / Frontend"]
+        direction LR
+        E1["Tauri Frontend<br/>(metrics:updated, event:processed)"]:::frontend
+        E2["HTTP API<br/>(/events/recent, /events/trace)"]:::frontend
+        E3["Gateway Lifecycle<br/>(gateway:starting/ready/stopping)"]:::frontend
+    end
+
+    SOURCES -->|"publish()"| GLOBAL
+    GLOBAL --> CORE
+    GLOBAL --> E1
+    GLOBAL --> E2
+    GLOBAL --> E3
+
+    GLOBAL -->|"agent:registered (lifecycle)"| AGENT_A
+    GLOBAL -->|"agent:registered (lifecycle)"| AGENT_B
+    GLOBAL -.->|"agent:message (cross-agent, to_agent=coder)"| AGENT_B
+    AGENT_A -.->|"agent:message (cross-agent, to_agent=cortana)"| GLOBAL
+
+    classDef source fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef subscriber fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef global fill:#bbdefb,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    classDef local fill:#fce4ec,stroke:#c62828,stroke-width:2px,color:#b71c1c
+    classDef localbus fill:#ffebee,stroke:#c62828,stroke-width:2px,stroke-dasharray: 5 5
+    classDef frontend fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+
+%% ============================================================================
+%% 3. Event Flow: Source → Bus → Subscriber → Store
+%% ============================================================================
+
+sequenceDiagram
+    autonumber
+
+    actor User
+    participant Source as Source<br/>(ChatPlatform, Timer, etc.)
+    participant Global as Global Bus<br/>(InMemoryBus|PersistentBus)
+    participant Registry as AgentRegistry
+    participant Local as Agent Local Bus<br/>(InMemoryBus)
+    participant Store as StoreAllEvents<br/>Handler → EventStore
+    participant Skill as SkillEvent<br/>Dispatcher
+    participant Harness as AgentHarness<br/>(ReAct Loop)
+    participant Engine as LlmReActEngine
+    participant Executor as ToolExecutor
+    participant Frontend as Frontend<br/>(Tauri / HTTP)
+
+    rect rgb(227, 242, 253)
+        Note over Source,Global: Phase 1: Source → Global Bus
+        Source->>Source: poll() / receive message
+        Source->>Global: publish(MessageReceived)
+        Global->>Store: record to EventStore
+        Global->>Skill: dispatch to matching skills
+        Skill-->>Global: publish(message:dispatch)
+        Skill-->>Global: publish(message:completed)
+    end
+
+    rect rgb(252, 228, 236)
+        Note over Global,Frontend: Phase 2: MessageReceivedHandler → AgentHarness
+        Global->>Harness: handle(MessageReceived)
+        Harness->>Registry: resolve_first_enabled_agent()
+        Registry-->>Harness: AgentInstance
+        Harness->>Global: publish(agent:busy)
+        Harness->>Harness: spawn_process_message(agent_id, session_id, text)
+    end
+
+    rect rgb(255, 243, 224)
+        Note over Harness,Executor: Phase 3: ReAct Loop (think-act-observe)
+        loop ReAct Turn
+            Harness->>Engine: execute_turn(ctx, messages)
+            Engine->>Local: publish(llm:call_started)
+            Engine->>Engine: llm_provider.chat_completion()
+            Engine->>Local: publish(llm:call_ended)
+            Engine-->>Harness: ReActTurn::Finished | ToolCalls
+
+            alt LLM returned Tool Calls
+                Harness->>Local: publish(agent:got_tool_calls)
+                Harness->>Executor: execute_tools()
+                loop Each Tool Call
+                    Executor->>Local: publish(tool:dispatched)
+                    Executor->>Executor: tool.execute() + security checks
+                    Executor->>Local: publish(tool:completed|failed)
+                end
+                Harness->>Local: publish(agent:tool_results_fed_back)
+            else LLM returned Final Response
+                Harness->>Global: publish(agent:reply_ready)
+                Harness->>Global: publish(agent:idle)
+            end
+        end
+    end
+
+    rect rgb(243, 229, 245)
+        Note over Local,Frontend: Phase 4: Streaming (parallel task, Local Bus)
+        par Stream Forwarder
+            Harness->>Local: publish(agent:reply_stream_start)
+            loop Each Chunk
+                Harness->>Local: publish(agent:reply_chunk)
+            end
+            Harness->>Local: publish(agent:reply_stream_done)
+        end
+    end
+
+    rect rgb(232, 245, 233)
+        Note over Global,Frontend: Phase 5: Frontend Delivery
+        Frontend->>Global: poll GET /events/recent
+        Global-->>Frontend: recent events (from EventStore on Global Bus)
+    end
+
+%% ============================================================================
+%% 4. Event Routing Decision Tree
 %% ============================================================================
 
 flowchart TD
-    subgraph Sources["Event Sources"]
-        FS[FileWatchSource<br/>file_watch.rs]
-        Timer[TimerSource<br/>timer.rs]
-        Cron[CronSource<br/>cron.rs]
-        WS[WebhookSource<br/>webhook.rs]
-        Signal[SignalSource<br/>signal.rs]
-        Socket[SocketSource<br/>socket.rs]
-        Chat[ChatPlatformSource<br/>chat-source/lib.rs]
-    end
+    START(["Event to publish"]) --> Q1{"Event category?"}
 
-    subgraph Bus["Event Bus (InMemoryBus / PersistentBus)"]
-        EB[EventBus<br/>publish / subscribe]
-        BP[Backpressure<br/>L1 L2 L3 L4A L4B]
-        DD[Dedup]
-        OV[Overflow-to-Disk]
-        RQ[RetryQueue]
-    end
+    Q1 -->|"🌐 Gateway lifecycle<br/>(gateway:*)"| GLOBAL
+    Q1 -->|"🌐 Agent lifecycle<br/>(agent:registered, busy, idle, reply_ready)"| GLOBAL
+    Q1 -->|"🌐 Agent final response<br/>(agent:reply_ready, agent:reply_interrupted)"| GLOBAL
+    Q1 -->|"🌐 Cross-agent message<br/>(agent:message)"| GLOBAL
+    Q1 -->|"🌐 Session<br/>(session:started, session:closed)"| GLOBAL
+    Q1 -->|"🌐 Config / Skill<br/>(ConfigChanged, SkillReloaded)"| GLOBAL
+    Q1 -->|"🌐 Source events<br/>(FileCreated, CronTick, etc.)"| GLOBAL
+    Q1 -->|"🌐 Message dispatch<br/>(message:dispatch, message:completed)"| GLOBAL
+    Q1 -->|"🌐 Capability<br/>(capability_*)"| GLOBAL
 
-    subgraph Subscribers["Core Subscribers"]
-        SA[StoreAllEventsHandler<br/>→ EventStore<br/>agent_runtime.rs:903]
-        SD[SkillEventDispatcher<br/>→ skill matching<br/>→ message:dispatch/completed<br/>agent_runtime.rs:422]
-        LP[LLMPlugin<br/>→ MessageReceived<br/>→ llm:call_started/ended<br/>llm-plugin/lib.rs:342]
-    end
+    Q1 -->|"🔒 LLM calls<br/>(llm:call_started, llm:call_ended, llm_error)"| LOCAL
+    Q1 -->|"🔒 Streaming<br/>(agent:reply_stream_*)"| LOCAL
+    Q1 -->|"🔒 Tool execution<br/>(tool:dispatched, completed, failed, security_denied)"| LOCAL
+    Q1 -->|"🔒 Token tracking<br/>(agent:token_used)"| LOCAL
+    Q1 -->|"🔒 ReAct internals<br/>(agent:got_tool_calls, history_compressed, etc.)"| LOCAL
 
-    subgraph Producers["Custom Event Producers"]
-        GW[Gateway Daemon<br/>main.rs<br/>gateway:start/ready/stop]
-        HTTP[HTTP Handlers<br/>http.rs<br/>session:started/closed]
-        CR[CapabilityRegistry<br/>agent_runtime.rs:833<br/>capability_*]
-        SX[SoulRuntime<br/>soul/lib.rs:384<br/>soul_changed]
-        WE[WorkflowEngine<br/>workflow/lib.rs<br/>retry / cancel]
-    end
+    GLOBAL["🌐 Global Bus"]:::globalNode
+    LOCAL["🔒 Local Bus"]:::localNode
 
-    subgraph Storage["Storage & Observability"]
-        ES[(EventStore<br/>in-memory ring buffer)]
-        DLQ[(Dead Letter Queue<br/>persistence/dlq.rs)]
-        AL[(Audit Log<br/>audit.rs)]
-        DP[Debug Panel<br/>Tauri frontend]
-    end
+    GLOBAL --> RESOLVE{"AgentRegistry<br/>has Local Bus<br/>for this agent_id?"}
+    RESOLVE -->|"Yes"| PUBLISH_LOCAL["publish to<br/>agent's Local Bus"]:::localNode
+    RESOLVE -->|"No (single-agent<br/>fallback)"| PUBLISH_GLOBAL["publish to<br/>Global Bus"]:::globalNode
 
-    Sources -->|poll + publish| EB
-    EB -->|route by filter| Subscribers
-    Producers -->|publish_event| EB
-    WE -->|handle_event| Subscribers
-    SA -->|record all| ES
-    SD -->|message:dispatch/completed| EB
-    LP -->|llm:call_started/ended| EB
-    ES --> DP
-    EB -->|failed delivery| DLQ
+    LOCAL --> PUBLISH_LOCAL
 
-    style EB fill:#4a6b8a,color:#fff
-    style Subscribers fill:#2d5a3d,color:#fff
-    style Storage fill:#5a3d2d,color:#fff
+    PUBLISH_LOCAL --> DONE(["✓ Backpressure scope: single agent"])
+    PUBLISH_GLOBAL --> DONE(["✓ Backpressure scope: system-wide"])
+
+    classDef globalNode fill:#bbdefb,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    classDef localNode fill:#ffcdd2,stroke:#c62828,stroke-width:2px,color:#b71c1c
 
 %% ============================================================================
-%% 3. Trace Chain Flow
-%% ============================================================================
-
-flowchart LR
-    subgraph TraceChain["Trace Chain (trace_id + parent_event_id)"]
-        direction LR
-        MSG[MessageReceived<br/>trace_id: T]
-        DISPATCH[message:dispatch<br/>trace_id: T<br/>parent: MSG.id]
-        CALL[llm:call_started<br/>trace_id: T<br/>parent: DISPATCH.id]
-        REPLY[llm:call_ended<br/>trace_id: T<br/>parent: CALL.id]
-        COMPLETE[message:completed<br/>trace_id: T<br/>parent: REPLY.id]
-    end
-
-    MSG --> DISPATCH --> CALL --> REPLY --> COMPLETE
-
-    style MSG fill:#4a6b8a,color:#fff
-    style DISPATCH fill:#6a8a4a,color:#fff
-    style CALL fill:#8a6a4a,color:#fff
-    style REPLY fill:#8a4a6a,color:#fff
-    style COMPLETE fill:#4a8a6a,color:#fff
-
-%% ============================================================================
-%% 4. Chat Session Workflow State Machine
+%% 5. Chat-Session Workflow State Machine
 %% ============================================================================
 
 stateDiagram-v2
     [*] --> ACTIVE: session created
 
+    state ACTIVE {
+        [*] --> waiting
+        waiting --> dispatching: MESSAGE_RECEIVED
+    }
+
+    state PROCESSING {
+        [*] --> llm_call
+        llm_call --> tool_exec: LLM requests tools
+        tool_exec --> llm_call: tool results ready
+        llm_call --> streaming: LLM streams response
+        streaming --> done: stream completes
+    }
+
     ACTIVE --> PROCESSING: MESSAGE_RECEIVED
     ACTIVE --> TIMEOUT: SESSION_TIMEOUT (300s)
 
-    PROCESSING --> IDLE: LLM_REPLY_READY / LLM_STREAM_DONE
+    PROCESSING --> IDLE: LLM_REPLY_READY
+    PROCESSING --> IDLE: LLM_STREAM_DONE
     PROCESSING --> ERROR: LLM_ERROR
     PROCESSING --> TIMEOUT: STREAM_TIMEOUT (120s)
     PROCESSING --> CLOSED: SESSION_CLOSE_CMD
@@ -172,65 +323,177 @@ stateDiagram-v2
     TIMEOUT --> CLOSED: SESSION_END
     TIMEOUT --> IDLE: MESSAGE_RECEIVED
 
-    note right of ACTIVE: Initial session state
-    note right of PROCESSING: LLM is generating
-    note right of IDLE: Waiting for next message
-    note right of ERROR: Needs retry or cancel
-    note right of RETRYING: Auto/manual retry in progress
-    note right of TIMEOUT: Session timed out
+    CLOSED --> [*]
+    TIMEOUT --> [*]
+
+    note right of PROCESSING
+        During PROCESSING:
+        • llm:* → Local Bus (isolated)
+        • tool:* → Local Bus (isolated)
+        • agent:reply_stream_* → Local Bus
+        • agent:got_tool_calls → Local Bus
+    end note
+
+    note left of ACTIVE
+        Lifecycle events → Global Bus:
+        • agent:busy (on dispatch)
+        • agent:idle (on complete)
+        • agent:reply_ready (final response)
+    end note
 
 %% ============================================================================
-%% 5. Custom Events by Source
+%% 6. ReAct Loop Internal Event Sequence (single turn)
+%% ============================================================================
+
+flowchart LR
+    subgraph TURN["One ReAct Turn — all internal events → Local Bus"]
+        direction TB
+        T1["① llm:call_started<br/>(Local Bus)"]:::local
+        T2["② LLM Provider call<br/>(system prompt + messages + tools)"]:::engine
+        T3["③ llm:call_ended (success)<br/>or llm_error (failure)<br/>(Local Bus)"]:::local
+
+        T3 -->|"assistant text reply"| T4["④ agent:token_used<br/>(Local Bus)"]:::local
+        T4 --> T5["⑤ Turn complete →<br/>agent:reply_ready (Global)"]:::global
+
+        T3 -->|"tool calls"| T6["⑥ agent:got_tool_calls<br/>(Local Bus)"]:::local
+        T6 --> T7["⑦ tool:dispatched<br/>(Local Bus)"]:::local
+        T7 --> T8["⑧ Tool execution<br/>(permit check → security → exec)"]:::engine
+        T8 --> T9["⑨ tool:completed<br/>or tool:failed<br/>(Local Bus)"]:::local
+        T9 --> T10["⑩ agent:tool_results_fed_back<br/>(Local Bus)"]:::local
+        T10 -->|"next turn"| T1
+    end
+
+    classDef global fill:#e3f2fd,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    classDef local fill:#fce4ec,stroke:#c62828,stroke-width:2px,color:#b71c1c
+    classDef engine fill:#fff3e0,stroke:#e65100,stroke-width:2px
+
+%% ============================================================================
+%% 7. Trace Chain Flow
+%% ============================================================================
+
+flowchart LR
+    subgraph TraceChain["Trace Chain (trace_id + parent_event_id)"]
+        direction LR
+        MSG[MessageReceived<br/>trace_id: T<br/>🌐 Global Bus]:::global
+        DISPATCH[message:dispatch<br/>trace_id: T<br/>🌐 Global Bus]:::global
+        CALL[llm:call_started<br/>trace_id: T<br/>🔒 Local Bus]:::local
+        TOOL[tool:dispatched<br/>trace_id: T<br/>🔒 Local Bus]:::local
+        REPLY[llm:call_ended<br/>trace_id: T<br/>🔒 Local Bus]:::local
+        COMPLETE[message:completed<br/>trace_id: T<br/>🌐 Global Bus]:::global
+    end
+
+    MSG --> DISPATCH --> CALL --> TOOL --> REPLY --> COMPLETE
+
+    classDef global fill:#bbdefb,stroke:#1565c0,stroke-width:2px,color:#0d47a1
+    classDef local fill:#ffcdd2,stroke:#c62828,stroke-width:2px,color:#b71c1c
+
+%% ============================================================================
+%% 8. Backpressure Levels (shared by Global & Local Buses)
+%% ============================================================================
+
+flowchart LR
+    NORMAL["Normal<br/>(0%-80%)"]:::bp0 -->
+    L1["L1: Warning<br/>(80%-90%)"]:::bp1 -->
+    L2["L2: Throttle<br/>(90%-95%)"]:::bp2 -->
+    L3["L3: Block GD<br/>(95%-98%)"]:::bp3 -->
+    L4A["L4A: Overflow<br/>(98%+)"]:::bp4 -->
+    L4B["L4B: Emergency<br/>(≥80% overflow)"]:::bp5 -->
+    CRITICAL["Critical<br/>(stop low-priority)"]:::bp5
+
+    NORMAL -.->|"queue drains"| NORMAL
+    L1 -.->|"queue drains"| NORMAL
+    L2 -.->|"queue drains"| NORMAL
+    L3 -.->|"queue drains"| NORMAL
+
+    classDef bp0 fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    classDef bp1 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    classDef bp2 fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px
+    classDef bp3 fill:#ffccbc,stroke:#d84315,stroke-width:2px
+    classDef bp4 fill:#ffcdd2,stroke:#c62828,stroke-width:2px
+    classDef bp5 fill:#ef9a9a,stroke:#b71c1c,stroke-width:2px
+
+%% ============================================================================
+%% 9. Custom Events by Bus & Category
 %% ============================================================================
 
 block-beta
-  columns 3
-  block:Gateways:1
+  columns 4
+  block:Global_lifecycle:1
     columns 1
-    GATEWAY("gateway:")
-    G1("gateway:starting")
-    G2("gateway:ready")
-    G3("gateway:stopping")
+    GLO("🌐 Global — Lifecycle")
+    GL1("gateway:starting/ready/stopping")
+    GL2("session:started/closed")
+    GL3("agent:registered/removed")
+    GL4("agent:status_changed")
+    GL5("agent:busy/idle")
   end
-  block:Session:1
+  block:Global_response:1
     columns 1
-    SESSION("session:")
-    S1("session:started")
-    S2("session:closed")
+    GRE("🌐 Global — Response")
+    GR1("agent:reply_ready")
+    GR2("agent:reply_interrupted")
+    GR3("agent:message")
+    GR4("agent:config_warning")
+    GR5("ConfigChanged")
   end
-  block:LLMEvents:1
+  block:Global_dispatch:1
     columns 1
-    LLM("llm:")
-    L1("llm:call_started")
-    L2("llm:call_ended")
+    GDI("🌐 Global — Dispatch")
+    GD1("message:dispatch")
+    GD2("message:completed")
+    GD3("soul_changed")
+    GD4("capability_*")
+    GD5("SkillReloaded")
   end
-  block:Tools:1
+  block:Local_events:1
     columns 1
-    TOOL("tool:")
-    T1("tool:invoke")
-    T2("tool:completed")
-    T3("tool:failed")
+    LCL("🔒 Local — Per Agent")
+    LC1("llm:call_started/ended/error")
+    LC2("tool:dispatched/completed/failed")
+    LC3("tool:security_denied")
+    LC4("agent:reply_stream_*")
+    LC5("agent:token_used")
+    LC6("agent:got_tool_calls")
+    LC7("agent:tool_results_fed_back")
+    LC8("agent:history_compressed")
   end
-  block:Messages:1
-    columns 1
-    MSG("message:")
-    M1("message:dispatch")
-    M2("message:completed")
-  end
-  block:Others:1
-    columns 1
-    OTH("other")
-    O1("soul_changed")
-    O2("retry / cancel")
-    O3("capability_*")
-  end
-  block:Llms:1
-    columns 1
-    LLL("llm-plugin:")
-    LA("message_queued")
-    LB("message_dropped")
-    LC("history_trimmed")
-    LD("llm_error")
-    LE("llm_reply_ready")
-    LF("output_blocked")
-  end
+
+%% ============================================================================
+%% 10. Startup Sequence — Bus & Agent Initialization
+%% ============================================================================
+
+sequenceDiagram
+    autonumber
+
+    participant Main as Gateway main.rs
+    participant Runtime as AgentRuntime
+    participant Global as Global Bus
+    participant Registry as AgentRegistry
+    participant LocalA as Local Bus (cortana)
+    participant LocalB as Local Bus (coder)
+
+    Main->>Main: AgentRuntimeBuilder::build()
+    Runtime->>Global: create(InMemoryBusConfig { max_queue_size: 10000 })
+    Runtime->>Runtime: create PluginLoader, SkillRegistry, ToolRegistry
+    Runtime->>Registry: AgentRegistry::new(global_bus)
+    Runtime->>Runtime: create AgentHarness(registry, global_bus, ...)
+    Runtime->>Global: subscribe: StoreAllEvents, SkillDispatcher, etc.
+
+    Main->>Main: runtime.start() — Phase 0 to Phase 5
+    Main->>Global: publish(gateway:starting)
+
+    Note over Runtime,Registry: Phase 2: load agents from config
+
+    loop AmanConfig.agents.each()
+        alt agent has event_bus config
+            Registry->>LocalA: InMemoryBus::new(max_queue_size: 2000)
+        else agent without config
+            Registry->>LocalB: InMemoryBus::new(max_queue_size: 1000, default)
+        end
+        Registry->>Registry: set_local_bus(agent_id, bus)
+        Registry->>Global: publish(agent:registered, {agent_id})
+    end
+
+    Main->>Global: publish(gateway:ready)
+
+    Note over Main,LocalB: Runtime ready — each agent's Local Bus handles<br/>internal events independently of other agents

@@ -1047,7 +1047,7 @@ pub async fn create_provider(
         config::ProviderConfig {
             display_name,
             base_url,
-            api_type: "openai".to_owned(),
+            api_type: Some("openai".to_owned()),
             api_key: None,
             models: Vec::new(),
         },

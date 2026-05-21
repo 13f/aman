@@ -339,9 +339,9 @@ pub struct ProviderConfig {
     pub display_name: String,
     pub base_url: String,
     /// Provider type identifier used to select the LlmProvider implementation.
-    /// Supported values: "openai" (default).
-    #[serde(default = "default_api_type")]
-    pub api_type: String,
+    /// Falls back to top-level `llm.api_type` when not set.
+    #[serde(default)]
+    pub api_type: Option<String>,
     /// Optional inline API key. Checked after Keychain and env var fallbacks.
     /// Use `$KEYCHAIN:aman.providers.<provider>.api_key` or
     /// `$ENV:AMAN_PROVIDER_<PROVIDER>_API_KEY` for secret management.
@@ -1358,6 +1358,7 @@ runtime:
                 base_url: "https://example.com".to_string(),
                 api_key: None,
                 models: Vec::new(),
+                api_type: None,
             },
         );
 
@@ -1384,6 +1385,7 @@ runtime:
                 base_url: "https://example.com".to_string(),
                 api_key: None,
                 models: Vec::new(),
+                api_type: None,
             },
         );
         config.agents.insert(
@@ -1441,6 +1443,7 @@ runtime:
                 base_url: "https://api.openai.com/v1".to_string(),
                 api_key: None,
                 models: Vec::new(),
+                api_type: None,
             },
         );
         config.model = Some(super::DefaultModelConfig {

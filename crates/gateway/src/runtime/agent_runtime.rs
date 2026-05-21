@@ -2295,7 +2295,7 @@ fn create_llm_provider() -> Arc<dyn LlmProvider> {
                 .unwrap_or_else(|| model.base_url.clone());
             let api_key = get_llm_api_key_or_inline(provider_key, p);
             let api_type = llm_api_type
-                .or_else(|| p.map(|p| p.api_type.as_str()))
+                .or_else(|| p.and_then(|p| p.api_type.as_deref()))
                 .unwrap_or("openai");
             tracing::info!(
                 provider = %provider_key,
@@ -2312,7 +2312,7 @@ fn create_llm_provider() -> Arc<dyn LlmProvider> {
             if let Some(p) = aman.providers.get(&agent.provider) {
                 let api_key = get_llm_api_key_or_inline(&agent.provider, Some(p));
                 let api_type = llm_api_type
-                    .or_else(|| Some(p.api_type.as_str()))
+                    .or_else(|| p.api_type.as_deref())
                     .unwrap_or("openai");
                 tracing::info!(
                     agent_key = %_key,

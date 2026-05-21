@@ -23,16 +23,52 @@ async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, S
 // Runtime lifecycle — gateway process management
 // ---------------------------------------------------------------------------
 
-#[tauri::command]
-pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatusInfo, String> {
-    let client = require_gateway(&state).await?;
-    let v = client.runtime_status().await?;
-    Ok(RuntimeStatusInfo {
+/// Parse runtime status JSON into RuntimeStatusInfo.
+fn parse_runtime_status(v: &serde_json::Value) -> RuntimeStatusInfo {
+    RuntimeStatusInfo {
         phase: v["phase"].as_str().map(|s| format!("Phase{s}")).unwrap_or_else(|| "stopped".to_owned()),
         ready: v["ready"].as_bool().unwrap_or(false),
         live: v["live"].as_bool().unwrap_or(false),
         running: v["phase"].as_u64().map(|p| p > 0).unwrap_or(false),
-    })
+    }
+}
+
+#[tauri::command]
+pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeStatusInfo, String> {
+    let client = require_gateway(&state).await?;
+    let v = client.runtime_status().await?;
+    Ok(parse_runtime_status(&v))
+}
+
+/// Try to connect to an already-running gateway without spawning a new process.
+///
+/// Reads the configured port from config, pings the health endpoint, and
+/// stores the client in app state on success.
+#[tauri::command]
+pub async fn try_connect_gateway(state: State<'_, AppState>) -> Result<RuntimeStatusInfo, String> {
+    // Skip if already connected
+    {
+        let guard = state.gateway_client.lock().await;
+        if guard.is_some() {
+            return Err("Already connected to a gateway".to_owned());
+        }
+    }
+
+    let port = get_gateway_port().await?;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let client = GatewayClient::new(&base_url);
+
+    client.health().await.map_err(|e| format!("Gateway not reachable at {base_url}: {e}"))?;
+
+    let v = client.runtime_status().await?;
+    let status = parse_runtime_status(&v);
+
+    {
+        let mut guard = state.gateway_client.lock().await;
+        *guard = Some(client);
+    }
+
+    Ok(status)
 }
 
 #[tauri::command]

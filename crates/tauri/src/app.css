@@ -32,12 +32,12 @@ body { min-height: 100vh; }
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 16px 0;
+  padding: 8px 0;
   flex-shrink: 0;
 }
-.sidebar a, .sidebar button {
+.sidebar a, .sidebar button.nav-btn {
   display: block;
-  padding: 10px 20px;
+  padding: 9px 20px;
   color: var(--fg-dim);
   text-decoration: none;
   font-size: 14px;
@@ -48,13 +48,13 @@ body { min-height: 100vh; }
   width: 100%;
   text-align: left;
 }
-.sidebar a:hover, .sidebar a.active, .sidebar button:hover, .sidebar button.active {
+.sidebar a:hover, .sidebar a.active, .sidebar button.nav-btn:hover, .sidebar button.nav-btn.active {
   background: var(--bg-hover);
   color: var(--fg);
 }
 .sidebar .disabled {
   display: block;
-  padding: 10px 20px;
+  padding: 9px 20px;
   color: var(--border);
   font-size: 14px;
   cursor: default;
@@ -69,6 +69,42 @@ body { min-height: 100vh; }
 }
 .sidebar .status-dot.running { background: var(--green); }
 .sidebar .status-dot.stopped { background: var(--red); }
+
+/* Collapsible menu groups */
+.menu-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: color 0.15s;
+  text-align: left;
+}
+.menu-header:hover {
+  color: var(--fg);
+  background: none;
+}
+.menu-arrow {
+  font-size: 10px;
+  width: 12px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.menu-items {
+  margin-bottom: 4px;
+}
+.menu-items .nav-btn,
+.menu-items .disabled {
+  padding-left: 28px;
+}
 
 /* Gateway start button in Dashboard */
 .start-btn {

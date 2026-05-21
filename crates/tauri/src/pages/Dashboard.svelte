@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
+  import NotificationBell from "./NotificationBell.svelte";
 
   let { onstatuschange = (_running: boolean) => {} } = $props();
 
@@ -133,20 +134,23 @@
       &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
     </p>
   </div>
-  {#if !status.running}
-    <button class="start-btn" onclick={startGateway} disabled={gatewayLoading}>
-      {gatewayLoading ? "连接中..." : "启动"}
-    </button>
-  {:else}
-    <div style="display:flex;gap:8px;">
-      <button class="stop-btn" onclick={stopGateway} disabled={gatewayStopping}>
-        {gatewayStopping ? "停止中..." : "停止"}
+  <div style="display:flex;align-items:center;gap:12px;">
+    <NotificationBell />
+    {#if !status.running}
+      <button class="start-btn" onclick={startGateway} disabled={gatewayLoading}>
+        {gatewayLoading ? "连接中..." : "启动"}
       </button>
-      <button class="restart-btn" onclick={restartGateway} disabled={gatewayStopping || gatewayLoading}>
-        重启
-      </button>
-    </div>
-  {/if}
+    {:else}
+      <div style="display:flex;gap:8px;">
+        <button class="stop-btn" onclick={stopGateway} disabled={gatewayStopping}>
+          {gatewayStopping ? "停止中..." : "停止"}
+        </button>
+        <button class="restart-btn" onclick={restartGateway} disabled={gatewayStopping || gatewayLoading}>
+          重启
+        </button>
+      </div>
+    {/if}
+  </div>
 </div>
 {#if gatewayError}
   <div class="card" style="border-color:var(--red);">

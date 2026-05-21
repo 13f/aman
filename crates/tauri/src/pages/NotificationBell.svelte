@@ -161,7 +161,7 @@
 <style>
   .bell-wrapper {
     position: relative;
-    padding: 4px 16px;
+    display: inline-block;
   }
 
   .bell-btn {
@@ -215,7 +215,6 @@
   .dropdown {
     position: absolute;
     bottom: calc(100% + 8px);
-    left: 0;
     right: 0;
     background: var(--sidebar-bg, #1a1d2e);
     border: 1px solid var(--border, #2a2d3a);
@@ -224,7 +223,7 @@
     max-height: 400px;
     overflow-y: auto;
     z-index: 9998;
-    min-width: 320px;
+    width: 320px;
   }
 
   .dropdown-header {

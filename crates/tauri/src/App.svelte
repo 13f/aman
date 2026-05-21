@@ -1,53 +1,71 @@
 <script lang="ts">
   import "./app.css";
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import Home from "./pages/Home.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import Maintenance from "./pages/Maintenance.svelte";
   import WorkflowBoard from "./pages/WorkflowBoard.svelte";
   import PluginManager from "./pages/PluginManager.svelte";
   import Chat from "./pages/Chat.svelte";
+  import Finance from "./pages/Finance.svelte";
+  import Work from "./pages/Work.svelte";
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
-  import NotificationBell from "./pages/NotificationBell.svelte";
   import NotificationOverlay from "./pages/NotificationOverlay.svelte";
   import Settings from "./pages/Settings.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
-  let chatAvailable = $state(false);
   let hasProvider = $state(false);
   let hasAgent = $state(false);
 
-  type Page = { id: string; label: string };
+  type MenuItem = { id: string; label: string };
+  type MenuGroup = { name: string; label: string; items: MenuItem[] };
 
-  const staticPages: Page[] = [
-    { id: "dashboard", label: "Dashboard" },
-    { id: "maintenance", label: "Maintenance" },
-    { id: "workflows", label: "Workflow Board" },
-    { id: "plugins", label: "Plugin Manager" },
-    { id: "settings", label: "Settings" },
+  const menuGroups: MenuGroup[] = [
+    {
+      name: "apps",
+      label: "Workspace",
+      items: [
+        { id: "home", label: "Home" },
+        { id: "chat", label: "Chat" },
+        { id: "finance", label: "Finance" },
+        { id: "work", label: "Work" },
+      ],
+    },
+    {
+      name: "platform",
+      label: "Services",
+      items: [
+        { id: "agents", label: "Agents" },
+        { id: "providers", label: "Providers" },
+        { id: "dashboard", label: "Dashboard" },
+      ],
+    },
+    {
+      name: "management",
+      label: "Management",
+      items: [
+        { id: "workflows", label: "Workflow Board" },
+        { id: "plugins", label: "Plugin Manager" },
+        { id: "maintenance", label: "Maintenance" },
+        { id: "settings", label: "Settings" },
+      ],
+    },
   ];
 
-  const providerPage: Page = { id: "providers", label: "Providers" };
-  const agentPage: Page = { id: "agents", label: "Agents" };
-  const chatPage: Page = { id: "chat", label: "Chat" };
-
-  let pages = $derived(
-    chatAvailable
-      ? [...staticPages, providerPage, agentPage, chatPage]
-      : [...staticPages, providerPage, agentPage, chatPage]
-  );
+  let expandedGroups = $state<Record<string, boolean>>({
+    apps: true,
+    platform: true,
+    management: true,
+  });
 
   let initialLoadDone = $state(false);
 
-  async function checkCapabilities() {
-    try {
-      const caps = await invoke<{ capability: string }[]>("get_capabilities");
-      chatAvailable = caps.some((c) => c.capability === "chat");
-    } catch {
-      chatAvailable = false;
-    }
+  function toggleGroup(name: string) {
+    expandedGroups[name] = !expandedGroups[name];
   }
 
   async function checkOnboarding() {
@@ -59,7 +77,7 @@
       hasProvider = hp;
       hasAgent = ha;
 
-      if (!hp && currentPage === "dashboard") {
+      if (!hp && (currentPage === "home" || currentPage === "dashboard")) {
         currentPage = "providers";
       }
     } catch {
@@ -69,11 +87,6 @@
 
   function onRuntimeStatusChange(running: boolean) {
     runtimeRunning = running;
-    if (running) {
-      checkCapabilities();
-    } else {
-      chatAvailable = false;
-    }
   }
 
   function handlePageVisited(pageId: string) {
@@ -89,35 +102,58 @@
 
   onMount(async () => {
     await checkOnboarding();
+
+    // Auto-detect if gateway is already running
+    try {
+      const status = await invoke<{ running: boolean }>("try_connect_gateway");
+      if (status.running) {
+        runtimeRunning = true;
+        currentPage = "home";
+      }
+    } catch {
+      // Gateway not running — stay on dashboard
+    }
+
     initialLoadDone = true;
   });
 </script>
 
 <nav class="sidebar">
-  {#each pages as page}
-    {#if page.id === "chat" && !runtimeRunning}
-      <span class="sidebar-link disabled" title="Start the runtime first">
-        <span class="status-dot stopped"></span>
-        {page.label}
-      </span>
-    {:else}
-      <button
-        class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
-        onclick={() => navigateTo(page.id)}
-      >
-        <span class="status-dot {runtimeRunning ? 'running' : 'stopped'}"></span>
-        {page.label}
-      </button>
+  {#each menuGroups as group}
+    <button class="menu-header" onclick={() => toggleGroup(group.name)}>
+      <span class="menu-arrow">{expandedGroups[group.name] ? "▾" : "▸"}</span>
+      {group.label}
+    </button>
+    {#if expandedGroups[group.name]}
+      <div class="menu-items">
+        {#each group.items as page}
+          {#if (page.id === "chat" || page.id === "finance" || page.id === "work") && !runtimeRunning}
+            <span class="sidebar-link disabled" title="Start the runtime first">
+              <span class="status-dot stopped"></span>
+              {page.label}
+            </span>
+          {:else}
+            <button
+              class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
+              onclick={() => navigateTo(page.id)}
+            >
+              <span class="status-dot {runtimeRunning ? 'running' : 'stopped'}"></span>
+              {page.label}
+            </button>
+          {/if}
+        {/each}
+      </div>
     {/if}
   {/each}
-  <NotificationBell onNavigate={(p) => navigateTo(p)} />
   <ActivityStateWidget {runtimeRunning} />
 </nav>
 
 <NotificationOverlay onNavigate={(p) => navigateTo(p)} />
 
 <main class="main">
-  {#if currentPage === "dashboard"}
+  {#if currentPage === "home"}
+    <Home />
+  {:else if currentPage === "dashboard"}
     <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
   {:else if currentPage === "maintenance"}
     <Maintenance />
@@ -131,6 +167,10 @@
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}
     <Chat />
+  {:else if currentPage === "finance"}
+    <Finance />
+  {:else if currentPage === "work"}
+    <Work />
   {:else if currentPage === "settings"}
     <Settings />
   {/if}

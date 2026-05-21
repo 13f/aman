@@ -49,6 +49,7 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_status,
+            commands::try_connect_gateway,
             commands::get_runtime_config,
             commands::start_runtime,
             commands::stop_runtime,

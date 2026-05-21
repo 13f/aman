@@ -302,17 +302,7 @@ pub struct ToolPermission {
 ///
 /// The agent harness creates a callback that forwards these events
 /// to the event bus as `agent:reply_chunk` etc.
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    /// Stream has started.
-    Start,
-    /// A text chunk was received.
-    Chunk(String),
-    /// Stream completed with a finish reason ("stop", "length", "tool_calls").
-    Done { finish_reason: String },
-    /// An error occurred during streaming.
-    Error(String),
-}
+pub use crate::llm::StreamEvent;
 
 /// The ReAct loop engine trait.
 ///

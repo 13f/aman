@@ -24,6 +24,7 @@ idle-system = { path = "../plugins/idle-system", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
 idle = { path = "../idle", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
+llm-provider-openai = { path = "../plugins/llm-provider-openai", version = "0.1.0" }
 notification = { path = "../notification", version = "0.1.0" }
 persistence = { path = "../persistence", version = "0.1.0" }
 pipeline = { path = "../pipeline", version = "0.1.0" }

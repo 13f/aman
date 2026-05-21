@@ -1,13 +1,18 @@
 #![forbid(unsafe_code)]
-#![doc = "OpenAI LLM Provider Tool — wraps OpenAI Chat Completion API as a Tool."]
+#![doc = "OpenAI LLM Provider Tool — wraps OpenAI Chat Completion API as a Tool and LlmProvider trait."]
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use kernel::context::ToolContext;
+use kernel::llm::{LlmChatRequest, LlmProvider, LlmResponse, StreamEvent};
+use kernel::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 use kernel::schema::JsonSchema;
 use kernel::tool::Tool;
 use kernel::types::ToolMode;
 use kernel::{AmanResult, Error};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::LazyLock;
 
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -15,6 +20,397 @@ const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
 const DEFAULT_TEMPERATURE: f64 = 0.7;
 const DEFAULT_MAX_TOKENS: u32 = 4096;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
+const STREAM_TIMEOUT_SECS: u64 = 600;
+
+// ---------------------------------------------------------------------------
+// LlmOpenaiProvider — implements the LlmProvider trait for OpenAI-compatible APIs
+// ---------------------------------------------------------------------------
+
+/// OpenAI-compatible LLM provider.
+///
+/// Handles both streaming (SSE) and non-streaming chat completions.
+pub struct LlmOpenaiProvider {
+    api_key: String,
+    base_url: String,
+}
+
+impl LlmOpenaiProvider {
+    pub fn new(api_key: String, base_url: String) -> Self {
+        Self { api_key, base_url }
+    }
+
+    /// Convert internal ChatMessage to OpenAI API JSON format.
+    fn message_to_openai(msg: &ChatMessage) -> Value {
+        let role = format!("{:?}", msg.role).to_lowercase();
+        let mut m = json!({
+            "role": role,
+            "content": msg.content,
+        });
+        if let Some(ref id) = msg.tool_call_id {
+            m["tool_call_id"] = json!(id);
+        }
+        if let Some(ref calls) = msg.tool_calls {
+            m["tool_calls"] = json!(calls);
+        }
+        if !msg.reasoning_content.is_empty() {
+            m["reasoning_content"] = json!(msg.reasoning_content);
+        }
+        m
+    }
+
+    /// Convert tool descriptors to OpenAI tools format.
+    fn tools_to_openai(tools: &[ToolDescriptor]) -> Vec<Value> {
+        tools
+            .iter()
+            .map(|td| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": td.name,
+                        "description": td.description,
+                        "parameters": td.parameters,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    /// Convert accumulated OpenAI tool call deltas into ParsedToolCall vec.
+    fn parse_tool_calls(
+        tool_call_acc: HashMap<usize, Value>,
+    ) -> Vec<ParsedToolCall> {
+        tool_call_acc
+            .into_values()
+            .filter_map(|tc| {
+                let id = tc.get("id")?.as_str()?.to_owned();
+                let name = tc.get("function")?.get("name")?.as_str()?.to_owned();
+                let args_str = tc
+                    .get("function")?
+                    .get("arguments")?
+                    .as_str()?
+                    .to_owned();
+                let args: Value =
+                    serde_json::from_str(&args_str).unwrap_or(Value::Object(Default::default()));
+                Some(ParsedToolCall {
+                    id,
+                    tool_name: name,
+                    args,
+                })
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl LlmProvider for LlmOpenaiProvider {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    async fn chat_completion(
+        &self,
+        req: LlmChatRequest,
+        cb: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    ) -> Result<LlmResponse, Error> {
+        if let Some(cb) = &cb {
+            self.streaming_chat_completion(req, Arc::clone(cb)).await
+        } else {
+            self.non_streaming_chat_completion(req).await
+        }
+    }
+}
+
+impl LlmOpenaiProvider {
+    /// Streaming SSE path — emits events via callback.
+    async fn streaming_chat_completion(
+        &self,
+        req: LlmChatRequest,
+        cb: Arc<dyn Fn(StreamEvent) + Send + Sync>,
+    ) -> Result<LlmResponse, Error> {
+        // Build system + conversation messages
+        let mut request_messages: Vec<Value> = Vec::with_capacity(req.messages.len() + 1);
+        request_messages.push(json!({"role": "system", "content": req.system_prompt}));
+        for msg in &req.messages {
+            request_messages.push(Self::message_to_openai(msg));
+        }
+
+        // Convert tools
+        let openai_tools = Self::tools_to_openai(&req.tools);
+
+        let mut request_body = json!({
+            "model": req.model,
+            "messages": request_messages,
+            "stream": true,
+            "temperature": DEFAULT_TEMPERATURE,
+        });
+        if req.max_output_tokens > 0 {
+            request_body["max_tokens"] = json!(req.max_output_tokens);
+        }
+        if !openai_tools.is_empty() {
+            request_body["tools"] = json!(openai_tools);
+            request_body["tool_choice"] = json!("auto");
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(STREAM_TIMEOUT_SECS))
+            .build()
+            .map_err(|e| {
+                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+
+        let url = format!("{}/chat/completions", self.base_url);
+
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://github.com/13f/aman")
+            .header("X-Title", "aman")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|e| {
+                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::ConfigInvalid {
+                message: format!("LLM API streaming error HTTP {status}: {body}"),
+            });
+        }
+
+        let mut stream = response.bytes_stream();
+        let mut full_content = String::new();
+        let mut reasoning_content = String::new();
+        let mut buffer = String::new();
+        let mut finish_reason = "stop".to_owned();
+        let mut tool_call_acc: HashMap<usize, Value> = HashMap::new();
+
+        cb(StreamEvent::Start);
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result.map_err(|e| {
+                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+            let chunk_str = String::from_utf8_lossy(&chunk);
+            buffer.push_str(&chunk_str);
+
+            // Process complete lines in buffer
+            loop {
+                let newline_pos = match buffer.find('\n') {
+                    Some(p) => p,
+                    None => break,
+                };
+                let line = buffer[..newline_pos].to_string();
+                buffer = buffer[newline_pos + 1..].to_string();
+
+                if !line.starts_with("data: ") {
+                    continue;
+                }
+                let data = line[6..].trim();
+                if data == "[DONE]" {
+                    break;
+                }
+                let Ok(sse) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
+                let Some(choices) = sse.get("choices").and_then(|c| c.as_array()) else {
+                    continue;
+                };
+                let Some(choice) = choices.first() else {
+                    continue;
+                };
+
+                // Extract delta content (text)
+                if let Some(delta) = choice.get("delta") {
+                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                        if !content.is_empty() {
+                            full_content.push_str(content);
+                            cb(StreamEvent::Chunk(content.to_owned()));
+                        }
+                    }
+
+                    // Capture reasoning_content (DeepSeek thinking mode)
+                    if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
+                        if !rc.is_empty() {
+                            reasoning_content.push_str(rc);
+                        }
+                    }
+
+                    // Accumulate tool call deltas
+                    if let Some(tc_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                        for tc in tc_arr {
+                            let idx = tc
+                                .get("index")
+                                .and_then(|i| i.as_u64())
+                                .unwrap_or(0) as usize;
+                            let entry = tool_call_acc.entry(idx).or_insert_with(|| {
+                                json!({
+                                    "id": null,
+                                    "type": "function",
+                                    "function": {"name": null, "arguments": ""}
+                                })
+                            });
+                            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                                entry["id"] = json!(id);
+                            }
+                            if let Some(name) = tc
+                                .get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                            {
+                                entry["function"]["name"] = json!(name);
+                            }
+                            if let Some(args) = tc
+                                .get("function")
+                                .and_then(|f| f.get("arguments"))
+                                .and_then(|a| a.as_str())
+                            {
+                                let current = entry["function"]["arguments"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_owned();
+                                entry["function"]["arguments"] = json!(current + args);
+                            }
+                        }
+                    }
+                }
+
+                // Check finish_reason
+                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                    if !reason.is_empty() && reason != "null" {
+                        finish_reason = reason.to_owned();
+                        cb(StreamEvent::Done {
+                            finish_reason: finish_reason.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let tool_calls = Self::parse_tool_calls(tool_call_acc);
+
+        Ok(LlmResponse {
+            content: full_content,
+            finish_reason,
+            tool_calls,
+            reasoning_content,
+        })
+    }
+
+    /// Non-streaming path — returns the complete response.
+    async fn non_streaming_chat_completion(
+        &self,
+        req: LlmChatRequest,
+    ) -> Result<LlmResponse, Error> {
+        let mut request_messages: Vec<Value> = Vec::with_capacity(req.messages.len() + 1);
+        request_messages.push(json!({"role": "system", "content": req.system_prompt}));
+        for msg in &req.messages {
+            request_messages.push(Self::message_to_openai(msg));
+        }
+
+        let openai_tools = Self::tools_to_openai(&req.tools);
+
+        let mut body = json!({
+            "model": req.model,
+            "messages": request_messages,
+            "temperature": DEFAULT_TEMPERATURE,
+        });
+        if req.max_output_tokens > 0 {
+            body["max_tokens"] = json!(req.max_output_tokens);
+        }
+        if !openai_tools.is_empty() {
+            body["tools"] = json!(openai_tools);
+        }
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+            .no_proxy()
+            .build()
+            .map_err(|e| Error::Unrecoverable {
+                message: format!("failed to build HTTP client: {e}"),
+            })?;
+
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://github.com/13f/aman")
+            .header("X-Title", "aman")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Unrecoverable {
+                message: format!("LLM API request failed: {e}"),
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(Error::ConfigInvalid {
+                message: format!("LLM API error HTTP {status}: {text}"),
+            });
+        }
+
+        let response_body: Value = response.json().await.map_err(|e| Error::ConfigInvalid {
+            message: format!("failed to parse LLM response: {e}"),
+        })?;
+
+        let choice = &response_body["choices"][0];
+        let message = &choice["message"];
+        let finish_reason = choice["finish_reason"]
+            .as_str()
+            .unwrap_or("stop")
+            .to_owned();
+
+        let content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
+        let reasoning_content = message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+
+        let tool_calls: Vec<ParsedToolCall> = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|tc| {
+                        let id = tc.get("id")?.as_str()?.to_owned();
+                        let name = tc["function"]["name"].as_str()?.to_owned();
+                        let args_str = tc["function"]["arguments"].as_str()?.to_owned();
+                        let args: Value = serde_json::from_str(&args_str)
+                            .unwrap_or(Value::Object(Default::default()));
+                        Some(ParsedToolCall {
+                            id,
+                            tool_name: name,
+                            args,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(LlmResponse {
+            content,
+            finish_reason,
+            tool_calls,
+            reasoning_content,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LlmOpenaiTool — wraps the OpenAI API as a Tool for health check / fallback
+// ---------------------------------------------------------------------------
 
 /// Tool that calls the OpenAI Chat Completion API.
 ///
@@ -188,6 +584,8 @@ impl Tool for LlmOpenaiTool {
             .post(&url)
             .header("Authorization", format!("Bearer {api_key}"))
             .header("Content-Type", "application/json")
+            .header("HTTP-Referer", "https://github.com/13f/aman")
+            .header("X-Title", "aman")
             .json(&body)
             .send()
             .await
@@ -603,5 +1001,83 @@ mod tests {
         let tool = LlmOpenaiTool;
         assert_eq!(tool.name(), "llm_openai");
         assert_eq!(tool.mode(), ToolMode::Local);
+    }
+
+    #[tokio::test]
+    async fn provider_non_streaming() {
+        let response = r#"{
+            "id": "chatcmpl-p1",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "Hello from provider!"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        }"#;
+
+        let (addr, _server) = start_mock_server(response);
+        let provider = LlmOpenaiProvider::new(
+            "test-key".into(),
+            format!("http://{addr}"),
+        );
+
+        let req = LlmChatRequest {
+            model: "gpt-4o".into(),
+            system_prompt: "You are a helpful assistant.".into(),
+            messages: vec![ChatMessage::user("Hello")],
+            tools: vec![],
+            max_output_tokens: 0,
+        };
+
+        let result = provider.chat_completion(req, None).await.unwrap();
+        assert_eq!(result.content, "Hello from provider!");
+        assert_eq!(result.finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn provider_streaming() {
+        // SSE response simulating a streaming completion
+        let sse_body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\
+                        data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\
+                        data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\" world\"},\"finish_reason\":null}]}\n\
+                        data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\
+                        data: [DONE]\n";
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut buf = [0_u8; 8192];
+            let _n = stream.read(&mut buf).expect("read");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                sse_body.len(),
+                sse_body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let provider = LlmOpenaiProvider::new("test-key".into(), format!("http://{addr}"));
+
+        let received = std::sync::Mutex::new(Vec::new());
+        let cb: Arc<dyn Fn(StreamEvent) + Send + Sync> = Arc::new(move |evt| {
+            received.lock().unwrap().push(evt);
+        });
+
+        let req = LlmChatRequest {
+            model: "gpt-4o".into(),
+            system_prompt: "Be helpful.".into(),
+            messages: vec![ChatMessage::user("Hi")],
+            tools: vec![],
+            max_output_tokens: 0,
+        };
+
+        let result = provider.chat_completion(req, Some(cb)).await.unwrap();
+        assert_eq!(result.content, "Hello world");
+        assert_eq!(result.finish_reason, "stop");
+        handle.join().unwrap();
     }
 }

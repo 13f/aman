@@ -338,6 +338,10 @@ pub struct AgentConfig {
 pub struct ProviderConfig {
     pub display_name: String,
     pub base_url: String,
+    /// Provider type identifier used to select the LlmProvider implementation.
+    /// Supported values: "openai" (default).
+    #[serde(default = "default_api_type")]
+    pub api_type: String,
     /// Optional inline API key. Checked after Keychain and env var fallbacks.
     /// Use `$KEYCHAIN:aman.providers.<provider>.api_key` or
     /// `$ENV:AMAN_PROVIDER_<PROVIDER>_API_KEY` for secret management.
@@ -347,6 +351,10 @@ pub struct ProviderConfig {
     /// Each entry maps a global model ID to a provider-specific API model name.
     #[serde(default)]
     pub models: Vec<ProviderModelEntry>,
+}
+
+fn default_api_type() -> String {
+    "openai".to_owned()
 }
 
 /// Maps a global model ID to a provider-specific API model name.

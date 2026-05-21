@@ -6,6 +6,7 @@ use idle::detector::IdleDetector;
 use idle::incubation::IncubationManager;
 use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
+use kernel::llm::LlmProvider;
 use kernel::schema::JsonSchema;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
@@ -392,7 +393,7 @@ impl AgentRuntimeBuilder {
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
         let auth_registry = Arc::new(tool::auth::AuthRegistry::new());
-        let (llm_api_key, llm_base_url) = get_llm_api_key_and_base_url();
+        let llm_provider = create_llm_provider();
 
         // Load the built-in idle system plugin (handles idle personality progression).
         let idle_plugin = idle_system::IdleSystemPlugin::new();
@@ -575,8 +576,7 @@ impl AgentRuntimeBuilder {
             Arc::clone(&tools),
             Arc::clone(&bus),
             Arc::clone(&memory_store),
-            llm_api_key,
-            llm_base_url,
+            llm_provider,
         ));
 
         // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──
@@ -2252,47 +2252,47 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
 
 /// Build LlmConfig from AmanConfig (providers, model / agents) + Keychain API key.
 ///
+/// Create an LLM provider from configuration.
+///
 /// Reads the default `aman.model` first. If not set, falls back to the first
-/// configured agent (provider + model) so users who only configure agents
-/// (without a top-level `model:` in config.yaml) still get a working LLM config.
-/// If no agent is found either, falls back to environment variables.
-fn get_llm_api_key_and_base_url() -> (String, String) {
+/// configured agent. If no agent is found either, falls back to environment variables.
+/// Uses `api_type` from the matching provider config to select the implementation.
+fn create_llm_provider() -> Arc<dyn LlmProvider> {
     if let Ok(aman) = config::AmanConfig::from_default_path() {
         // Priority 1: default model config
         if let Some(model) = &aman.model {
             let provider_key = &model.provider;
-            let base_url = aman
-                .providers
-                .get(provider_key)
-                .map(|p| p.base_url.clone())
+            let p = aman.providers.get(provider_key);
+            let base_url = p.map(|p| p.base_url.clone())
                 .unwrap_or_else(|| model.base_url.clone());
-            let api_key = get_llm_api_key_or_inline(provider_key, aman.providers.get(provider_key));
+            let api_key = get_llm_api_key_or_inline(provider_key, p);
+            let api_type = p.map(|p| p.api_type.clone()).unwrap_or_default();
             tracing::info!(
                 provider = %provider_key,
                 model = %model.default,
                 api_key_len = api_key.len(),
-                "get_llm_api_key_and_base_url: using default model config"
+                "create_llm_provider: using default model config"
             );
-            return (api_key, base_url);
+            return build_provider(provider_key, &api_key, &base_url, &api_type);
         }
 
         // Priority 2: first configured agent (provider + model)
         for (_key, agent) in &aman.agents {
-            if let Some(provider_config) = aman.providers.get(&agent.provider) {
-                let api_key = get_llm_api_key_or_inline(&agent.provider, Some(provider_config));
+            if let Some(p) = aman.providers.get(&agent.provider) {
+                let api_key = get_llm_api_key_or_inline(&agent.provider, Some(p));
                 tracing::info!(
                     agent_key = %_key,
                     provider = %agent.provider,
                     model = %agent.model,
                     api_key_len = api_key.len(),
-                    "get_llm_api_key_and_base_url: using agent config"
+                    "create_llm_provider: using agent config"
                 );
-                return (api_key, provider_config.base_url.clone());
+                return build_provider(&agent.provider, &api_key, &p.base_url, &p.api_type);
             }
             tracing::warn!(
                 agent_key = %_key,
                 provider = %agent.provider,
-                "get_llm_api_key_and_base_url: agent provider not found in config"
+                "create_llm_provider: agent provider not found in config"
             );
         }
     }
@@ -2302,9 +2302,31 @@ fn get_llm_api_key_and_base_url() -> (String, String) {
         .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
     tracing::info!(
         api_key_len = api_key.len(),
-        "get_llm_api_key_and_base_url: using env var fallback"
+        "create_llm_provider: using env var fallback"
     );
-    (api_key, base_url)
+    build_provider("default", &api_key, &base_url, "openai")
+}
+
+/// Build the appropriate LlmProvider based on api_type.
+fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: &str) -> Arc<dyn LlmProvider> {
+    match api_type {
+        "openai" => {
+            Arc::new(llm_provider_openai::LlmOpenaiProvider::new(
+                api_key.to_owned(),
+                base_url.to_owned(),
+            ))
+        }
+        other => {
+            tracing::error!(
+                api_type = %other,
+                "unsupported LLM provider type, falling back to openai"
+            );
+            Arc::new(llm_provider_openai::LlmOpenaiProvider::new(
+                api_key.to_owned(),
+                base_url.to_owned(),
+            ))
+        }
+    }
 }
 
 /// Get API key for a provider from Keychain, falling back to env var.

@@ -4,14 +4,13 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use event_bus::EventBus;
-use futures_util::StreamExt;
 use kernel::agent::{AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
+use kernel::llm::{LlmChatRequest, LlmProvider};
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
     SoulSnapshot, StreamEvent, ToolDescriptor,
 };
-use kernel::tool::Tool;
 use kernel::{AmanResult, Error};
 use serde_json::json;
 use tool::ToolRegistry;
@@ -240,15 +239,13 @@ impl ContextAssembler {
     }
 }
 
-/// Concrete ReAct engine that calls an LLM provider tool.
+/// Concrete ReAct engine that calls an LLM provider.
 pub struct LlmReActEngine {
     tool_registry: Arc<ToolRegistry>,
     agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
-    /// API key for direct streaming HTTP calls to the LLM provider.
-    api_key: String,
-    /// Base URL for direct streaming HTTP calls to the LLM provider.
-    base_url: String,
+    /// The LLM provider implementation (OpenAI, etc.).
+    llm_provider: Arc<dyn LlmProvider>,
 }
 
 impl LlmReActEngine {
@@ -256,223 +253,14 @@ impl LlmReActEngine {
         tool_registry: Arc<ToolRegistry>,
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
-        api_key: String,
-        base_url: String,
+        llm_provider: Arc<dyn LlmProvider>,
     ) -> Self {
         Self {
             tool_registry,
             agent_registry,
             bus,
-            api_key,
-            base_url,
+            llm_provider,
         }
-    }
-
-    /// Find the LLM provider tool from the registry.
-    fn find_llm_tool(&self) -> Option<Arc<dyn Tool>> {
-        // Search for any tool whose name starts with "llm_" or "llm_provider_"
-        let names = self.tool_registry.list_tools();
-        for n in &names {
-            if n.starts_with("llm_") || n.starts_with("llm_provider_") {
-                return self.tool_registry.get(n);
-            }
-        }
-        None
-    }
-
-    /// Execute a streaming LLM call via SSE, calling the callback for each delta.
-    ///
-    /// Returns (full_content, finish_reason, tool_calls_map).
-    async fn streaming_llm_call(
-        &self,
-        system_prompt: &str,
-        history: &[serde_json::Value],
-        ctx: &ReActContext,
-        cb: Arc<dyn Fn(StreamEvent) + Send + Sync>,
-    ) -> Result<(String, String, Vec<ParsedToolCall>, String), kernel::Error> {
-        let mut request_messages: Vec<serde_json::Value> = Vec::with_capacity(history.len() + 1);
-        request_messages.push(json!({"role": "system", "content": system_prompt}));
-        request_messages.extend(history.iter().cloned());
-
-        // Convert tool descriptors to OpenAI tools format for structured function calling
-        let openai_tools: Vec<serde_json::Value> = ctx.agent_tools.iter().map(|td| {
-            json!({
-                "type": "function",
-                "function": {
-                    "name": td.name,
-                    "description": td.description,
-                    "parameters": td.parameters,
-                }
-            })
-        }).collect();
-
-        let mut request_body = serde_json::json!({
-            "model": ctx.model,
-            "messages": request_messages,
-            "stream": true,
-            "temperature": 0.7,
-        });
-        // Only send max_tokens if configured (> 0). When 0, omit the field
-        // so the API uses its own default (typically 4096 or unlimited) instead
-        // of interpreting 0 as "generate nothing."
-        if ctx.token_budget.max_output_tokens > 0 {
-            request_body["max_tokens"] = serde_json::json!(ctx.token_budget.max_output_tokens);
-        }
-        if !openai_tools.is_empty() {
-            request_body["tools"] = serde_json::json!(openai_tools);
-            request_body["tool_choice"] = serde_json::json!("auto");
-        }
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(600))
-            .build()
-            .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
-
-        let response = client
-            .post(format!("{}/chat/completions", self.base_url))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
-
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(Error::ConfigInvalid {
-                message: format!("LLM API streaming error HTTP {status}: {body}"),
-            });
-        }
-
-        let mut stream = response.bytes_stream();
-        let stream_start = std::time::Instant::now();
-        let mut full_content = String::new();
-        let mut reasoning_content = String::new();
-        let mut buffer = String::new();
-        let mut finish_reason = "stop".to_owned();
-        let mut tool_call_acc: HashMap<usize, serde_json::Value> = HashMap::new();
-
-        cb(StreamEvent::Start);
-
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = match chunk_result {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(error = %e, elapsed_ms = stream_start.elapsed().as_millis(), "llm stream error");
-                    return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-                }
-            };
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&chunk_str);
-
-            // Process complete lines in buffer
-            loop {
-                let newline_pos = match buffer.find('\n') {
-                    Some(p) => p,
-                    None => break,
-                };
-                let line = buffer[..newline_pos].to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if !line.starts_with("data: ") {
-                    continue;
-                }
-                let data = line[6..].trim();
-                if data == "[DONE]" {
-                    break;
-                }
-                let Ok(sse) = serde_json::from_str::<serde_json::Value>(data) else {
-                    continue;
-                };
-                let Some(choices) = sse.get("choices").and_then(|c| c.as_array()) else {
-                    continue;
-                };
-                let Some(choice) = choices.first() else {
-                    continue;
-                };
-
-                // Extract delta content (text)
-                if let Some(delta) = choice.get("delta") {
-                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                        if !content.is_empty() {
-                            full_content.push_str(content);
-                            cb(StreamEvent::Chunk(content.to_owned()));
-                        }
-                    }
-
-                    // Capture reasoning_content (DeepSeek thinking mode)
-                    if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-                        if !rc.is_empty() {
-                            reasoning_content.push_str(rc);
-                        }
-                    }
-
-                    // Accumulate tool call deltas
-                    if let Some(tc_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {
-                        for tc in tc_arr {
-                            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                            let entry = tool_call_acc.entry(idx).or_insert_with(|| {
-                                serde_json::json!({
-                                    "id": null,
-                                    "type": "function",
-                                    "function": {"name": null, "arguments": ""}
-                                })
-                            });
-                            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
-                                entry["id"] = serde_json::json!(id);
-                            }
-                            if let Some(name) = tc.get("function")
-                                .and_then(|f| f.get("name"))
-                                .and_then(|n| n.as_str())
-                            {
-                                entry["function"]["name"] = serde_json::json!(name);
-                            }
-                            if let Some(args) = tc.get("function")
-                                .and_then(|f| f.get("arguments"))
-                                .and_then(|a| a.as_str())
-                            {
-                                let current = entry["function"]["arguments"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_owned();
-                                entry["function"]["arguments"] = serde_json::json!(current + args);
-                            }
-                        }
-                    }
-                }
-
-                // Check finish_reason
-                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                    if !reason.is_empty() && reason != "null" && reason != "null" {
-                        finish_reason = reason.to_owned();
-                        cb(StreamEvent::Done {
-                            finish_reason: finish_reason.clone(),
-                        });
-                    }
-                }
-            }
-        }
-
-        // Convert accumulated tool calls to ParsedToolCall vec
-        let tool_calls: Vec<ParsedToolCall> = tool_call_acc
-            .into_values()
-            .filter_map(|tc| {
-                let id = tc.get("id")?.as_str()?.to_owned();
-                let name = tc.get("function")?.get("name")?.as_str()?.to_owned();
-                let args_str = tc.get("function")?.get("arguments")?.as_str()?.to_owned();
-                let args: serde_json::Value =
-                    serde_json::from_str(&args_str).unwrap_or(serde_json::Value::Object(Default::default()));
-                Some(ParsedToolCall {
-                    id,
-                    tool_name: name,
-                    args,
-                })
-            })
-            .collect();
-
-        Ok((full_content, finish_reason, tool_calls, reasoning_content))
     }
 }
 
@@ -497,81 +285,24 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             ))
             .await;
 
-        // Build the payload: system prompt from soul + conversation history
+        // Build the system prompt from soul + conversation history
         let system_prompt = ContextAssembler::assemble(
             &ctx.soul_snapshot,
             &ctx.agent_tools,
             ctx.memory_context.as_deref(),
         );
 
-        let history: Vec<serde_json::Value> = messages
-            .iter()
-            .map(|m| {
-                let role = format!("{:?}", m.role).to_lowercase();
-                let mut msg = json!({
-                    "role": role,
-                    "content": m.content,
-                });
-                // OpenAI API requires tool_call_id for tool role messages
-                if let Some(ref id) = m.tool_call_id {
-                    msg["tool_call_id"] = json!(id);
-                }
-                // OpenAI API requires tool_calls for assistant messages that invoked tools
-                if let Some(ref calls) = m.tool_calls {
-                    msg["tool_calls"] = json!(calls);
-                }
-                // Echo back reasoning_content if present (DeepSeek thinking mode)
-                if !m.reasoning_content.is_empty() {
-                    msg["reasoning_content"] = json!(m.reasoning_content);
-                }
-                msg
-            })
-            .collect();
+        let cb = ctx.stream_cb.as_ref().map(Arc::clone);
 
-        let result = if let Some(ref cb) = ctx.stream_cb {
-            // ── Streaming path (T2.4): direct SSE HTTP call ──
-            let cb = Arc::clone(cb);
-            match self
-                .streaming_llm_call(&system_prompt, &history, ctx, cb)
-                .await
-            {
-                Ok((content, finish_reason, tool_calls, reasoning_content)) => {
-                    if tool_calls.is_empty() {
-                        let mut resp = json!({
-                            "content": content,
-                            "finish_reason": finish_reason,
-                        });
-                        if !reasoning_content.is_empty() {
-                            resp["reasoning_content"] = json!(reasoning_content);
-                        }
-                        Ok(resp)
-                    } else {
-                        let mut resp = json!({
-                            "content": content,
-                            "finish_reason": finish_reason,
-                            "tool_calls": tool_calls,
-                        });
-                        if !reasoning_content.is_empty() {
-                            resp["reasoning_content"] = json!(reasoning_content);
-                        }
-                        Ok(resp)
-                    }
-                }
-                Err(e) => Err(e),
-            }
-        } else {
-            // ── Non-streaming tool path ──
-            let llm_tool = self.find_llm_tool().ok_or_else(|| {
-                kernel::react::ReActError::LlmError("no LLM provider tool registered".to_owned())
-            })?;
-            let params = json!({
-                "system_prompt": system_prompt,
-                "messages": history,
-                "max_turns": 1,
-            });
-            let tool_ctx = kernel::context::ToolContext::default();
-            llm_tool.execute(params, tool_ctx).await
+        let req = LlmChatRequest {
+            model: ctx.model.clone(),
+            system_prompt,
+            messages,
+            tools: ctx.agent_tools.clone(),
+            max_output_tokens: ctx.token_budget.max_output_tokens as u32,
         };
+
+        let result = self.llm_provider.chat_completion(req, cb).await;
 
         // Publish llm:call_ended
         let _ = self
@@ -589,26 +320,10 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             .await;
 
         match result {
-            Ok(value) => {
-                // Try to parse tool calls from the response
-                let content = value
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_owned();
-                let tool_calls = value
-                    .get("tool_calls")
-                    .and_then(|tc| serde_json::from_value::<Vec<ParsedToolCall>>(tc.clone()).ok())
-                    .unwrap_or_default();
-                let reasoning_content = value
-                    .get("reasoning_content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("")
-                    .to_owned();
-
-                if tool_calls.is_empty() {
+            Ok(response) => {
+                if response.tool_calls.is_empty() {
                     // Publish token usage estimate
-                    let estimated_tokens = (content.len() / 4) as u64;
+                    let estimated_tokens = (response.content.len() / 4) as u64;
                     let _ = self
                         .bus
                         .publish(Event::new(
@@ -624,15 +339,15 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                         .await;
 
                     Ok(ReActTurn::Finished {
-                        content,
-                        finish_reason: value
-                            .get("finish_reason")
-                            .and_then(|r| r.as_str())
-                            .unwrap_or("stop")
-                            .to_owned(),
+                        content: response.content,
+                        finish_reason: response.finish_reason,
                     })
                 } else {
-                    Ok(ReActTurn::ToolCalls { content, calls: tool_calls, reasoning_content })
+                    Ok(ReActTurn::ToolCalls {
+                        content: response.content,
+                        calls: response.tool_calls,
+                        reasoning_content: response.reasoning_content,
+                    })
                 }
             }
             Err(e) => Err(kernel::react::ReActError::LlmError(e.to_string())),
@@ -694,15 +409,13 @@ impl AgentHarness {
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
         memory_store: Arc<MemoryStore>,
-        api_key: String,
-        base_url: String,
+        llm_provider: Arc<dyn LlmProvider>,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
             Arc::clone(&registry),
             Arc::clone(&bus),
-            api_key,
-            base_url,
+            llm_provider,
         );
         Self {
             registry,

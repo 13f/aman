@@ -18,7 +18,9 @@ use kernel::router::AgentRouter;
 use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
 use serde_json::json;
+use tool::security;
 use tool::ToolRegistry;
+use tool::ToolSecurityConfig;
 
 use super::AgentRegistry;
 
@@ -78,6 +80,8 @@ pub struct ToolExecutor {
     registry: Arc<ToolRegistry>,
     agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
+    /// Optional path/network/command allowlist config for the ReAct path.
+    security_config: Option<ToolSecurityConfig>,
 }
 
 impl ToolExecutor {
@@ -90,7 +94,16 @@ impl ToolExecutor {
             registry,
             agent_registry,
             bus,
+            security_config: None,
         }
+    }
+
+    /// Set a security config for path/network/command allowlist checks.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn with_security_config(mut self, config: ToolSecurityConfig) -> Self {
+        self.security_config = Some(config);
+        self
     }
 
     /// Execute a tool call for a specific agent, checking permissions first.
@@ -152,14 +165,74 @@ impl ToolExecutor {
             ))
             .await;
 
+        // ── Security checks ──────────────────────────────────────────
+        let hardline_blocked: Option<&str> =
+            security::check_hardline_block(&tool_name, &call.args);
+
+        let config_blocked: Option<String> = self.security_config.as_ref().and_then(|config| {
+            tool::check_tool_security(config, &call.args)
+                .err()
+                .map(|e| e.to_string())
+        });
+
+        // Publish security denied events before proceeding.
+        if let Some(reason) = hardline_blocked {
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    "agent:harness",
+                    EventType::Custom("tool:security_denied".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "block_type": "hardline",
+                        "reason": reason,
+                    }),
+                ))
+                .await;
+        }
+        if let Some(ref reason) = config_blocked {
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    "agent:harness",
+                    EventType::Custom("tool:security_denied".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_name,
+                        "block_type": "path_denied",
+                        "reason": reason,
+                    }),
+                ))
+                .await;
+        }
+
+        // ── Tool execution (or short-circuit if security blocked) ─────
         let tool = self.registry.get(&tool_name);
         let (success, output) = match tool {
             Some(t) => {
-                let mut ctx = kernel::context::ToolContext::default();
-                ctx.base.extensions.insert("agent_id".to_owned(), serde_json::json!(agent_id));
-                match t.execute(call.args.clone(), ctx).await {
-                    Ok(value) => (true, value.to_string()),
-                    Err(e) => (false, format!("tool error: {e}")),
+                if let Some(reason) = hardline_blocked {
+                    (false, format!("hardline_blocked: {reason}"))
+                } else if let Some(ref reason) = config_blocked {
+                    (false, format!("security_denied: {reason}"))
+                } else {
+                    // Reset consecutive read tracking when a non-read tool runs.
+                    if tool_name != "read" {
+                        tool::fs_tools::reset_read_tracker();
+                    }
+
+                    let mut ctx = kernel::context::ToolContext::default();
+                    ctx.base
+                        .extensions
+                        .insert("agent_id".to_owned(), serde_json::json!(agent_id));
+                    match t.execute(call.args.clone(), ctx).await {
+                        Ok(value) => (true, value.to_string()),
+                        Err(e) => (false, format!("tool error: {e}")),
+                    }
                 }
             }
             None => (false, format!("tool not found: {tool_name}")),

@@ -164,7 +164,20 @@ impl ToolRunner {
         })?;
 
         self.validate_params(tool.parameters().as_value(), &params)?;
-        self.security_check(&params)?;
+
+        if let Err(e) = self.security_check(&params) {
+            tracing::warn!(tool_name, error = %e, "tool security check denied");
+            return Err(e);
+        }
+        if let Err(e) = self.hardline_check(tool_name, &params) {
+            tracing::warn!(tool_name, error = %e, "tool hardline check denied");
+            return Err(e);
+        }
+
+        // Reset consecutive read tracking when a non-read tool runs.
+        if tool_name != "read" {
+            crate::fs_tools::reset_read_tracker();
+        }
 
         let timeout_ms = self.allocate_resources(&mut ctx)?;
         let temp_dir = runner_temp_dir(&ctx)?;
@@ -193,36 +206,15 @@ impl ToolRunner {
     }
 
     fn security_check(&self, params: &Value) -> AmanResult<()> {
-        check_allowed_path(&self.security.allowed_paths, params.get("path"))?;
-        check_allowed_path(&self.security.allowed_paths, params.get("file_path"))?;
-        check_allowed_path(&self.security.allowed_paths, params.get("from"))?;
-        check_allowed_path(&self.security.allowed_paths, params.get("to"))?;
-        check_allowed_path(&self.security.allowed_paths, params.get("cwd"))?;
-        check_allowed_path(&self.security.allowed_paths, params.get("base"))?;
-        check_allowed_path(&self.security.allowed_paths, params.get("db_path"))?;
+        check_tool_security(&self.security, params)
+    }
 
-        if let Some(url) = params.get("url").and_then(Value::as_str)
-            && !self.security.network_allowed {
-                return Err(Error::PermissionDenied {
-                    message: format!("network access is disabled: {url}"),
-                });
-            }
-
-        if let Some(command) = params.get("command").and_then(Value::as_str) {
-            let executable = command.split_whitespace().next().unwrap_or_default();
-            if self.security.command_allowlist.is_empty()
-                || !self
-                    .security
-                    .command_allowlist
-                    .iter()
-                    .any(|allowed| allowed == executable)
-            {
-                return Err(Error::PermissionDenied {
-                    message: format!("command not allowed: {executable}"),
-                });
-            }
+    fn hardline_check(&self, tool_name: &str, params: &Value) -> AmanResult<()> {
+        if let Some(reason) = security::check_hardline_block(tool_name, params) {
+            return Err(Error::PermissionDenied {
+                message: reason.to_owned(),
+            });
         }
-
         Ok(())
     }
 
@@ -325,7 +317,7 @@ fn validate_against_schema(schema: &Value, params: &Value) -> AmanResult<()> {
     Ok(())
 }
 
-fn check_allowed_path(allowed_paths: &[PathBuf], candidate: Option<&Value>) -> AmanResult<()> {
+pub fn check_allowed_path(allowed_paths: &[PathBuf], candidate: Option<&Value>) -> AmanResult<()> {
     if allowed_paths.is_empty() {
         return Ok(());
     }
@@ -345,7 +337,7 @@ fn check_allowed_path(allowed_paths: &[PathBuf], candidate: Option<&Value>) -> A
     }
 }
 
-fn path_within(candidate: &Path, base: &Path) -> bool {
+pub fn path_within(candidate: &Path, base: &Path) -> bool {
     let Ok(base) = base.canonicalize() else {
         return false;
     };
@@ -360,6 +352,41 @@ fn path_within(candidate: &Path, base: &Path) -> bool {
         }
 
     false
+}
+
+/// Check tool call arguments against a [`ToolSecurityConfig`].
+///
+/// Returns `Ok(())` if the call is allowed, `Err(PermissionDenied)` otherwise.
+/// Checks path allowlist for file-related params, network access for HTTP,
+/// and command allowlist for exec.
+pub fn check_tool_security(config: &ToolSecurityConfig, params: &Value) -> AmanResult<()> {
+    check_allowed_path(&config.allowed_paths, params.get("path"))?;
+    check_allowed_path(&config.allowed_paths, params.get("file_path"))?;
+    check_allowed_path(&config.allowed_paths, params.get("from"))?;
+    check_allowed_path(&config.allowed_paths, params.get("to"))?;
+    check_allowed_path(&config.allowed_paths, params.get("cwd"))?;
+    check_allowed_path(&config.allowed_paths, params.get("base"))?;
+    check_allowed_path(&config.allowed_paths, params.get("db_path"))?;
+
+    if let Some(url) = params.get("url").and_then(Value::as_str)
+        && !config.network_allowed {
+            return Err(Error::PermissionDenied {
+                message: format!("network access is disabled: {url}"),
+            });
+        }
+
+    if let Some(command) = params.get("command").and_then(Value::as_str) {
+        let executable = command.split_whitespace().next().unwrap_or_default();
+        if config.command_allowlist.is_empty()
+            || !config.command_allowlist.iter().any(|allowed| allowed == executable)
+        {
+            return Err(Error::PermissionDenied {
+                message: format!("command not allowed: {executable}"),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {

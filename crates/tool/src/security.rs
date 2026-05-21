@@ -79,6 +79,27 @@ static DENIED_WRITE_PATHS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     ]
 });
 
+/// Device files that should never be read — reading these blocks the process
+/// indefinitely (infinite output or waiting for input).
+static DENIED_READ_DEVICES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    vec![
+        // Infinite output (never EOF)
+        "/dev/zero",
+        "/dev/random",
+        "/dev/urandom",
+        // Blocking input
+        "/dev/stdin",
+        "/dev/tty",
+        "/dev/console",
+        // Non-sensical for reading
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/fd/0",
+        "/dev/fd/1",
+        "/dev/fd/2",
+    ]
+});
+
 // ---------------------------------------------------------------------------
 // Db-tool hardline patterns
 // ---------------------------------------------------------------------------
@@ -114,6 +135,7 @@ static DELETE_FROM: LazyLock<Regex> = LazyLock::new(|| {
 pub fn check_hardline_block(tool_name: &str, args: &Value) -> Option<&'static str> {
     match tool_name {
         "exec" => check_exec_hardline(args),
+        "read" => check_read_hardline(args),
         "write" | "edit" => check_write_hardline(args),
         "db" => check_db_hardline(args),
         _ => None,
@@ -169,6 +191,18 @@ fn check_write_hardline(args: &Value) -> Option<&'static str> {
     for denied in DENIED_WRITE_PATHS.iter() {
         if path.contains(denied) {
             return Some("write to sensitive path is blocked");
+        }
+    }
+
+    None
+}
+
+fn check_read_hardline(args: &Value) -> Option<&'static str> {
+    let path = args.get("path").and_then(Value::as_str)?;
+
+    for denied in DENIED_READ_DEVICES.iter() {
+        if path.contains(denied) {
+            return Some("reading device file is blocked (would hang the process)");
         }
     }
 
@@ -260,6 +294,20 @@ mod tests {
             }),
         );
         assert!(result.is_none(), "write to /tmp should be allowed");
+    }
+
+    #[test]
+    fn block_read_device_files() {
+        for device in ["/dev/zero", "/dev/random", "/dev/urandom", "/dev/stdin", "/dev/tty"] {
+            let result = check_hardline_block("read", &json!({"path": device}));
+            assert!(result.is_some(), "read from {device} should be blocked");
+        }
+    }
+
+    #[test]
+    fn allow_read_regular_file() {
+        let result = check_hardline_block("read", &json!({"path": "/tmp/hello.txt"}));
+        assert!(result.is_none(), "read from regular file should be allowed");
     }
 
     #[test]

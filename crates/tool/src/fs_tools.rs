@@ -4,10 +4,114 @@ use kernel::tool::Tool;
 use kernel::types::ToolMode;
 use kernel::{AmanResult, Error};
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::{fs, io};
+
+// ---------------------------------------------------------------------------
+// Shared guards
+// ---------------------------------------------------------------------------
+
+/// File extensions that should never be read (binary, non-text formats).
+static BINARY_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
+        ".o", ".so", ".dylib", ".pyc", ".pyo", ".class", ".jar",
+        ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".svg",
+        ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".zst",
+        ".a", ".lib", ".dll", ".exe", ".wasm",
+        ".mp3", ".mp4", ".avi", ".mov", ".wav", ".flac", ".ogg",
+        ".ttf", ".woff", ".woff2", ".eot",
+        ".db", ".sqlite", ".sqlite3",
+        ".lockb", // bun lock
+    ]
+    .iter()
+    .copied()
+    .collect()
+});
+
+/// Global tracker for consecutive file reads.
+static READ_TRACKER: LazyLock<Mutex<HashMap<String, u32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Track a file read and return a warning if too many consecutive reads.
+pub fn track_read(path: &str) -> Option<&'static str> {
+    let mut tracker = READ_TRACKER.lock().expect("read tracker lock");
+    let count = tracker.entry(path.to_owned()).or_insert(0);
+    *count += 1;
+    match *count {
+        3 => Some("You've read this file 3 times consecutively. Consider whether you already have the needed information."),
+        n if n >= 4 => Some("consecutive read limit reached — try a different approach"),
+        _ => None,
+    }
+}
+
+/// Reset consecutive read tracking — call when any non-read tool executes.
+pub fn reset_read_tracker() {
+    READ_TRACKER.lock().expect("read tracker lock").clear();
+}
+
+/// Check if a file path has a binary extension.
+fn is_binary_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    BINARY_EXTENSIONS.iter().any(|&ext| lower.ends_with(ext))
+}
+
+/// Sanitize common API key patterns from text content.
+fn redact_sensitive_text(text: &str) -> String {
+    let lower = text.to_lowercase();
+    let mut result = text.to_owned();
+    let mut search_start = 0;
+    while let Some(pos) = lower[search_start..].find("sk-") {
+        let abs_pos = search_start + pos;
+        let ctx_start = abs_pos.saturating_sub(40);
+        let ctx = &lower[ctx_start..abs_pos];
+        if ctx.contains("apikey") || ctx.contains("api_key")
+            || ctx.contains("api-key") || ctx.contains("bearer")
+            || ctx.contains("authorization")
+        {
+            let key_start = abs_pos;
+            let mut key_end = key_start;
+            for ch in text[key_start..].chars() {
+                if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+                    key_end += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            if key_end - key_start >= 20 {
+                result.replace_range(key_start..key_end, "[REDACTED]");
+                break;
+            }
+        }
+        search_start = abs_pos + 3;
+    }
+    result
+}
+
+/// Normalize whitespace for fuzzy matching: collapse runs of spaces/tabs to
+/// a single space, and strip leading/trailing whitespace from each line.
+fn normalize_whitespace(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_was_space = false;
+    for ch in text.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !prev_was_space {
+                out.push(' ');
+                prev_was_space = true;
+            }
+        } else {
+            out.push(ch);
+            prev_was_space = false;
+        }
+    }
+    // Strip leading/trailing whitespace per line
+    out.lines()
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 // ---------------------------------------------------------------------------
 // ReadTool
@@ -34,6 +138,14 @@ impl Tool for ReadTool {
                     "path": {
                         "type": "string",
                         "description": "Absolute path to the file to read"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "1-based line number to start reading from (default 1)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max lines to return (default 500, max 2000)"
                     }
                 }
             }))
@@ -47,7 +159,11 @@ impl Tool for ReadTool {
                 "type": "object",
                 "properties": {
                     "content": {"type": "string"},
-                    "bytes": {"type": "integer"}
+                    "bytes": {"type": "integer"},
+                    "total_lines": {"type": "integer"},
+                    "offset": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                    "truncated": {"type": "boolean"}
                 }
             }))
         });
@@ -61,11 +177,68 @@ impl Tool for ReadTool {
             .ok_or_else(|| Error::ConfigInvalid {
                 message: "path must be a string".to_owned(),
             })?;
+
+        // Binary file guard
+        if is_binary_path(path) {
+            return Err(Error::ConfigInvalid {
+                message: format!("refusing to read binary file: {path}"),
+            });
+        }
+
+        let offset: usize = params
+            .get("offset")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize)
+            .unwrap_or(1)
+            .max(1);
+        let limit: usize = params
+            .get("limit")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize)
+            .unwrap_or(500)
+            .min(2000);
+
+        // Consecutive read tracking
+        if let Some(warning) = track_read(path) {
+            return Err(Error::ConfigInvalid {
+                message: warning.to_owned(),
+            });
+        }
+
         let content = fs::read_to_string(path)?;
-        Ok(json!({
-            "content": content,
-            "bytes": content.len()
-        }))
+        let total_lines = content.lines().count();
+        let lines: Vec<&str> = content.lines().collect();
+
+        let start_idx = (offset - 1).min(total_lines);
+        let end_idx = (start_idx + limit).min(total_lines);
+        let truncated = end_idx < total_lines;
+
+        let selected: String = lines[start_idx..end_idx]
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Redact sensitive patterns from content
+        let selected = redact_sensitive_text(&selected);
+
+        let mut result = json!({
+            "content": selected,
+            "bytes": selected.len(),
+            "total_lines": total_lines,
+            "offset": offset,
+            "limit": end_idx - start_idx,
+            "truncated": truncated,
+        });
+
+        // Large-file hint
+        if total_lines > 1000 && limit >= 500 {
+            result["hint"] = json!(format!(
+                "File has {total_lines} lines. Use offset=N&limit=M to read in chunks."
+            ));
+        }
+
+        Ok(result)
     }
 }
 
@@ -216,36 +389,103 @@ impl Tool for EditTool {
 
         let content = fs::read_to_string(file_path)?;
 
-        // Count matches
+        // Try exact match first.
         let matches: Vec<_> = content.match_indices(old_string).collect();
         let count = matches.len();
 
-        if count == 0 {
-            return Err(Error::ConfigInvalid {
-                message: format!(
-                    "`old_string` not found in `{}`. It may have already been edited, or the exact text differs.",
-                    file_path
-                ),
-            });
-        }
-
-        if count > 1 {
+        let (new_content, method) = if count == 1 {
+            (content.replacen(old_string, new_string, 1), "exact")
+        } else if count == 0 {
+            // Fallback: fuzzy match (whitespace-normalized).
+            let normalized_content = normalize_whitespace(&content);
+            let normalized_old = normalize_whitespace(old_string);
+            let fuzzy_idx = normalized_content.find(&normalized_old);
+            if fuzzy_idx.is_some() {
+                // Map the position back to the original content by aligning
+                // whitespace runs. We rebuild the replacement using the
+                // original content's whitespace by matching byte-for-byte
+                // through the normalized string and finding the corresponding
+                // span in the original.
+                let mut orig_pos = 0usize;
+                let mut norm_pos = 0usize;
+                let norm_bytes = normalized_old.as_bytes();
+                while norm_pos < norm_bytes.len() && orig_pos < content.len() {
+                    let ob = content.as_bytes()[orig_pos];
+                    let nb = norm_bytes[norm_pos];
+                    let is_ws_orig = ob == b' ' || ob == b'\t';
+                    let is_ws_norm = nb == b' ';
+                    if is_ws_orig && is_ws_norm {
+                        // Skip all whitespace in original, advance one in normalized
+                        while orig_pos < content.len()
+                            && (content.as_bytes()[orig_pos] == b' '
+                                || content.as_bytes()[orig_pos] == b'\t')
+                        {
+                            orig_pos += 1;
+                        }
+                        norm_pos += 1;
+                    } else if ob == nb {
+                        orig_pos += 1;
+                        norm_pos += 1;
+                    } else {
+                        // Mismatch — fuzzy match failed
+                        break;
+                    }
+                }
+                if norm_pos == norm_bytes.len() {
+                    let end_pos = orig_pos;
+                    let start_pos = end_pos - old_string.len();
+                    let mut new = String::with_capacity(content.len() + new_string.len() - old_string.len());
+                    new.push_str(&content[..start_pos]);
+                    new.push_str(new_string);
+                    new.push_str(&content[end_pos..]);
+                    (new, "fuzzy")
+                } else {
+                    return Err(Error::ConfigInvalid {
+                        message: format!(
+                            "`old_string` not found in `{}`. Whitespace-normalized match also failed.",
+                            file_path
+                        ),
+                    });
+                }
+            } else {
+                return Err(Error::ConfigInvalid {
+                    message: format!(
+                        "`old_string` not found in `{}`. It may have already been edited, or the exact text differs.",
+                        file_path
+                    ),
+                });
+            }
+        } else {
             return Err(Error::ConfigInvalid {
                 message: format!(
                     "`old_string` matches {count} times in `{}`. Please include more surrounding context to make the match unique.",
                     file_path
                 ),
             });
-        }
+        };
 
-        // Exactly one match — do the replacement.
-        let new_content = content.replacen(old_string, new_string, 1);
         fs::write(file_path, &new_content)?;
 
-        Ok(json!({
+        // Post-write syntax check for JSON files.
+        let mut result = json!({
             "ok": true,
-            "replaced": old_string.len()
-        }))
+            "replaced": old_string.len(),
+            "method": method,
+        });
+
+        if file_path.ends_with(".json") {
+            match serde_json::from_str::<Value>(&new_content) {
+                Ok(_) => {
+                    result["syntax_check"] = json!("ok");
+                }
+                Err(e) => {
+                    result["syntax_check"] = json!("invalid");
+                    result["syntax_error"] = json!(format!("JSON syntax error: {e}"));
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 
@@ -561,7 +801,11 @@ impl Tool for GrepTool {
                     },
                     "max_results": {
                         "type": "integer",
-                        "description": "Max matching results (default 100, max 500)"
+                        "description": "Max matching results to return (default 100, max 500)"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Number of results to skip for pagination (default 0)"
                     },
                     "fixed_strings": {
                         "type": "boolean",
@@ -594,7 +838,8 @@ impl Tool for GrepTool {
                         }
                     },
                     "total_matches": {"type": "integer"},
-                    "matching_files": {"type": "integer"}
+                    "matching_files": {"type": "integer"},
+                    "truncated": {"type": "boolean"}
                 }
             }))
         });
@@ -619,6 +864,11 @@ impl Tool for GrepTool {
             .and_then(Value::as_u64)
             .unwrap_or(100)
             .min(500);
+        let offset = params
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .min(10_000) as usize;
         let fixed_strings = params
             .get("fixed_strings")
             .and_then(Value::as_bool)
@@ -659,14 +909,29 @@ impl Tool for GrepTool {
             message: format!("failed to run rg: {e}"),
         })?;
 
-        let (results, matching_files) = parse_rg_json_output(&output.stdout, max_results);
+        let (all_results, matching_files) = parse_rg_json_output(&output.stdout, max_results + offset as u64);
+
+        // Apply offset — skip the first N results.
+        let offset = offset.min(all_results.len());
+        let results: Vec<Value> = all_results.into_iter().skip(offset).collect();
+
         let total_matches = results.len() as u64;
+        let truncated = total_matches >= max_results;
 
         let mut result = json!({
             "results": results,
             "total_matches": total_matches,
             "matching_files": matching_files,
+            "truncated": truncated,
         });
+
+        // Truncation hint for pagination.
+        if truncated {
+            let next_offset = offset + max_results as usize;
+            result["hint"] = json!(format!(
+                "Results truncated. Use offset={next_offset} to see the next page."
+            ));
+        }
 
         // Attach stderr as warning if rg reported anything (e.g. binary file skips).
         let stderr = String::from_utf8_lossy(&output.stderr);

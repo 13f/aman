@@ -139,6 +139,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/agents", get(agent_list))
         .route("/agent/{agent_id}", get(agent_get))
         .route("/agent/{agent_id}/status", post(agent_set_status))
+        .route("/agent/{agent_id}/reload", post(agent_reload))
         .route_layer(middleware::from_fn_with_state(
             runtime.clone(),
             require_api_token,
@@ -3008,6 +3009,32 @@ async fn agent_set_status(
 ) -> Response {
     match runtime.agent_registry().set_status(&agent_id, body.status).await {
         Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
+    }
+}
+
+async fn agent_reload(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_id): Path<String>,
+) -> Response {
+    let config = match config::AmanConfig::from_default_path() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorBody {
+                    message: format!("failed to read config: {e}"),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match runtime
+        .agent_registry()
+        .reload_agent(&config, &agent_id)
+        .await
+    {
+        Ok(()) => Json(json!({ "ok": true, "agent_id": agent_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
     }
 }

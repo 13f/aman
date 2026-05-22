@@ -145,6 +145,123 @@ impl AgentRegistry {
         count
     }
 
+    /// Reload a single agent from config, updating the in-memory instance
+    /// and creating/destroying the idle manager as needed (e.g. after the
+    /// user configures a provider for a previously-unconfigured agent).
+    pub async fn reload_agent(&self, config: &AmanConfig, agent_id: &str) -> AmanResult<()> {
+        let entry = config
+            .agents
+            .get(agent_id)
+            .ok_or_else(|| kernel::Error::ConfigInvalid {
+                message: format!("agent '{agent_id}' not found in config"),
+            })?;
+
+        // Resolve API model name from provider's model list.
+        let api_model_id = config
+            .providers
+            .get(&entry.provider)
+            .and_then(|p| p.models.iter().find(|m| m.id == entry.model))
+            .map(|m| m.model_id.clone())
+            .unwrap_or_else(|| entry.model.clone());
+
+        let model_params = config.models.get(&entry.model);
+
+        let (allowed_tools, denied_tools) = match &entry.tools {
+            Some(tc) => (tc.allow.clone(), tc.deny.clone()),
+            None => (None, vec![]),
+        };
+
+        let desc = AgentDescriptor {
+            agent_id: agent_id.to_string(),
+            display_name: entry.display_name.clone(),
+            provider: entry.provider.clone(),
+            model: api_model_id,
+            soul_path: entry.system_prompt_override.as_ref().map(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                std::path::PathBuf::from(&home)
+                    .join(".aman")
+                    .join("agents")
+                    .join(agent_id)
+                    .join("SOUL.md")
+            }),
+            allowed_tools,
+            denied_tools,
+            allowed_skills: entry.skills.clone(),
+            enabled: entry.enabled,
+            max_context_tokens: model_params.map(|m| m.max_context_tokens),
+            max_output_tokens: model_params.map(|m| m.max_output_tokens),
+        };
+
+        // Update the agent instance in the registry.
+        let instance = AgentInstance::new(desc);
+        {
+            let mut agents = self.agents.write().await;
+            agents.insert(agent_id.to_string(), instance);
+        }
+
+        // Ensure a local event bus exists for this agent.
+        {
+            let buses = self.local_buses.read().await;
+            if !buses.contains_key(agent_id) {
+                drop(buses);
+                let queue_size = entry
+                    .event_bus
+                    .as_ref()
+                    .and_then(|b| b.max_queue_size)
+                    .unwrap_or(1_000);
+                let local_bus: Arc<dyn EventBus> = Arc::new(InMemoryBus::new(InMemoryBusConfig {
+                    max_queue_size: queue_size,
+                    ..InMemoryBusConfig::default()
+                }));
+                self.set_local_bus(agent_id, Arc::clone(&local_bus)).await;
+            }
+        }
+
+        // Create or destroy idle manager based on enabled state.
+        let idle_enabled = config.runtime.idle.enabled && entry.enabled;
+        let has_idle = {
+            let managers = self.idle_managers.read().await;
+            managers.contains_key(agent_id)
+        };
+
+        if idle_enabled && !has_idle {
+            let local_bus = self
+                .get_local_bus(agent_id)
+                .await
+                .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+            let idle_manager = Arc::new(AgentIdleManager::new(
+                agent_id.to_string(),
+                local_bus,
+                Some(Arc::clone(&self.bus) as Arc<dyn EventBus>),
+                config.runtime.idle.personality.clone(),
+                config.runtime.idle.arousal.initial_value,
+                config.runtime.idle.arousal.half_life_secs,
+            ));
+            self.set_idle_manager(agent_id, idle_manager.clone()).await;
+            // Start the idle loop immediately.
+            idle_manager.start().await;
+            tracing::info!(agent = %agent_id, "idle manager created and started after reload");
+        } else if !idle_enabled && has_idle {
+            // Agent was disabled — shut down the idle manager.
+            if let Some(manager) = self.get_idle_manager(agent_id).await {
+                let _ = manager.shutdown().await;
+            }
+            self.remove_idle_manager(agent_id).await;
+            tracing::info!(agent = %agent_id, "idle manager shut down after reload");
+        }
+
+        let _ = self
+            .bus
+            .publish(Event::new(
+                "runtime:agent_registry",
+                EventType::Custom("agent:reloaded".to_owned()),
+                json!({ "agent_id": agent_id }),
+            ))
+            .await;
+
+        Ok(())
+    }
+
     /// 注册一个 Agent。
     pub async fn register(&self, descriptor: AgentDescriptor) -> AmanResult<()> {
         let agent_id = descriptor.agent_id.clone();
@@ -306,6 +423,12 @@ impl AgentRegistry {
     pub async fn get_local_bus(&self, agent_id: &str) -> Option<Arc<dyn EventBus>> {
         let buses = self.local_buses.read().await;
         buses.get(agent_id).cloned()
+    }
+
+    /// 移除 Agent 的 IdleManager。
+    pub async fn remove_idle_manager(&self, agent_id: &str) {
+        let mut managers = self.idle_managers.write().await;
+        managers.remove(agent_id);
     }
 
     /// 设置 Agent 的 IdleManager。

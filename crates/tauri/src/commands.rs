@@ -1284,6 +1284,7 @@ pub async fn list_agents(
 
 #[tauri::command]
 pub async fn create_agent(
+    state: State<'_, AppState>,
     key: String,
     display_name: String,
     provider: String,
@@ -1326,11 +1327,17 @@ pub async fn create_agent(
     let path = default_config_path();
     aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
 
+    // Notify the gateway runtime to reload this agent so the idle system picks it up.
+    if let Ok(client) = require_gateway(&state).await {
+        let _ = client.reload_agent(&key).await;
+    }
+
     Ok(format!("Agent '{key}' 已创建"))
 }
 
 #[tauri::command]
 pub async fn update_agent(
+    state: State<'_, AppState>,
     key: String,
     display_name: Option<String>,
     provider: Option<String>,
@@ -1353,7 +1360,12 @@ pub async fn update_agent(
         if !aman_config.providers.contains_key(&p) {
             return Err(format!("Provider '{p}' 不存在"));
         }
+        // Auto-enable the agent when a provider is first configured.
+        let was_unconfigured = agent.provider.is_empty();
         agent.provider = p;
+        if was_unconfigured {
+            agent.enabled = true;
+        }
     }
     if let Some(m) = model {
         agent.model = m;
@@ -1364,6 +1376,11 @@ pub async fn update_agent(
 
     let path = default_config_path();
     aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+
+    // Notify the gateway runtime to reload this agent so the idle system picks it up.
+    if let Ok(client) = require_gateway(&state).await {
+        let _ = client.reload_agent(&key).await;
+    }
 
     // Write soul content separately if provided.
     if let Some(content) = soul_content {

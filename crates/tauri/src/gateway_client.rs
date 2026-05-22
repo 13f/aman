@@ -138,6 +138,20 @@ impl GatewayClient {
         }
     }
 
+    pub async fn reload_agent(&self, agent_id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/agent/{agent_id}/reload")))
+            .send()
+            .await
+            .map_err(|e| format!("reload_agent: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("reload_agent", resp.status()).await)
+        }
+    }
+
     pub async fn enable_skill(&self, name: &str) -> Result<(), String> {
         let resp = self
             .client

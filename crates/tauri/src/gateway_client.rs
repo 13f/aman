@@ -112,6 +112,18 @@ impl GatewayClient {
             .map_err(|e| format!("list_skills decode: {e}"))
     }
 
+    pub async fn list_llm_skills(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/llm-skills"))
+            .send()
+            .await
+            .map_err(|e| format!("list_llm_skills: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("list_llm_skills decode: {e}"))
+    }
+
     pub async fn reload_skills(&self) -> Result<(), String> {
         let resp = self
             .client
@@ -151,6 +163,35 @@ impl GatewayClient {
             Ok(())
         } else {
             Err(status_error("disable_skill", resp.status()).await)
+        }
+    }
+
+    pub async fn search_skills(&self, query: &str, limit: usize) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/skills/search"))
+            .query(&[("q", query), ("limit", &limit.to_string())])
+            .send()
+            .await
+            .map_err(|e| format!("search_skills: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("search_skills decode: {e}"))
+    }
+
+    pub async fn read_skill_content(&self, name: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/skill/{name}/content")))
+            .send()
+            .await
+            .map_err(|e| format!("read_skill_content: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("read_skill_content decode: {e}"))
+        } else {
+            Err(status_error("read_skill_content", resp.status()).await)
         }
     }
 

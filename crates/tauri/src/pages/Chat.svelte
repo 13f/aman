@@ -81,6 +81,14 @@
   let archivedMsgIds = $state<Set<string>>(new Set());
   let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
 
+  // Skill picker state
+  let skillList = $state<Array<{ name: string; description: string }>>([]);
+  let showSkillPicker = $state(false);
+  let skillPickerResults = $state<Array<{ name: string; description: string }>>([]);
+  let skillPickerIndex = $state(0);
+  // Built-in command names that should NOT trigger the skill picker
+  const BUILTIN_COMMAND_NAMES = ["help", "h", "?", "session", "retry", "r", "stop", "edit", "e", "export", "trace", "tc", "soul"];
+
   // Pagination
   let currentPage = $state(1);
   let sessionsPerPage = 10;
@@ -127,6 +135,67 @@
     } catch (e) {
       showToast("error", `Failed to select agent: ${e}`);
     }
+  }
+
+  // ── Skill picker ─────────────────────────────────────────────────────
+
+  async function loadSkills() {
+    try {
+      const v = await invoke<any>("list_llm_skills");
+      const items = v?.items as Array<{ name: string; description: string }> | undefined;
+      skillList = (items || []).filter(s => s.name && s.description);
+    } catch {
+      // Skills unavailable — picker stays empty
+    }
+  }
+
+  function updateSkillPicker() {
+    const text = inputText;
+    // Only trigger on "/skill" command (not any "/")
+    if (!text.startsWith("/skill")) {
+      showSkillPicker = false;
+      return;
+    }
+
+    // Extract the part after "/skill" (the skill name prefix)
+    const afterCommand = text.slice("/skill".length);
+    // If user has typed something after "/skill" with a space, they are entering args
+    if (afterCommand.startsWith(" ")) {
+      showSkillPicker = false;
+      return;
+    }
+
+    const prefix = afterCommand.trim().toLowerCase();
+
+    // Filter skills by prefix
+    if (prefix) {
+      skillPickerResults = skillList.filter(
+        s => s.name.toLowerCase().includes(prefix) ||
+             s.description.toLowerCase().includes(prefix)
+      );
+    } else {
+      skillPickerResults = [...skillList];
+    }
+
+    showSkillPicker = skillPickerResults.length > 0;
+    skillPickerIndex = 0;
+  }
+
+  function applySkillPickerSelection(skillName: string) {
+    inputText = "/skill " + skillName + " ";
+    showSkillPicker = false;
+    // Focus back on textarea
+    setTimeout(() => {
+      const ta = document.querySelector(".input-area textarea") as HTMLTextAreaElement;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(inputText.length, inputText.length);
+      }
+    }, 10);
+  }
+
+  function closeSkillPicker() {
+    showSkillPicker = false;
   }
 
   function updateMessage(id: string, patch: Partial<Message>) {
@@ -1227,6 +1296,7 @@
       return;
     }
 
+    closeSkillPicker();
     inputText = "";
     const tempId = crypto.randomUUID();
 
@@ -1266,6 +1336,39 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // Skill picker keyboard navigation
+    if (showSkillPicker) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        skillPickerIndex = Math.min(skillPickerIndex + 1, skillPickerResults.length - 1);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        skillPickerIndex = Math.max(skillPickerIndex - 1, 0);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (skillPickerResults[skillPickerIndex]) {
+          applySkillPickerSelection(skillPickerResults[skillPickerIndex].name);
+        }
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        if (skillPickerResults[skillPickerIndex]) {
+          applySkillPickerSelection(skillPickerResults[skillPickerIndex].name);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeSkillPicker();
+        return;
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -1304,6 +1407,7 @@
 
     await loadSoulInfo();
     await loadAgents();
+    await loadSkills();
     window.addEventListener("keydown", handleGlobalKeydown);
   });
 
@@ -1489,6 +1593,7 @@
       <textarea
         bind:value={inputText}
         onkeydown={handleKeydown}
+        oninput={updateSkillPicker}
         placeholder={!chatCapabilityAvailable
           ? "Chat capability unavailable..."
           : rateLimitCountdown > 0
@@ -1497,6 +1602,26 @@
         rows="1"
         disabled={isProcessing || rateLimitCountdown > 0 || !chatCapabilityAvailable}
       ></textarea>
+      {#if showSkillPicker}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="skill-picker" onkeydown={(e: KeyboardEvent) => e.stopPropagation()}>
+          {#each skillPickerResults as skill, i}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="skill-picker-item"
+              class:selected={i === skillPickerIndex}
+              onclick={() => applySkillPickerSelection(skill.name)}
+              onmouseenter={() => skillPickerIndex = i}
+            >
+              <span class="skill-picker-name">/{skill.name}</span>
+              <span class="skill-picker-desc">{skill.description}</span>
+            </div>
+          {/each}
+          {#if skillPickerResults.length === 0}
+            <div class="skill-picker-empty">No matching skills</div>
+          {/if}
+        </div>
+      {/if}
       {#if rateLimitCountdown > 0}
         <button class="rate-limited-btn" disabled>{rateLimitCountdown}s</button>
       {:else if isProcessing}
@@ -2006,6 +2131,7 @@
   }
 
   .input-area {
+    position: relative;
     display: flex;
     gap: 8px;
     padding: 12px 16px;
@@ -2028,6 +2154,65 @@
 
   .input-area textarea:disabled {
     background: var(--bg-card);
+  }
+
+  /* Skill picker dropdown */
+  .skill-picker {
+    position: absolute;
+    bottom: 100%;
+    left: 16px;
+    right: 16px;
+    margin-bottom: 4px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: var(--bg-card, #1e1e2e);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+  }
+
+  .skill-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+
+  .skill-picker-item:last-child {
+    border-bottom: none;
+  }
+
+  .skill-picker-item:hover,
+  .skill-picker-item.selected {
+    background: var(--bg-hover, rgba(59, 130, 246, 0.15));
+  }
+
+  .skill-picker-name {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent, #3b82f6);
+    white-space: nowrap;
+    min-width: fit-content;
+  }
+
+  .skill-picker-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .skill-picker-empty {
+    padding: 12px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
   }
 
   .send-btn {

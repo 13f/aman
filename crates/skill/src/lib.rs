@@ -558,15 +558,17 @@ impl SkillLoader {
 ///
 /// These are NOT event-driven. The LLM decides when to use them based on
 /// the `name` and `description` injected into its context.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
     pub category: String,
     pub triggers: Vec<String>,
+    #[serde(skip)]
     pub path: PathBuf,
 }
 
+pub mod execution;
 pub mod formatting;
 
 pub mod skm_adapter;

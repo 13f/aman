@@ -275,6 +275,12 @@ pub async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillEntry>, 
 }
 
 #[tauri::command]
+pub async fn list_llm_skills(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let client = require_gateway(&state).await?;
+    client.list_llm_skills().await
+}
+
+#[tauri::command]
 pub async fn reload_skills(state: State<'_, AppState>) -> Result<String, String> {
     let client = require_gateway(&state).await?;
     client.reload_skills().await?;
@@ -293,6 +299,25 @@ pub async fn disable_skill(state: State<'_, AppState>, name: String) -> Result<S
     let client = require_gateway(&state).await?;
     client.disable_skill(&name).await?;
     Ok(format!("Skill '{name}' disabled"))
+}
+
+#[tauri::command]
+pub async fn search_skills(
+    state: State<'_, AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let client = require_gateway(&state).await?;
+    client.search_skills(&query, limit.unwrap_or(10)).await
+}
+
+#[tauri::command]
+pub async fn read_skill_content(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let client = require_gateway(&state).await?;
+    client.read_skill_content(&name).await
 }
 
 // ---------------------------------------------------------------------------

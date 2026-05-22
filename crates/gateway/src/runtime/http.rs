@@ -75,8 +75,10 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/source/{id}/resume", post(source_resume))
         .route("/source/{id}/config", put(source_config))
         .route("/skills", get(skill_list))
+        .route("/llm-skills", get(llm_skills_list))
         .route("/skills/search", get(skill_search))
         .route("/skill/{name}", get(skill_info))
+        .route("/skill/{name}/content", get(skill_content))
         .route("/skill/{name}/enable", post(skill_enable))
         .route("/skill/{name}/disable", post(skill_disable))
         .route("/skill/{name}/versions", get(skill_versions))
@@ -98,6 +100,8 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/cron/{id}/update", post(cron_update))
         .route("/cron/{id}/remove", post(cron_remove))
         .route("/inject-event", post(inject_event))
+        .route("/events/push", post(push_event))
+        .route("/events/types", get(events_types))
         .route("/events/dump/{id}", get(event_dump))
         .route("/events/recent", get(events_recent))
         .route("/events/trace/{trace_id}", get(event_trace))
@@ -320,6 +324,33 @@ async fn skill_list(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     .into_response()
 }
 
+#[derive(Debug, Serialize)]
+struct LlmSkillItem {
+    name: String,
+    description: String,
+    category: String,
+    triggers: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LlmSkillsResponse {
+    items: Vec<LlmSkillItem>,
+}
+
+async fn llm_skills_list(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let items = runtime
+        .llm_skills()
+        .into_iter()
+        .map(|s| LlmSkillItem {
+            name: s.name,
+            description: s.description,
+            category: s.category,
+            triggers: s.triggers,
+        })
+        .collect();
+    Json(LlmSkillsResponse { items }).into_response()
+}
+
 #[derive(Debug, Deserialize)]
 struct SkillSearchParams {
     q: Option<String>,
@@ -372,6 +403,28 @@ async fn skill_info(State(runtime): State<Arc<AgentRuntime>>, Path(name): Path<S
             .into_response();
     };
     Json(item).into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct SkillContentResponse {
+    name: String,
+    content: String,
+}
+
+async fn skill_content(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(name): Path<String>,
+) -> Response {
+    match runtime.read_skill(&name) {
+        Some(content) => Json(SkillContentResponse { name, content }).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: format!("skill not found: {name}"),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn skill_enable(
@@ -1145,6 +1198,143 @@ struct InjectEventRequest {
 #[derive(Debug, Clone, Serialize)]
 struct InjectEventResponse {
     id: String,
+}
+
+// ── External event push ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct PushEventRequest {
+    source: String,
+    event_type: String,
+    payload: Value,
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    delivery: Option<String>,
+    #[serde(default)]
+    ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PushEventResponse {
+    id: String,
+    event_type: String,
+    target: String,
+}
+
+#[instrument(skip(runtime, headers), fields(source = %req.source, event_type = %req.event_type))]
+async fn push_event(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Json(req): Json<PushEventRequest>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+
+    if req.source.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "source cannot be empty"})),
+        )
+            .into_response();
+    }
+
+    let event_type = EventType::from(req.event_type.clone());
+    let mut event = Event::new(req.source.clone(), event_type, req.payload);
+
+    if let Some(ref p) = req.priority {
+        if let Ok(priority) = serde_json::from_value(Value::String(p.clone())) {
+            event.priority = priority;
+        }
+    }
+    if let Some(ref d) = req.delivery {
+        if let Ok(delivery) = serde_json::from_value(Value::String(d.clone())) {
+            event.delivery = delivery;
+        }
+    }
+    if let Some(ttl) = req.ttl_ms {
+        event.metadata.ttl_ms = Some(ttl);
+    }
+
+    let id = event.id.to_string();
+    let target = match &req.agent_id {
+        Some(agent_id) => {
+            match runtime.publish_event_to_agent(agent_id, event).await {
+                Ok(()) => format!("agent:{agent_id}"),
+                Err(error) => {
+                    runtime.audit().record(
+                        operator,
+                        "event.push",
+                        "error",
+                        "error",
+                        error.to_string(),
+                    );
+                    return error_response(error);
+                }
+            }
+        }
+        None => {
+            match runtime.publish_event(event).await {
+                Ok(()) => "global".to_owned(),
+                Err(error) => {
+                    runtime.audit().record(
+                        operator,
+                        "event.push",
+                        "error",
+                        "error",
+                        error.to_string(),
+                    );
+                    return error_response(error);
+                }
+            }
+        }
+    };
+
+    runtime
+        .audit()
+        .record(operator, "event.push", &target, "ok", &id);
+
+    (
+        StatusCode::OK,
+        Json(PushEventResponse {
+            id,
+            event_type: req.event_type,
+            target,
+        }),
+    )
+        .into_response()
+}
+
+async fn events_types() -> Response {
+    let known_types: &[&str] = &[
+        "file_created",
+        "file_changed",
+        "file_deleted",
+        "cron_tick",
+        "timer_tick",
+        "heartbeat",
+        "message_received",
+        "webhook_received",
+        "system_signal",
+        "workflow_state_changed",
+        "skill_loaded",
+        "skill_reloaded",
+        "config_changed",
+        "secret_rotated",
+        "injection_detected",
+        "idle",
+        "system.queue_drained",
+        "agent:message",
+    ];
+    (
+        StatusCode::OK,
+        Json(json!({
+            "known_types": known_types,
+            "custom": "Any string not in known_types produces EventType::Custom(value)",
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2203,6 +2393,32 @@ async fn chat_session_send(
         SanitizeResult::PassThrough => req.text.clone(),
     };
 
+    // Detect slash-command skill invocation (e.g. "/btc-bottom-model should I buy?").
+    // When a skill is invoked directly by the user, load the full SKILL.md body and
+    // inject it into the message so the LLM can follow the methodology immediately
+    // without a separate read_skill tool call.
+    let maybe_skill = skill::execution::parse_skill_command(&text);
+    let (effective_text, skill_context) = match maybe_skill {
+        Some((skill_name, user_input)) => {
+            match skill::execution::prepare_skill_execution(
+                &skill_name,
+                &user_input,
+                &runtime.llm_skills(),
+            ) {
+                Some(exec) => {
+                    let ctx = Some(json!({
+                        "skill_name": exec.skill_name,
+                        "user_input": exec.user_input,
+                        "augmented_message": exec.augmented_message,
+                    }));
+                    (exec.augmented_message, ctx)
+                }
+                None => (text.clone(), None),
+            }
+        }
+        None => (text.clone(), None),
+    };
+
     // Build system prompt: soul identity + skill index.
     // Skills listed in the system prompt (name + description only) act as a
     // lightweight index. The LLM discovers and loads the full skill content
@@ -2233,17 +2449,23 @@ async fn chat_session_send(
         }
     };
 
-    // Publish the message event (no pre-selected skill — LLM discovers via read_skill).
+    // Build event payload with optional skill context.
+    let mut payload = json!({
+        "session_id": id,
+        "text": effective_text,
+        "sender": operator,
+        "source": "tauri-desktop",
+        "soul_system_prompt": combined_prompt,
+    });
+    if let Some(sc) = skill_context {
+        payload["skill_context"] = sc;
+    }
+
+    // Publish the message event.
     let event = Event::new(
         "chat:platform",
         EventType::MessageReceived,
-        json!({
-            "session_id": id,
-            "text": text,
-            "sender": operator,
-            "source": "tauri-desktop",
-            "soul_system_prompt": combined_prompt,
-        }),
+        payload,
     );
     let event_id = event.id.to_string();
     if let Err(error) = runtime.publish_event(event).await {

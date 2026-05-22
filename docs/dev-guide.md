@@ -10,6 +10,7 @@
 4. [事件系统——核心数据流](#4-事件系统核心数据流)
 5. [Plugin 系统——完整的扩展能力](#5-plugin-系统完整的扩展能力)
 6. [实践指南](#6-实践指南)
+7. [从外部推送事件](#7-从外部推送事件)
 
 ---
 
@@ -424,6 +425,8 @@ bus.subscribe(
 
 ### 4.4 自定义事件源
 
+> **简单场景**：如果只需要从外部系统向 Aman 推送事件，使用 `POST /events/push` HTTP API 或 `aman event push` CLI 即可，无需实现 `EventSource` trait。详见 [§7 从外部推送事件](#7-从外部推送事件)。
+
 实现 `EventSource` trait 可以创建自定义事件源：
 
 ```rust
@@ -646,3 +649,170 @@ my-plugin.tar.gz
 - **Plugin 加载失败**：查看 `~/.aman/logs/` 下的日志，检查依赖图
 - **事件未到达**：检查背压级别、订阅过滤条件、事件优先级
 - **启用调试日志**：`RUST_LOG=debug cargo run --release --bin aman`
+
+---
+
+## 7. 从外部推送事件
+
+Aman 提供 HTTP API 和 CLI 两种方式，允许外部系统（浏览器插件、CI/CD、RSS 阅读器等）向 Aman 推送事件。推送的事件可以是 Aman 内置类型，也可以是任意的自定义类型。Aman 内部的规则或 Agent LLM 决定是否处理、是否通知用户。
+
+### 7.1 HTTP API
+
+**推送事件 — `POST /events/push`**
+
+```
+需要认证：x-aman-token（与 aman run --token 一致）
+不依赖 risky_capabilities_enabled
+```
+
+请求体：
+
+```json
+{
+  "source": "browser-extension",
+  "event_type": "ingest:page",
+  "payload": {
+    "url": "https://example.com/article",
+    "title": "文章标题",
+    "category": "tech"
+  },
+  "agent_id": "my-agent",
+  "priority": "normal",
+  "delivery": "at_least_once",
+  "ttl_ms": 60000
+}
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `source` | **是** | 事件来源标识，如 `browser-extension`、`ci:github`、`rss:reader` |
+| `event_type` | **是** | 事件类型。内置类型（`heartbeat`、`webhook_received` 等）或自定义（`ingest:*`、`myapp:*`）。未知字符串自动映射为 `EventType::Custom(value)` |
+| `payload` | **是** | 任意 JSON 数据 |
+| `agent_id` | 否 | 指定目标 Agent。有值时事件路由到该 Agent 的 Local EventBus，否则走全局 Bus |
+| `priority` | 否 | 优先级：`low`、`normal`（默认）、`high` |
+| `delivery` | 否 | 投递保证：`at_most_once`、`at_least_once`（默认）、`exactly_once` |
+| `ttl_ms` | 否 | 事件生存时间（毫秒），超时后事件可被丢弃 |
+
+响应：
+
+```json
+{
+  "id": "019e4e62-bbdc-7b43-b83c-556c51ff2580",
+  "event_type": "ingest:page",
+  "target": "agent:my-agent"
+}
+```
+
+`target` 字段指示事件发布目标：`"global"` 表示全局 Bus，`"agent:<id>"` 表示某个 Agent 的 Local Bus。
+
+**用例：浏览器插件向 Aman 推送发现的网页**
+
+```bash
+curl -X POST http://127.0.0.1:18080/events/push \
+  -H "x-aman-token: your-token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": "browser-extension",
+    "event_type": "ingest:page",
+    "payload": {
+      "url": "https://example.com/article",
+      "title": "值得阅读的文章",
+      "text_snippet": "文章摘要...",
+      "category": "ai"
+    },
+    "agent_id": "reader-bot"
+  }'
+```
+
+**查看可用事件类型 — `GET /events/types`**
+
+```bash
+curl -H "x-aman-token: your-token" http://127.0.0.1:18080/events/types
+```
+
+返回内置类型列表和使用自定义类型的说明。
+
+**事件注入（调试用） — `POST /inject-event`**
+
+```
+需要认证 + risky_capabilities_enabled = true
+```
+
+请求体与 `/events/push` 类似（无 `agent_id` 字段）。此端点仅用于调试，生产环境建议使用 `/events/push`。
+
+### 7.2 CLI
+
+**推送事件**
+
+```bash
+# 基本用法：推送自定义事件
+aman event push \
+  --source ci:github \
+  --type myapp:deploy \
+  --payload '{"status":"success","branch":"main"}' \
+  --addr 127.0.0.1:18080 --token your-token
+
+# 推送到指定 Agent
+aman event push \
+  --source rss:reader \
+  --type ingest:article \
+  --payload '{"title":"新文章"}' \
+  --agent reader-bot \
+  --addr 127.0.0.1:18080 --token your-token
+
+# 携带优先级和投递保证
+aman event push \
+  --source monitoring \
+  --type alert \
+  --payload '{"msg":"disk full"}' \
+  --priority high \
+  --addr 127.0.0.1:18080 --token your-token
+
+# 从 stdin 读取 payload（适合管道）
+echo '{"key":"value"}' | aman event push \
+  --source pipe \
+  --type custom:data \
+  --payload-stdin \
+  --addr 127.0.0.1:18080 --token your-token
+```
+
+**查看可用事件类型**
+
+```bash
+aman event types --addr 127.0.0.1:18080 --token your-token
+```
+
+### 7.3 典型使用场景
+
+**场景 1：浏览器插件发现内容**
+
+```
+浏览器插件检测到技术文章
+  → POST /events/push { event_type: "ingest:page", payload: {url, title, category} }
+  → Agent (reader-bot) 的 LLM 评估是否值得阅读
+  → LLM 决定：保存到待读列表 / 发送通知 / 忽略
+```
+
+**场景 2：CI/CD 部署通知**
+
+```
+GitHub Actions 部署完成
+  → aman event push --source ci:github --type deploy:completed --payload '{"env":"prod"}'
+  → Hook 匹配 deploy:completed → 播放音效 / 发送 Slack 通知
+```
+
+**场景 3：RSS 阅读器**
+
+```
+RSS 抓取新文章
+  → POST /events/push { event_type: "ingest:article", payload: {title, link, summary} }
+  → Agent LLM 判断文章相关性
+  → 高相关 → 自动摘要并推送通知
+```
+
+### 7.4 自定义事件类型命名建议
+
+- 使用 `namespace:action` 格式：`ingest:page`、`deploy:completed`、`alert:disk`
+- `ingest:*` 前缀表示外部数据摄入（网页、文章、RSS、日历事件等）
+- 避免使用 `system.*`、`idle.*`、`agent:*` 前缀，这些为 Aman 内部保留
+- 自定义事件类型自动映射为 `EventType::Custom(String)`，无需预注册

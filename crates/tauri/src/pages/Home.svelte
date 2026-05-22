@@ -3,8 +3,15 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import IdleRing from "./IdleRing.svelte";
+  import AgentSelector from "./AgentSelector.svelte";
 
-  let { onNavigate = (_page: string) => {} }: { onNavigate?: (page: string) => void } = $props();
+  let {
+    onNavigate = (_page: string) => {},
+    onNavigateChatWithSkill = async (_agentKey: string, _skillName: string) => {},
+  }: {
+    onNavigate?: (page: string) => void;
+    onNavigateChatWithSkill?: (agentKey: string, skillName: string) => Promise<void>;
+  } = $props();
 
   interface AgentEntry {
     key: string;
@@ -64,6 +71,9 @@
   let activeTab = $state<"agents" | "finance">("agents");
   let idleStates = $state<Record<string, AgentIdleState>>({});
   let unlisteners: (() => void)[] = [];
+  let showAgentSelector = $state(false);
+  let selectedSkillName = $state("");
+  let modalError = $state("");
 
   function ensureIdleState(key: string) {
     if (!(key in idleStates)) {
@@ -110,7 +120,6 @@
   }
 
   async function selectAgent(agent: AgentEntry) {
-    // If the agent has no provider configured, navigate to Agents config page.
     if (!agent.provider) {
       onNavigate("agents");
       return;
@@ -120,6 +129,27 @@
       onNavigate("chat");
     } catch {
       // silent
+    }
+  }
+
+  function onFinanceClick(skillName: string) {
+    selectedSkillName = skillName;
+    modalError = "";
+    showAgentSelector = true;
+  }
+
+  async function handleFinanceAgentSelect(agent: AgentEntry) {
+    if (!agent.provider) {
+      showAgentSelector = false;
+      onNavigate("agents");
+      return;
+    }
+    try {
+      await invoke("select_agent", { key: agent.key });
+      showAgentSelector = false;
+      await onNavigateChatWithSkill(agent.key, selectedSkillName);
+    } catch (e) {
+      modalError = String(e);
     }
   }
 
@@ -201,18 +231,51 @@
 {:else}
   <div class="home-section">
     <div class="finance-cards">
-      <div class="finance-card">
-        <div class="finance-card-icon">📊</div>
-        <h3>股票打新</h3>
-        <p class="dim">IPO Research — 新股申购分析与研究</p>
-        <span class="finance-skill-tag">ipo-research</span>
+      <button class="finance-card" onclick={() => onFinanceClick("ipo-research")}>
+        <div class="finance-card-accent"></div>
+        <div class="finance-card-icon"><span>📊</span></div>
+        <div class="finance-card-body">
+          <h3>股票打新</h3>
+          <p class="dim">新股申购分析与研究</p>
+          <div class="finance-card-footer">
+            <span class="finance-skill-tag">ipo-research</span>
+            <span class="finance-card-arrow">→</span>
+          </div>
+        </div>
+      </button>
+      <button class="finance-card" onclick={() => onFinanceClick("unlisted-ecosystem-analysis")}>
+        <div class="finance-card-accent"></div>
+        <div class="finance-card-icon"><span>🔍</span></div>
+        <div class="finance-card-body">
+          <h3>未上市公司调研</h3>
+          <p class="dim">非上市公司生态分析</p>
+          <div class="finance-card-footer">
+            <span class="finance-skill-tag">unlisted-ecosystem-analysis</span>
+            <span class="finance-card-arrow">→</span>
+          </div>
+        </div>
+      </button>
+    </div>
+  </div>
+{/if}
+
+{#if showAgentSelector}
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <div class="modal-overlay" onclick={() => showAgentSelector = false} onkeydown={() => {}} role="button" tabindex="0">
+    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+    <div class="modal-content" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="dialog" tabindex="-1">
+      <div class="modal-header">
+        <h3>选择 Agent 执行 "{selectedSkillName}"</h3>
+        <button class="modal-close-btn" onclick={() => showAgentSelector = false}>✕</button>
       </div>
-      <div class="finance-card">
-        <div class="finance-card-icon">🔍</div>
-        <h3>未上市公司调研</h3>
-        <p class="dim">Unlisted Ecosystem Analysis — 非上市公司生态分析</p>
-        <span class="finance-skill-tag">unlisted-ecosystem-analysis</span>
-      </div>
+      {#if modalError}
+        <div class="toast toast-error">{modalError}</div>
+      {/if}
+      <AgentSelector
+        agents={agents}
+        variant="compact"
+        onSelect={handleFinanceAgentSelect}
+      />
     </div>
   </div>
 {/if}
@@ -295,34 +358,89 @@
   /* Finance cards */
   .finance-cards {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
   }
 
   .finance-card {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
     background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 14px;
     padding: 24px;
-    cursor: default;
-    transition: border-color 0.2s;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    color: inherit;
+    width: 100%;
+    overflow: hidden;
+    transition: border-color 0.25s, transform 0.2s, box-shadow 0.2s;
   }
   .finance-card:hover {
     border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
   }
+  .finance-card:active {
+    transform: translateY(0);
+  }
+
+  /* Colored accent stripe at top */
+  .finance-card-accent {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--accent, #6c8cff), #a78bfa);
+    border-radius: 14px 14px 0 0;
+  }
+
+  /* Icon in a rounded background */
   .finance-card-icon {
-    font-size: 32px;
-    margin-bottom: 12px;
+    flex-shrink: 0;
+    width: 52px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, rgba(108,140,255,0.12), rgba(167,139,250,0.08));
+    border-radius: 14px;
+    margin-top: 2px;
   }
-  .finance-card h3 {
+  .finance-card-icon span {
+    font-size: 26px;
+    line-height: 1;
+  }
+
+  .finance-card-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .finance-card-body h3 {
     font-size: 16px;
     font-weight: 600;
-    margin-bottom: 6px;
+    margin: 0;
     color: var(--fg);
+    line-height: 1.3;
   }
-  .finance-card p {
+  .finance-card-body p {
     font-size: 13px;
-    margin-bottom: 12px;
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  .finance-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
   }
   .finance-skill-tag {
     display: inline-block;
@@ -334,5 +452,69 @@
     font-family: "SF Mono", "Fira Code", monospace;
     color: var(--fg-dim);
   }
+  .finance-card-arrow {
+    font-size: 16px;
+    color: var(--fg-dim);
+    transition: color 0.2s, transform 0.2s;
+  }
+  .finance-card:hover .finance-card-arrow {
+    color: var(--accent);
+    transform: translateX(3px);
+  }
+
   .dim { color: var(--fg-dim); }
+
+  /* Modal */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-content {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    min-width: 400px;
+    max-width: 700px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+  .modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .modal-close-btn {
+    background: none;
+    border: none;
+    color: var(--fg-dim);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .modal-close-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .toast-error {
+    background: rgba(248,113,113,0.15);
+    color: var(--red);
+    padding: 10px 16px;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
 </style>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import AgentSelector from "./AgentSelector.svelte";
 
   let { onNavigate = (_page: string) => {} }: { onNavigate?: (page: string) => void } = $props();
 
@@ -26,7 +27,6 @@
   let loading = $state(true);
   let error = $state("");
   let showCreateForm = $state(false);
-  let showEditForm = $state<string | null>(null);
   let noProviders = $state(false);
 
   // Create form
@@ -57,12 +57,6 @@ I prefer concise and accurate responses.
 `;
 
   let newSoulContent = $state(defaultSoul);
-
-  // Edit form
-  let editDisplayName = $state("");
-  let editProvider = $state("");
-  let editModel = $state("");
-  let editSoulContent = $state("");
 
   async function loadData() {
     loading = true;
@@ -102,16 +96,15 @@ I prefer concise and accurate responses.
     }
   }
 
-  async function updateAgent(key: string) {
+  async function handleSaveEditFromSelector(key: string, displayName: string, provider: string, model: string, soulContent: string) {
     try {
       await invoke("update_agent", {
         key,
-        displayName: editDisplayName || null,
-        provider: editProvider || null,
-        model: editModel || null,
-        soulContent: editSoulContent || null,
+        displayName: displayName?.trim() || null,
+        provider: provider?.trim() || null,
+        model: model?.trim() || null,
+        soulContent: soulContent?.trim() || null,
       });
-      showEditForm = null;
       await loadData();
     } catch (e) {
       error = String(e);
@@ -135,14 +128,6 @@ I prefer concise and accurate responses.
     } catch (e) {
       error = String(e);
     }
-  }
-
-  function openEdit(agent: AgentEntry) {
-    editDisplayName = agent.display_name;
-    editProvider = agent.provider;
-    editModel = agent.model;
-    editSoulContent = "";
-    showEditForm = agent.key;
   }
 
   onMount(() => { loadData(); });
@@ -205,80 +190,15 @@ I prefer concise and accurate responses.
     <p class="dim">点击"新建 Agent"创建你的第一个 AI 助手。</p>
   </div>
 {:else}
-  <div class="agent-list">
-    {#each agents as agent}
-      <div class="card agent-card {agent.is_active ? 'active' : ''}" class:needs-config={!agent.provider}>
-        <div class="agent-header">
-          <strong class="agent-name">{agent.display_name}</strong>
-          <span class="badge ok">{(agent as any).key}</span>
-          {#if agent.is_active}
-            <span class="badge" style="background:rgba(108,140,255,0.15);color:var(--accent);">Active</span>
-          {/if}
-        </div>
-        <div class="agent-detail">
-          {#if agent.provider}
-            <span class="dim">Provider:</span> {agent.provider}
-            <span class="dim" style="margin-left:16px;">Model:</span> {agent.model}
-          {:else}
-            <span class="needs-config-badge">⚡ 需要配置 Provider</span>
-          {/if}
-        </div>
-        {#if agent.soul_summary}
-          <div class="agent-soul-preview">
-            <span class="dim">SOUL:</span>
-            <pre class="soul-text">{agent.soul_summary}</pre>
-          </div>
-        {/if}
-        <div class="agent-detail">
-          <span class="dim">Sessions:</span> {agent.session_count}
-        </div>
-        <div class="agent-actions">
-          {#if !agent.provider}
-            <button class="primary" onclick={() => openEdit(agent)}>⚙ 配置 Provider</button>
-            <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-            <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
-          {:else if !agent.is_active}
-            <button onclick={() => selectAgent(agent.key)}>选择并聊天</button>
-            <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-            <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
-          {:else}
-            <button class="secondary" onclick={() => onNavigate("chat")}>去 Chat</button>
-            <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-            <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
-          {/if}
-        </div>
-
-        {#if showEditForm === agent.key}
-          <div class="edit-form">
-            <div class="form-field">
-              <label for="edit-display-{agent.key}">Display Name</label>
-              <input id="edit-display-{agent.key}" type="text" bind:value={editDisplayName} />
-            </div>
-            <div class="form-field">
-              <label for="edit-provider-{agent.key}">Provider</label>
-              <select id="edit-provider-{agent.key}" bind:value={editProvider}>
-                {#each providers as p}
-                  <option value={p.key}>{p.display_name}</option>
-                {/each}
-              </select>
-            </div>
-            <div class="form-field">
-              <label for="edit-model-{agent.key}">Model</label>
-              <input id="edit-model-{agent.key}" type="text" bind:value={editModel} />
-            </div>
-            <div class="form-field">
-              <label for="edit-soul-{agent.key}">SOUL.md (留空不修改)</label>
-              <textarea id="edit-soul-{agent.key}" rows="8" bind:value={editSoulContent}></textarea>
-            </div>
-            <div class="form-actions">
-              <button class="secondary" onclick={() => { showEditForm = null; }}>取消</button>
-              <button onclick={() => updateAgent(agent.key)}>保存</button>
-            </div>
-          </div>
-        {/if}
-      </div>
-    {/each}
-  </div>
+  <AgentSelector
+    variant="full"
+    {agents}
+    {providers}
+    onSelect={(agent) => selectAgent(agent.key)}
+    onDelete={deleteAgent}
+    onSaveEdit={handleSaveEditFromSelector}
+    {onNavigate}
+  />
 {/if}
 
 <style>
@@ -313,81 +233,6 @@ I prefer concise and accurate responses.
     gap: 8px;
     justify-content: flex-end;
     margin-top: 16px;
-  }
-  .agent-list {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-    gap: 16px;
-  }
-  .agent-card {
-    /* grid handles sizing — all cards in a row share the same width */
-  }
-  .agent-card.active {
-    border-color: var(--accent);
-  }
-  .agent-card.needs-config {
-    border-color: var(--warn, #f59e0b);
-    background: linear-gradient(135deg,
-      rgba(245,158,11,0.06) 0%,
-      var(--bg-card) 40%
-    );
-    position: relative;
-  }
-  .agent-card.needs-config::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 4px;
-    height: 100%;
-    background: var(--warn, #f59e0b);
-    border-radius: 12px 0 0 12px;
-  }
-  .needs-config-badge {
-    display: inline-block;
-    padding: 3px 10px;
-    background: rgba(245,158,11,0.15);
-    color: var(--warn, #f59e0b);
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .agent-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 8px;
-    flex-wrap: wrap;
-  }
-  .agent-name { font-size: 15px; }
-  .agent-detail {
-    font-size: 13px;
-    margin-bottom: 4px;
-  }
-  .agent-soul-preview {
-    margin: 8px 0;
-    font-size: 13px;
-  }
-  .soul-text {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 8px;
-    margin-top: 4px;
-    font-size: 12px;
-    white-space: pre-wrap;
-    overflow: hidden;
-    max-height: 60px;
-  }
-  .agent-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-  }
-  .edit-form {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border);
   }
   .dim { color: var(--fg-dim); }
   .empty-state { text-align: center; padding: 40px; }

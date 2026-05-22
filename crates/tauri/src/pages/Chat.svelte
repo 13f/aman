@@ -8,6 +8,8 @@
 
   marked.setOptions({ gfm: true, breaks: true });
 
+  let { prefillInput = "", prefillSeq = 0 }: { prefillInput?: string; prefillSeq?: number } = $props();
+
   // Escape standalone markdown structural elements that would eat content:
   // - standalone `---` rendered as invisible <hr>
   // - standalone `===` that can act as setext heading underlines
@@ -1435,6 +1437,26 @@
       sendMessage();
     }
   }
+
+  // Apply prefill text from external navigation (e.g., Finance skill card).
+  // Uses a sequence counter so we can detect a fresh prefill even after
+  // the component has mounted and activeSessionId changes asynchronously.
+  let lastPrefillSeq = $state(0);
+
+  $effect(() => {
+    if (prefillInput && prefillSeq !== lastPrefillSeq && activeSessionId) {
+      inputText = prefillInput;
+      lastPrefillSeq = prefillSeq;
+      // Focus the textarea and place cursor at end of prefill text
+      requestAnimationFrame(() => {
+        const ta = document.querySelector(".input-area textarea") as HTMLTextAreaElement;
+        if (ta) {
+          ta.focus();
+          ta.setSelectionRange(ta.value.length, ta.value.length);
+        }
+      });
+    }
+  });
 
   onMount(async () => {
     const unsub1 = await listen("event:processed", handleEventProcessed);

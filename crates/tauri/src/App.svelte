@@ -20,6 +20,8 @@
   let hasProvider = $state(false);
   let hasAgent = $state(false);
   let activeAgentName = $state("");
+  let chatPrefill = $state("");
+  let chatPrefillSeq = $state(0);
 
   type MenuItem = { id: string; label: string };
   type MenuGroup = { name: string; label: string; items: MenuItem[] };
@@ -99,6 +101,12 @@
     handlePageVisited(pageId);
   }
 
+  function navigateToChatWithPrefill(text: string) {
+    chatPrefill = text;
+    chatPrefillSeq++;
+    navigateTo("chat");
+  }
+
   async function refreshActiveAgent() {
     try {
       const agent = await invoke<{ display_name: string } | null>("get_active_agent");
@@ -167,7 +175,12 @@
 
 <main class="main">
   {#if currentPage === "home"}
-    <Home onNavigate={(p) => navigateTo(p)} />
+    <Home
+      onNavigate={(p) => navigateTo(p)}
+      onNavigateChatWithSkill={async (_agentKey: string, skillName: string) => {
+        navigateToChatWithPrefill(`/skill ${skillName} `);
+      }}
+    />
   {:else if currentPage === "dashboard"}
     <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
   {:else if currentPage === "maintenance"}
@@ -183,7 +196,7 @@
   {:else if currentPage === "agents"}
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}
-    <Chat />
+    <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
   {:else if currentPage === "settings"}
     <Settings />
   {/if}

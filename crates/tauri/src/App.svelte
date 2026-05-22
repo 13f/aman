@@ -8,8 +8,6 @@
   import WorkflowBoard from "./pages/WorkflowBoard.svelte";
   import PluginManager from "./pages/PluginManager.svelte";
   import Chat from "./pages/Chat.svelte";
-  import Finance from "./pages/Finance.svelte";
-  import Work from "./pages/Work.svelte";
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
@@ -31,8 +29,6 @@
       items: [
         { id: "home", label: "Home" },
         { id: "chat", label: "Chat" },
-        { id: "finance", label: "Finance" },
-        { id: "work", label: "Work" },
       ],
     },
     {
@@ -127,7 +123,7 @@
     {#if expandedGroups[group.name]}
       <div class="menu-items">
         {#each group.items as page}
-          {#if (page.id === "chat" || page.id === "finance" || page.id === "work") && !runtimeRunning}
+          {#if page.id === "chat" && !runtimeRunning}
             <span class="sidebar-link disabled" title="Start the runtime first">
               <span class="status-dot stopped"></span>
               {page.label}
@@ -152,7 +148,7 @@
 
 <main class="main">
   {#if currentPage === "home"}
-    <Home />
+    <Home onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "dashboard"}
     <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
   {:else if currentPage === "maintenance"}
@@ -167,10 +163,6 @@
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}
     <Chat />
-  {:else if currentPage === "finance"}
-    <Finance />
-  {:else if currentPage === "work"}
-    <Work />
   {:else if currentPage === "settings"}
     <Settings />
   {/if}

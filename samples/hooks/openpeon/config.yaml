@@ -3,11 +3,16 @@ description: openpeon hooks for aman
 version: 0.1.0
 pack: peon
 min_version: "3.2"
+# This is an agent-level hook — copy it to:
+#   ~/.aman/agents/<agent-id>/hooks/openpeon/
+# The hook subscribes to the agent's local event bus and receives
+# agent-specific events (agent:busy, tool:completed, etc.).
+#
+# For global events (gateway:ready, session:started, etc.), place
+# hooks under ~/.aman/hooks/ instead.
 on:
-  - session:started
   - agent:busy
   - tool:completed
   - tool:failed
-  - message:completed
   - llm:call_started
 runtime: bash

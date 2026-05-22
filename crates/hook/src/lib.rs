@@ -101,6 +101,7 @@ impl Default for HookRegistry {
 ///
 /// Fires on one or more named event types (e.g. `"agent:busy"`, `"tool:completed"`).
 /// The script receives a JSON payload on stdin and may return a response on stdout.
+#[derive(Clone)]
 pub struct ScriptHook {
     name: String,
     /// The event type strings this hook listens to (e.g. ["agent:busy", "tool:completed"]).

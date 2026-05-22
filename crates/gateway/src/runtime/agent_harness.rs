@@ -138,7 +138,8 @@ impl ToolExecutor {
         self.execute(call, agent_id, session_id).await
     }
 
-    /// Publish an event to the agent's local bus, falling back to the global bus.
+    /// Publish an event to the agent's local bus, falling back to the global bus
+    /// if the agent has no dedicated local bus.
     async fn publish_to_agent_bus(
         &self,
         agent_id: &str,
@@ -320,7 +321,8 @@ impl LlmReActEngine {
         }
     }
 
-    /// Publish an event to the agent's local bus, falling back to the global bus.
+    /// Publish an event to the agent's local bus, falling back to the global bus
+    /// if the agent has no dedicated local bus.
     async fn publish_to_agent_bus(
         &self,
         agent_id: &str,

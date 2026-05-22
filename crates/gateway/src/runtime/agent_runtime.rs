@@ -737,7 +737,7 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
-        // ── Configured script hooks ──────────────────────────────
+        // ── Global script hooks (from ~/.aman/hooks/) ───────────
         struct ScriptHookEventHandler {
             runner: Arc<hook::ScriptHookRunner>,
         }
@@ -752,7 +752,7 @@ impl AgentRuntimeBuilder {
         let script_hook_runner = {
             let mut hooks = Vec::new();
 
-            // 1. Auto-discover hooks from ~/.aman/hooks/<name>/config.yaml
+            // 1. Auto-discover global hooks from ~/.aman/hooks/<name>/config.yaml
             let hooks_dir = super::skill_sync::aman_data_dir().join("hooks");
             let _ = std::fs::create_dir_all(&hooks_dir);
             let discovered = config::discover_hooks(&hooks_dir);
@@ -764,7 +764,7 @@ impl AgentRuntimeBuilder {
                     cfg.min_version.as_deref(),
                 );
                 if let Err(e) = runtime.check_available() {
-                    tracing::warn!(name = %cfg.name, error = %e, "discovered hook runtime unavailable, skipping");
+                    tracing::warn!(name = %cfg.name, error = %e, "global hook runtime unavailable, skipping");
                     continue;
                 }
                 let script_path = if cfg.script.is_absolute() {
@@ -799,6 +799,7 @@ impl AgentRuntimeBuilder {
                     } else {
                         std::env::current_dir().unwrap_or_default().join(&cfg.script)
                     };
+                    hooks.retain(|h: &hook::ScriptHook| h.name() != cfg.name);
                     hooks.push(hook::ScriptHook::new(
                         &cfg.name,
                         cfg.on.clone(),
@@ -808,10 +809,11 @@ impl AgentRuntimeBuilder {
                 }
             }
 
-            tracing::info!(count = hooks.len(), "script hooks loaded");
+            tracing::info!(count = hooks.len(), "global script hooks loaded");
             Arc::new(hook::ScriptHookRunner::new(hooks))
         };
 
+        // Global hooks subscribe to the global event bus.
         let _ = pollster::block_on(bus.subscribe(
             event_bus::SubscriptionFilter::default(),
             Box::new(ScriptHookEventHandler {
@@ -1434,6 +1436,70 @@ impl AgentRuntime {
         }
     }
 
+    /// Subscribe per-agent script hooks to the given agent's local event bus.
+    ///
+    /// Discovers hooks from `~/.aman/agents/<agent_id>/hooks/` and subscribes
+    /// them to the agent's local bus. Hooks placed here only receive that
+    /// specific agent's events (e.g. `agent:busy`, `tool:completed`).
+    pub async fn subscribe_per_agent_hooks(&self, agent_id: &str) {
+        let hooks_dir = super::skill_sync::aman_data_dir()
+            .join("agents")
+            .join(agent_id)
+            .join("hooks");
+        let _ = std::fs::create_dir_all(&hooks_dir);
+        let discovered = config::discover_hooks(&hooks_dir);
+        if discovered.is_empty() {
+            return;
+        }
+
+        let mut hooks = Vec::new();
+        for cfg in &discovered {
+            let runtime = kernel::script::ScriptRuntime::new(
+                &cfg.runtime,
+                cfg.min_version.as_deref(),
+            );
+            if let Err(e) = runtime.check_available() {
+                tracing::warn!(name = %cfg.name, agent = %agent_id, error = %e, "agent hook runtime unavailable, skipping");
+                continue;
+            }
+            let script_path = if cfg.script.is_absolute() {
+                cfg.script.clone()
+            } else {
+                std::env::current_dir().unwrap_or_default().join(&cfg.script)
+            };
+            hooks.push(hook::ScriptHook::new(
+                &cfg.name,
+                cfg.on.clone(),
+                script_path,
+                runtime,
+            ));
+        }
+        if hooks.is_empty() {
+            return;
+        }
+
+        let runner = Arc::new(hook::ScriptHookRunner::new(hooks));
+        struct AgentHookHandler {
+            runner: Arc<hook::ScriptHookRunner>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for AgentHookHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let event_type = event.event_type.as_str().to_owned();
+                self.runner.run(&event_type, &event.payload).await
+            }
+        }
+        if let Some(local_bus) = self.agent_registry.get_local_bus(agent_id).await {
+            let _ = local_bus
+                .subscribe(
+                    event_bus::SubscriptionFilter::default(),
+                    Box::new(AgentHookHandler { runner }),
+                )
+                .await;
+            tracing::info!(agent = %agent_id, count = discovered.len(), "agent script hooks subscribed to local bus");
+        }
+    }
+
     #[instrument(skip(self))]
     pub fn bus_metrics(&self) -> event_bus::BusMetrics {
         self.bus.metrics()
@@ -1908,6 +1974,10 @@ impl AgentRuntime {
                 if let Ok(aman_cfg) = config::AmanConfig::from_default_path() {
                     let count = self.agent_registry.load_from_config(&aman_cfg).await;
                     tracing::info!(count, "agents loaded from config");
+                    // Subscribe per-agent script hooks to each agent's local bus.
+                    for agent in self.agent_registry.list().await {
+                        self.subscribe_per_agent_hooks(&agent.descriptor.agent_id).await;
+                    }
                 }
                 tracing::info!("Phase2: store");
                 self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);

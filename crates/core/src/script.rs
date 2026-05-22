@@ -12,6 +12,7 @@ use std::process::{Command, Output, Stdio};
 /// stdout as the result.
 ///
 /// Reusable across hooks, plugins, and custom event sources.
+#[derive(Clone)]
 pub struct ScriptRuntime {
     /// Interpreter binary name (e.g. "python3", "node", "deno").
     runtime: String,

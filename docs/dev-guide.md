@@ -218,16 +218,26 @@ hooks:
 
 #### 方式二：目录自动发现（推荐）
 
-在 `~/.aman/hooks/` 下创建子目录，每个目录包含 `config.yaml` 和脚本文件：
+Hook 通过目录位置区分作用域：
+
+- **全局 Hook**：放在 `~/.aman/hooks/` 下，订阅全局事件总线，接收全局事件
+- **Agent Hook**：放在 `~/.aman/agents/<agent-id>/hooks/` 下，订阅该 Agent 的本地事件总线，只接收该 Agent 的事件
 
 ```
-~/.aman/hooks/
-└── openpeon/
-    ├── config.yaml
-    └── main.sh
+~/.aman/
+├── hooks/                          # 全局 Hook
+│   └── webhook-alert/
+│       ├── config.yaml
+│       └── main.sh
+└── agents/
+    └── minmax/
+        └── hooks/                  # Agent 专属 Hook
+            └── openpeon/
+                ├── config.yaml
+                └── main.sh
 ```
 
-项目 `samples/hooks/` 目录下提供了可直接使用的示例 Hook，复制到 `~/.aman/hooks/` 即可启用：
+项目 `samples/hooks/` 目录下提供了可直接使用的示例 Hook。全局 Hook 复制到 `~/.aman/hooks/`，Agent Hook 复制到对应 Agent 的 `hooks/` 目录下即可启用：
 
 **config.yaml 格式：**
 
@@ -252,6 +262,12 @@ min_version: "3.2"          # 可选，版本约束
 | `script` | 否 | 脚本路径，相对路径相对于 config.yaml 所在目录，默认为 `main.sh` |
 | `min_version` | 否 | 解释器最低版本约束（semver 格式） |
 
+> **作用域规则：** Hook 的作用域由目录位置决定，无需在 config.yaml 中配置。
+> - `~/.aman/hooks/<name>/` → 全局 Hook，订阅全局事件总线
+> - `~/.aman/agents/<id>/hooks/<name>/` → Agent Hook，订阅该 Agent 的本地事件总线
+> 
+> 不同 Agent 可以有同名 Hook，各自独立配置参数（如不同 Agent 使用不同的通知渠道）。
+
 ### 3.3 脚本协议
 
 Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
@@ -272,12 +288,26 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 
 ### 3.4 支持的事件类型
 
-所有系统事件以 `EventType` Debug 格式序列化，常见的有：
+事件分为两类，分别发布到不同的事件总线：
+
+**全局事件** — 发布到全局事件总线，放在 `~/.aman/hooks/` 下的全局 Hook 可接收：
 
 | 事件类型 | 触发时机 |
 |----------|----------|
 | `MessageReceived` | 收到用户消息 |
 | `session:started` | 会话开始 |
+| `session:closed` | 会话关闭 |
+| `message:dispatch` | 技能分发开始 |
+| `message:completed` | 技能分发完成 |
+| `gateway:ready` | 网关就绪 |
+| `gateway:starting` | 网关启动中 |
+| `gateway:stopping` | 网关关闭中 |
+| `agent:registered` | Agent 注册完成 |
+
+**Agent 本地事件** — 发布到各 Agent 的本地事件总线，放在 `~/.aman/agents/<id>/hooks/` 下的 Agent Hook 可接收：
+
+| 事件类型 | 触发时机 |
+|----------|----------|
 | `agent:busy` | Agent 开始处理 |
 | `agent:reply_ready` | Agent 回复完成 |
 | `agent:reply_stream_start` | 流式回复开始 |
@@ -286,10 +316,11 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 | `agent:reply_interrupted` | 回复被中断 |
 | `tool:completed` | 工具执行完成 |
 | `tool:failed` | 工具执行失败 |
+| `tool:dispatched` | 工具调用分发 |
 | `llm:call_started` | LLM 调用开始 |
 | `llm:call_ended` | LLM 调用结束 |
-| `session:closed` | 会话关闭 |
-| `gateway:ready` | 网关就绪 |
+
+> **注意：** 如果 Hook 需要同时监听全局事件和 Agent 事件，需要在两个位置分别放置：全局事件 Hook 放在 `~/.aman/hooks/`，Agent 事件 Hook 放在 `~/.aman/agents/<id>/hooks/`。
 
 ### 3.5 完整示例：openpeon 音效 Hook
 
@@ -301,17 +332,15 @@ samples/hooks/openpeon/
 └── main.sh            # 脚本实现
 ```
 
-**config.yaml** 定义了监听的事件类型和脚本 runtime：
+**config.yaml** 定义了监听的事件类型和脚本 runtime。openpeon 监听 Agent 本地事件（`agent:busy`、`tool:completed` 等），因此应放在 Agent 的 hooks 目录下：
 
 ```yaml
 name: openpeon
 description: openpeon hooks for aman
 on:
-  - session:started
   - agent:busy
   - tool:completed
   - tool:failed
-  - message:completed
   - llm:call_started
 runtime: bash
 min_version: "3.2"
@@ -325,11 +354,13 @@ EVENT_TYPE=$(echo "$INPUT" | jq -r '.event_type // empty' 2>/dev/null || exit 0)
 # ... 事件分类 → 音效播放
 ```
 
-使用方式：将 `samples/hooks/openpeon` 复制到 `~/.aman/hooks/` 下即可启用：
+使用方式：将 `samples/hooks/openpeon` 复制到对应 Agent 的 hooks 目录下即可启用：
 
 ```bash
-cp -r samples/hooks/openpeon ~/.aman/hooks/
+cp -r samples/hooks/openpeon ~/.aman/agents/minmax/hooks/
 ```
+
+如果希望所有 Agent 共用同一 Hook，复制到每个 Agent 的 hooks 目录即可，各 Agent 可独立修改参数。
 
 也可作为模板，修改 `config.yaml` 中的事件类型和脚本逻辑，快速创建自己的 Hook。
 
@@ -645,7 +676,7 @@ my-plugin.tar.gz
 
 ### 6.6 调试技巧
 
-- **Hook 未触发**：检查事件类型名称是否匹配、runtime 是否存在、版本是否满足
+- **Hook 未触发**：检查事件类型名称是否匹配、runtime 是否存在、版本是否满足；检查 Hook 位置是否正确——Agent 事件（`agent:busy`、`tool:completed` 等）需放在 `~/.aman/agents/<id>/hooks/`，全局事件（`gateway:ready`、`session:started` 等）需放在 `~/.aman/hooks/`
 - **Plugin 加载失败**：查看 `~/.aman/logs/` 下的日志，检查依赖图
 - **事件未到达**：检查背压级别、订阅过滤条件、事件优先级
 - **启用调试日志**：`RUST_LOG=debug cargo run --release --bin aman`

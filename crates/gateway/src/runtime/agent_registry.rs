@@ -132,6 +132,7 @@ impl AgentRegistry {
                 let idle_manager = Arc::new(AgentIdleManager::new(
                     agent_id.clone(),
                     local_bus,
+                    Some(Arc::clone(&self.bus) as Arc<dyn EventBus>),
                     idle_personality.clone(),
                     arousal_initial,
                     arousal_half_life,

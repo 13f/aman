@@ -36,6 +36,9 @@ pub struct AgentIdleManager {
     personality: IdlePersonality,
     /// The agent's local event bus — idle events are published here
     local_bus: Arc<dyn EventBus>,
+    /// Optional global event bus — idle events are also published here so the
+    /// UI (Tauri event bridge) can observe per-agent idle state.
+    global_bus: Option<Arc<dyn EventBus>>,
     /// Per-agent incubation manager for background idle threads
     incubation: Arc<IncubationManager>,
     /// Stop signal for the background idle loop
@@ -50,6 +53,7 @@ impl AgentIdleManager {
     pub fn new(
         agent_id: impl Into<String>,
         local_bus: Arc<dyn EventBus>,
+        global_bus: Option<Arc<dyn EventBus>>,
         personality: IdlePersonality,
         arousal_initial: f64,
         arousal_half_life_secs: f64,
@@ -62,6 +66,7 @@ impl AgentIdleManager {
             coord,
             personality,
             local_bus,
+            global_bus,
             incubation: Arc::new(IncubationManager::new()),
             stop_token: CancellationToken::new(),
             task: tokio::sync::Mutex::new(None),
@@ -94,6 +99,7 @@ impl AgentIdleManager {
         let coord = Arc::clone(&self.coord);
         let personality = self.personality.clone();
         let local_bus = Arc::clone(&self.local_bus);
+        let global_bus = self.global_bus.clone();
         let stop_token = self.stop_token.clone();
 
         *task_slot = Some(tokio::spawn(async move {
@@ -165,6 +171,7 @@ impl AgentIdleManager {
                     duration_secs: effective.poll_interval.next_delay(detector.idle_depth),
                     context: Some(context),
                     from_chat_mode: detector.was_in_chat_mode,
+                    agent_id: Some(agent_id.clone()),
                 };
 
                 // Apply arousal behavior for this idle kind
@@ -181,7 +188,13 @@ impl AgentIdleManager {
                     "AgentIdleManager produced idle event"
                 );
 
-                let _ = local_bus.publish(event).await;
+                // Publish to the agent's local bus for skill matching
+                let _ = local_bus.publish(event.clone()).await;
+                // Also publish to the global bus so the Tauri UI event bridge
+                // can observe per-agent idle state
+                if let Some(ref global) = global_bus {
+                    let _ = global.publish(event).await;
+                }
             }
         }));
     }

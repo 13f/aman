@@ -175,6 +175,7 @@ impl EventSource for IdleDetector {
             duration_secs,
             context: Some(context),
             from_chat_mode: self.was_in_chat_mode,
+            agent_id: None,
         };
 
         // Apply arousal behavior for this idle kind

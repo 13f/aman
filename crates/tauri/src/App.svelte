@@ -18,6 +18,7 @@
   let runtimeRunning = $state(false);
   let hasProvider = $state(false);
   let hasAgent = $state(false);
+  let activeAgentName = $state("");
 
   type MenuItem = { id: string; label: string };
   type MenuGroup = { name: string; label: string; items: MenuItem[] };
@@ -96,6 +97,22 @@
     handlePageVisited(pageId);
   }
 
+  async function refreshActiveAgent() {
+    try {
+      const agent = await invoke<{ display_name: string } | null>("get_active_agent");
+      activeAgentName = agent?.display_name ?? "";
+    } catch {
+      activeAgentName = "";
+    }
+  }
+
+  $effect(() => {
+    // Refresh active agent on every page change so the idle widget
+    // shows/hides correctly regardless of which page the agent is used from.
+    void currentPage;
+    refreshActiveAgent();
+  });
+
   onMount(async () => {
     await checkOnboarding();
 
@@ -141,7 +158,7 @@
       </div>
     {/if}
   {/each}
-  <ActivityStateWidget {runtimeRunning} />
+  <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentName={activeAgentName} />
 </nav>
 
 <NotificationOverlay onNavigate={(p) => navigateTo(p)} />

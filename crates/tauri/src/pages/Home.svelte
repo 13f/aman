@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { onMount, onDestroy } from "svelte";
+  import IdleRing from "./IdleRing.svelte";
 
   let { onNavigate = (_page: string) => {} }: { onNavigate?: (page: string) => void } = $props();
 
@@ -14,25 +16,97 @@
     is_active: boolean;
   }
 
+  type Mode = "idle" | "reflection" | "processing";
+
+  interface AgentIdleState {
+    mode: Mode;
+    outerPct: number;
+    innerPct: number;
+    emoji: string;
+  }
+
+  const COLORS: Record<Mode, { outer: string; inner: string }> = {
+    idle:       { outer: "#6c8cff", inner: "#f59e0b" },
+    reflection: { outer: "#a78bfa", inner: "#f472b6" },
+    processing: { outer: "#4ade80", inner: "#22d3ee" },
+  };
+
+  const IDLE_EMOJI: Record<string, string> = {
+    daze: "\u{1F636}", boredom: "\u{1F612}", sleep: "\u{1F634}",
+    exploration: "\u{1F50D}", meditation: "\u{1F9D8}",
+    incubation: "\u{1F4A1}", waiting: "\u{23F3}",
+  };
+
+  const MODE_ICON: Record<Mode, string> = {
+    idle: "\u{1F4A4}", reflection: "\u{1F9E0}", processing: "\u{26A1}",
+  };
+
+  const THRESHOLDS = [0, 5, 20, 50, 100, 200];
+
+  function depthPct(depth: number): number {
+    if (depth <= 0) return 0;
+    let idx = 0;
+    for (let i = THRESHOLDS.length - 1; i >= 0; i--) {
+      if (THRESHOLDS[i] <= depth) { idx = i; break; }
+    }
+    if (idx >= THRESHOLDS.length - 1) return 100;
+    const cur = THRESHOLDS[idx];
+    const next = THRESHOLDS[idx + 1];
+    return Math.min(100, ((depth - cur) / (next - cur)) * 100);
+  }
+
+  function defaultIdleState(): AgentIdleState {
+    return { mode: "idle", outerPct: 0, innerPct: 0, emoji: MODE_ICON.idle };
+  }
+
   let agents = $state<AgentEntry[]>([]);
   let loading = $state(true);
   let activeTab = $state<"agents" | "finance">("agents");
+  let idleStates = $state<Record<string, AgentIdleState>>({});
+  let unlisteners: (() => void)[] = [];
 
-  function avatarColor(name: string): string {
-    let hash = 0;
-    for (let i = 0; i < name.length; i++) {
-      hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  function ensureIdleState(key: string) {
+    if (!(key in idleStates)) {
+      idleStates = { ...idleStates, [key]: defaultIdleState() };
     }
-    const hue = Math.abs(hash) % 360;
-    return `hsl(${hue}, 50%, 42%)`;
   }
 
-  function avatarInitials(name: string): string {
-    const parts = name.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
+  function handleIdleEvent(e: any) {
+    const p = e.payload;
+    if (!p?.event_type) return;
+    const et: string = p.event_type;
+    const data = p.payload ?? {};
+    const agentId: string | undefined = data.agent_id;
+
+    if (!agentId) return;
+    ensureIdleState(agentId);
+
+    if (et === "idle") {
+      const depth: number = data.depth ?? 0;
+      const arousal: number = data.context?.arousal_level ?? 0.5;
+      const kind: string = data.kind ?? "daze";
+      idleStates = {
+        ...idleStates,
+        [agentId]: {
+          mode: "idle",
+          outerPct: depthPct(depth),
+          innerPct: Math.round(arousal * 100),
+          emoji: IDLE_EMOJI[kind] ?? MODE_ICON.idle,
+        },
+      };
+    } else if (et === "agent:reply_stream_start" || et === "agent:reply_chunk" ||
+               et === "agent:reply_stream_done" || et === "agent:reply_ready" ||
+               et === "tool:dispatched" || et === "tool:completed" || et === "tool:failed") {
+      // Agent is active — show processing
+      idleStates = {
+        ...idleStates,
+        [agentId]: { mode: "processing", outerPct: 50, innerPct: 50, emoji: MODE_ICON.processing },
+      };
     }
-    return name.slice(0, 2).toUpperCase();
+  }
+
+  function getIdleState(key: string): AgentIdleState {
+    return idleStates[key] ?? defaultIdleState();
   }
 
   async function selectAgent(key: string) {
@@ -40,18 +114,29 @@
       await invoke("select_agent", { key });
       onNavigate("chat");
     } catch {
-      // agent selection failed silently
+      // silent
     }
   }
 
   onMount(async () => {
     try {
       agents = await invoke<AgentEntry[]>("list_agents");
+      // Initialize default idle state for each agent
+      const init: Record<string, AgentIdleState> = {};
+      for (const a of agents) {
+        init[a.key] = defaultIdleState();
+      }
+      idleStates = init;
     } catch {
       // no agents or config missing
     } finally {
       loading = false;
     }
+    unlisteners.push(await listen("event:processed", handleIdleEvent));
+  });
+
+  onDestroy(() => {
+    for (const fn of unlisteners) fn();
   });
 </script>
 
@@ -84,16 +169,21 @@
     {:else}
       <div class="agent-grid">
         {#each agents as agent}
+          {@const st = getIdleState(agent.key)}
           <button class="agent-avatar-card" onclick={() => selectAgent(agent.key)}>
-            <div
-              class="agent-avatar"
-              style="background: {avatarColor(agent.display_name)}"
-            >
-              <span class="agent-avatar-initials">{avatarInitials(agent.display_name)}</span>
-            </div>
+            <IdleRing
+              mode={st.mode}
+              outerPct={st.outerPct}
+              innerPct={st.innerPct}
+              emoji={st.emoji}
+              ringColors={COLORS[st.mode]}
+              size={56}
+              showLabel={false}
+              showInfo={false}
+            />
             <span class="agent-avatar-name">{agent.display_name}</span>
             {#if agent.is_active}
-              <span class="badge ok" style="margin-top:4px;font-size:10px;">active</span>
+              <span class="badge ok" style="margin-top:2px;font-size:10px;">active</span>
             {/if}
           </button>
         {/each}
@@ -163,7 +253,7 @@
     flex-direction: column;
     align-items: center;
     gap: 10px;
-    padding: 24px 16px 20px;
+    padding: 20px 16px 16px;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -174,24 +264,6 @@
   .agent-avatar-card:hover {
     border-color: var(--accent);
     transform: translateY(-2px);
-  }
-
-  .agent-avatar {
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  .agent-avatar-initials {
-    color: #fff;
-    font-size: 24px;
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    user-select: none;
   }
 
   .agent-avatar-name {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
+  import IdleRing from "./IdleRing.svelte";
 
   // ---------------------------------------------------------------------------
   // Types
@@ -31,7 +32,17 @@
   // Props
   // ---------------------------------------------------------------------------
 
-  let { runtimeRunning = false }: { runtimeRunning?: boolean } = $props();
+  let {
+    visible = true,
+    agentId = "",
+    agentName = "",
+    runtimeRunning = false,
+  }: {
+    visible?: boolean;
+    agentId?: string;
+    agentName?: string;
+    runtimeRunning?: boolean;
+  } = $props();
 
   // ---------------------------------------------------------------------------
   // State
@@ -43,8 +54,6 @@
   let metrics = $state<MetricsData | null>(null);
   let unlisteners: (() => void)[] = [];
 
-  // Reset all state when the gateway stops so stale idle/metrics data
-  // doesn't linger after a stop/restart cycle.
   $effect(() => {
     if (!runtimeRunning) {
       mode = "idle";
@@ -65,24 +74,22 @@
   };
 
   const IDLE_LABEL: Record<string, string> = {
-    daze: "Daze — \u{76F2}\u{7136}", boredom: "Boredom — \u{65E0}\u{804A}",
-    sleep: "Sleep — \u{4F11}\u{7720}", exploration: "Exploration — \u{63A2}\u{7D22}",
-    meditation: "Meditation — \u{51A5}\u{60F3}",
-    incubation: "Incubation — \u{5B75}\u{5316}", waiting: "Waiting — \u{7B49}\u{5F85}",
+    daze: "Daze", boredom: "Boredom",
+    sleep: "Sleep", exploration: "Exploration",
+    meditation: "Meditation",
+    incubation: "Incubation", waiting: "Waiting",
   };
 
-  // Mode-specific ring colors
   const COLORS: Record<Mode, { outer: string; inner: string }> = {
     idle:       { outer: "#6c8cff", inner: "#f59e0b" },
     reflection: { outer: "#a78bfa", inner: "#f472b6" },
     processing: { outer: "#4ade80", inner: "#22d3ee" },
   };
 
-  // Center emoji per mode
   const MODE_ICON: Record<Mode, string> = {
-    idle:       "\u{1F4A4}",   // 💤 fallback when no snapshot
-    reflection: "\u{1F9E0}",   // 🧠
-    processing: "\u{26A1}",    // ⚡
+    idle:       "\u{1F4A4}",
+    reflection: "\u{1F9E0}",
+    processing: "\u{26A1}",
   };
 
   // --- derived ---
@@ -153,36 +160,36 @@
       return `Cycle: ${reflectSnap?.reflectionConsecutiveCount ?? 0}`;
     if (mode === "processing") {
       const bp = metrics?.backpressure_level;
-      return bp && bp !== "Normal" ? `Backpressure: ${bp}` : `Inflight: ${totalInflight}`;
+      return bp && bp !== "Normal" ? `BP: ${bp}` : `Inflight: ${totalInflight}`;
     }
     return "";
   });
 
   let ringColors = $derived(COLORS[mode]);
 
-  // --- SVG ring geometry ---
-
-  const R_OUTER = 48;
-  const R_INNER = 34;
-  const C_OUTER = 2 * Math.PI * R_OUTER;
-  const C_INNER = 2 * Math.PI * R_INNER;
-
-  function dash(circum: number, pct: number): number {
-    return circum - (pct / 100) * circum;
-  }
-
   // ---------------------------------------------------------------------------
   // Event handlers
   // ---------------------------------------------------------------------------
+
+  function matchesAgent(data: any): boolean {
+    if (!agentId) return true;
+    const eventAgentId: string | undefined = data.agent_id ?? data.payload?.agent_id;
+    if (!eventAgentId) return true; // global events pass through
+    return eventAgentId === agentId;
+  }
 
   function onEvent(e: any) {
     const p = e.payload;
     if (!p?.event_type) return;
 
     const et: string = p.event_type;
+    const data = p.payload ?? {};
+
+    // Filter by agent when an agentId is specified
+    if (!matchesAgent(data)) return;
 
     if (et === "idle") {
-      const d = p.payload ?? {};
+      const d = data;
       idleSnap = {
         kind: d.kind ?? "daze",
         depth: d.depth ?? 0,
@@ -190,7 +197,7 @@
       };
       mode = "idle";
     } else if (et === "system.queue_drained") {
-      const d = p.payload ?? {};
+      const d = data;
       reflectSnap = {
         lastEventType: d.lastEventType ?? "",
         arousalLevel: d.arousalLevel ?? 0.5,
@@ -220,34 +227,30 @@
   });
 </script>
 
-<div class="activity-widget" class:active={runtimeRunning}>
-  <div class="label-text">{label}</div>
+{#if visible}
+  <div class="activity-widget" class:active={runtimeRunning}>
+    {#if agentName}
+      <div class="agent-label">{agentName}</div>
+    {/if}
 
-  <div class="ring-wrapper">
-    <svg viewBox="0 0 110 110" class="ring-svg">
-      <!-- track rings -->
-      <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke="#2a2d3a" stroke-width="5" />
-      <circle cx="55" cy="55" r={R_INNER} fill="none" stroke="#2a2d3a" stroke-width="5" />
+    <IdleRing
+      {mode}
+      {outerPct}
+      {innerPct}
+      {emoji}
+      {label}
+      {info1}
+      {info2}
+      {ringColors}
+      size={110}
+      active={runtimeRunning}
+    />
 
-      <!-- outer ring (progress) -->
-      <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke={ringColors.outer} stroke-width="5"
-        stroke-dasharray={C_OUTER} stroke-dashoffset={dash(C_OUTER, outerPct)}
-        stroke-linecap="round" transform="rotate(-90 55 55)" />
-
-      <!-- inner ring (secondary) -->
-      <circle cx="55" cy="55" r={R_INNER} fill="none" stroke={ringColors.inner} stroke-width="5"
-        stroke-dasharray={C_INNER} stroke-dashoffset={dash(C_INNER, innerPct)}
-        stroke-linecap="round" transform="rotate(-90 55 55)" />
-    </svg>
-
-    <div class="ring-center" title={title}>{emoji}</div>
+    {#if agentName}
+      <div class="widget-title" title={title}>{agentName}</div>
+    {/if}
   </div>
-
-  <div class="info-lines">
-    <span class="info-outer" style="color: {ringColors.outer}">{info1}</span>
-    <span class="info-inner" style="color: {ringColors.inner}">{info2}</span>
-  </div>
-</div>
+{/if}
 
 <style>
   .activity-widget {
@@ -255,48 +258,27 @@
     padding: 14px 16px 20px;
     border-top: 1px solid var(--border);
     text-align: center;
-    opacity: 0.35;
-    transition: opacity 0.4s;
-  }
-  .activity-widget.active {
-    opacity: 1;
-  }
-  .label-text {
-    font-size: 10px;
-    color: var(--fg-dim);
-    letter-spacing: 1.5px;
-    margin-bottom: 10px;
-  }
-  .ring-wrapper {
-    position: relative;
-    width: 110px;
-    height: 110px;
-    margin: 0 auto;
-  }
-  .ring-svg {
-    width: 100%;
-    height: 100%;
-  }
-  .ring-center {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 30px;
-    user-select: none;
-    cursor: default;
-  }
-  .info-lines {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    margin-top: 6px;
   }
-  .info-outer, .info-inner {
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1.5;
+  .agent-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 8px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .widget-title {
+    font-size: 11px;
+    color: var(--fg-dim);
+    margin-top: 4px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

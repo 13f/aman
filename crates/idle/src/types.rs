@@ -71,6 +71,9 @@ pub struct IdleEvent {
     pub duration_secs: f64,
     pub context: Option<IdleContext>,
     pub from_chat_mode: bool,
+    /// The agent this idle event belongs to (for UI filtering).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +506,7 @@ mod tests {
             duration_secs: 0.0,
             context: None,
             from_chat_mode: false,
+            agent_id: None,
         };
         let event: Event = idle.into();
         assert_eq!(event.priority, Priority::Low);
@@ -532,6 +536,7 @@ mod tests {
             duration_secs: 0.0,
             context: None,
             from_chat_mode: false,
+            agent_id: None,
         };
         let event: Event = idle.into();
         assert!(!event.is_from_external_source());

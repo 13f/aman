@@ -142,6 +142,9 @@ pub struct ChatSessionInfo {
     pub message_count: usize,
     pub created_at: i64,
     pub last_active_at: Option<i64>,
+    /// Short title derived from the first user message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Session type: "ad-hoc", "persistent", "shared", "shared-sub", "branch", "role-play"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_type: Option<String>,

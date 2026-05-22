@@ -60,6 +60,7 @@
     title: string;
     messageCount: number;
     status: "idle" | "processing";
+    createdAt?: number;
     lastActiveAt?: number;
     state?: string;
   }
@@ -352,13 +353,14 @@
       const list = await invoke<Array<{
         id: string; state: string; message_count: number;
         created_at: number; last_active_at: number | null;
-        session_type: string | null;
+        session_type: string | null; title?: string;
       }>>("chat_session_list_db", { agentKey: activeAgentKey || null });
       const loaded: Session[] = list.map((s, i) => ({
         id: s.id,
-        title: s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`,
+        title: s.title || (s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`),
         messageCount: s.message_count,
         status: "idle" as const,
+        createdAt: s.created_at,
         lastActiveAt: s.last_active_at ?? s.created_at,
         state: s.state,
       }));
@@ -374,14 +376,15 @@
         const list = await invoke<Array<{
           id: string; state: string; message_count: number;
           created_at: number; last_active_at: number | null;
-          session_type: string | null;
+          session_type: string | null; title?: string;
         }>>("chat_session_list");
         list.sort((a, b) => (b.last_active_at ?? b.created_at) - (a.last_active_at ?? a.created_at));
         const loaded: Session[] = list.map((s, i) => ({
           id: s.id,
-          title: s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`,
+          title: s.title || (s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`),
           messageCount: s.message_count,
           status: "idle" as const,
+          createdAt: s.created_at,
           lastActiveAt: s.last_active_at ?? s.created_at,
           state: s.state,
         }));
@@ -403,7 +406,7 @@
       id = Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
     }
     const count = sessions.length + 1;
-    sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle" }];
+    sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }];
     activeSessionId = id;
     // Reset to last page for the new session
     currentPage = totalPages;
@@ -1052,7 +1055,7 @@
     try {
       const id = await invoke<string>("chat_session_create");
       const count = sessions.length + 1;
-      sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle" }];
+      sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }];
       activeSessionId = id;
     } catch (err: any) {
       messages = [...messages, {
@@ -1482,7 +1485,15 @@
               onclick={() => selectSession(session.id)}
             >
               <span class="session-title">{session.title}</span>
-              <span class="session-meta">{session.messageCount} msgs &middot; {session.status}</span>
+              <span class="session-meta">
+                {#if session.createdAt && session.lastActiveAt}
+                  {#if new Date(session.createdAt).toLocaleDateString() === new Date(session.lastActiveAt).toLocaleDateString()}
+                    {new Date(session.createdAt).toLocaleDateString()}
+                  {:else}
+                    {new Date(session.createdAt).toLocaleDateString()} - {new Date(session.lastActiveAt).toLocaleDateString()}
+                  {/if}
+                {/if}
+              </span>
             </button>
             <button
               class="session-delete-btn"

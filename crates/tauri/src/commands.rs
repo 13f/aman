@@ -630,6 +630,7 @@ pub async fn chat_session_list(
             message_count: item["message_count"].as_u64().unwrap_or(0) as usize,
             created_at: item["created_at"].as_i64().unwrap_or(0),
             last_active_at: item["last_active_at"].as_i64(),
+            title: item["title"].as_str().map(String::from),
             session_type: item["session_type"].as_str().map(String::from),
             parent_session_id: item["parent_session_id"].as_str().map(String::from),
             branch_message_id: item["branch_message_id"].as_str().map(String::from),
@@ -660,11 +661,65 @@ pub async fn chat_session_list_db(
                 .clone()
         }
     };
-    let db_path = std::path::PathBuf::from(&home)
+    let agent_dir = std::path::PathBuf::from(&home)
         .join(".aman")
         .join("agents")
-        .join(&agent_key)
-        .join("sessions.db");
+        .join(&agent_key);
+    let db_path = agent_dir.join("sessions.db");
+    let agents_root = agent_dir.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| agent_dir.clone());
+
+    // Helper: count lines in a session's JSONL file, searching across ALL
+    // agent directories (the gateway writes to the first agent's dir).
+    fn jsonl_message_count(agents_root: &std::path::Path, session_id: &str) -> usize {
+        let entries = match std::fs::read_dir(agents_root) {
+            Ok(e) => e,
+            Err(_) => return 0,
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().map_or(false, |t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path().join("sessions").join(format!("{session_id}.jsonl"));
+            if path.exists() {
+                if let Ok(s) = std::fs::read_to_string(&path) {
+                    let count = s.lines().count();
+                    if count > 0 {
+                        return count;
+                    }
+                }
+            }
+        }
+        0
+    }
+
+    /// Extract a short title from the first user message in a session JSONL,
+    /// searching across all agent directories.
+    fn jsonl_session_title(agents_root: &std::path::Path, session_id: &str) -> Option<String> {
+        let entries = std::fs::read_dir(agents_root).ok()?;
+        for entry in entries.flatten() {
+            if !entry.file_type().map_or(false, |t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path().join("sessions").join(format!("{session_id}.jsonl"));
+            let content = std::fs::read_to_string(&path).ok()?;
+            for line in content.lines() {
+                if let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) {
+                    let et = evt["event_type"].as_str().unwrap_or("");
+                    if et.contains("MessageReceived") {
+                        let text = evt["payload"]["text"].as_str().unwrap_or("").trim().to_string();
+                        if !text.is_empty() {
+                            if text.chars().count() <= 40 {
+                                return Some(text);
+                            }
+                            let truncated: String = text.chars().take(40).collect();
+                            return Some(format!("{truncated}…"));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 
     let db = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("open sessions.db: {e}"))?;
@@ -682,6 +737,7 @@ pub async fn chat_session_list_db(
             message_count: row.get::<_, i64>(2)? as usize,
             created_at: row.get(3)?,
             last_active_at: Some(row.get(4)?),
+            title: None,
             session_type: row.get(5)?,
             parent_session_id: None,
             branch_message_id: None,
@@ -692,7 +748,17 @@ pub async fn chat_session_list_db(
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| format!("session row: {e}"))?);
+        let mut item = row.map_err(|e| format!("session row: {e}"))?;
+        // The DB message_count may be stale (only the first agent's DB is
+        // updated by the gateway).  Use the JSONL line count as the
+        // authoritative count for this per-agent session list.
+        let jsonl_count = jsonl_message_count(&agents_root, &item.id);
+        if jsonl_count > 0 {
+            item.message_count = jsonl_count;
+        }
+        // Extract a title from the first user message in the JSONL.
+        item.title = jsonl_session_title(&agents_root, &item.id);
+        items.push(item);
     }
     Ok(items)
 }

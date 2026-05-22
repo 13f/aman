@@ -646,17 +646,24 @@ pub async fn chat_session_list(
 /// started and no sessions have been persisted yet.
 #[tauri::command]
 pub async fn chat_session_list_db(
+    agent_key: Option<String>,
 ) -> Result<Vec<ChatSessionInfo>, String> {
-    // Compute DB path: ~/.aman/agents/{first_key}/sessions.db
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
-    let aman_cfg = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("load config: {e}"))?;
-    let first_key = aman_cfg.agents.keys().next()
-        .ok_or_else(|| "no agents configured".to_owned())?;
+    // Use the provided agent key, or fall back to the first agent in config.
+    let agent_key = match agent_key {
+        Some(k) => k,
+        None => {
+            let aman_cfg = config::AmanConfig::from_default_path()
+                .map_err(|e| format!("load config: {e}"))?;
+            aman_cfg.agents.keys().next()
+                .ok_or_else(|| "no agents configured".to_owned())?
+                .clone()
+        }
+    };
     let db_path = std::path::PathBuf::from(&home)
         .join(".aman")
         .join("agents")
-        .join(first_key)
+        .join(&agent_key)
         .join("sessions.db");
 
     let db = rusqlite::Connection::open(&db_path)
@@ -799,6 +806,54 @@ pub async fn chat_session_state(
         messages,
         session_type: v["session_type"].as_str().unwrap_or("persistent").to_owned(),
         version: v["version"].as_u64().unwrap_or(0),
+    })
+}
+
+/// Read session state directly from the per-agent sessions directory,
+/// bypassing the gateway's single-agent session store.
+#[tauri::command]
+pub async fn chat_session_state_local(
+    agent_key: String,
+    session_id: String,
+) -> Result<ChatSessionState, String> {
+    if session_id.trim().is_empty() {
+        return Err("Session ID cannot be empty".to_owned());
+    }
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
+    let sessions_dir = std::path::PathBuf::from(&home)
+        .join(".aman")
+        .join("agents")
+        .join(&agent_key)
+        .join("sessions");
+    let jsonl_path = sessions_dir.join(format!("{session_id}.jsonl"));
+
+    let messages: Vec<ChatMessageEntry> = if jsonl_path.exists() {
+        let content = std::fs::read_to_string(&jsonl_path)
+            .map_err(|e| format!("read JSONL: {e}"))?;
+        content
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .map(|e| ChatMessageEntry {
+                id: e["event_id"].as_str().unwrap_or("").to_owned(),
+                event_type: e["event_type"].as_str().unwrap_or("").to_owned(),
+                payload: e["payload"].clone(),
+                timestamp: e["timestamp_ms"].as_i64().unwrap_or(0),
+                trace_id: String::new(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let msg_count = messages.len() as u64;
+    Ok(ChatSessionState {
+        session_id,
+        state: "closed".to_owned(),
+        state_version: msg_count,
+        retry_count: 0,
+        messages,
+        session_type: "persistent".to_owned(),
+        version: msg_count,
     })
 }
 

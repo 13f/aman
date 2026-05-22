@@ -123,6 +123,8 @@
       const active = agents.find(a => a.is_active && a.provider);
       if (active) {
         activeAgentKey = active.key;
+        // Fresh entry into Chat — load sessions for the active agent.
+        await loadSessions();
       } else if (agents.length > 0) {
         // Auto-select first agent that has a provider, or first agent
         const firstConfigured = agents.find(a => a.provider);
@@ -139,6 +141,10 @@
     try {
       await invoke("select_agent", { key: activeAgentKey });
       showToast("info", `Switched to agent: ${activeAgentKey}`);
+      // Clear current chat view and reload sessions for the newly selected agent.
+      activeSessionId = "";
+      messages = [];
+      await loadSessions();
     } catch (e) {
       showToast("error", `Failed to select agent: ${e}`);
     }
@@ -235,7 +241,7 @@
           payload: any;
           timestamp_ms: number;
         }>;
-      }>("chat_session_state", { sessionId });
+      }>("chat_session_state_local", { agentKey: activeAgentKey, sessionId });
       if (!state.messages?.length) return;
       // Build Message objects from persisted session events.
       const historyMsgs: Message[] = [];
@@ -305,12 +311,12 @@
 
   async function loadSessions() {
     try {
-      // Try reading from the local SQLite DB first (persists across restarts).
+      // Try reading from the local SQLite DB for the active agent.
       const list = await invoke<Array<{
         id: string; state: string; message_count: number;
         created_at: number; last_active_at: number | null;
         session_type: string | null;
-      }>>("chat_session_list_db");
+      }>>("chat_session_list_db", { agentKey: activeAgentKey || null });
       const loaded: Session[] = list.map((s, i) => ({
         id: s.id,
         title: s.id.length > 8 ? `Session ${s.id.slice(0, 8)}` : `Session ${i + 1}`,
@@ -1402,8 +1408,8 @@
       chatCapabilityAvailable = false;
     }
 
-    // Load sessions from backend, sorted by last_active_at desc
-    await loadSessions();
+    // Load agents first (sets activeAgentKey, triggers session load for the right agent).
+    await loadAgents();
 
     // Ensure there's at least one session
     if (sessions.length === 0) {
@@ -1413,7 +1419,6 @@
     }
 
     await loadSoulInfo();
-    await loadAgents();
     await loadSkills();
     window.addEventListener("keydown", handleGlobalKeydown);
   });

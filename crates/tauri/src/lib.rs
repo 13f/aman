@@ -90,6 +90,7 @@ pub fn run() {
             commands::chat_session_delete,
             commands::chat_session_history,
             commands::chat_session_state,
+            commands::chat_session_state_local,
             commands::chat_retry_last,
             commands::chat_edit_message,
             commands::chat_trace_chain,

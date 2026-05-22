@@ -141,13 +141,6 @@
     return "PROCESSING";
   });
 
-  let title = $derived.by(() => {
-    if (mode === "idle" && idleSnap) return IDLE_LABEL[idleSnap.kind] ?? idleSnap.kind;
-    if (mode === "reflection")
-      return "Reflecting after " + (reflectSnap?.lastEventType ?? "?");
-    return "Processing " + totalQueue + " queued events";
-  });
-
   let info1 = $derived.by(() => {
     if (mode === "idle") return `Depth: ${Math.round(outerPct)}%`;
     if (mode === "reflection") return `Arousal: ${Math.round(outerPct)}%`;
@@ -246,9 +239,6 @@
       active={runtimeRunning}
     />
 
-    {#if agentName}
-      <div class="widget-title" title={title}>{agentName}</div>
-    {/if}
   </div>
 {/if}
 
@@ -267,15 +257,6 @@
     font-weight: 600;
     color: var(--accent);
     margin-bottom: 8px;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .widget-title {
-    font-size: 11px;
-    color: var(--fg-dim);
-    margin-top: 4px;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;

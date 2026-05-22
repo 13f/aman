@@ -13,6 +13,7 @@
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
   import NotificationOverlay from "./pages/NotificationOverlay.svelte";
   import Settings from "./pages/Settings.svelte";
+  import ThirdPartyServices from "./pages/ThirdPartyServices.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -38,6 +39,7 @@
       items: [
         { id: "agents", label: "Agents" },
         { id: "providers", label: "Providers" },
+        { id: "third-party", label: "Third Party Services" },
         { id: "dashboard", label: "Dashboard" },
       ],
     },
@@ -140,8 +142,8 @@
     {#if expandedGroups[group.name]}
       <div class="menu-items">
         {#each group.items as page}
-          {#if page.id === "chat" && !runtimeRunning}
-            <span class="sidebar-link disabled" title="Start the runtime first">
+          {#if (page.id === "chat" && !runtimeRunning) || page.id === "settings"}
+            <span class="sidebar-link disabled" title={page.id === "settings" ? "Settings are being reorganised" : "Start the runtime first"}>
               <span class="status-dot stopped"></span>
               {page.label}
             </span>
@@ -176,6 +178,8 @@
     <PluginManager />
   {:else if currentPage === "providers"}
     <Providers />
+  {:else if currentPage === "third-party"}
+    <ThirdPartyServices />
   {:else if currentPage === "agents"}
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}

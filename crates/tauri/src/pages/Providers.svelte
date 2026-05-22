@@ -194,16 +194,16 @@
     margin-top: 16px;
   }
   .provider-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
   }
-  .provider-card { max-width: 600px; }
   .provider-header {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
+    flex-wrap: wrap;
   }
   .provider-name { font-size: 15px; }
   .provider-detail {

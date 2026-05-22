@@ -107,19 +107,26 @@
   );
 
   // Agent selector state
-  let agentList = $state<Array<{ key: string; display_name: string }>>([]);
+  let agentList = $state<Array<{ key: string; display_name: string; provider: string }>>([]);
   let activeAgentKey = $state("");
+
+  const activeAgentHasProvider = $derived(
+    agentList.find(a => a.key === activeAgentKey)?.provider != null &&
+    agentList.find(a => a.key === activeAgentKey)?.provider !== ""
+  );
 
   async function loadAgents() {
     try {
-      const agents = await invoke<Array<{ key: string; display_name: string; is_active: boolean }>>("list_agents");
+      const agents = await invoke<Array<{ key: string; display_name: string; provider: string; is_active: boolean }>>("list_agents");
       agentList = agents;
-      const active = agents.find(a => a.is_active);
+      // Prefer active agent that has a provider configured
+      const active = agents.find(a => a.is_active && a.provider);
       if (active) {
         activeAgentKey = active.key;
       } else if (agents.length > 0) {
-        // Auto-select first agent when none is active.
-        activeAgentKey = agents[0].key;
+        // Auto-select first agent that has a provider, or first agent
+        const firstConfigured = agents.find(a => a.provider);
+        activeAgentKey = firstConfigured ? firstConfigured.key : agents[0].key;
         handleAgentChange();
       }
     } catch (e) {
@@ -1506,7 +1513,7 @@
         {:else}
           <select class="agent-selector" bind:value={activeAgentKey} onchange={handleAgentChange}>
             {#each agentList as agent}
-              <option value={agent.key}>{agent.display_name}</option>
+              <option value={agent.key} disabled={!agent.provider}>{agent.display_name}{!agent.provider ? " (needs config)" : ""}</option>
             {/each}
           </select>
         {/if}
@@ -1596,11 +1603,13 @@
         oninput={updateSkillPicker}
         placeholder={!chatCapabilityAvailable
           ? "Chat capability unavailable..."
-          : rateLimitCountdown > 0
-            ? `Rate limited — wait ${rateLimitCountdown}s...`
-            : "Type a message... (Enter to send, Shift+Enter for newline)"}
+          : !activeAgentHasProvider
+            ? "Configure a provider for this agent first..."
+            : rateLimitCountdown > 0
+              ? `Rate limited — wait ${rateLimitCountdown}s...`
+              : "Type a message... (Enter to send, Shift+Enter for newline)"}
         rows="1"
-        disabled={isProcessing || rateLimitCountdown > 0 || !chatCapabilityAvailable}
+        disabled={isProcessing || rateLimitCountdown > 0 || !chatCapabilityAvailable || !activeAgentHasProvider}
       ></textarea>
       {#if showSkillPicker}
         <!-- svelte-ignore a11y_no_static_element_interactions -->

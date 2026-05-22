@@ -207,7 +207,7 @@ I prefer concise and accurate responses.
 {:else}
   <div class="agent-list">
     {#each agents as agent}
-      <div class="card agent-card {agent.is_active ? 'active' : ''}">
+      <div class="card agent-card {agent.is_active ? 'active' : ''}" class:needs-config={!agent.provider}>
         <div class="agent-header">
           <strong class="agent-name">{agent.display_name}</strong>
           <span class="badge ok">{(agent as any).key}</span>
@@ -216,8 +216,12 @@ I prefer concise and accurate responses.
           {/if}
         </div>
         <div class="agent-detail">
-          <span class="dim">Provider:</span> {agent.provider}
-          <span class="dim" style="margin-left:16px;">Model:</span> {agent.model}
+          {#if agent.provider}
+            <span class="dim">Provider:</span> {agent.provider}
+            <span class="dim" style="margin-left:16px;">Model:</span> {agent.model}
+          {:else}
+            <span class="needs-config-badge">⚡ 需要配置 Provider</span>
+          {/if}
         </div>
         {#if agent.soul_summary}
           <div class="agent-soul-preview">
@@ -229,13 +233,19 @@ I prefer concise and accurate responses.
           <span class="dim">Sessions:</span> {agent.session_count}
         </div>
         <div class="agent-actions">
-          {#if !agent.is_active}
+          {#if !agent.provider}
+            <button class="primary" onclick={() => openEdit(agent)}>⚙ 配置 Provider</button>
+            <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
+            <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
+          {:else if !agent.is_active}
             <button onclick={() => selectAgent(agent.key)}>选择并聊天</button>
+            <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
+            <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
           {:else}
             <button class="secondary" onclick={() => onNavigate("chat")}>去 Chat</button>
+            <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
+            <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
           {/if}
-          <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-          <button class="danger" onclick={() => deleteAgent(agent.key)}>删除</button>
         </div>
 
         {#if showEditForm === agent.key}
@@ -305,19 +315,49 @@ I prefer concise and accurate responses.
     margin-top: 16px;
   }
   .agent-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 16px;
   }
-  .agent-card { max-width: 650px; }
+  .agent-card {
+    /* grid handles sizing — all cards in a row share the same width */
+  }
   .agent-card.active {
     border-color: var(--accent);
+  }
+  .agent-card.needs-config {
+    border-color: var(--warn, #f59e0b);
+    background: linear-gradient(135deg,
+      rgba(245,158,11,0.06) 0%,
+      var(--bg-card) 40%
+    );
+    position: relative;
+  }
+  .agent-card.needs-config::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+    background: var(--warn, #f59e0b);
+    border-radius: 12px 0 0 12px;
+  }
+  .needs-config-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    background: rgba(245,158,11,0.15);
+    color: var(--warn, #f59e0b);
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
   }
   .agent-header {
     display: flex;
     align-items: center;
     gap: 8px;
     margin-bottom: 8px;
+    flex-wrap: wrap;
   }
   .agent-name { font-size: 15px; }
   .agent-detail {

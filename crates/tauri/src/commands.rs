@@ -1176,10 +1176,72 @@ pub async fn has_provider_api_key(key: String) -> Result<bool, String> {
 // Agent management (multi-agent P2) — LOCAL filesystem operations
 // ---------------------------------------------------------------------------
 
+/// Scan `~/.aman/agents/` for subdirectories containing `SOUL.md` that are
+/// not yet in config.yaml, and auto-register them with empty provider (disabled).
+fn sync_filesystem_agents_to_config() -> Result<(), String> {
+    let agents_dir = crate::agent_fs::agents_dir();
+    if !agents_dir.exists() {
+        return Ok(());
+    }
+
+    let config_path = default_config_path();
+    let mut aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    let entries = std::fs::read_dir(&agents_dir).map_err(|e| format!("读取agents目录失败: {e}"))?;
+    let mut changed = false;
+
+    for entry in entries.flatten() {
+        if !entry.file_type().map_or(false, |t| t.is_dir()) {
+            continue;
+        }
+        let key = entry.file_name().to_string_lossy().to_string();
+        if !config::is_valid_identifier(&key) {
+            continue;
+        }
+        if aman_config.agents.contains_key(&key) {
+            continue;
+        }
+        if !entry.path().join("SOUL.md").exists() {
+            continue;
+        }
+
+        let display_name = crate::agent_fs::soul_summary(&key)
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .unwrap_or_else(|| key.clone());
+
+        aman_config.agents.insert(
+            key.clone(),
+            config::AgentEntryConfig {
+                display_name,
+                provider: String::new(),
+                model: String::new(),
+                system_prompt_override: None,
+                enabled: false,
+                tools: None,
+                skills: None,
+                event_bus: None,
+            },
+        );
+        changed = true;
+    }
+
+    if changed {
+        aman_config.save(&config_path).map_err(|e| format!("保存配置失败: {e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn list_agents(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::models::AgentEntry>, String> {
+    // Discover any agents manually copied into ~/.aman/agents/ before listing.
+    sync_filesystem_agents_to_config()?;
+
     let aman_config = config::AmanConfig::from_default_path()
         .map_err(|e| format!("读取配置失败: {e}"))?;
 
@@ -1349,6 +1411,15 @@ pub async fn select_agent(
         .map_err(|e| format!("读取配置失败: {e}"))?;
     if !aman_config.agents.contains_key(&key) {
         return Err(format!("Agent '{key}' 不存在"));
+    }
+
+    // Block selection of agents without a configured provider.
+    if let Some(entry) = aman_config.agents.get(&key) {
+        if entry.provider.is_empty() {
+            return Err(format!(
+                "Agent '{key}' 尚未配置 Provider，请先在 Agents 页面配置。"
+            ));
+        }
     }
 
     let mut active = state.active_agent_key.lock().await;

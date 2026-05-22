@@ -127,8 +127,9 @@ impl AgentRegistry {
             }));
             self.set_local_bus(agent_id, Arc::clone(&local_bus)).await;
 
-            // Create per-agent idle manager if idle is enabled
-            if idle_enabled {
+            // Create per-agent idle manager only if both global idle is enabled
+            // AND this specific agent is enabled (has a configured provider).
+            if idle_enabled && entry.enabled {
                 let idle_manager = Arc::new(AgentIdleManager::new(
                     agent_id.clone(),
                     local_bus,

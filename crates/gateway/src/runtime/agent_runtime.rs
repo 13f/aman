@@ -193,6 +193,10 @@ impl AgentRuntimeBuilder {
         if let Err(e) = super::skill_sync::sync_builtin_skills() {
             tracing::error!(error = %e, "failed to sync built-in skills");
         }
+        // Seed predefined agents into ~/.aman/agents/ for new users.
+        let _seeded_agents = super::agent_seed::seed_builtin_agents();
+        // Discover any agents manually copied into ~/.aman/agents/.
+        let _discovered = super::agent_seed::discover_filesystem_agents();
         let skills_dir = super::skill_sync::aman_data_dir().join("skills");
         let _ = std::fs::create_dir_all(&skills_dir);
         let llm_skills = skill::discover_llm_skills(&skills_dir);
@@ -1414,6 +1418,20 @@ impl AgentRuntime {
     #[instrument(skip(self), fields(event_id = %event.id, source = %event.source, event_type = ?event.event_type))]
     pub async fn publish_event(&self, event: kernel::event::Event) -> AmanResult<()> {
         self.bus.publish(event).await
+    }
+
+    /// Publish an event to a specific agent's local bus, falling back to
+    /// the global bus if the agent has no dedicated local bus.
+    #[instrument(skip(self), fields(event_id = %event.id, agent_id = %agent_id))]
+    pub async fn publish_event_to_agent(
+        &self,
+        agent_id: &str,
+        event: kernel::event::Event,
+    ) -> AmanResult<()> {
+        match self.agent_registry.get_local_bus(agent_id).await {
+            Some(local_bus) => local_bus.publish(event).await,
+            None => self.bus.publish(event).await,
+        }
     }
 
     #[instrument(skip(self))]

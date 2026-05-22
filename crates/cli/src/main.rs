@@ -459,6 +459,118 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
                 Err(1)
             }
         }
+        "push" => {
+            let mut source: Option<String> = None;
+            let mut event_type: Option<String> = None;
+            let mut payload: Option<serde_json::Value> = None;
+            let mut agent_id: Option<String> = None;
+            let mut priority: Option<String> = None;
+            let mut delivery: Option<String> = None;
+            let mut ttl_ms: Option<u64> = None;
+            let mut payload_stdin: bool = false;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--source" => {
+                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--type" => {
+                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--payload" => {
+                        let raw = rest.get(i + 1).ok_or(2)?;
+                        payload = Some(
+                            serde_json::from_str::<serde_json::Value>(raw).map_err(|_| 2)?,
+                        );
+                        i += 2;
+                    }
+                    "--agent" => {
+                        agent_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--priority" => {
+                        priority = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--delivery" => {
+                        delivery = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--ttl-ms" => {
+                        ttl_ms = Some(
+                            rest.get(i + 1)
+                                .ok_or(2)?
+                                .parse::<u64>()
+                                .map_err(|_| 2)?,
+                        );
+                        i += 2;
+                    }
+                    "--payload-stdin" => {
+                        payload_stdin = true;
+                        i += 1;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            if payload_stdin {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .map_err(|_| 1)?;
+                payload =
+                    Some(serde_json::from_str::<serde_json::Value>(&buf).map_err(|_| 1)?);
+            }
+            let mut body = serde_json::json!({
+                "source": source.ok_or(2)?,
+                "event_type": event_type.ok_or(2)?,
+                "payload": payload.ok_or(2)?,
+            });
+            if let Some(ref id) = agent_id {
+                body["agent_id"] = serde_json::json!(id);
+            }
+            if let Some(ref p) = priority {
+                body["priority"] = serde_json::json!(p);
+            }
+            if let Some(ref d) = delivery {
+                body["delivery"] = serde_json::json!(d);
+            }
+            if let Some(t) = ttl_ms {
+                body["ttl_ms"] = serde_json::json!(t);
+            }
+            let res = opts
+                .apply_headers(client.post(opts.url("/events/push")).json(&body))
+                .send()
+                .await
+                .map_err(|_| 1)?;
+            let status = res.status();
+            let text = res.text().await.map_err(|_| 1)?;
+            if status.is_success() {
+                print!("{text}");
+                Ok(())
+            } else {
+                eprint!("{text}");
+                Err(1)
+            }
+        }
+        "types" => {
+            let res = opts
+                .apply_headers(client.get(opts.url("/events/types")))
+                .send()
+                .await
+                .map_err(|_| 1)?;
+            let status = res.status();
+            let text = res.text().await.map_err(|_| 1)?;
+            if status.is_success() {
+                print!("{text}");
+                Ok(())
+            } else {
+                eprint!("{text}");
+                Err(1)
+            }
+        }
         "dump" => {
             let mut id: Option<String> = None;
             let mut i = 0;
@@ -1268,7 +1380,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
+        "usage:\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }
 

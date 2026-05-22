@@ -109,9 +109,14 @@
     return idleStates[key] ?? defaultIdleState();
   }
 
-  async function selectAgent(key: string) {
+  async function selectAgent(agent: AgentEntry) {
+    // If the agent has no provider configured, navigate to Agents config page.
+    if (!agent.provider) {
+      onNavigate("agents");
+      return;
+    }
     try {
-      await invoke("select_agent", { key });
+      await invoke("select_agent", { key: agent.key });
       onNavigate("chat");
     } catch {
       // silent
@@ -170,7 +175,7 @@
       <div class="agent-grid">
         {#each agents as agent}
           {@const st = getIdleState(agent.key)}
-          <button class="agent-avatar-card" onclick={() => selectAgent(agent.key)}>
+          <button class="agent-avatar-card" class:needs-config={!agent.provider} onclick={() => selectAgent(agent)}>
             <IdleRing
               mode={st.mode}
               outerPct={st.outerPct}
@@ -180,9 +185,12 @@
               size={56}
               showLabel={false}
               showInfo={false}
+              active={!!agent.provider}
             />
             <span class="agent-avatar-name">{agent.display_name}</span>
-            {#if agent.is_active}
+            {#if !agent.provider}
+              <span class="badge warn" style="margin-top:2px;font-size:10px;">needs config</span>
+            {:else if agent.is_active}
               <span class="badge ok" style="margin-top:2px;font-size:10px;">active</span>
             {/if}
           </button>
@@ -264,6 +272,16 @@
   .agent-avatar-card:hover {
     border-color: var(--accent);
     transform: translateY(-2px);
+  }
+
+  .agent-avatar-card.needs-config {
+    opacity: 0.5;
+    cursor: pointer;
+  }
+
+  .agent-avatar-card.needs-config:hover {
+    opacity: 0.7;
+    border-color: var(--warn, #f59e0b);
   }
 
   .agent-avatar-name {

@@ -2040,7 +2040,7 @@ async fn chat_session_create(
                 "ok",
                 "",
             );
-            let _ = runtime.publish_event(Event::new(
+            let session_started_event = Event::new(
                 "session:control",
                 EventType::Custom("session:started".to_owned()),
                 json!({
@@ -2048,7 +2048,16 @@ async fn chat_session_create(
                     "session_type": session_type,
                     "operator": operator,
                 }),
-            )).await;
+            );
+            // Publish to global bus so global hooks see it.
+            let _ = runtime.publish_event(session_started_event.clone()).await;
+            // Also publish to each agent's local bus so agent hooks can receive it.
+            for agent in runtime.agent_registry().list().await {
+                let _ = runtime.publish_event_to_agent(
+                    &agent.descriptor.agent_id,
+                    session_started_event.clone(),
+                ).await;
+            }
             // Persist to local DB immediately so the session appears in
             // the frontend's session list even after a gateway restart.
             let created_at = instance.data.get("created_at")

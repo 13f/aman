@@ -11,6 +11,7 @@ min_version: "3.2"
 # For global events (gateway:ready, session:started, etc.), place
 # hooks under ~/.aman/hooks/ instead.
 on:
+  - session:started
   - agent:busy
   - tool:completed
   - tool:failed

@@ -745,7 +745,8 @@ impl AgentRuntimeBuilder {
         impl event_bus::EventHandler for ScriptHookEventHandler {
             async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
                 let event_type = event.event_type.as_str().to_owned();
-                self.runner.run(&event_type, &event.payload).await
+                let _ = self.runner.run(&event_type, &event.payload).await?;
+                Ok(())
             }
         }
 
@@ -1479,21 +1480,28 @@ impl AgentRuntime {
         }
 
         let runner = Arc::new(hook::ScriptHookRunner::new(hooks));
+        let global_bus = Arc::clone(&self.bus) as Arc<dyn event_bus::EventBus>;
         struct AgentHookHandler {
             runner: Arc<hook::ScriptHookRunner>,
+            global_bus: Arc<dyn event_bus::EventBus>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for AgentHookHandler {
             async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
                 let event_type = event.event_type.as_str().to_owned();
-                self.runner.run(&event_type, &event.payload).await
+                let prevented = self.runner.run(&event_type, &event.payload).await?;
+                if !prevented {
+                    // Bubble event up to the global bus so global hooks see it.
+                    let _ = self.global_bus.publish(event).await;
+                }
+                Ok(())
             }
         }
         if let Some(local_bus) = self.agent_registry.get_local_bus(agent_id).await {
             let _ = local_bus
                 .subscribe(
                     event_bus::SubscriptionFilter::default(),
-                    Box::new(AgentHookHandler { runner }),
+                    Box::new(AgentHookHandler { runner, global_bus }),
                 )
                 .await;
             tracing::info!(agent = %agent_id, count = discovered.len(), "agent script hooks subscribed to local bus");

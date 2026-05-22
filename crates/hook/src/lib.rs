@@ -97,10 +97,20 @@ impl Default for HookRegistry {
 
 // ── Script-based hooks ─────────────────────────────────────────────
 
+/// Result of executing a script hook.
+#[derive(Clone)]
+pub struct HookResult {
+    /// The script's stdout.
+    pub stdout: String,
+    /// If true, the event should not bubble up to the global bus.
+    pub prevented: bool,
+}
+
 /// A hook backed by an external script (Python, Node, Shell, etc.).
 ///
 /// Fires on one or more named event types (e.g. `"agent:busy"`, `"tool:completed"`).
 /// The script receives a JSON payload on stdin and may return a response on stdout.
+/// If the stdout is `{"prevented": true}`, the event will not bubble to the global bus.
 #[derive(Clone)]
 pub struct ScriptHook {
     name: String,
@@ -170,9 +180,18 @@ impl ScriptHook {
 
     /// Execute the hook script with the given JSON event payload.
     ///
-    /// The script receives the event JSON on stdin. Returns the script's stdout.
-    pub fn execute(&self, input: &Value) -> AmanResult<String> {
-        self.runtime.execute(&self.script_path, input)
+    /// The script receives the event JSON on stdin.
+    /// If stdout is `{"prevented": true}`, the returned `HookResult.prevented` is set
+    /// and the event will not bubble to the global bus.
+    pub fn execute(&self, input: &Value) -> AmanResult<HookResult> {
+        let stdout = self.runtime.execute(&self.script_path, input)?;
+        let prevented = stdout
+            .trim()
+            .strip_prefix('{')
+            .and_then(|_| serde_json::from_str::<Value>(&stdout).ok())
+            .and_then(|v| v.get("prevented")?.as_bool())
+            .unwrap_or(false);
+        Ok(HookResult { stdout, prevented })
     }
 }
 
@@ -192,24 +211,31 @@ impl ScriptHookRunner {
     /// Run all hooks whose event type matches the given event type string.
     ///
     /// Each hook receives the full event JSON on stdin.
+    /// Returns `true` if any hook prevented the event from bubbling to the global bus.
     /// Errors from individual hooks are collected and returned as a combined error.
-    pub async fn run(&self, event_type: &str, payload: &Value) -> AmanResult<()> {
+    pub async fn run(&self, event_type: &str, payload: &Value) -> AmanResult<bool> {
         let input = serde_json::json!({
             "event_type": event_type,
             "payload": payload,
         });
 
+        let mut prevented = false;
         let mut errors = Vec::new();
         for hook in &self.hooks {
             if hook.matches(event_type) {
-                if let Err(e) = hook.execute(&input) {
-                    errors.push(e);
+                match hook.execute(&input) {
+                    Ok(result) => {
+                        if result.prevented {
+                            prevented = true;
+                        }
+                    }
+                    Err(e) => errors.push(e),
                 }
             }
         }
 
         if errors.is_empty() {
-            Ok(())
+            Ok(prevented)
         } else {
             Err(kernel::Error::Unrecoverable {
                 message: format!(

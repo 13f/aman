@@ -1,5 +1,6 @@
 use config::AmanConfig;
 use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
+use idle::AgentIdleManager;
 use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
 use kernel::AmanResult;
@@ -23,6 +24,7 @@ use tokio::sync::RwLock;
 pub struct AgentRegistry {
     agents: RwLock<HashMap<String, AgentInstance>>,
     local_buses: RwLock<HashMap<String, Arc<dyn EventBus>>>,
+    idle_managers: RwLock<HashMap<String, Arc<AgentIdleManager>>>,
     bus: Arc<dyn EventBus>,
 }
 
@@ -32,6 +34,7 @@ impl AgentRegistry {
         Self {
             agents: RwLock::new(HashMap::new()),
             local_buses: RwLock::new(HashMap::new()),
+            idle_managers: RwLock::new(HashMap::new()),
             bus,
         }
     }
@@ -104,7 +107,13 @@ impl AgentRegistry {
                 .await;
         }
 
-        // Create per-agent local event buses
+        // Extract idle config values (resolve from partial or use defaults)
+        let idle_enabled = config.runtime.idle.enabled;
+        let idle_personality = config.runtime.idle.personality.clone();
+        let arousal_initial = config.runtime.idle.arousal.initial_value;
+        let arousal_half_life = config.runtime.idle.arousal.half_life_secs;
+
+        // Create per-agent local event buses and idle managers
         for (agent_id, entry) in &config.agents {
             // Determine local bus config: per-agent override or default
             let queue_size = entry
@@ -116,7 +125,19 @@ impl AgentRegistry {
                 max_queue_size: queue_size,
                 ..InMemoryBusConfig::default()
             }));
-            self.set_local_bus(agent_id, local_bus).await;
+            self.set_local_bus(agent_id, Arc::clone(&local_bus)).await;
+
+            // Create per-agent idle manager if idle is enabled
+            if idle_enabled {
+                let idle_manager = Arc::new(AgentIdleManager::new(
+                    agent_id.clone(),
+                    local_bus,
+                    idle_personality.clone(),
+                    arousal_initial,
+                    arousal_half_life,
+                ));
+                self.set_idle_manager(agent_id, idle_manager).await;
+            }
         }
 
         count
@@ -256,10 +277,21 @@ impl AgentRegistry {
 
     /// 清空注册表（shutdown 时调用）。
     pub async fn clear(&self) {
+        // Shut down all per-agent idle managers first
+        let idle_managers: Vec<Arc<AgentIdleManager>> = {
+            let managers = self.idle_managers.read().await;
+            managers.values().cloned().collect()
+        };
+        for manager in &idle_managers {
+            let _ = manager.shutdown().await;
+        }
+
         let mut agents = self.agents.write().await;
         agents.clear();
         let mut buses = self.local_buses.write().await;
         buses.clear();
+        let mut managers = self.idle_managers.write().await;
+        managers.clear();
     }
 
     /// 设置 Agent 的 Local EventBus。
@@ -272,5 +304,31 @@ impl AgentRegistry {
     pub async fn get_local_bus(&self, agent_id: &str) -> Option<Arc<dyn EventBus>> {
         let buses = self.local_buses.read().await;
         buses.get(agent_id).cloned()
+    }
+
+    /// 设置 Agent 的 IdleManager。
+    pub async fn set_idle_manager(&self, agent_id: &str, manager: Arc<AgentIdleManager>) {
+        let mut managers = self.idle_managers.write().await;
+        managers.insert(agent_id.to_owned(), manager);
+    }
+
+    /// 获取 Agent 的 IdleManager。
+    pub async fn get_idle_manager(&self, agent_id: &str) -> Option<Arc<AgentIdleManager>> {
+        let managers = self.idle_managers.read().await;
+        managers.get(agent_id).cloned()
+    }
+
+    /// 获取 Agent 的 IdleCoordination（用于 harness 交互）。
+    pub async fn get_idle_coordination(&self, agent_id: &str) -> Option<Arc<idle::IdleCoordination>> {
+        let managers = self.idle_managers.read().await;
+        managers.get(agent_id).map(|m| Arc::clone(m.coordination()))
+    }
+
+    /// 启动所有 Agent 的 idle 后台循环（在 Phase 4 调用）。
+    pub async fn start_all_idle_loops(&self) {
+        let managers = self.idle_managers.read().await;
+        for manager in managers.values() {
+            manager.start().await;
+        }
     }
 }

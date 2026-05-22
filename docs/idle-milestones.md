@@ -1,6 +1,6 @@
 # Idle State System — 开发里程碑与任务拆分
 
-> 基于 `/Users/jerin/projects/aman/docs/idle-design.md`（R6 审计收敛，设计成熟度 ★★★★★）
+> 基于 `/Users/jerin/projects/aman/docs/idle-design.md`（R8 per-agent-idle，设计成熟度 ★★★★★）
 > 扩展自 `/Users/jerin/projects/aman/docs/agent-design.md` §3.4 Event Dispatcher — Reflection 部分
 > 每个里程碑有明确的可交付物和验收标准，开发者可直接领取任务。
 > 架构引用格式：`§章节` 指向 idle-design.md 对应章节。
@@ -9,7 +9,7 @@
 
 ## 总体进度
 
-**设计阶段**：R6 审计收敛 ✅ (2025-05-16)
+**设计阶段**：R8 per-agent-idle 收敛 ✅ (2025-05-22)
 
 | 里程碑 | 进度 | 任务数 | 已完成 | 估时 |
 |--------|------|--------|--------|------|
@@ -491,30 +491,32 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 
 ## M5：IdleDetector 实现（4 天）
 
-> 目标：IdleDetector 作为 EventSource 正确感知队列空闲、产生对应 IdleEvent、处理聊天/完整模式切换。
+> 目标：IdleDetector 作为空闲状态机正确感知队列空闲、产生对应 IdleEvent、处理聊天/完整模式切换。
+> R8 后 IdleDetector 不再直接实现 EventSource trait，而是由 AgentIdleManager 的后台 tokio task 驱动。
 > 验收：队列持续为空时按深度产生 Daze→Boredom→Sleep→... 事件序列。
 
-### [x] T5.1 — 实现 IdleDetector EventSource 骨架
+### [x] T5.1 — 实现 IdleDetector 空闲状态机骨架
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
 | 涉及 | `crates/idle/src/detector.rs` |
-| 架构 | §5.3 IdleDetector 伪代码 |
+| 架构 | §5.3 IdleDetector 伪代码（R8：状态机逻辑由 AgentIdleManager 后台 task 驱动） |
 
 **子任务：**
 1. 实现 `IdleDetector` 结构体：coord, personality, idle_depth, last_non_idle, was_in_chat_mode, last_event_type, last_idle_outputs, agent_state
-2. 实现 `EventSource` trait（init, poll, shutdown 等）
+2. 字段使用 `pub(crate)` 可见性，供 `AgentIdleManager` 后台 task 读写
 3. 实现 `poll()` 方法基本骨架：
    - busy_reflecting 检查 → 直接返回空
-   - real_event_seen + pending_count 检查 → 重置 depth → 返回空
+   - pending_depth_reset 检查 → 重置 depth → 返回空
+   - Local EventBus queue_depth > 0 → 重置 depth → 返回空
    - 队列空 → 确定空闲类型 → 产生 IdleEvent
-4. 在 `poll()` 中设置 IdleEvent 的 priority = Low，source = IdleDetector.id
+4. IdleEvent 的 priority = Low，发布到 Agent 的 Local EventBus
 
 **验收：**
 - `cargo check -p idle` 通过
-- IdleDetector 实现了完整的 EventSource trait
-- poll 返回的 Vec<Event> 元素具有 IdleEvent 内容
+- IdleDetector 状态机逻辑正确
+- 产出的 IdleEvent 内容正确
 
 ---
 
@@ -726,50 +728,54 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 
 ## M7：生命周期集成（3 天）
 
-> 目标：IdleDetector 正确注册到 Agent 生命周期、关闭序列正确、路由配置生效。
-> 验收：Agent 启动后 IdleDetector 就绪；关闭时空闲 Workflow 正确终止。
+> 目标：Per-agent idle 系统正确集成到 Agent 生命周期、关闭序列正确、路由配置生效。
+> R8：IdleDetector 不再注册为全局 EventSource。AgentRegistry 在 Phase 2 为每个 Agent 创建 AgentIdleManager，
+> Phase 4 通过 `start_all_idle_loops()` 启动所有后台 task。
+> 验收：Agent 启动后 per-agent idle 系统就绪；关闭时空闲 Workflow 正确终止。
 
-### [x] T7.1 — 注册 idle 路由 + 启动集成 (gateway)
+### [x] T7.1 — 注册 idle 路由 + Per-Agent 启动集成 (gateway)
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/runtime/src/agent_runtime.rs`、`crates/runtime/src/` |
-| 架构 | §9.1 启动序列 |
+| 涉及 | `crates/gateway/src/runtime/agent_registry.rs`、`crates/gateway/src/runtime/agent_runtime.rs` |
+| 架构 | §9.1 启动序列（R8：Per-Agent） |
 
 **子任务：**
-1. Phase 0：创建 `IdleCoordination` 实例（与 Dispatcher 共享引用）
-2. Phase 2：Dispatcher 路由注入（idle.* 路由注册）
-3. Phase 4：注册 `IdleDetector` 为 EventSource
-4. 确保 IdleDetector 在 Timer/Cron 之后注册（或在 Phase 4 末尾）
-5. IdleDetector 状态反映在 health endpoint 中
+1. Phase 2：AgentRegistry::load_from_config() 为每个 Agent 创建：
+   - Local EventBus（InMemoryBus）
+   - IdleCoordination（共享协调状态）
+   - AgentIdleManager（含 IdleDetector + IncubationManager）
+   - 存入 registry 的 idle_managers map
+2. Phase 4：agent_registry.start_all_idle_loops().await → 所有 AgentIdleManager 启动后台 tokio task
+3. AgentHarness 通过 `get_idle_coordination()` 获取 per-agent 协调状态
+4. idle 路由注册（与旧版一致）
 
 **验收：**
-- Agent 启动日志中可见 IdleDetector 注册
-- `GET /health/ready` 返回 200 后 IdleDetector 可正常工作
-- 启动后没有 "处理器未注册先有事件" 的竞态
+- Agent 启动日志中可见 per-agent idle 系统初始化
+- `GET /health/ready` 返回 200 后 idle 系统可正常工作
+- 每个 Agent 的 idle 独立运行，互不干扰
 
 ---
 
-### [x] T7.2 — 关闭时清理空闲系统
+### [x] T7.2 — 关闭时清理 Per-Agent 空闲系统
 
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/runtime/src/agent_runtime.rs` |
-| 架构 | §9.2 关闭序列 |
+| 涉及 | `crates/gateway/src/runtime/agent_registry.rs` |
+| 架构 | §9.2 关闭序列（R8：Per-Agent） |
 
 **子任务：**
-1. Phase 4.5 排水步骤：
-   - 停止 IdleDetector（停止 poll）
-   - `IncubationManager.shutdown_all()` — CancellationToken → 5s 超时
-   - `coord.reset_idle_signal()` — 中断所有运行中的 Sleep/Exploration/Meditation Workflow
+1. `agent_registry.clear()` 遍历所有 AgentIdleManager：
+   - 调用 `manager.shutdown()` → IncubationManager.shutdown_all() + reset_idle_signal() + stop_token.cancel()
+   - 后台 task 在 5s 内终止
 2. 确保 idle Workflow 被取消后 checkpoint 保存到 State Store
-3. Phase 3：idle Workflow 状态持久化（仅已保存 checkpoint 的实例）
+3. 清空 agents、local_buses、idle_managers 三个 map
 4. 关闭日志中记录被取消的 idle Workflow 数量
 
 **验收：**
-- 关闭信号到达 → idle Workflow 在 5s 内终止
+- 关闭信号到达 → 所有 per-agent idle task 在 5s 内终止
 - Incubation 线程正确退出
 - 重启后 idle 系统正常恢复
 
@@ -780,7 +786,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | 配置文件 + `crates/runtime/src/` |
+| 涉及 | 配置文件 + `crates/gateway/src/runtime/` |
 | 架构 | §6.1 路由配置 |
 
 **子任务：**
@@ -912,12 +918,12 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | §3.5 IdleCoordination | idle crate | `crates/idle/src/coordination.rs` |
 | §4 状态机 | 跨模块 | dispatcher, idle, runtime |
 | §5.2 Dispatcher 主循环 | dispatcher crate | `crates/dispatcher/src/lib.rs` |
-| §5.3 IdleDetector | idle crate | `crates/idle/src/detector.rs` |
+| §5.3 IdleDetector / AgentIdleManager | idle crate | `crates/idle/src/detector.rs`、`manager.rs` |
 | §5.4 Workflow 取消 | idle crate | `crates/idle/src/workflow.rs` |
 | §5.5 Incubation | idle crate | `crates/idle/src/incubation.rs` |
-| §6 路由配置 | runtime crate | 配置文件 + 路由注册 |
+| §6 路由配置 | gateway crate | 配置文件 + 路由注册 |
 | §8 配置 | config crate | `crates/config/src/` |
-| §9 生命周期 | runtime crate | `crates/runtime/src/agent_runtime.rs` |
+| §9 生命周期 | gateway crate | `crates/gateway/src/runtime/agent_runtime.rs`、`agent_registry.rs` |
 | §12 Metrics | idle crate | `crates/idle/src/metrics.rs` |
 
 ---

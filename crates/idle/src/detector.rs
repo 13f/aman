@@ -28,15 +28,15 @@ pub struct IdleDetector {
     coord: Arc<IdleCoordination>,
     personality: IdlePersonality,
     /// Current idle depth (0 = just entered idle, incremented each poll)
-    idle_depth: u32,
+    pub(crate) idle_depth: u32,
     /// True if the last effective_personality call was in chat mode
-    was_in_chat_mode: bool,
+    pub(crate) was_in_chat_mode: bool,
     /// Timestamp of the last chat event (for grace period tracking)
-    last_chat_seen: Option<Instant>,
+    pub(crate) last_chat_seen: Option<Instant>,
     /// Timestamp of the last event produced by poll()
-    last_poll: Option<Instant>,
+    pub(crate) last_poll: Option<Instant>,
     /// Ring buffer of recent idle outputs (max 10)
-    last_idle_outputs: Vec<String>,
+    pub(crate) last_idle_outputs: Vec<String>,
 }
 
 impl IdleDetector {
@@ -58,12 +58,18 @@ impl IdleDetector {
         }
     }
 
+    /// Returns a clone of the configured personality.
+    #[must_use]
+    pub fn personality(&self) -> IdlePersonality {
+        self.personality.clone()
+    }
+
     /// Determine which personality to use (T5.2).
     ///
     /// If the last source was Chat and we're within the grace period,
     /// use the ChatMode-restricted personality. When leaving chat mode,
     /// reset idle_depth to 0 (R3-1 correction).
-    fn effective_personality(&mut self) -> IdlePersonality {
+    pub(crate) fn effective_personality(&mut self) -> IdlePersonality {
         let source_u8 = self.coord.last_source_type.load(Ordering::Relaxed);
         let is_chat = source_u8 == SourceType::Chat.to_u8();
 

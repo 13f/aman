@@ -1,9 +1,6 @@
 use chat_source::ChatPlatformSource;
 use config::{AgentConfig, BusMode};
 use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
-use idle::coordination::IdleCoordination;
-use idle::detector::IdleDetector;
-use idle::incubation::IncubationManager;
 use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
 use kernel::hook::Hook;
@@ -174,12 +171,6 @@ impl AgentRuntimeBuilder {
 
         let dlq = Arc::new(InMemoryDeadLetterQueue::new(5));
         let audit = Arc::new(AuditLogger::new(2_000));
-
-        // Extract idle config before self.config is moved
-        let idle_enabled = self.config.idle.enabled;
-        let idle_arousal_initial = self.config.idle.arousal.initial_value;
-        let idle_arousal_half_life = self.config.idle.arousal.half_life_secs;
-        let idle_personality = self.config.idle.personality.clone();
 
         let config = resolve_secrets_in_config(self.config, &self.runtime_dir, &audit)?;
 
@@ -526,27 +517,6 @@ impl AgentRuntimeBuilder {
             source::TrustLevel::Untrusted,
         ));
 
-        // ── Idle system setup (M7) ──────────────────────────────
-        let (idle_coord, incubation_manager) = if idle_enabled {
-            let coord = Arc::new(IdleCoordination::new(
-                idle_arousal_initial,
-                idle_arousal_half_life,
-            ));
-            let detector = IdleDetector::new(
-                "idle:detector",
-                Arc::clone(&coord),
-                idle_personality,
-            );
-            let _ = pollster::block_on(sources.register(
-                Box::new(detector),
-                source::SourceMode::Pull,
-                source::TrustLevel::Untrusted,
-            ));
-            (Some(coord), Arc::new(IncubationManager::new()))
-        } else {
-            (None, Arc::new(IncubationManager::new()))
-        };
-
         // ── Notification store ─────────────────────────────────────
         let notifications = Arc::new(notification::NotificationStore::new(500));
 
@@ -886,8 +856,6 @@ impl AgentRuntimeBuilder {
             metrics,
             capability_registry: Default::default(),
             chat_sender,
-            idle_coord,
-            incubation_manager,
             llm_skills: StdMutex::new(llm_skills),
             skill_registry,
             cascade_selector,
@@ -1106,10 +1074,6 @@ pub struct AgentRuntime {
     metrics: super::metrics::MetricsRegistry,
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
     chat_sender: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
-    /// Idle system coordination state.
-    idle_coord: Option<Arc<IdleCoordination>>,
-    /// Incubation manager for background idle threads.
-    incubation_manager: Arc<IncubationManager>,
     /// LLM-instruction skills (SKILL.md frontmatter, Agent Skills standard).
     llm_skills: StdMutex<Vec<skill::SkillInfo>>,
     /// skm-core registry for cascade selection (None if init failed).
@@ -1935,6 +1899,9 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase3 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
+                // Start per-agent idle loops
+                self.agent_registry.start_all_idle_loops().await;
+
                 let snapshots = self.sources.list().await;
                 for source in snapshots {
                     if self.shutdown_requested.load(Ordering::Acquire) {
@@ -1990,15 +1957,10 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
-                // Phase 4.5: stop idle system (IncubationManager, cancel idle workflows)
-                let cancelled = self.incubation_manager.shutdown_all().await;
-                if cancelled > 0 {
-                    tracing::info!(cancelled, "phase4.5: cancelled idle incubation threads");
-                }
-                // Reset idle coordination if active (cancels any running idle workflow)
-                if let Some(coord) = &self.idle_coord {
-                    coord.reset_idle_signal().await;
-                }
+                // Phase 4.5: per-agent idle systems are shut down in Phase 2
+                // via agent_registry.clear(), which calls shutdown() on each
+                // AgentIdleManager (cancels incubation threads, cancels idle
+                // workflows, stops idle detection loops).
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {

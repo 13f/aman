@@ -3043,6 +3043,7 @@ name = "idle"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "event-bus",
  "kernel",
  "serde",
  "serde_json",

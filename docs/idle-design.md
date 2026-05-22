@@ -3,23 +3,17 @@
 > 将 Windows "空闲进程"的隐喻落地为 Aman Agent 框架的正式子系统。
 > 空闲不是无事可做，而是 Agent 在内省、维护、探索、复盘——用未被使用的周期做有价值的事。
 >
-> **八种空闲状态**：七种由 IdleDetector 根据空闲深度产生，一种（Reflection）由 Dispatcher
+> **八种空闲状态**：七种由 AgentIdleManager 根据空闲深度产生，一种（Reflection）由 Dispatcher
 > 在队列清空时通过 QueueDrained 事件触发。
 >
+> **Per-Agent 架构（R8）**：每个 Agent 拥有独立的 idle 系统——自己的 IdleCoordination、
+> IdleDetector（通过 AgentIdleManager）、IncubationManager。Idle 事件发布到 Agent 的
+> Local EventBus，与全局 Bus 隔离。
+>
 > **审计状态**：
-> - R1（idle-design-r1.md）：11 项发现全部处理——类型系统、select! 抢占、ChatMode、熔断/配额/arousal/线程/隔离
-> - R2（idle-design-r2.md）：R1 修复 9/11 ✅ 验证通过。2 个 P1 传播断裂（last_event_from_chat 传播、Workflow 中断）+
->   9 个 P2/P3 细节——全部修复
-> - R3（idle-design-r3.md）：R2 修复 9/11 ✅ 验证通过。1 个 P1 执行路径断裂（depth 重置条件不触发）+ 1 个 P1 信息不可达（no-op 标记）+
->   3 个 P2/P3——全部修复。R3 的核心特征：不是缺结构，而是已有结构的执行路径断了。
-> - R4（idle-design-r4.md）：R3 修复 5/5 ✅ 验证通过。1 个 P2 文档语义偏差（Pipeline 打断描述不准确）+
->   2 个 P3 边界条件（序列化残留、depth 不保证重置）——全部修复。
-> - R5（idle-design-r5.md）：R4 修复 3/3 ✅ 验证通过。1 个 P2 因果链断裂（Reflection 连锁任务覆盖 last_source_type，
->   导致 ChatMode 在对话期间被静默停用）——已修复。
-> - R6（idle-design-r6.md）：R5 修复 1/1 ✅ 验证通过。**审计收敛。** 跨轮修复交互 7/7 ✅ 一致。
->   0 项 P0/P1/P2/P3 新发现。仅 1 项 P4 观察（内部连锁任务不必要的 token 旋转——性能影响可忽略，建议不修）。
->   设计成熟度评估：类型系统/时序并发/状态机/聊天适应/文档一致性 ★★★★★。
->   **结论：设计已准备好进入实现阶段。**
+> - R1–R6：类型系统、select!/ChatMode/熔断/配额/arousal/线程/隔离 —— 全部修复，设计成熟度 ★★★★★
+> - R8（per-agent-idle）：全局 IdleDetector+SourceRegistry 模式替换为 per-agent AgentIdleManager。
+>   每个 Agent 的 idle 系统只监控该 Agent 的 Local EventBus，实现 Agent 间 idle 隔离。
 
 ---
 
@@ -59,7 +53,7 @@ Aman 是事件响应式框架——一切行为由事件驱动。但事件队列
 1. **IdleEvent 是 Event 的合法子类型** — 空闲事件通过 Event Bus 路由，与其他事件一视同仁。
 2. **QueueDrained 是空闲入口** — Dispatcher 在队列清空时产生 QueueDrained，触发 Reflection。Reflection 可被新事件 select! 抢先。
 3. **空闲深度决定空闲类型** — Reflection 完成后进入空闲序列：Daze → Boredom → Sleep → deeper。
-4. **全局中断令牌** — 所有空闲 Workflow 共享一个 `CancellationToken`。真实事件到达时 Dispatcher 取消令牌，Workflow 在下一个 checkpoint 优雅退出。
+4. **Per-Agent 中断令牌** — 每个 Agent 的 IdleCoordination 持有独立的 `CancellationToken`。真实事件到达时 AgentHarness 调用 `coord.reset_idle_signal()` 取消令牌，Workflow 在下一个 checkpoint 优雅退出。
 5. **配置驱动 + 源类型感知** — IdleCoordination 传递 `last_source_type`，闲聊场景自适应切换 ChatMode。
 6. **上下文隔离** — 空闲操作不污染对话历史。实现位置：Pipeline 层的 ContextBuilder 根据 `IdleEvent.source` 标记隔离。
 
@@ -221,7 +215,7 @@ pub struct IdleCoordination {
     /// IdleDetector 据此判断是否激活 ChatMode。
     pub last_source_type: Arc<AtomicU8>,  // SourceType 的 u8 编码
 
-    /// R2-2 fix: 全局空闲取消令牌。
+    /// R2-2 fix: Per-Agent 空闲取消令牌。
     /// 真实事件到达时 Dispatcher 调用 cancel() + 替换为新 token。
     /// Sleep/Exploration/Meditation Workflow 在每个 checkpoint 检查此 token。
     pub idle_cancel_token: Arc<RwLock<CancellationToken>>,
@@ -318,7 +312,7 @@ impl IdleCoordination {
 1. **QueueDrained 由 Dispatcher 产生** — 每次处理完一个真实事件且队列为空时触发一次 Reflection。
 2. **Reflection 可被 select! 抢先** — 新事件到达 → cancel Reflection → 处理新事件。抢先时熔断计数重置。
 3. **Reflection 有 timeout 和熔断** — timeout=60s；连续 5 次→跳过 lessons_learned；10 次→完全跳过+cooldown。
-4. **全局 Cancel Token** — 真实事件到达时 Dispatcher 取消令牌。所有空闲 Workflow 监控此令牌并在 checkpoint 退出。
+4. **Per-Agent Cancel Token** — 真实事件到达时 AgentHarness 通过 `coord.reset_idle_signal()` 取消令牌。该 Agent 的所有空闲 Workflow 监控此令牌并在 checkpoint 退出。
 5. **Reflection 不占深度** — depth 从 Daze 开始（depth=0）。
 6. **聊天模式切换 + depth 重置** — 从聊天模式退出到完整人格时，idle_depth 重置为 0。
 7. **深度递增** — 连续空闲轮次驱动。空闲类型之间切换不重置深度。
@@ -455,47 +449,63 @@ Reflection Pipeline 的第一个 step 读取此字段决定执行哪些 check_it
 
 ## 5. Integration with Aman Runtime
 
-### 5.1 架构位置
+### 5.1 架构位置（R8：Per-Agent）
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                         Agent Runtime                             │
-│                                                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────┐       │
-│  │  Timer   │  │ FileWatch│  │ Webhook  │  │IdleDetector│       │
-│  │ Source   │  │ Source   │  │ Source   │  │  Source    │       │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └─────┬──────┘       │
-│       └──────────────┴──────────────┴──────────────┘              │
-│                             │                                      │
-│              ┌──────────────┼──────────────┐                       │
-│              ▼              │              ▼                       │
-│        Dispatcher  ◄── 出队  │  ── 入队 ──▶ Dispatcher             │
-│              │              │                                     │
-│              │    ┌─────────▼──────────────┐                      │
-│              │    │    IdleCoordination    │                      │
-│              │    │ busy_reflecting        │                      │
-│              │    │ last_source_type  (R2) │                      │
-│              │    │ idle_cancel_token (R2) │                      │
-│              │    │ arousal_tracker        │                      │
-│              │    └────────────────────────┘                      │
-│              │         ▲          ▲                               │
-│     route: system.queue_drained → pipeline:reflection              │
-│     route: idle.*               → pipeline/workflow:idle-*         │
-│              │         │          │                                │
-│     ┌────────┼─────────┼──────────┼────────┐                      │
-│     ▼        ▼         │          ▼        ▼                      │
-│  Reflection  Idle      │    Idle Workflow  │                      │
-│  Pipeline    Pipeline  │    (Sleep,Explor, │                      │
-│  (select!)   (Daze,    │     Meditation)   │                      │
-│              Boredom)  │    监控 cancel    │                      │
-│                        │    token          │                      │
-│              ┌─────────▼────────┐          │                      │
-│              │   Tool Runner    │          │                      │
-│              └──────────────────┘          │                      │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                          Agent Runtime                                │
+│                                                                       │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                            │
+│  │  Timer   │  │ FileWatch│  │ Webhook  │                            │
+│  │ Source   │  │ Source   │  │ Source   │                            │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘                            │
+│       └──────────────┴──────────────┘                                 │
+│                      │                                                │
+│           ┌──────────┼──────────┐                                     │
+│           ▼          │          ▼                                     │
+│     Dispatcher  ◄── 出队  │  ── 入队 ──▶ Dispatcher                   │
+│           │          │                                               │
+│           │  ┌───────▼──────────────────────────┐                    │
+│           │  │       AgentRegistry               │                    │
+│           │  │                                   │                    │
+│           │  │  Per-Agent (×N):                  │                    │
+│           │  │  ┌─────────────────────────────┐  │                    │
+│           │  │  │ AgentIdleManager            │  │                    │
+│           │  │  │ ├─ IdleCoordination         │  │                    │
+│           │  │  │ │  busy_reflecting          │  │                    │
+│           │  │  │ │  last_source_type  (R2)   │  │                    │
+│           │  │  │ │  idle_cancel_token (R2)   │  │                    │
+│           │  │  │ │  arousal_tracker          │  │                    │
+│           │  │  │ │  pending_depth_reset (R7) │  │                    │
+│           │  │  │ ├─ IdleDetector (内部)       │  │                    │
+│           │  │  │ ├─ IncubationManager        │  │                    │
+│           │  │  │ └─ background task           │  │                    │
+│           │  │  │    监控 Local EventBus ──────┼──┼──► Agent Local Bus │
+│           │  │  └─────────────────────────────┘  │                    │
+│           │  └───────────────────────────────────┘                    │
+│           │                                                           │
+│  route: system.queue_drained → pipeline:reflection                    │
+│  route: idle.*               → pipeline/workflow:idle-*               │
+│           │         │          │                                      │
+│  ┌────────┼─────────┼──────────┼────────┐                            │
+│  ▼        ▼         │          ▼        ▼                            │
+│ Reflection  Idle    │    Idle Workflow  │                            │
+│ Pipeline    Pipeline│    (Sleep,Explor, │                            │
+│ (select!)   (Daze,  │     Meditation)   │                            │
+│             Boredom)│    监控 cancel    │                            │
+│                     │    token          │                            │
+│           ┌─────────▼────────┐          │                            │
+│           │   Tool Runner    │          │                            │
+│           └──────────────────┘          │                            │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 Dispatcher 主循环（R2 重写：last_source_type + cancel + 抢先复位 + abort 顺序 + 假唤醒）
+> **R8 关键变更**：IdleDetector 不再作为全局 EventSource 注册到 SourceRegistry。
+> 改为每个 Agent 拥有独立的 `AgentIdleManager`（存储在 `AgentRegistry` 中），
+> 其后台 tokio task 监控该 Agent 的 Local EventBus 队列深度，idle 事件发布到
+> Local EventBus。Agent 间 idle 完全隔离。
+
+### 5.2 Dispatcher 主循环（R2 重写；R8：per-agent 上下文通过 AgentHarness 注入）
 
 ```rust
 impl Dispatcher {
@@ -594,101 +604,123 @@ impl Dispatcher {
 }
 ```
 
-### 5.3 IdleDetector（R2：使用 coord.last_source_type 替代本地字段）
+### 5.3 AgentIdleManager — Per-Agent 后台空闲循环（R8：替代 EventSource 模式）
+
+R8 用 `AgentIdleManager` 替代了原先注册到 SourceRegistry 的全局 `IdleDetector`。
+每个 Agent 拥有独立的 Manager 实例，其后台 tokio task 直接监控该 Agent 的 Local EventBus，
+不再依赖 SourceRegistry 的 poll 循环。
 
 ```rust
-/// IdleDetector: 感知事件队列持续为空。
+/// AgentIdleManager：per-agent 空闲生命周期管理。
 ///
-/// R2 关键变更：
-/// - 通过 coord.last_source_type 判断 ChatMode（而非本地字段）
-/// - 从聊天模式退出到完整人格时，idle_depth 重置为 0
-/// - resolve() 的 fallback 返回 Daze
-///
-/// R7 关键变更：
-/// - depth 重置不再依赖 real_event_seen（在 idle poll 中被提前消费）。
-/// - 改用 pending_depth_reset，由 Dispatcher 在产生 QueueDrained 时设置，
-///   确保 depth 只在队列清空后才重置。
-#[async_trait]
-impl EventSource for IdleDetector {
-    async fn poll(&mut self, ctx: &SourceContext) -> Result<Vec<Event>> {
-        if self.coord.busy_reflecting.load(Ordering::SeqCst) {
-            return Ok(vec![]);
+/// 内部持有：
+/// - IdleCoordination（共享状态）
+/// - IdleDetector（空闲状态机，pub(crate) 字段供后台 task 读写）
+/// - IncubationManager（后台灵感线程）
+/// - CancellationToken（shutdown 信号）
+pub struct AgentIdleManager {
+    agent_id: String,
+    coord: Arc<IdleCoordination>,
+    personality: IdlePersonality,
+    local_bus: Arc<dyn EventBus>,
+    incubation: Arc<IncubationManager>,
+    stop_token: CancellationToken,
+    task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+}
+
+impl AgentIdleManager {
+    /// 创建实例（不启动后台循环）。
+    pub fn new(
+        agent_id: String,
+        local_bus: Arc<dyn EventBus>,
+        personality: IdlePersonality,
+        arousal_initial: f64,
+        arousal_half_life: f64,
+    ) -> Self { /* ... */ }
+
+    /// 启动后台 tokio task（在 Phase 4 调用）。
+    pub async fn start(&self) { /* ... */ }
+
+    /// 获取共享协调状态的引用（供 AgentHarness 使用）。
+    pub fn coordination(&self) -> &Arc<IdleCoordination> { /* ... */ }
+
+    /// 关闭：取消 incubation 线程 → reset idle signal → stop token。
+    pub async fn shutdown(&self) -> AmanResult<()> { /* ... */ }
+}
+```
+
+**后台 task 主循环逻辑**（替代原 `EventSource::poll`）：
+
+```rust
+async fn idle_loop(
+    agent_id: String,
+    coord: Arc<IdleCoordination>,
+    personality: IdlePersonality,
+    local_bus: Arc<dyn EventBus>,
+    incubation: Arc<IncubationManager>,
+    stop_token: CancellationToken,
+) {
+    let mut detector = IdleDetector::new(personality, Arc::clone(&coord));
+
+    loop {
+        // 1. 检查 shutdown 信号
+        if stop_token.is_cancelled() {
+            break;
         }
 
-        // R7: 检查 Dispatcher 是否已清空队列并标记 depth 重置
-        if self.coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
-            self.idle_depth = 0;
-            self.last_non_idle = Instant::now();
-            return Ok(vec![]);
+        // 2. 检查 Dispatcher 是否正在执行 Reflection
+        if coord.busy_reflecting.load(Ordering::SeqCst) {
+            tokio::time::sleep(poll_interval).await;
+            continue;
         }
 
-        // 队列空 → 真实空闲
-        let personality = self.effective_personality();
+        // 3. R7: 检查 depth 重置信号（Dispatcher 在 QueueDrained 时设置）
+        if coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
+            detector.idle_depth = 0;
+            detector.last_non_idle = Instant::now();
+            tokio::time::sleep(poll_interval).await;
+            continue;
+        }
 
-        let kind = if self.idle_depth == 0 {
+        // 4. 检查 Agent Local EventBus 队列深度
+        let metrics = local_bus.metrics().await;
+        if metrics.queue_depth > 0 {
+            // 有待处理事件 → 重置深度，等待下次
+            detector.idle_depth = 0;
+            detector.last_non_idle = Instant::now();
+            tokio::time::sleep(poll_interval).await;
+            continue;
+        }
+
+        // 5. 队列空 → 真实空闲，推进 idle 状态
+        let personality = detector.effective_personality();
+        let kind = if detector.idle_depth == 0 {
             IdleKind::Daze
         } else {
-            // resolve_with_arousal: 双轴模型，depth 解锁范围 + arousal 精调
-            let arousal = self.coord.arousal.current();
-            personality.resolve_with_arousal(self.idle_depth, arousal)
+            let arousal = coord.arousal.current();
+            personality.resolve_with_arousal(detector.idle_depth, arousal)
                 .unwrap_or(IdleKind::Daze)
         };
 
-        self.coord.arousal.apply_behavior(kind.arousal_behavior());
+        coord.arousal.apply_behavior(kind.arousal_behavior());
 
-        let event = IdleEvent {
-            kind,
-            depth: self.idle_depth,
-            duration_secs: self.last_non_idle.elapsed().as_secs_f64(),
-            from_chat_mode: self.was_in_chat_mode,  // R3-2
-            context: Some(IdleContext {
-                last_event_type: self.last_event_type.clone(),
-                last_idle_outputs: self.last_idle_outputs.clone(),
-                arousal_level: self.coord.arousal.current(),
-            }),
-        };
+        let event = IdleEvent { kind, depth: detector.idle_depth, /* ... */ };
+        detector.idle_depth += 1;
 
-        self.idle_depth += 1;
+        // 6. 发布 idle 事件到 Agent 的 Local EventBus
         let mut event: Event = event.into();
         event.metadata.priority = Priority::Low;
-        event.metadata.source = self.id().into();
-        Ok(vec![event])
-    }
-
-    /// R2: 通过 coord.last_source_type 判断，而非本地字段。
-    /// 从聊天模式切换到完整人格时重置 depth 为 0。
-    ///
-    /// R3-1 fix: 原条件 `was_chat && !is_chat` 在纯聊天场景下永不触发
-    /// （grace_period 过期后 is_chat 仍为 true，无新事件改写 last_source_type）。
-    /// 修正为：离开聊天模式 = 源类型变了 OR 超时。
-    fn effective_personality(&mut self) -> &IdlePersonality {
-        let is_chat = SourceType::from_u8(
-            self.coord.last_source_type.load(Ordering::Relaxed)
-        ).is_chat();
-
-        let was_chat = self.was_in_chat_mode;
-        let elapsed = self.last_non_idle.elapsed().as_secs_f64();
-
-        let chat_grace = self.personality.chat_mode.as_ref()
-            .map(|c| c.grace_period_secs).unwrap_or(0.0);
-
-        // 仍然在聊天模式保护期内
-        if is_chat && elapsed < chat_grace {
-            if let Some(ref chat) = self.personality.chat_mode {
-                self.was_in_chat_mode = true;
-                return chat.as_personality(&self.personality);
-            }
-        }
-
-        // 离开聊天模式（源类型变了 OR 超时）
-        if was_chat {
-            self.idle_depth = 0;  // R2-4 + R3-1: 任何聊天退出都重置深度
-        }
-        self.was_in_chat_mode = false;
-        &self.personality
+        let _ = local_bus.publish(event).await;
     }
 }
 ```
+
+> **与旧架构的关键区别**：
+> - 旧：`IdleDetector` 实现 `EventSource` trait，由 `SourceRegistry::poll_loop` 统一调度，
+>   事件发布到全局 EventBus。
+> - 新：`AgentIdleManager` 自管理后台 task，直接读取 Local EventBus 的 `metrics().queue_depth`，
+>   事件发布到 Agent 的 Local EventBus。Agent 间完全隔离。
+> - `effective_personality()` 和双轴模型（depth + arousal）逻辑保持不变，仅运行载体改变。
 
 ### 5.4 Idle Workflow 取消机制（R2 新增）
 
@@ -741,7 +773,10 @@ async fn execute_sleep_workflow(
 }
 ```
 
-### 5.5 Incubation 后台线程生命周期
+### 5.5 Incubation 后台线程生命周期（R8：Per-Agent）
+
+每个 Agent 的 `AgentIdleManager` 持有独立的 `IncubationManager` 实例。
+Incubation 线程不因真实事件中断（纯后台），仅在 Agent shutdown 时通过 `AgentIdleManager::shutdown()` 取消。
 
 ```rust
 struct IncubationManager {
@@ -816,7 +851,8 @@ crates/idle/src/
 │                   #   IdleCoordination, IdleContext, ChatMode,
 │                   #   ReflectionBreaker, PollRelaxation, ContextIsolation,
 │                   #   ArousalBehavior, PollInterval
-├── detector.rs     # IdleDetector: EventSource 实现
+├── detector.rs     # IdleDetector: 空闲状态机（pub(crate) 字段供 manager 读写）
+├── manager.rs      # AgentIdleManager: per-agent 后台 task + 生命周期（R8）
 ├── personality.rs  # 人格解析：depth→kind + ChatMode.as_personality() + resolve()
 ├── coordination.rs # IdleCoordination: reset_idle_signal()
 ├── workflow.rs     # IdleWorkflowRunner: run_with_cancel()
@@ -831,9 +867,9 @@ crates/idle/src/
 |-------|------|
 | `core` | `EventKind::Idle` + `EventKind::QueueDrained` 变体；`SourceType` 新增 `to_u8()`/`from_u8()`/`is_chat()`；`Event` 新增 `is_from_external_source()` |
 | `dispatcher` | select! 模式 + QueueDrained 生产 + last_source_type 写入 + reset_idle_signal 调用 |
-| `event-bus` | `wait_for_event()` — 仅队列从空→非空时触发通知，保证无假唤醒 |
+| `event-bus` | `wait_for_event()` — 仅队列从空→非空时触发通知，保证无假唤醒；新增 `metrics()` 返回队列深度（供 AgentIdleManager 后台 task 使用） |
 | `config` | `IdleConfig` section + 验证：`allowed_kinds ⊆ enabled_kinds` |
-| `runtime` | Phase 4 注册 IdleDetector + IdleCoordination；Phase 4.5 关停 + Incubation 清理 |
+| `runtime` | **R8**：不再注册全局 IdleDetector 到 SourceRegistry。AgentRegistry 在 `load_from_config()` 中为每个 Agent 创建 `AgentIdleManager`（含 Local EventBus + IdleCoordination）。Phase 4 通过 `start_all_idle_loops()` 启动所有后台 task。Shutdown 时 `agent_registry.clear()` 统一停止。AgentHarness 通过 `get_idle_coordination()` 获取 per-agent 协调状态 |
 
 ---
 
@@ -909,22 +945,28 @@ idle:
 
 ## 9. Lifecycle Integration
 
-### 9.1 启动
+### 9.1 启动（R8：Per-Agent）
 
 ```
-Phase 0: IdleCoordination 初始化（包含 last_source_type, idle_cancel_token）
-Phase 2: Dispatcher 路由注入
-Phase 4: IdleDetector 注册为 Event Source
+Phase 0: 全局 EventBus 初始化
+Phase 2: AgentRegistry::load_from_config()
+         ├─ 为每个 Agent 创建 Local EventBus
+         ├─ 为每个 Agent 创建 IdleCoordination
+         └─ 为每个 Agent 创建 AgentIdleManager（存入 registry）
+Phase 4: agent_registry.start_all_idle_loops().await
+         └─ 每个 AgentIdleManager 启动后台 tokio task
 ```
 
-### 9.2 关闭
+### 9.2 关闭（R8：Per-Agent）
 
 ```
-Phase 4.5:
-  1. IdleDetector 停止
-  2. IncubationManager.shutdown_all() — CancellationToken → 5s 超时
-  3. reset_idle_signal() — 中断所有运行中的 idle Workflow
-  4. 其他 Source 停止
+Phase 4→0 shutdown:
+  agent_registry.clear():
+    1. 遍历所有 AgentIdleManager，调用 shutdown()
+       ├─ IncubationManager.shutdown_all() — CancellationToken → 5s 超时
+       ├─ reset_idle_signal() — 中断运行中的 idle Workflow
+       └─ stop_token.cancel() — 停止后台 task
+    2. 清空 agents、local_buses、idle_managers 三个 map
 ```
 
 ### 9.3 防循环/防竞态机制总览
@@ -1015,7 +1057,7 @@ struct IdleMetrics {
 2. **Sleep 产出的长期记忆存哪里？** 建议独立 `memory` crate。
 3. **Incubation 的"灵感"机制？** Phase 1 跳过。
 4. **"正在输入"信号集成？** Chat Source 未来扩展。
-5. **多 Agent 的空闲互相影响？** 不在本次范围。
+5. **多 Agent 的空闲互相影响？** R8 已解决——每个 Agent 拥有独立的 IdleCoordination、Local EventBus、AgentIdleManager，Agent 间 idle 完全隔离。
 
 ---
 

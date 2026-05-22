@@ -676,17 +676,25 @@ impl AgentHarness {
             .await?;
         self.registry.set_status(agent_id, AgentStatus::Busy).await?;
 
-        // Publish agent:busy event
+        // Cancel any running idle workflows for this agent and boost arousal
+        if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {
+            coord.reset_idle_signal().await;
+            coord.arousal.boost(0.3);
+        }
+
+        // Publish agent:busy event to the agent's local bus
         let _ = self
-            .bus
-            .publish(Event::new(
-                "agent:harness",
-                EventType::Custom("agent:busy".to_owned()),
-                json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                }),
-            ))
+            .publish_to_agent_bus(
+                agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:busy".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                    }),
+                ),
+            )
             .await;
 
         // 3. Build tool descriptors from registered tools
@@ -855,17 +863,19 @@ impl AgentHarness {
             .set_status(agent_id, AgentStatus::Idle)
             .await?;
 
-        // Publish agent:idle event
+        // Publish agent:idle event to the agent's local bus
         let _ = self
-            .bus
-            .publish(Event::new(
-                "agent:harness",
-                EventType::Custom("agent:idle".to_owned()),
-                json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                }),
-            ))
+            .publish_to_agent_bus(
+                agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:idle".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                    }),
+                ),
+            )
             .await;
 
         Ok(final_reply)

@@ -244,12 +244,15 @@
       }>("chat_session_state_local", { agentKey: activeAgentKey, sessionId });
       if (!state.messages?.length) return;
       // Build Message objects from persisted session events.
+      // JSONL stores event_type as Rust Debug format, e.g.
+      //   MessageReceived, Custom("tool:dispatched"), Custom("agent:reply_ready")
       const historyMsgs: Message[] = [];
       const seenIds = new Set(messages.map(m => m.id));
+      // Two-pass: collect tool:dispatched then apply tool:completed/failed results.
+      const toolResults: Array<{ callId: string; success: boolean; output: any }> = [];
       for (const evt of state.messages) {
         const et = evt.event_type;
         const p = evt.payload ?? {};
-        // Dedup against already-loaded messages.
         if (seenIds.has(evt.event_id)) continue;
         seenIds.add(evt.event_id);
         let msg: Message | null = null;
@@ -276,16 +279,29 @@
               status: "completed",
             };
           }
-        } else if (et === "llm_tool_call" || et.includes("tool_call")) {
+        } else if (et.includes("tool:dispatched") || et === "llm_tool_call" || et.includes("tool_call")) {
+          // Tool invocation — stored as Custom("tool:dispatched") in JSONL.
+          const callId: string = p.tool_call_id ?? p.call_id ?? evt.event_id;
+          const toolName: string = p.tool_name ?? p.name ?? "tool";
           msg = {
-            id: evt.event_id,
-            type: "tool_call",
-            content: p.tool_name ?? p.name ?? "tool",
+            id: callId,
+            type: "assistant_tool_call",
+            content: `Tool: ${toolName}`,
             timestamp: new Date(evt.timestamp_ms).toISOString(),
             sessionId,
-            status: "completed",
-            toolCall: p,
+            status: "streaming",
+            toolCall: {
+              callId,
+              toolName,
+              arguments: typeof p.args === "string" ? p.args : JSON.stringify(p.args ?? {}),
+              status: "running" as const,
+            },
           };
+        } else if (et.includes("tool:completed") || et.includes("tool:failed")) {
+          // Stored as Custom("tool:completed") or Custom("tool:failed").
+          const callId: string = p.tool_call_id ?? p.call_id ?? "";
+          const success = et.includes("tool:completed") || p.success === true;
+          toolResults.push({ callId, success, output: p.output ?? p.result });
         } else if (et === "history_trimmed" || et === "HISTORY_TRIMMED" || et.includes("config_warning")) {
           // System event
           msg = {
@@ -299,6 +315,27 @@
         }
         if (msg) {
           historyMsgs.push(msg);
+        }
+      }
+      // Second pass: apply tool:completed/failed results to matching tool_call messages.
+      for (const tr of toolResults) {
+        const callMsg = historyMsgs.find(m => m.type === "assistant_tool_call" && m.toolCall?.callId === tr.callId);
+        if (callMsg && callMsg.toolCall) {
+          callMsg.toolCall.status = tr.success ? "success" : "failed";
+          callMsg.status = tr.success ? "completed" : "error";
+          if (tr.success) {
+            callMsg.toolCall.result = tr.output;
+          } else {
+            callMsg.toolCall.error = tr.output;
+          }
+        }
+      }
+      // Any tool call still "running" after history replay is stale —
+      // mark it completed so the send button isn't stuck as "Stop".
+      for (const msg of historyMsgs) {
+        if (msg.type === "assistant_tool_call" && msg.toolCall?.status === "running") {
+          msg.toolCall.status = "success";
+          msg.status = "completed";
         }
       }
       if (historyMsgs.length > 0) {

@@ -560,8 +560,22 @@ impl AgentRuntimeBuilder {
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Memory store (M5) — pluggable memory provider ──────────
-        let memory_dir = super::skill_sync::aman_data_dir().join("memory");
         let aman_cfg = config::AmanConfig::from_default_path().ok();
+        let agent_key = aman_cfg
+            .as_ref()
+            .and_then(|c| c.agents.keys().next())
+            .cloned()
+            .unwrap_or_else(|| "default".to_owned());
+
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/tmp".to_owned());
+        let memory_dir = PathBuf::from(&home)
+            .join(".aman")
+            .join("agents")
+            .join(&agent_key)
+            .join("memory");
+
         let provider_name = aman_cfg
             .as_ref()
             .and_then(|c| c.memory.as_ref())
@@ -575,7 +589,7 @@ impl AgentRuntimeBuilder {
                 .unwrap_or_default();
             let memory_config = MemoryConfig {
                 db_path: memory_dir.to_string_lossy().into_owned(),
-                agent_id: "default".to_owned(),
+                agent_id: agent_key.clone(),
                 embedding: embedding_config,
             };
             Arc::new(

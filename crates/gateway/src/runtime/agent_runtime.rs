@@ -659,6 +659,43 @@ impl AgentRuntimeBuilder {
             ));
         }
 
+        // ── Sleep runner (Idle kind=Sleep → cognitive housekeeping) ──────
+        let sleep_runner = Arc::new(super::sleep::SleepRunner::new());
+        sleep_runner.set_agent_registry(Arc::clone(&agent_registry));
+        sleep_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        if let Some(ref store) = session_store {
+            sleep_runner.set_session_store(Arc::clone(store));
+        }
+        let sleep_cfg = aman_cfg
+            .as_ref()
+            .map(|c| c.runtime.idle.sleep.clone())
+            .unwrap_or_default();
+        sleep_runner.set_sleep_config(sleep_cfg);
+
+        // Subscribe to Idle events on the global bus (filtered to kind="sleep" in handle())
+        {
+            struct SleepSub {
+                runner: Arc<super::sleep::SleepRunner>,
+            }
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for SleepSub {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    self.runner.handle(event).await
+                }
+            }
+            let _ = pollster::block_on(bus.subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![kernel::event::EventType::Idle]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(SleepSub {
+                    runner: sleep_runner,
+                }),
+            ));
+        }
+
         // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──
         struct StopGenerationHandler {
             agent_harness: Arc<super::agent_harness::AgentHarness>,

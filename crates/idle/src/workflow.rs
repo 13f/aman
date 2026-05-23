@@ -191,6 +191,10 @@ pub fn run_boredom_pipeline(_event: &Event, idle_depth: u32, from_chat_mode: boo
 ///
 /// Processes 7-day short-term memory → long-term storage.
 /// Cancellable via CancellationToken — saves checkpoint on interrupt.
+///
+/// **Note**: The real Sleep implementation lives in
+/// `crates/gateway/src/runtime/sleep.rs` (`SleepRunner`).
+/// This struct is a lightweight stub for crate-level tests only.
 pub struct SleepWorkflow {
     idle_depth: u32,
 }

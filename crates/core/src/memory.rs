@@ -126,7 +126,7 @@ impl Default for ThinkConfig {
 }
 
 /// Summary returned by [`MemoryProvider::think`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ThinkResult {
     /// Number of triggers fired.
     pub triggers_fired: usize,

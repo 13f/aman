@@ -3,7 +3,7 @@
 > 目标：将每个 idle 子状态的 skill 从「只有 description 的空壳」落实为「可逐步执行的步骤」。
 > 基准文档：`idle-design.md`，特别是 §14 Idle State Activity Catalog。
 > 约束：本文只处理执行步骤 + 缺失组件指认，不修改 idle-design.md 的架构设计。
-> **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生。
+> **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生；**Sleep 已实现**（SleepRunner EventHandler，phase 2/3/4/6 完整实现，phase 1/5 stub 待 think() 桥接）。
 
 ---
 
@@ -14,7 +14,7 @@
 | 0 | **Daze** | Pipeline | 纯状态声明 (no-op)，idle 序列锚点 | 无 | ✅ 已完成 |
 | 1 | **Boredom** | Pipeline | 扫描 pending 任务 + 随机浏览记忆 | deferred task queue / kanban | ❌ 等 kanban 机制 |
 | 2 | **Waiting** | Pipeline | 等待外部条件满足（timer / async / 用户回复） | 无 | ⚠️ 被动，可能用不到 |
-| 3 | **Sleep** | Workflow | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | MemoryProvider（已落地），think() 桥接 | ⚠️ 部分就绪 |
+| 3 | **Sleep** | EventHandler | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | MemoryProvider（已落地），think() 桥接 | ✅ 已实现 (phase 2/3/4/6 完整，1/5 stub) |
 | 5 | **Exploration** | Workflow | 外部信息探索，产出 idea / 新闻 / 论文 | RSS/Atom 源，web search API，兴趣度评分器 | ❌ 等外部源 |
 | 7 | **Reflection** | EventHandler | 即时复盘：**session→YantrikDB 提取** + 过期记忆检查 | LLM config（已有），SessionStore（已有） | ✅ session_extract 已实现 |
 | 8 | **Incubation** | Pipeline+Thread | 创意孵化 / 跨域联想，产出假设性洞察 | 综合记忆 + kanban + 新闻 + idea + 论文 | ❌ 等一切就绪 |
@@ -28,14 +28,16 @@ Phase 1 (现在) ── 无外部依赖，立即可做
     Waiting     被动，no-op 即可（depth+arousal 机制不涉及，可能永远用不到）
     Reflection  session_extract ✅ 已完成 (QueueDrained → LLM → YantrikDB)
                 chain_tasks / immediate_errors / lessons_learned → 待 TraceStore
+    Sleep       ✅ phase 2/3/4/6 完整实现，1/5 stub（见 Phase 2）
 
-Phase 2 (短期) ── 桥接完成后
-    Sleep       phase 1: 回填 Reflection 遗漏的 session
-                phase 2: temporal housekeeping
-                phase 3: 缓存清理
-                phase 4: 索引监控
-                phase 5: think() consolidation ← 核心价值
-                phase 6: 健康报告
+Phase 2 (短期) ── 已实现 Sleep 核心功能
+    Sleep       phase 1: 回填 Reflection 遗漏的 session ⏳ stub
+                phase 2: temporal housekeeping ✅
+                phase 3: 缓存清理 ✅
+                phase 4: 索引监控 ✅
+                phase 5: think() consolidation ⏳ stub（待 YantrikDB 桥接）
+                phase 6: 健康报告 ✅
+                SleepRunner 作为 EventHandler 实现于 crates/gateway/src/runtime/sleep.rs
 
 Phase 3 (中期) ── 引入外部组件后
     Boredom     kanban / deferred task queue
@@ -342,8 +344,12 @@ step 4: 仍未满足 → no-op（下一次 poll 继续检查）
 
 ## 4. Sleep
 
-**路由**: `workflow:idle-sleep`
-**类型**: Workflow（异步，附 cancel_token 监控）
+> **状态：已实现。** `SleepRunner` 实现在 `crates/gateway/src/runtime/sleep.rs`，作为 EventHandler 订阅全局 Idle 事件（kind="sleep"）。采用与 `ReflectionRunner` 相同的 OnceLock 依赖注入模式。Phase 2 (temporal housekeeping)、Phase 3 (缓存清理)、Phase 4 (索引监控)、Phase 6 (健康报告) 完整实现；Phase 1 (session 回填) 和 Phase 5 (think() consolidation) 为 stub，待后续桥接。
+>
+> **架构选择**：Sleep 不通过 idle-system plugin skill 执行（skill 仅记录日志），而是由独立的 SleepRunner EventHandler 在全局 event bus 上并行处理。这遵循了 ReflectionRunner 的模式——基础设施性质的 background housekeeping 不经过 Skill trait，避免对 Plugin/Skill trait 的依赖注入改造。
+
+**路由**: `event_handler:IdleEvent{kind="sleep"}`
+**类型**: EventHandler（异步，附 cancel_token 监控，通过 AgentRegistry 获取）
 **可打断**: 是（idle_cancel_token，checkpoint 保存）
 **Arousal**: Engaged (×0.5)
 **MemoryProvider 依赖**: 全部 CRUD + session + temporal + think + stats
@@ -356,7 +362,7 @@ step 4: 仍未满足 → no-op（下一次 poll 继续检查）
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ Sleep Workflow (max_cpu_seconds=60)                  │
+│ Sleep Workflow (max_cpu_seconds=300, 可配置)          │
 │ 每步前检查 cancel_token，被取消时 checkpoint → 退出  │
 │ 所有 provider 调用通过 Arc<dyn MemoryProvider> 接口  │
 └─────────────────────────────────────────────────────┘
@@ -467,13 +473,13 @@ phase 6: 健康报告
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | `MemoryProvider.think()` 桥接 | **未实现** | YantrikdbProvider 的 `think()` 当前返回空结果。yantrikdb 内部有完整的 `think()` 实现（八种 trigger + consolidation + conflict scan + pattern mining）。需要后续确定桥接方案——直接透传 ThinkConfig 参数，或将 think 作为独立的后台线程运行 |
-| CPU 时间追踪 | **未实现** | 需要 per-workflow 的 CPU 时间累加器。`max_cpu_seconds=60` 的约束需要 enforce |
-| CacheStore（文件系统 TTL） | **未实现** | Phase 3 缓存清理操作文件系统，不经过 MemoryProvider。可用 `std::fs` + mtime 检查实现 |
-| Health snapshot 存储 | **未实现** | Phase 6 的健康快照需要持久化。建议 SQLite 表或 `~/.aman/health/` 下 JSON 文件 |
+| CPU 时间追踪 | ✅ **已实现** | `CpuTracker` 实现在 `sleep.rs`，track wall-clock time against `max_cpu_seconds` budget。每个 phase 前后调用 `start_phase()` / `end_phase()`，`budget_remaining()` 在 phase 间检查 |
+| CacheStore（文件系统 TTL） | ✅ **已实现** | Phase 3 通过 `std::fs::read_dir` 递归遍历 `~/.aman/agents/{agent_id}/cache/`，按 mtime + `cache_expiry_days` 删除过期文件 |
+| Health snapshot 存储 | ✅ **已实现** | Phase 6 写 JSON 到 `~/.aman/agents/{agent_id}/health/sleep_{timestamp_ms}.json` |
 
 ### 优先级
 
-**Phase 2** — MemoryProvider 已就绪。phase 1/2/4/6 可立即实现（不依赖 think 桥接）。phase 5（consolidation）需要 `think()` 桥接后才能发挥完整作用——当前可先记录空结果，桥接后自动提升。session 提取的主路径已移至 Reflection，Sleep 仅做回填。
+**Phase 2** — ✅ 已完成。phase 2/3/4/6 完整实现，不依赖 think 桥接。phase 1 (session 回填) 为 stub——Reflection 处理主路径，回填需 `SessionSummary.is_compressed` 字段 + LLM wiring。phase 5 (consolidation) 为 stub——调用 `think()` 但当前返回空结果，待 YantrikDB 桥接后自动生效。
 
 ---
 
@@ -969,9 +975,9 @@ pipeline 部分 (<1ms):
  ── Phase 2 (短期 — 桥接 + Sleep) ──
  7       SessionExtractor (Reflection)    ✅ 已实现               ReflectionRunner         Reflection
  8       think() 桥接 (yantrikdb→Provider) 未实现                YantrikdbProvider        Sleep, Meditation, Incubation
- 9       CacheStore (文件系统 TTL)         未实现                  无                       Sleep (phase 3)
-10       Health snapshot 存储              未实现                  SQLite 或 JSON 文件       Sleep (phase 6)
-11       CPU time tracker                 未实现                  无                       Sleep, Exploration, Meditation
+ 9       CacheStore (文件系统 TTL)         ✅ 已实现              std::fs (sleep.rs)       Sleep (phase 3)
+10       Health snapshot 存储              ✅ 已实现              JSON 文件 (per-agent)     Sleep (phase 6)
+11       CPU time tracker                 ✅ 已实现              CpuTracker (sleep.rs)     Sleep
 12       AtomicWrite                      未实现                  无                       全局复用
  ── Phase 3 (中期 — 外部组件) ──
 13       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
@@ -1042,17 +1048,19 @@ pipeline 部分 (<1ms):
 - [ ] Reflection step 2 (`immediate_errors`): 错误分类 — 待 TraceStore
 - [ ] 验证: QueueDrained → Reflection → session JSONL → LLM 提取 → YantrikDB 可见（端到端测试）
 
-**Milestone 2: think() 桥接 + Sleep**（1–2 周）
+**Milestone 2: think() 桥接 + Sleep**（基本完成）
 - [ ] 确定 YantrikdbProvider::think() 桥接方案
 - [ ] 实现桥接代码
-- [ ] Sleep phase 1: 会话压缩回填
-- [ ] Sleep phase 2: temporal housekeeping
-- [ ] Sleep phase 3: 缓存清理
-- [ ] Sleep phase 4: 索引监控
-- [ ] Sleep phase 5: think() consolidation
-- [ ] Sleep phase 6: 健康报告
-- [ ] 验证: think() → consolidation_count > 0 → 记忆合并
-- [ ] 验证: Sleep → provider.stale_memories() → 清理/标记
+- [x] Sleep phase 1: 会话压缩回填 (stub — Reflection 处理主路径，回填待 LLM wiring)
+- [x] Sleep phase 2: temporal housekeeping — `stale_memories(days=7)` → forget/flag
+- [x] Sleep phase 3: 缓存清理 — 递归遍历 `~/.aman/agents/{id}/cache/`，按 mtime 删除
+- [x] Sleep phase 4: 索引监控 — `stats()` 调用，100MB 阈值 warn
+- [x] Sleep phase 5: think() consolidation (stub — `think()` 返回空结果待桥接)
+- [x] Sleep phase 6: 健康报告 — JSON snapshot 写入 `~/.aman/agents/{id}/health/`
+- [x] SleepRunner 架构：EventHandler + OnceLock 注入 + CancellationToken 支持 + CpuTracker
+- [x] 验证: Sleep → provider.stale_memories() → 清理/标记 (unit tested)
+- [ ] 验证: think() → consolidation_count > 0 → 记忆合并 (待 yantrikdb 桥接)
+- [ ] 验证: 端到端 — 启动 gateway，idle depth 达到 Sleep，观察 phase 日志
 
 **Milestone 3: Exploration**（1–2 周）
 - [ ] `ExternalSearchEngine` v0（web_search only）

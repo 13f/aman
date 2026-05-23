@@ -46,6 +46,7 @@ skm-select = "0.1.0"
 serde_json.workspace = true
 serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "signal", "sync", "macros", "time"] }
+tokio-util = "0.7"
 tower = { version = "0.5.2", features = ["util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

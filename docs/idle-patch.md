@@ -11,7 +11,7 @@
 
 | 深度 | 状态 | 类型 | 核心动作 | 硬依赖 | 就绪度 |
 |------|------|------|----------|--------|--------|
-| 0 | **Daze** | Pipeline | 纯 metrics 采集，跑通 idle→skill 链路 | 无 | ✅ 立即可做 |
+| 0 | **Daze** | Pipeline | 纯状态声明 (no-op)，idle 序列锚点 | 无 | ✅ 已完成 |
 | 1 | **Boredom** | Pipeline | 扫描 pending 任务 + 随机浏览记忆 | deferred task queue / kanban | ❌ 等 kanban 机制 |
 | 2 | **Waiting** | Pipeline | 等待外部条件满足（timer / async / 用户回复） | 无 | ✅ 立即可做 (no-op) |
 | 3 | **Sleep** | Workflow | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | MemoryProvider（已落地），think() 桥接 | ⚠️ 部分就绪 |
@@ -24,7 +24,7 @@
 
 ```
 Phase 1 (现在) ── 无外部依赖，立即可做
-    Daze        metrics 采集，跑通 idle→skill 链路
+    Daze        纯状态声明 (no-op)，idle 序列锚点 ✅ 已完成
     Waiting     纯条件检查，no-op 即可
     Reflection  lessons_learned + session_extract → YantrikDB
 
@@ -181,7 +181,7 @@ pub struct ThinkResult {
 
 ---
 
-## 1. Daze
+## 1. Daze ✅ 已完成
 
 **路由**: `pipeline:idle-daze`
 **类型**: Pipeline（同步，<1ms）
@@ -191,26 +191,21 @@ pub struct ThinkResult {
 ### 执行步骤
 
 ```
-step 1: 从 IdleEvent 读取 depth、duration_secs
-step 2: 调用 IdleMetrics::record_kind_transition(IdleKind::Daze, depth)
-         └─ 内部：idle_depth ← depth
-                 kind_durations[Daze] += duration_secs
-                 total_idle_seconds += duration_secs
-step 3: 调用 coord.arousal.apply_behavior(Passive)
-         └─ 内部：按 half_life 衰减公式正常衰减
-step 4: 返回 None（空 Pipeline，不产出事件）
+step 1: 声明当前状态为 Daze（IdleDetector 内存中已记录 current_kind、depth、duration_secs）
+step 2: return None（纯 no-op，不产出事件）
 ```
 
-### 缺失组件
+IdleDetector 已在内存中跟踪所有 idle 指标（`current_kind`、`depth`、`kind_durations[]`、`arousal`），并实时同步到 UI。不需要独立的 `IdleMetrics` 持久化存储——idle metrics 是运行时快照，重启后重置，没有离线分析需求。
 
-| 组件 | 状态 | 说明 |
-|------|------|------|
-| `IdleMetrics` 写入端点 | **未实现** | §12 定义了结构体但无写入逻辑。需要新增 `crates/idle/src/metrics.rs`，提供 `record_kind_transition()` + `get_snapshot()` 两个方法。metrics 存储位置：内存 HashMap 即可（不需要持久化——idle metrics 是运行时快照） |
-| UI 查询端点 | **未实现** | 前端状态图表需要轮询当前 idle 状态。建议在 `runtime` crate 的 HTTP API 新增 `GET /api/v1/agents/:id/idle-status`，返回 `{ kind, depth, duration_secs, arousal }` |
+### 无缺失组件
 
-### 优先级
+Daze 是 idle 序列的深度 0 锚点。它的存在意义是区分"刚空闲"和"空闲了一段时间"——这个区分由 IdleDetector 完成，Daze skill 本身不需要额外逻辑。
 
-**Phase 1** — 最简状态，零依赖。用它验证 idle→skill dispatch 整条链路是否通畅。
+### 验证
+
+- [x] idle→Daze→skill dispatch 链路通畅
+- [x] IdleDetector 正确追踪 current_kind = Daze
+- [x] UI 实时显示 idle 状态
 
 ---
 
@@ -985,36 +980,34 @@ pipeline 部分 (<1ms):
  5       memory.llm / memory.embedding 配置✅ 已实现               config crate             Reflection, Sleep
  6       RemoteEmbedder (云端 embedding)  ✅ 已实现               reqwest                   YantrikdbProvider
  ── Phase 2 (短期 — 桥接 + Sleep + Reflection) ──
- 7       IdleMetrics 写入端点             未实现                  无                       Daze, UI
- 8       UI idle-status 端点              未实现                  IdleMetrics              前端状态图表
- 9       SessionExtractor (Reflection)    LLM config 已就绪       memory.llm + SessionStore Reflection
-10       think() 桥接 (yantrikdb→Provider) 未实现                YantrikdbProvider        Sleep, Meditation, Incubation
-11       CacheStore (文件系统 TTL)         未实现                  无                       Sleep (phase 3)
-12       Health snapshot 存储              未实现                  SQLite 或 JSON 文件       Sleep (phase 6)
-13       CPU time tracker                 未实现                  无                       Sleep, Exploration, Meditation
-14       AtomicWrite                      未实现                  无                       全局复用
+ 7       SessionExtractor (Reflection)    LLM config 已就绪       memory.llm + SessionStore Reflection
+ 8       think() 桥接 (yantrikdb→Provider) 未实现                YantrikdbProvider        Sleep, Meditation, Incubation
+ 9       CacheStore (文件系统 TTL)         未实现                  无                       Sleep (phase 3)
+10       Health snapshot 存储              未实现                  SQLite 或 JSON 文件       Sleep (phase 6)
+11       CPU time tracker                 未实现                  无                       Sleep, Exploration, Meditation
+12       AtomicWrite                      未实现                  无                       全局复用
  ── Phase 3 (中期 — 外部组件) ──
-15       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
-16       TimerRegistry                    部分实现                无                       Boredom, Waiting
-17       RateLimiter                      未实现                  无                       Exploration
-18       ExternalSearchEngine             未实现                  HTTP client              Exploration
-19       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration
-20       InterestScorer                   未实现                  embedding / BM25         Exploration
-21       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration
-22       SkillAuditReport                 未实现                  文件系统                   Exploration
+13       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
+14       TimerRegistry                    部分实现                无                       Boredom, Waiting
+15       RateLimiter                      未实现                  无                       Exploration
+16       ExternalSearchEngine             未实现                  HTTP client              Exploration
+17       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration
+18       InterestScorer                   未实现                  embedding / BM25         Exploration
+19       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration
+20       SkillAuditReport                 未实现                  文件系统                   Exploration
  ── Phase 4 (远期 — 深度认知) ──
-23       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
-24       ErrorClassifier                  未实现                  TraceStore               Reflection
-25       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
-26       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
-27       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
-28       PendingAsyncCalls 注册表         未实现                  无                       Waiting (完整模式)
-29       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
-30       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
-31       Narrative 报告目录               未实现                  文件系统                   Meditation
-32       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
-33       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
-34       IdleConfig 各子项配置            部分实现                 config crate             Daze, Boredom, Waiting, Sleep, Exploration, Meditation, Incubation
+21       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
+22       ErrorClassifier                  未实现                  TraceStore               Reflection
+23       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
+24       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
+25       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
+26       PendingAsyncCalls 注册表         未实现                  无                       Waiting (完整模式)
+27       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
+28       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
+29       Narrative 报告目录               未实现                  文件系统                   Meditation
+30       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
+31       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
+32       IdleConfig 各子项配置            部分实现                 config crate             Daze, Boredom, Waiting, Sleep, Exploration, Meditation, Incubation
 ```
 
 ### YantrikDB 已覆盖的能力（原方案中需要手动实现的组件）
@@ -1047,15 +1040,13 @@ pipeline 部分 (<1ms):
 - [x] workspace build 通过
 
 **Milestone 1: Phase 1 实现 — Daze + Waiting + Reflection**（1–2 周）
-- [ ] `IdleMetrics` 写入端点
-- [ ] UI `GET /api/v1/agents/:id/idle-status`
-- [ ] Daze skill: metrics 采集，跑通 idle→skill 链路
+- [x] Daze skill: 纯状态声明 (no-op)，idle 序列锚点。IdleDetector 内存跟踪 metrics + UI 同步
+- [x] idle→Daze→skill dispatch 链路验证通过
 - [ ] Waiting skill: 纯条件检查 (no-op stub)
 - [ ] Reflection step 4 (`session_extract`): JSONL → LLM 提取 → YantrikDB.store() + relate()
 - [ ] Reflection step 3 (`lessons_learned`): 经验提取 → YantrikDB.store()
 - [ ] Reflection step 1 (`chain_tasks`): stub 实现（无 TraceStore 时用规则表）
 - [ ] Reflection step 2 (`immediate_errors`): stub 实现
-- [ ] 验证: idle→Daze→metrics 更新→UI 可见
 - [ ] 验证: QueueDrained → Reflection → session JSONL → LLM 提取 → YantrikDB 可见
 
 **Milestone 2: think() 桥接 + Sleep**（1–2 周）

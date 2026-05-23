@@ -49,7 +49,7 @@ Defined in `crates/core/src/event.rs:146-158`:
 
 ## Dual-Layer Event Bus Architecture
 
-Aman uses a **dual-layer event bus** design: one **Global Bus** for infrastructure events and cross-agent communication, plus a **Per-Agent Local Bus** for each agent's internal high-throughput events.
+aman uses a **dual-layer event bus** design: one **Global Bus** for infrastructure events and cross-agent communication, plus a **Per-Agent Local Bus** for each agent's internal high-throughput events.
 
 ```
 ┌─────────────────────────────────────────────────────────┐

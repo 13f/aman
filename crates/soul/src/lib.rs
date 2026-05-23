@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "SOUL model, parser, boundary checks, and hot reload for Aman."]
+#![doc = "SOUL model, parser, boundary checks, and hot reload for aman."]
 
 use kernel::context::{BaseContext, PipelineContext, SkillContext, ToolContext};
 use kernel::event::{Event, EventType};
@@ -399,7 +399,7 @@ mod tests {
     use kernel::AmanResult;
     use std::sync::{Arc, Mutex};
 
-    const SOUL_MD: &str = r#"# Aman
+    const SOUL_MD: &str = r#"# aman
 
 ## identity
 Event-driven assistant focused on safe execution.
@@ -426,11 +426,11 @@ Calm and concise.
     #[test]
     fn parses_soul_markdown_and_generates_prompt() {
         let soul = Soul::parse(SOUL_MD).expect("soul parses");
-        assert_eq!(soul.name, "Aman");
+        assert_eq!(soul.name, "aman");
         assert_eq!(soul.expertise, vec!["Rust".to_owned(), "Plugin systems".to_owned()]);
         assert_eq!(soul.boundaries.len(), 2);
         let prompt = soul.to_system_prompt();
-        assert!(prompt.contains("You are Aman."));
+        assert!(prompt.contains("You are aman."));
         assert!(prompt.contains("Boundaries:"));
     }
 
@@ -453,7 +453,7 @@ Calm and concise.
             soul_name: None,
         };
         let injected_skill = soul.inject_skill_context(skill_context);
-        assert_eq!(injected_skill.soul_name, Some("Aman".to_owned()));
+        assert_eq!(injected_skill.soul_name, Some("aman".to_owned()));
         assert!(injected_skill.base.extensions.contains_key("soul.system_prompt"));
 
         let pipeline_context = PipelineContext {
@@ -464,7 +464,7 @@ Calm and concise.
         let injected_pipeline = soul.inject_pipeline_context(pipeline_context);
         assert_eq!(
             injected_pipeline.base.extensions["soul.name"],
-            serde_json::Value::String("Aman".to_owned())
+            serde_json::Value::String("aman".to_owned())
         );
     }
 
@@ -473,7 +473,7 @@ Calm and concise.
         let soul = Soul::parse(SOUL_MD).expect("soul parses");
         let event = soul_changed_event(&soul);
         assert_eq!(event.event_type, EventType::Custom("soul_changed".to_owned()));
-        assert_eq!(event.payload["name"], serde_json::Value::String("Aman".to_owned()));
+        assert_eq!(event.payload["name"], serde_json::Value::String("aman".to_owned()));
     }
 
     #[derive(Default)]

@@ -1,4 +1,4 @@
-# Aman 插件 / 事件 / Hook 开发指南
+# aman 插件 / 事件 / Hook 开发指南
 
 ---
 
@@ -16,7 +16,7 @@
 
 ## 1. 概述
 
-Aman 提供三层扩展机制，从简单到复杂依次为：
+aman 提供三层扩展机制，从简单到复杂依次为：
 
 | 机制 | 复杂度 | 用途 | 语言 |
 |------|--------|------|------|
@@ -28,7 +28,7 @@ Aman 提供三层扩展机制，从简单到复杂依次为：
 
 ## 2. 内置工具参考
 
-Aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
+aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
 
 ### 2.1 文件操作工具
 
@@ -181,7 +181,7 @@ Aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
 工具注册点在 `crates/tool/src/lib.rs`：
 
 ```rust
-pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
+pub fn install_builtin_tools(registry: &ToolRegistry) -> amanResult<()> {
     registry.register(Arc::new(fs_tools::ReadTool))?;
     registry.register(Arc::new(fs_tools::WriteTool))?;
     registry.register(Arc::new(fs_tools::EditTool))?;
@@ -197,7 +197,7 @@ Plugin 可以通过 `PluginExportRegistrar::register_tool()` 注册自定义工�
 
 ### 3.1 工作原理
 
-Hook 是 Aman 中最轻量的扩展机制。每个 Hook 是一个可执行脚本，当特定事件发生时，Aman 将事件信息以 JSON 格式通过 stdin 传递给脚本。
+Hook 是 aman 中最轻量的扩展机制。每个 Hook 是一个可执行脚本，当特定事件发生时，aman 将事件信息以 JSON 格式通过 stdin 传递给脚本。
 
 ```
 事件发生 → ScriptHookRunner 匹配 → 脚本 stdin 收到 JSON → 脚本执行 → 完成
@@ -283,7 +283,7 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 ```
 
 - stdout 输出被收集（当前可忽略）
-- stderr 输出会打印到 Aman 日志中，可用于调试
+- stderr 输出会打印到 aman 日志中，可用于调试
 - 脚本退出码非零不会影响主流程
 
 ### 3.4 支持的事件类型
@@ -370,7 +370,7 @@ cp -r samples/hooks/openpeon ~/.aman/agents/minmax/hooks/
 
 ```rust
 // crates/core/src/script.rs
-pub fn check_available(&self) -> AmanResult<()> {
+pub fn check_available(&self) -> amanResult<()> {
     // 1. which bash（检查 PATH）
     // 2. bash --version（获取版本）
     // 3. 验证版本约束（如 >=3.2）
@@ -432,8 +432,8 @@ let event = Event::new(
 ```rust
 #[async_trait]
 pub trait EventBus: Send + Sync {
-    async fn publish(&self, event: Event) -> AmanResult<()>;
-    async fn subscribe(&self, filter: SubscriptionFilter, handler: Box<dyn EventHandler>) -> AmanResult<SubscriptionId>;
+    async fn publish(&self, event: Event) -> amanResult<()>;
+    async fn subscribe(&self, filter: SubscriptionFilter, handler: Box<dyn EventHandler>) -> amanResult<SubscriptionId>;
     async fn unsubscribe(&self, id: SubscriptionId);
     fn try_dequeue(&self) -> Option<Event>;
     fn backpressure_level(&self) -> BackpressureLevel;
@@ -456,7 +456,7 @@ bus.subscribe(
 
 ### 4.4 自定义事件源
 
-> **简单场景**：如果只需要从外部系统向 Aman 推送事件，使用 `POST /events/push` HTTP API 或 `aman event push` CLI 即可，无需实现 `EventSource` trait。详见 [§7 从外部推送事件](#7-从外部推送事件)。
+> **简单场景**：如果只需要从外部系统向 aman 推送事件，使用 `POST /events/push` HTTP API 或 `aman event push` CLI 即可，无需实现 `EventSource` trait。详见 [§7 从外部推送事件](#7-从外部推送事件)。
 
 实现 `EventSource` trait 可以创建自定义事件源：
 
@@ -465,10 +465,10 @@ bus.subscribe(
 pub trait EventSource: Send + Sync {
     fn id(&self) -> &str;
     fn source_type(&self) -> SourceType;
-    async fn init(&mut self, ctx: SourceContext) -> AmanResult<()>;
-    async fn poll(&mut self, ctx: &SourceContext) -> AmanResult<Vec<Event>>;
-    async fn shutdown(&mut self) -> AmanResult<()>;
-    async fn on_backpressure(&mut self, level: BackpressureLevel, ctx: &SourceContext) -> AmanResult<()>;
+    async fn init(&mut self, ctx: SourceContext) -> amanResult<()>;
+    async fn poll(&mut self, ctx: &SourceContext) -> amanResult<Vec<Event>>;
+    async fn shutdown(&mut self) -> amanResult<()>;
+    async fn on_backpressure(&mut self, level: BackpressureLevel, ctx: &SourceContext) -> amanResult<()>;
     fn health(&self) -> HealthStatus;
 }
 ```
@@ -522,11 +522,11 @@ pub trait Plugin: Send + Sync {
     fn dependencies(&self) -> &[PluginDependency];
 
     // 生命周期
-    async fn on_load(&mut self, ctx: PluginContext) -> AmanResult<()>;
-    async fn on_unload(&mut self) -> AmanResult<()>;
+    async fn on_load(&mut self, ctx: PluginContext) -> amanResult<()>;
+    async fn on_unload(&mut self) -> amanResult<()>;
 
     // 依赖通知
-    async fn on_dependency_unloading(&self, dep_name: &str) -> AmanResult<()>;
+    async fn on_dependency_unloading(&self, dep_name: &str) -> amanResult<()>;
 
     // 导出
     fn event_sources(&self) -> Vec<Arc<dyn EventSource>>;
@@ -649,7 +649,7 @@ my-plugin.tar.gz
 1. 在 `~/.aman/hooks/` 下创建目录
 2. 编写 `config.yaml`（配置事件类型和 runtime）
 3. 编写脚本（从 stdin 读 JSON）
-4. 重启 Aman 或等待热加载
+4. 重启 aman 或等待热加载
 5. 查看调试日志确认触发
 
 ### 6.3 Event Source 开发要点
@@ -685,7 +685,7 @@ my-plugin.tar.gz
 
 ## 7. 从外部推送事件
 
-Aman 提供 HTTP API 和 CLI 两种方式，允许外部系统（浏览器插件、CI/CD、RSS 阅读器等）向 Aman 推送事件。推送的事件可以是 Aman 内置类型，也可以是任意的自定义类型。Aman 内部的规则或 Agent LLM 决定是否处理、是否通知用户。
+aman 提供 HTTP API 和 CLI 两种方式，允许外部系统（浏览器插件、CI/CD、RSS 阅读器等）向 aman 推送事件。推送的事件可以是 aman 内置类型，也可以是任意的自定义类型。aman 内部的规则或 Agent LLM 决定是否处理、是否通知用户。
 
 ### 7.1 HTTP API
 
@@ -736,7 +736,7 @@ Aman 提供 HTTP API 和 CLI 两种方式，允许外部系统（浏览器插件
 
 `target` 字段指示事件发布目标：`"global"` 表示全局 Bus，`"agent:<id>"` 表示某个 Agent 的 Local Bus。
 
-**用例：浏览器插件向 Aman 推送发现的网页**
+**用例：浏览器插件向 aman 推送发现的网页**
 
 ```bash
 curl -X POST http://127.0.0.1:18080/events/push \
@@ -845,5 +845,5 @@ RSS 抓取新文章
 
 - 使用 `namespace:action` 格式：`ingest:page`、`deploy:completed`、`alert:disk`
 - `ingest:*` 前缀表示外部数据摄入（网页、文章、RSS、日历事件等）
-- 避免使用 `system.*`、`idle.*`、`agent:*` 前缀，这些为 Aman 内部保留
+- 避免使用 `system.*`、`idle.*`、`agent:*` 前缀，这些为 aman 内部保留
 - 自定义事件类型自动映射为 `EventType::Custom(String)`，无需预注册

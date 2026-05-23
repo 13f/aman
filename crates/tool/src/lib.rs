@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Tool registry, runner, and builtin tools for the Aman agent framework."]
+#![doc = "Tool registry, runner, and builtin tools for the aman agent framework."]
 
 pub mod auth;
 pub mod fs_tools;

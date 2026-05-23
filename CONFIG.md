@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Aman uses a layered configuration system with YAML files and environment variable overrides.
+aman uses a layered configuration system with YAML files and environment variable overrides.
 
 ## Configuration File (`aman.yaml`)
 

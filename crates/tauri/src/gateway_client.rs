@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::time::Duration;
 
-/// HTTP client for communicating with the Aman Gateway daemon.
+/// HTTP client for communicating with the aman Gateway daemon.
 #[derive(Debug, Clone)]
 pub struct GatewayClient {
     pub base_url: String,

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Hook registry for the Aman agent framework."]
+#![doc = "Hook registry for the aman agent framework."]
 
 use kernel::context::HookContext;
 use kernel::error::AmanResult;

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Persistence layer primitives for the Aman agent framework."]
+#![doc = "Persistence layer primitives for the aman agent framework."]
 
 mod dlq;
 mod overflow;

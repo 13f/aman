@@ -1,6 +1,6 @@
 # Idle State System — Architecture Design
 
-> 将 Windows "空闲进程"的隐喻落地为 Aman Agent 框架的正式子系统。
+> 将 Windows "空闲进程"的隐喻落地为 aman Agent 框架的正式子系统。
 > 空闲不是无事可做，而是 Agent 在内省、维护、探索、复盘——用未被使用的周期做有价值的事。
 >
 > **八种空闲状态**：七种由 AgentIdleManager 根据空闲深度产生，一种（Reflection）由 Dispatcher
@@ -21,11 +21,11 @@
 
 ### 要解决的问题
 
-Aman 是事件响应式框架——一切行为由事件驱动。但事件队列为空时，Agent 陷入"真空"：什么都不做，也什么都没学到。这不是设计缺陷，而是**设计空白**。
+aman 是事件响应式框架——一切行为由事件驱动。但事件队列为空时，Agent 陷入"真空"：什么都不做，也什么都没学到。这不是设计缺陷，而是**设计空白**。
 
 更重要的是：事件刚处理完、队列刚清空的那一刻，Agent 的 arousal 还高、上下文还热——应该立刻复盘刚完成的任务、检查是否有连锁任务。这是 Dispatcher 的责任，不是 IdleDetector 的责任。
 
-类比：Windows 内核中 CPU 永远不会"什么也不做"。当没有用户进程需要调度时，系统切换到 `System Idle Process`（PID 0）——一个专门捕获空闲周期的特殊进程。Aman 需要同等级别的"空闲进程"。
+类比：Windows 内核中 CPU 永远不会"什么也不做"。当没有用户进程需要调度时，系统切换到 `System Idle Process`（PID 0）——一个专门捕获空闲周期的特殊进程。aman 需要同等级别的"空闲进程"。
 
 ### 核心约束
 
@@ -447,7 +447,7 @@ Reflection Pipeline 的第一个 step 读取此字段决定执行哪些 check_it
 
 ---
 
-## 5. Integration with Aman Runtime
+## 5. Integration with aman Runtime
 
 ### 5.1 架构位置（R8：Per-Agent）
 
@@ -645,7 +645,7 @@ impl AgentIdleManager {
     pub fn coordination(&self) -> &Arc<IdleCoordination> { /* ... */ }
 
     /// 关闭：取消 incubation 线程 → reset idle signal → stop token。
-    pub async fn shutdown(&self) -> AmanResult<()> { /* ... */ }
+    pub async fn shutdown(&self) -> amanResult<()> { /* ... */ }
 }
 ```
 
@@ -1075,3 +1075,172 @@ struct IdleMetrics {
 > **R1→R2 的关键修复路径**：
 > 1. `Dispatcher.store(source_type)` → `coord.last_source_type` → `IdleDetector.load()` — 源类型传播链闭合
 > 2. `coord.reset_idle_signal()` → `idle_cancel_token.cancel()` → `Workflow.checkpoint()` — 中断机制闭合
+
+---
+
+## 14. Idle State Activity Catalog
+
+> 每个空闲子状态「适合做什么」的具体事项清单。
+> 信息来源：设计文档 §8 配置暗示 + `~/.aman/skills/idle/*.yaml` 的 description 字段。
+
+### 14.1 总览表
+
+| 状态 | 深度范围 | 累积时间 | Arousal 行为 | 触发者 | 核心意图 |
+|------|---------|---------|-------------|--------|---------|
+| Reflection | — | — | — | Dispatcher (QueueDrained) | 刚完成任务后的即时复盘 |
+| Daze | 0–4 | 0–20s | Passive | IdleDetector | 空闲基线，仅记 metrics |
+| Boredom | 5–19 | 25–95s | Passive | IdleDetector | 感知不活跃，寻 pending 任务 |
+| Sleep | 20–49 | 100–245s | Engaged (×0.5) | IdleDetector | 长期记忆整合，压缩上下文 |
+| Exploration | 50–99 | 250–495s | Engaged (×0.0) | IdleDetector | 主动探索外部信息，发现信号 |
+| Meditation | 100–199 | 500–995s | Engaged (×0.0) | IdleDetector | 深度内省，提炼经验更新启发式 |
+| Waiting | — | — | Passive | IdleDetector (条件) | 等待外部输入或异步操作完成 |
+| Incubation | 200+ | 1000s+ | Engaged (×0.1) | IdleDetector | 创意孵化，跨域联想 |
+
+### 14.2 Reflection — 即时复盘
+
+**触发**：Dispatcher 处理完一个真实事件且 Event Bus 队列为空时，发布 `QueueDrained`。
+
+**check_items**（按顺序执行）：
+1. `chain_tasks` — 检查刚完成的任务是否产生了新的连锁任务（如 "部署完 → 运行冒烟测试"）
+2. `immediate_errors` — 检查任务执行过程中是否有被忽略的即时错误或警告
+3. `lessons_learned` — 提取本轮任务的经验教训，写入经验库
+
+**约束**：
+- 通过 `select!` 实现：新事件到达时 Reflection 被抢先取消，无产出时熔断计数重置
+- timeout=60s，超时视为完成（无产出）
+- 连续 5 次无产出 → 跳过 `lessons_learned`；10 次 → 完全跳过 + cooldown 30s
+
+**产出**：连锁任务 Event（注入 Event Bus）、错误报告、经验条目
+
+### 14.3 Daze — 空闲基线
+
+**核心意图**：Agent 处于安静基线状态——认知负荷最低。不执行任何实质性工作，仅记录 idle metrics。
+
+**建议活动**：
+- 更新 `IdleMetrics`：idle_depth 递增、kind_durations 计时
+- 检查 `pending_depth_reset` 信号（R7）
+- 应用 Passive arousal 衰减
+- 聊天模式与完整模式行为一致（空 Pipeline，<1ms 完成）
+
+**不适合做的事**：任何 I/O、LLM 调用、外部查询——Daze 应该是零开销的过渡态。
+
+### 14.4 Boredom — 感知不活跃
+
+**核心意图**：Agent 感知到不活跃，开始寻找是否有被遗忘的待处理事项。
+
+**聊天模式**：纯 no-op——不执行任何操作。Pipeline 为同步空操作，<1ms 返回。轮次之间的空闲不应触发实质性工作。
+
+**完整模式建议活动**：
+- 扫描 deferred task queue / pending 工作队列，寻找可执行的延迟任务
+- 检查是否有链式任务（Reflection 产出的连锁任务）尚未被拾取
+- 随机浏览：从知识库中随机抽取条目进行快速回顾（保持认知"温热"）
+- 检查定时器/提醒是否到期但未触发
+- 评估 "任务饥饿度"——如果发现积压，产出低优先级提醒事件
+
+**不适合做的事**：外部 API 调用（留给 Exploration）、深度思考（留给 Meditation）、记忆整理（留给 Sleep）
+
+### 14.5 Sleep — 长期记忆整合
+
+**核心意图**：将短期/工作记忆压缩到持久化存储。类比人类睡眠中的记忆巩固。
+
+**建议活动**：
+- **会话压缩**：将最近完成的对话/任务上下文从完整日志压缩为摘要嵌入
+- **短期记忆 → 长期记忆**：short_term_retention_days (7天) 内的记忆进行质量筛选，高质量条目提升到长期存储
+- **缓存清理**：过期缓存（>30天）的惰性清理，释放存储空间
+- **索引重建**：对记忆/Tantivy 索引执行增量优化（merge segments）
+- **去重**：扫描重复或高度相似的记忆条目，合并或标记
+- **指标快照**：生成当前 memory store 的健康报告（条目数、大小、碎片率）
+
+**资源约束**：
+- CPU 预算：max_cpu_seconds=60（防止记忆整理抢占资源）
+- 可被真实事件通过 `idle_cancel_token` 中断，checkpoint 保存进度后退出
+- Engaged arousal (×0.5)：衰减速度减半，允许 Agent 在 Sleep 状态停留更久
+
+**不适合做的事**：外部查询（无网络依赖）、实时性要求高的操作
+
+### 14.6 Exploration — 主动探索
+
+**核心意图**：Agent 主动向外探索，获取新信息、评估信号。类比人类无聊时刷信息流。
+
+**好奇心源**（`curiosity_sources`）：
+1. **memory_gaps** — 记忆中标记为 "待查证" 或 "信息不完整" 的条目。逐一查询补充。
+2. **skill_audit** — 审计已注册 skill 的新鲜度：上游文档是否更新？API 是否变更？最佳实践是否过时？
+3. **recent_failures** — 回顾最近的错误/失败，搜索外部解决方案：是否有新的 issue/PR/文章 解决了同样的问题？
+
+**建议活动**：
+- 查询外部信息源（web search、RSS feed、API endpoints）
+- 对获取的信息做兴趣度评分（相关性、新鲜度、可操作性），筛选 top-N 信号
+- 将高价值发现包装为低优先级 Event 注入 Event Bus（Agent 醒来后处理）
+- 更新 skill 审计报告
+
+**约束**：
+- max_results=20：每轮探索最多保留 20 个信号
+- api_rate_per_minute=10：对外 API 调用速率限制
+- `on_quota_exhausted: fallback`：配额耗尽时降级为本地探索（扫描本地文件/日志）
+- Engaged (×0.0)：arousal 不衰减，agent 在探索中保持"清醒"
+- 可被真实事件通过 `idle_cancel_token` 中断，断点保存
+
+**不适合做的事**：写操作（只读探索）、发送消息/通知（idle 不应主动联系用户）
+
+### 14.7 Meditation — 深度内省
+
+**核心意图**：回顾近期经验链，提取教训，更新内部启发式规则。类比人类的深度反思或冥想。
+
+**建议活动**：
+- **经验链回顾**：加载最近 N 轮任务的经验链（trace），做端到端复盘
+- **教训提取**：从经验链中识别模式——"什么做对了？什么做错了？下次如何改进？"
+- **启发式更新**：将提取的教训转化为内部规则/约束（如 "以后遇到 X 类型错误先检查 Y"）
+- **知识图谱修剪**：清理过时或矛盾的内部知识条目
+- **撰写冥想报告**：生成结构化的叙事报告，输出到 `~/.aman/narrative/meditation/`
+
+**文件安全**：
+- `atomic_write: true`：先写 temp 文件，完成后再 rename，防止崩溃损坏
+- `min_interval_ticks: 20`：两次 Meditation 之间最少间隔 20 个 tick，防止连续触发
+
+**约束**：
+- 中断损失高：被 `idle_cancel_token` 中断时直接丢弃当前产出（temp+rename 保证文件安全，上一个完成的报告不受影响）
+- Engaged (×0.0)：arousal 冻结，agent 在冥想中完全沉浸
+
+**不适合做的事**：外部信息查询（那是 Exploration 的职责）、快速响应性任务
+
+### 14.8 Waiting — 等待外部输入
+
+**核心意图**：Agent 在等待某个外部条件满足——异步操作完成、用户回复、定时器到期。
+
+**与 Daze 的关键区别**：
+- Daze = "没什么可做的"（被动空闲）
+- Waiting = "有事在做但需要等"（预期未来活动）
+
+**建议活动**：
+- 轮询或等待条件变量（如异步 HTTP 请求的 response、文件系统事件）
+- 检查 timeout：等待超时后产出一个 timeout 事件
+- 条件满足时立即产出一个唤醒事件，将 Agent 拉回 Active
+
+**约束**：
+- Pipeline 同步执行（条件检查极短，<1ms）
+- 不可被真实事件打断（同步 Pipeline 完成后再处理新事件）
+- Passive arousal 衰减
+
+**不适合做的事**：长时间阻塞（应在 Workflow 层用 async/await 而非 busy-wait）
+
+### 14.9 Incubation — 创意孵化
+
+**核心意图**：后台潜意识处理——在不相关的记忆之间建立新颖连接。类比人类的 "灵感乍现"。
+
+**建议活动**（Phase 1 跳过，以下为设计方向）：
+- **跨域联想**：扫描记忆库中不同领域的条目，寻找意外的关联（如 "医疗 Agent 的错误恢复模式 是否能用于 金融 Agent？"）
+- **假设生成**：基于现有知识生成 "如果……会怎样？" 的假设性问题
+- **灵感评分**：对新生成的连接做新颖性和可行性评分，高价值灵感包装为 Event
+- **种子演进**：对之前 Incubation 产生的灵感种子做进一步的发散推演
+
+**约束**：
+- `max_concurrent_threads: 1`：同时最多 1 个孵化线程
+- `cancel_timeout_secs: 5`：shutdown 时给 5s 窗口优雅退出
+- 纯后台：不因真实事件中断（仅 Agent shutdown 时取消）
+- Engaged (×0.1)：arousal 极慢衰减，允许长期驻留在深层状态
+
+**不适合做的事**：任何面向用户的输出（灵感仅为内部消费）
+
+---
+
+*本节的技能定义文件位于 `~/.aman/skills/idle/`。技能 YAML 的 `description` 字段与本节的「核心意图」保持同步。*

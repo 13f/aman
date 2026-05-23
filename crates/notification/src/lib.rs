@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Notification center — severity-classed user-facing alerts for the Aman agent runtime."]
+#![doc = "Notification center — severity-classed user-facing alerts for the aman agent runtime."]
 
 pub mod model;
 pub mod store;

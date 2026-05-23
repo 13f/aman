@@ -1,6 +1,6 @@
 # Plugin Development Guide
 
-Plugins extend Aman with custom Skills, Tools, Event Sources, and lifecycle hooks. They can be loaded as shared libraries, WASM modules, or subprocesses.
+Plugins extend aman with custom Skills, Tools, Event Sources, and lifecycle hooks. They can be loaded as shared libraries, WASM modules, or subprocesses.
 
 ## Plugin Manifest (`plugin.yaml`)
 
@@ -34,7 +34,7 @@ my-plugin/
 
 ## WASM Plugins
 
-WASM plugins export specific functions that Aman calls at runtime:
+WASM plugins export specific functions that aman calls at runtime:
 
 ```rust
 // Required exports for WASM plugin
@@ -56,7 +56,7 @@ pub extern "C" fn aman_skill_on_unload() -> u32 {
 
 ## Plugin Lifecycle
 
-1. **Discovery**: Aman scans `plugins.dir` from config
+1. **Discovery**: aman scans `plugins.dir` from config
 2. **Dependency resolution**: Topological sort + cycle detection
 3. **Load**: `on_load()` called for each plugin (topological order)
 4. **Enable**: Plugin registers its exports

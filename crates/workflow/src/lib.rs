@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Workflow state machine engine for the Aman agent framework."]
+#![doc = "Workflow state machine engine for the aman agent framework."]
 
 use async_trait::async_trait;
 use kernel::event::{Event, EventType};

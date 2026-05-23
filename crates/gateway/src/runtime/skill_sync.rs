@@ -55,7 +55,7 @@ fn load_manifest(path: &Path) -> SkillManifest {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Returns the Aman user data directory (`~/.aman`).
+/// Returns the aman user data directory (`~/.aman`).
 pub fn aman_data_dir() -> PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))

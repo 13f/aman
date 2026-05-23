@@ -3,7 +3,7 @@ name = "hello-skill"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Aman SDK example: hello-skill plugin demonstrating Skill, Tool, and Plugin traits"
+description = "aman SDK example: hello-skill plugin demonstrating Skill, Tool, and Plugin traits"
 publish = false
 
 [lints]

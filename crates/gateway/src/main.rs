@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Aman Gateway Daemon
+//! aman Gateway Daemon
 //!
 //! Standalone background process that wraps the agent runtime and serves
 //! its HTTP API. Designed to run as a systemd/launchd service, independent

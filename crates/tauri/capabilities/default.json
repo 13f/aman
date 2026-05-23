@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capability for the Aman desktop app",
+  "description": "Default capability for the aman desktop app",
   "windows": ["main"],
   "permissions": [
     "core:default",

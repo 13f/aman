@@ -1,6 +1,6 @@
 # Multi-Agent 数据目录与配置重构 — 架构设计
 
-> 基于 Aman 现有 20-crate 架构（event-driven, plugin-based, Tauri v2 desktop），重构 `~/.aman/` 数据目录、`config.yaml` 结构，在保留现有运行时核心的同时支持多 Agent 管理。
+> 基于 aman 现有 20-crate 架构（event-driven, plugin-based, Tauri v2 desktop），重构 `~/.aman/` 数据目录、`config.yaml` 结构，在保留现有运行时核心的同时支持多 Agent 管理。
 
 ---
 
@@ -162,7 +162,7 @@ ProviderSecretResolver
 
 ```
 ┌─────────────┐     ┌─────────────────┐     ┌───────────────────┐
-│ config.yaml │────▶│ AmanMultiConfig  │────▶│ Validation        │
+│ config.yaml │────▶│ amanMultiConfig  │────▶│ Validation        │
 │ (YAML)      │     │                 │     │ - provider 不重名  │
 └─────────────┘     │ + providers: {}  │     │ - agent 不重名    │
                     │ + model: {}      │     │ - agent.provider  │
@@ -206,7 +206,7 @@ pub struct AgentEntryConfig {
 
 /// 多 Agent 全量配置（包含运行时 + providers + agents）
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AmanConfig {
+pub struct amanConfig {
     // 运行时配置（保持现有 AgentConfig 不变）
     #[serde(flatten)]
     pub runtime: AgentConfig,
@@ -227,8 +227,8 @@ pub struct AmanConfig {
 ### 4.2 Validator 扩展
 
 ```rust
-impl AmanConfig {
-    pub fn validate_full(&self) -> AmanResult<Vec<String>> {
+impl amanConfig {
+    pub fn validate_full(&self) -> amanResult<Vec<String>> {
         // 1. 原有的 runtime 验证
         let mut warnings = self.runtime.validate()?;
 
@@ -274,23 +274,23 @@ fn is_valid_identifier(s: &str) -> bool {
 
 ```rust
 // 新增加载函数
-impl AmanConfig {
+impl amanConfig {
     /// 从 ~/.aman/config.yaml 加载完整配置
-    pub fn from_default_path() -> AmanResult<Self> {
+    pub fn from_default_path() -> amanResult<Self> {
         let path = default_config_path();
         Self::from_file(&path)
     }
 
-    pub fn from_file(path: &Path) -> AmanResult<Self> {
+    pub fn from_file(path: &Path) -> amanResult<Self> {
         let content = fs::read_to_string(path)?;
-        let config: AmanConfig = serde_yaml::from_str(&content)
+        let config: amanConfig = serde_yaml::from_str(&content)
             .map_err(|e| Error::config_invalid(format!("解析 config.yaml 失败: {e}")))?;
         config.validate_full()?;
         Ok(config)
     }
 
     /// 保存配置到文件（保留注释的难度高，用最小侵入式序列化）
-    pub fn save(&self, path: &Path) -> AmanResult<()> {
+    pub fn save(&self, path: &Path) -> amanResult<()> {
         let content = serde_yaml::to_string(self)
             .map_err(|e| Error::config_invalid(format!("序列化配置失败: {e}")))?;
         if let Some(parent) = path.parent() {
@@ -368,7 +368,7 @@ pub struct AgentEntry {
 
 | Command | 签名 | 说明 |
 |---------|------|------|
-| `get_aman_config` | → `AmanConfig` | 读取完整配置（不含 API keys） |
+| `get_aman_config` | → `amanConfig` | 读取完整配置（不含 API keys） |
 | `has_any_provider` | → `bool` | 检查是否有至少一个 provider |
 | `has_any_agent` | → `bool` | 检查是否有至少一个 agent |
 | `get_default_model` | → `Option<DefaultModelConfig>` | 获取默认模型 |
@@ -400,7 +400,7 @@ App.svelte 导航栏新增：
 │  ┌─── 检查 config.yaml ──────────────┐   │
 │  │ has_any_provider() = false?       │   │
 │  │  → 弹窗/横幅: "请先配置 LLM       │   │
-│  │    Provider 以开始使用 Aman"      │   │
+│  │    Provider 以开始使用 aman"      │   │
 │  │  → "去配置 Provider" 按钮         │   │
 │  │  → 导航到 /providers 页面         │   │
 │  └─────────────────────────────────┘   │
@@ -582,7 +582,7 @@ Payload 示例（agent:created）：
 ```rust
 // crates/tauri/src/state.rs
 
-use config::AmanConfig;
+use config::amanConfig;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::time::Duration;
@@ -596,7 +596,7 @@ pub struct AppState {
     pub active_agent_key: Arc<Mutex<Option<String>>>,
 
     // 新增：config 文件的 in-memory cache
-    pub config: Arc<Mutex<Option<AmanConfig>>>,
+    pub config: Arc<Mutex<Option<amanConfig>>>,
 }
 
 impl AppState {
@@ -612,15 +612,15 @@ impl AppState {
     }
 
     /// 从磁盘加载 config.yaml
-    pub async fn load_config(&self) -> AmanResult<AmanConfig> {
-        let config = AmanConfig::from_default_path()?;
+    pub async fn load_config(&self) -> amanResult<amanConfig> {
+        let config = amanConfig::from_default_path()?;
         let mut guard = self.config.lock().await;
         *guard = Some(config.clone());
         Ok(config)
     }
 
     /// 保存 config.yaml 并刷新缓存
-    pub async fn save_config(&self, config: &AmanConfig) -> AmanResult<()> {
+    pub async fn save_config(&self, config: &amanConfig) -> amanResult<()> {
         let path = default_config_path();
         config.save(&path)?;
         let mut guard = self.config.lock().await;
@@ -642,7 +642,7 @@ pub fn init_agent_dir(
     base_dir: &Path,    // ~/.aman/agents
     key: &str,
     soul_content: &str,
-) -> AmanResult<()> {
+) -> amanResult<()> {
     let agent_dir = base_dir.join(key);
     if agent_dir.exists() {
         return Err(Error::config_invalid(format!(
@@ -664,7 +664,7 @@ pub fn init_agent_dir(
 }
 
 /// 删除 Agent 文件系统结构
-pub fn remove_agent_dir(base_dir: &Path, key: &str) -> AmanResult<()> {
+pub fn remove_agent_dir(base_dir: &Path, key: &str) -> amanResult<()> {
     let agent_dir = base_dir.join(key);
     if !agent_dir.exists() {
         return Err(Error::config_invalid(format!(
@@ -681,7 +681,7 @@ pub fn append_session_message(
     key: &str,
     timestamp: chrono::NaiveDateTime,
     message: &ChatMessage,
-) -> AmanResult<PathBuf> {
+) -> amanResult<PathBuf> {
     let month_dir = format!("{}", timestamp.format("%Y-%m"));
     let day_prefix = format!("{}", timestamp.format("%Y-%m-%d"));
     let short_id = &uuid::Uuid::now_v7().to_string()[..8];
@@ -756,7 +756,7 @@ label: aman.providers.deepseek.api_key
 ## 11. crate 依赖关系与改动范围总览
 
 ```
-crates/config         — 新增 AmanConfig, ProviderConfig, AgentEntryConfig struct
+crates/config         — 新增 amanConfig, ProviderConfig, AgentEntryConfig struct
                         新增 AMAN_* 环境变量支持（AMAN_PROVIDER_*）
 crates/tauri          — 新增 commands（provider/agent CRUD）
                         新增 models（ProviderEntry, AgentEntry）
@@ -865,8 +865,8 @@ CREATE INDEX idx_sessions_last_active ON sessions(last_active_at);
 
 | Phase | Scope | Dependencies | 预估工作量 |
 |-------|-------|-------------|-----------|
-| **P1** | config crate: `AmanConfig`, `ProviderConfig`, `AgentEntryConfig`, `validate_full()` | 无 | crates/config: ~200 lines |
-| **P1** | `AmanConfig::save()` + `is_valid_identifier()` | P1 config | ~50 lines |
+| **P1** | config crate: `amanConfig`, `ProviderConfig`, `AgentEntryConfig`, `validate_full()` | 无 | crates/config: ~200 lines |
+| **P1** | `amanConfig::save()` + `is_valid_identifier()` | P1 config | ~50 lines |
 | **P2** | Tauri backend: `list_providers`, `create_provider`, `delete_provider`, API Key 存储命令 | P1 config | crates/tauri: ~300 lines |
 | **P2** | Tauri backend: `agent_fs.rs` — `init_agent_dir`, `remove_agent_dir`, session 写入 | P1 config | ~200 lines |
 | **P2** | Tauri backend: `list_agents`, `create_agent`, `delete_agent`, `select_agent` | P2 agent_fs | ~250 lines |

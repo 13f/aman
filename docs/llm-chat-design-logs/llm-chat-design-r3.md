@@ -92,11 +92,11 @@
 
 ### 🎯 R3-3: Event Bus 背压机制与会话级队列两级之间无协调 — 事件在到达队列前被拒绝（🟡）
 
-**场景**：系统处于 L3 背压等级（§10.1 之外，来自 Aman 核心 Event Bus 设计——L3 = 95% capacity，新事件被拒绝）。用户发送一条 MESSAGE_RECEIVED，被 Event Bus 拒绝，**在到达会话级队列之前**。
+**场景**：系统处于 L3 背压等级（§10.1 之外，来自 aman 核心 Event Bus 设计——L3 = 95% capacity，新事件被拒绝）。用户发送一条 MESSAGE_RECEIVED，被 Event Bus 拒绝，**在到达会话级队列之前**。
 
 **💥 可能后果**：
 - §4 定义了会话级队列（深度 10 条/会话），但队列存在于 **LLM Skill 或 Dispatcher 层面**——它假设 MESSAGE_RECEIVED 事件能够到达该层
-- 但 Aman 的 Event Bus 有自己的背压机制（L1-L4B），在事件到达 Dispatcher **之前**就可能拒绝事件
+- 但 aman 的 Event Bus 有自己的背压机制（L1-L4B），在事件到达 Dispatcher **之前**就可能拒绝事件
 - 两条独立设计的防御路径**互不知晓**：
   - Event Bus 说"满了，拒绝新事件"→ 事件**没有到达**会话级队列
   - §4 的队列溢出检测（ChatPlatformSource 发送前检查）监听到的是**队列满**，不是 Event Bus 满
@@ -153,7 +153,7 @@
   - WAL 在关闭时是否 Flush？是否确保所有正在处理的事件在关闭前完成或持久化？
 
 **🛠 建议**：
-- 将 LLM 对话组件映射到 Aman 生命周期 Phase 中：
+- 将 LLM 对话组件映射到 aman 生命周期 Phase 中：
   - Phase 0.5: SecretResolver 解析 LLM Provider API Key
   - Phase 2: WAL 恢复执行（重放未消费的事件到 Event Bus）
   - Phase 3: LLM Skill 注册到 Skill 系统

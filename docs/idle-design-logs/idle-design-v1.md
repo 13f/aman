@@ -1,6 +1,6 @@
 # Idle State System — Architecture Design
 
-> 将 Windows "空闲进程"的隐喻落地为 Aman Agent 框架的正式子系统。
+> 将 Windows "空闲进程"的隐喻落地为 aman Agent 框架的正式子系统。
 > 空闲不是无事可做，而是 Agent 在内省、维护、探索、复盘——用未被使用的周期做有价值的事。
 >
 > **八种空闲状态**：其中七种由 IdleDetector 根据空闲深度产生，一种（Reflection）由 Dispatcher
@@ -12,11 +12,11 @@
 
 ### 要解决的问题
 
-Aman 是事件响应式框架——一切行为由事件驱动。但事件队列为空时，Agent 陷入"真空"：什么都不做，也什么都没学到。这不是设计缺陷，而是**设计空白**。
+aman 是事件响应式框架——一切行为由事件驱动。但事件队列为空时，Agent 陷入"真空"：什么都不做，也什么都没学到。这不是设计缺陷，而是**设计空白**。
 
 更重要的是：事件刚处理完、队列刚清空的那一刻，Agent 的 arousal 还高、上下文还热——应该立刻复盘刚完成的任务、检查是否有连锁任务。这是 Dispatcher 的责任，不是 IdleDetector 的责任。
 
-类比：Windows 内核中 CPU 永远不会"什么也不做"。当没有用户进程需要调度时，系统切换到 `System Idle Process`（PID 0）——一个专门捕获空闲周期的特殊进程。Aman 需要同等级别的"空闲进程"。
+类比：Windows 内核中 CPU 永远不会"什么也不做"。当没有用户进程需要调度时，系统切换到 `System Idle Process`（PID 0）——一个专门捕获空闲周期的特殊进程。aman 需要同等级别的"空闲进程"。
 
 ### 核心约束
 
@@ -24,7 +24,7 @@ Aman 是事件响应式框架——一切行为由事件驱动。但事件队列
 |---------|------|
 | **不可变（框架哲学）** | 一切行为仍是事件驱动。空闲不引入新的执行模型，只是产生新类型的事件 |
 | **可变（业务策略）** | 哪些空闲类型启用、阈值、每个 Agent 的"空闲人格" |
-| **技术限制** | 空闲检测必须在事件循环内部，不能依赖外部 cron（不符合 Aman 的 Phase 4 后自主运行原则） |
+| **技术限制** | 空闲检测必须在事件循环内部，不能依赖外部 cron（不符合 aman 的 Phase 4 后自主运行原则） |
 | **性能约束** | 空闲检测本身不能成为 CPU 热点。在空闲状态下，检测逻辑本身消耗应 <1% CPU |
 | **时序约束** | Reflection（复盘）必须在事件处理完成后、真正空闲开始前执行，不能等到 IdleDetector 的下一轮 poll |
 
@@ -354,11 +354,11 @@ idle:
 
 ---
 
-## 5. Integration with Aman Runtime
+## 5. Integration with aman Runtime
 
 ### 5.1 架构位置
 
-IdleDetector 作为 **Event Source** 插入 Aman 的 Source 层。
+IdleDetector 作为 **Event Source** 插入 aman 的 Source 层。
 QueueDrained 由 **Dispatcher** 产生，经 Event Bus 流动——Dispatcher 既是生产者也是消费者。
 
 ```

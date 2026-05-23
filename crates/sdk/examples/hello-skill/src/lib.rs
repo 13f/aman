@@ -1,11 +1,11 @@
-//! Hello Skill — an example Aman plugin demonstrating the Skill, Tool, and Plugin traits.
+//! Hello Skill — an example aman plugin demonstrating the Skill, Tool, and Plugin traits.
 #![allow(dead_code)]
 //!
 //! This plugin provides:
 //! - An **EchoTool** that echoes back whatever parameters it receives.
 //! - An **EchoSkill** triggered by heartbeat events.
 //!
-//! Use this as a starting template for your own Aman plugins.
+//! Use this as a starting template for your own aman plugins.
 
 use sdk::prelude::*;
 use semver::Version;

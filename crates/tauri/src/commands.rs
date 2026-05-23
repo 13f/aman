@@ -1035,7 +1035,7 @@ fn show_native_auth_dialog(tool_name: &str, arguments_summary: &str) -> Result<S
 
 {escaped_args}
 
-Allow this operation?" buttons {{"Deny", "Allow"}} default button "Allow" cancel button "Deny" with title "Aman — Tool Authorization" with icon caution"#
+Allow this operation?" buttons {{"Deny", "Allow"}} default button "Allow" cancel button "Deny" with title "aman — Tool Authorization" with icon caution"#
     );
 
     let output = std::process::Command::new("osascript")

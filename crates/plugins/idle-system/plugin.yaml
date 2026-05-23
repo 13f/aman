@@ -1,7 +1,7 @@
 name: idle-system
 version: "1.0.0"
 description: Idle personality system — handles all 7 IdleKind states
-author: Aman
+author: aman
 depends_on:
   - name: core
     version_range: ">=0.1.0"

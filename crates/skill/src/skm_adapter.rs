@@ -65,7 +65,7 @@ impl SkmRegistry {
     #[must_use]
     pub fn parse_one(&self, path: &Path) -> Option<SkillInfo> {
         let meta = self.parser.parse_metadata(path).ok()?;
-        // Extract Aman-specific fields (category, array-form triggers) from raw YAML
+        // Extract aman-specific fields (category, array-form triggers) from raw YAML
         // since skm-core only exposes standard agentskills.io fields.
         let (category, triggers) = extract_raw_fields(path);
         Some(SkillInfo {
@@ -150,10 +150,10 @@ fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>) ->
     })
 }
 
-/// Extract Aman-specific frontmatter fields (category, array-form triggers)
+/// Extract aman-specific frontmatter fields (category, array-form triggers)
 /// that skm-core's standard schema doesn't support.
 ///
-/// Checks both top-level `triggers` (Aman format) and `metadata.triggers`
+/// Checks both top-level `triggers` (aman format) and `metadata.triggers`
 /// (agentskills.io standard format). Falls back from top-level to metadata
 /// for compatibility with skm-core-using tools (e.g. cascade selector).
 fn extract_raw_fields(path: &Path) -> (String, Vec<String>) {
@@ -185,7 +185,7 @@ fn extract_raw_fields(path: &Path) -> (String, Vec<String>) {
         .unwrap_or("")
         .to_owned();
 
-    // Try top-level `triggers` first (Aman format: YAML array), fall back to
+    // Try top-level `triggers` first (aman format: YAML array), fall back to
     // `metadata.triggers` (agentskills.io standard: comma-separated string).
     let triggers = extract_triggers_value(
         mapping.get(serde_yaml::Value::String("triggers".to_owned())),

@@ -26,7 +26,7 @@ aman run --config aman.yaml
 
 ## Core Concepts
 
-Aman is built around an **event-driven architecture**:
+aman is built around an **event-driven architecture**:
 
 1. **Events** flow through the system as typed JSON payloads with trace IDs
 2. **Event Sources** (cron, file watch, webhook, timer) produce events
@@ -120,7 +120,7 @@ API keys and credentials are stored in the OS-native credential store (macOS Key
 
 ## Agent Harness
 
-Agent Harness is the runtime engine that connects Aman's event infrastructure to LLM agent behaviors:
+Agent Harness is the runtime engine that connects aman's event infrastructure to LLM agent behaviors:
 
 **ReAct Loop** — Think-Act-Observe iteration:
 1. Assemble context (SOUL system prompt + conversation history + tool schemas + memory)

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Pipeline engine primitives for the Aman agent framework."]
+#![doc = "Pipeline engine primitives for the aman agent framework."]
 
 use kernel::context::{BaseContext, PipelineContext, ToolContext};
 use kernel::event::Event;

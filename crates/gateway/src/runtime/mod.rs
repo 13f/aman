@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Runtime orchestration and control plane for Aman (inlined into gateway)."]
+#![doc = "Runtime orchestration and control plane for aman (inlined into gateway)."]
 
 mod agent_harness;
 mod agent_registry;

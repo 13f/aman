@@ -14,7 +14,7 @@ The `aman` CLI provides runtime management and administrative commands.
 
 ### `aman run`
 
-Start the Aman agent runtime.
+Start the aman agent runtime.
 
 ```bash
 aman run --config ~/.aman/config.yaml --soul ~/.aman/SOUL.md

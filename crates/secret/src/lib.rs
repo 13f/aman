@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Secret resolution and prompt-injection safeguards for Aman."]
+#![doc = "Secret resolution and prompt-injection safeguards for aman."]
 
 use kernel::{AmanResult, Error};
 use kernel::retry::RetryBackoff;

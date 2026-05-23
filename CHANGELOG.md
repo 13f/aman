@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial release of Aman Agent Framework
+- Initial release of aman Agent Framework
 - Core type system: Event, EventType, Priority, DeliveryGuarantee, Timestamp, TraceId
 - Event bus with 5-level backpressure, dedup window, per-source ordering, retry queue
 - Event sources: Timer, Cron, FileWatch, Webhook, Signal, Socket

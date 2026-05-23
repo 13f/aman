@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Aman Agent Framework SDK — single-dependency entry point for external Skill and Plugin developers"
+description = "aman Agent Framework SDK — single-dependency entry point for external Skill and Plugin developers"
 
 [lints]
 workspace = true

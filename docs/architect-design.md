@@ -1,4 +1,4 @@
-# Aman Agent Framework — Rust 架构设计
+# aman Agent Framework — Rust 架构设计
 
 > 基于 [agent-design.md](./agent-design.md) 的事件响应式 Agent 框架，Rust 系统级实现。
 > 本文件为纯架构设计，不包含里程碑/roadmap/任务拆分。
@@ -1288,7 +1288,7 @@ aman
 ```rust
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = AmanCli::parse();
+    let cli = amanCli::parse();
 
     match cli.command {
         Commands::Run { config, soul, daemon, log_level } => {

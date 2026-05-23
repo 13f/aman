@@ -1,6 +1,6 @@
 # Skill Development Guide
 
-Skills are YAML-defined capabilities that trigger on events and execute tools. They are the primary way to add custom behavior to Aman.
+Skills are YAML-defined capabilities that trigger on events and execute tools. They are the primary way to add custom behavior to aman.
 
 ## Skill Definition (SKILL.md)
 
@@ -62,7 +62,7 @@ triggers:
 
 ## Skill Lifecycle
 
-1. **Discovery**: Aman scans `~/.aman/skills/` on startup
+1. **Discovery**: aman scans `~/.aman/skills/` on startup
 2. **Registration**: Each `SKILL.md` is parsed and registered
 3. **Triggering**: Matching events activate the skill
 4. **Execution**: Tools run sequentially with timeout protection
@@ -93,6 +93,6 @@ steps:
 
 1. Create a skill directory: `mkdir -p ~/.aman/skills/my-skill`
 2. Write `SKILL.md` in that directory
-3. Aman auto-detects the skill (or restart `aman run`)
+3. aman auto-detects the skill (or restart `aman run`)
 4. Test by injecting matching events: `aman event inject --type file_created --payload '{"path": "test.pdf"}'`
-5. Edit the SKILL.md — Aman hot-reloads changes automatically
+5. Edit the SKILL.md — aman hot-reloads changes automatically

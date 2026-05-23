@@ -91,7 +91,7 @@ impl AgentInstance {
 /// Agent 级别的事件类型。
 ///
 /// 这些事件由 AgentRegistry 和 AgentHarness 在关键操作点发布，
-/// 遵循 Aman "万物皆事件"的设计公理。
+/// 遵循 aman "万物皆事件"的设计公理。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
     Registered(AgentDescriptor),

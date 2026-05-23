@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Skill registry, loader, and trigger execution for the Aman agent framework."]
+#![doc = "Skill registry, loader, and trigger execution for the aman agent framework."]
 
 use kernel::context::SkillContext;
 use kernel::event::Event;

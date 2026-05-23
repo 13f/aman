@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Idle state system for the Aman agent framework."]
+#![doc = "Idle state system for the aman agent framework."]
 
 pub mod arousal;
 pub mod config;

@@ -1,7 +1,7 @@
 name: hello-plugin
 version: "1.0.0"
-description: A minimal Aman plugin example
-author: Aman SDK
+description: A minimal aman plugin example
+author: aman SDK
 depends_on:
   - name: core
     version_range: ">=0.1.0"

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Dispatcher primitives for the Aman agent framework."]
+#![doc = "Dispatcher primitives for the aman agent framework."]
 
 use event_bus::EventBus;
 use idle::coordination::IdleCoordination;

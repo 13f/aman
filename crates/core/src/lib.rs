@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
-#![doc = "Core types and traits for the Aman agent framework."]
+#![doc = "Core types and traits for the aman agent framework."]
+
+/// Canonical project name used throughout the framework.
+pub const PKG_NAME: &str = "aman";
 
 pub mod agent;
 pub mod budget;

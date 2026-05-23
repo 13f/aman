@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Event source registry and built-in sources for the Aman framework."]
+#![doc = "Event source registry and built-in sources for the aman framework."]
 
 mod cron;
 mod file_watch;

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Configuration model and layered loader for the Aman agent framework."]
+#![doc = "Configuration model and layered loader for the aman agent framework."]
 
 use idle::IdlePersonality;
 use kernel::event::{Event, EventType};

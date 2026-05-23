@@ -267,7 +267,7 @@ let result = IdleWorkflowRunner::run_with_cancel(&mut workflow, token).await;
 
 ### 纯聊天场景的全路径失败链
 
-假设 Aman 只用于聊天（最常见场景），所有 R3 问题同时存在：
+假设 aman 只用于聊天（最常见场景），所有 R3 问题同时存在：
 
 ```
 用户连续聊天 2 分钟（4 条消息，间隔 30s）

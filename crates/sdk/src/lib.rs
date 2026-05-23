@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Aman Agent Framework SDK.
+#![doc = "aman Agent Framework SDK.
 
 This crate provides a single-dependency entry point for external Skill and Plugin
 developers. Re-exports the most important public types from across the framework.
@@ -56,7 +56,7 @@ pub use tool;
 pub use workflow;
 
 pub mod prelude {
-    //! Convenience re-exports for Aman Skill and Plugin authors.
+    //! Convenience re-exports for aman Skill and Plugin authors.
 
     pub use kernel::prelude::*;
 

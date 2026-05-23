@@ -1,6 +1,6 @@
 # Idle State System — Architecture Design
 
-> 将 Windows "空闲进程"的隐喻落地为 Aman Agent 框架的正式子系统。
+> 将 Windows "空闲进程"的隐喻落地为 aman Agent 框架的正式子系统。
 > 空闲不是无事可做，而是 Agent 在内省、维护、探索、复盘——用未被使用的周期做有价值的事。
 >
 > **八种空闲状态**：七种由 IdleDetector 根据空闲深度产生，一种（Reflection）由 Dispatcher
@@ -23,11 +23,11 @@
 
 ### 要解决的问题
 
-Aman 是事件响应式框架——一切行为由事件驱动。但事件队列为空时，Agent 陷入"真空"：什么都不做，也什么都没学到。这不是设计缺陷，而是**设计空白**。
+aman 是事件响应式框架——一切行为由事件驱动。但事件队列为空时，Agent 陷入"真空"：什么都不做，也什么都没学到。这不是设计缺陷，而是**设计空白**。
 
 更重要的是：事件刚处理完、队列刚清空的那一刻，Agent 的 arousal 还高、上下文还热——应该立刻复盘刚完成的任务、检查是否有连锁任务。这是 Dispatcher 的责任，不是 IdleDetector 的责任。
 
-类比：Windows 内核中 CPU 永远不会"什么也不做"。当没有用户进程需要调度时，系统切换到 `System Idle Process`（PID 0）——一个专门捕获空闲周期的特殊进程。Aman 需要同等级别的"空闲进程"。
+类比：Windows 内核中 CPU 永远不会"什么也不做"。当没有用户进程需要调度时，系统切换到 `System Idle Process`（PID 0）——一个专门捕获空闲周期的特殊进程。aman 需要同等级别的"空闲进程"。
 
 ### 核心约束
 
@@ -449,7 +449,7 @@ Reflection Pipeline 的第一个 step 读取此字段决定执行哪些 check_it
 
 ---
 
-## 5. Integration with Aman Runtime
+## 5. Integration with aman Runtime
 
 ### 5.1 架构位置
 

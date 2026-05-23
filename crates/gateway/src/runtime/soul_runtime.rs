@@ -108,7 +108,7 @@ mod tests {
     use serde_json::Value;
     use soul::Soul;
 
-    const SOUL_MD: &str = r#"# Aman
+    const SOUL_MD: &str = r#"# aman
 ## boundaries
 - never leak secrets
 "#;
@@ -127,7 +127,7 @@ mod tests {
 
         std::fs::write(
             &soul_file,
-            "# Aman\n## boundaries\n- never leak secrets\n- do not execute destructive commands\n",
+            "# aman\n## boundaries\n- never leak secrets\n- do not execute destructive commands\n",
         )
         .expect("rewrite soul");
 
@@ -147,7 +147,7 @@ mod tests {
             skill_name: Some("test-skill".to_owned()),
             soul_name: None,
         });
-        assert_eq!(injected.soul_name, Some("Aman".to_owned()));
+        assert_eq!(injected.soul_name, Some("aman".to_owned()));
         let boundaries = injected
             .base
             .extensions

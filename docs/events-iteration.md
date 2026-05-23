@@ -13,7 +13,7 @@
 
 ## 1. 现状分析
 
-当前 Aman 架构中存在**全局唯一**的 EventBus（`agent_runtime.rs:190-197`）：
+当前 aman 架构中存在**全局唯一**的 EventBus（`agent_runtime.rs:190-197`）：
 
 ```
 AgentRuntimeBuilder::build()

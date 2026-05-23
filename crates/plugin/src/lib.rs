@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Plugin manifest, dependency graph, and lifecycle loader for Aman."]
+#![doc = "Plugin manifest, dependency graph, and lifecycle loader for aman."]
 
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;

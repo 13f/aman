@@ -1,6 +1,6 @@
 # LLM Chat 页面架构设计
 
-> 基于 Aman 事件响应式架构 + 插件系统的聊天页面可视化架构方案。
+> 基于 aman 事件响应式架构 + 插件系统的聊天页面可视化架构方案。
 > 本文件为架构决策记录，面向架构师评审。涵盖后端运行时、桥接层、前端激活、安全边界、多渠道恢复。
 > 前端 UI 业务语义（消息类型、工具卡片折叠、调试面板等）在 `llm-chat-design.md §14` 中详述。
 
@@ -10,9 +10,9 @@
 
 ### 1.1 背景
 
-Aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Dashboard、Skill Editor、Workflow Board、SOUL Editor、Plugin Manager、DLQ、Event Viewer。下一步需要支持 **LLM 对话能力**，核心问题在于：
+aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Dashboard、Skill Editor、Workflow Board、SOUL Editor、Plugin Manager、DLQ、Event Viewer。下一步需要支持 **LLM 对话能力**，核心问题在于：
 
-- 聊天页面（Chat Page）的可视化部分如何与 Aman 的插件系统对接？
+- 聊天页面（Chat Page）的可视化部分如何与 aman 的插件系统对接？
 - 聊天能力是内置在 Tauri 应用中，还是通过插件机制动态加载？
 - 插件系统是否需要扩展以支持 UI 相关的声明能力？
 
@@ -20,7 +20,7 @@ Aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Da
 
 | 角度 | 直觉倾向 | 问题 |
 |------|---------|------|
-| 插件化最大化 | 聊天页做成插件，动态加载 | Aman 插件系统是后端能力注册，不支持前端组件；安全性、一致性难以保证 |
+| 插件化最大化 | 聊天页做成插件，动态加载 | aman 插件系统是后端能力注册，不支持前端组件；安全性、一致性难以保证 |
 | 静态内置 | 聊天页编译在 Tauri 应用内 | 耦合：没有聊天插件时页面不可用但代码存在；无法热插拔 |
 | 折中 | 拆为两层 | 需要定义清晰的桥接契约 |
 
@@ -34,7 +34,7 @@ Aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Da
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  Layer 1: 后端能力插件 (Aman Plugin)                   │
+│  Layer 1: 后端能力插件 (aman Plugin)                   │
 │                                                       │
 │  放在: crates/plugins/ (或独立仓库)                    │
 │  注册: EventSource + Skill + Tool                     │
@@ -57,8 +57,8 @@ Aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Da
 
 | 依据 | 详细 |
 |------|------|
-| 安全 | 前端组件无法进入 Aman 的三种插件隔离模式（进程内/子进程/WASM）。UI 插件需要第四种沙箱，引入攻击面 |
-| 一致性 | 每个插件的 UI 风格不同会导致体验碎片化。Aman 的消费者视角期望统一的事件终端 |
+| 安全 | 前端组件无法进入 aman 的三种插件隔离模式（进程内/子进程/WASM）。UI 插件需要第四种沙箱，引入攻击面 |
+| 一致性 | 每个插件的 UI 风格不同会导致体验碎片化。aman 的消费者视角期望统一的事件终端 |
 | 编译约束 | Svelte 是编译时框架。动态加载 .svelte 需要运行时编译器，增加几百 KB 开销 |
 | 改动范围 | 后端插件加载不影响前端编译。聊天页的布局调整只需修改 Tauri 代码，不涉及插件重载 |
 | 热插拔 | 后端插件可以在运行时加载/卸载，前端通过事件响应 |
@@ -523,7 +523,7 @@ SOUL 热更新的生效边界限定在**完整的交互单元**（一个用户�
            │  MESSAGE_RECEIVED (trust_level: untrusted)
            ▼
 ┌──────────────────────────────────────┐
-│  Aman AgentRuntime                    │
+│  aman AgentRuntime                    │
 │                                        │
 │  ┌─ Event Bus (背压控制 + 去重)      │
 │  │   └─ InputSanitizer (注入检测)    │
@@ -919,7 +919,7 @@ capability_registry 聚合结果:
 
 ### 11.1 事件终端模型
 
-传统聊天页面是"发送→等待→接收"三段式。Aman 聊天页面是一个**双向事件终端**：
+传统聊天页面是"发送→等待→接收"三段式。aman 聊天页面是一个**双向事件终端**：
 
 ```
 事件终端（Chat Page）的角色:
@@ -1720,7 +1720,7 @@ GET /session/{id}/state 可选字段 (trim_info):
 || /stop 与 LLM_STREAM_DONE 竞态 | 低 | 低：偶尔标记错误 | 500ms 缓存窗口仲裁：窗口内收到 DONE → 视为正常完成 |
 || WAL 写入失败（磁盘满/权限不足） | 低 | 高：消息丢失 | WAL 写入失败 → MESSAGE_RECEIVED 不得进入 Event Bus；ChatPlatformSource 返回 507 Insufficient Storage；`wal.disk_usage_percent` ≥ 90% 时触发关键告警（§14.6 WalDiskCritical）；恢复后 WAL 重放从最近 checkpoint 开始，已确认的事件通过幂等去重跳过 |
 || State Store 写入失败 | 低 | 中：会话状态回滚 | 写入失败时：会话状态回滚到上一个已知持久化点（WAL 中最近 ACK 的事件）；`retry: 3 次`（指数退避 100ms/200ms/400ms）；3 次耗尽后降级为仅内存操作——用户可继续聊天，但重启后丢失该会话；审计日志记录 `state_store_write_failure` |
-|| Event Bus 完全不可用（非背压，进程级崩溃） | 低 | 高：所有消息处理停止 | Event Bus 崩溃属于 Aman 运行时级灾难，不在本组件恢复范围内；LLM Skill 检测到 Bus 不可用后停止接受新消息；ChatPlatformSource 返回 503 "Service Unavailable"；/health/ready 返回 503；恢复路径：Agent 重启（Phase 5→0→5），WAL 重放恢复未 ACK 事件 |
+|| Event Bus 完全不可用（非背压，进程级崩溃） | 低 | 高：所有消息处理停止 | Event Bus 崩溃属于 aman 运行时级灾难，不在本组件恢复范围内；LLM Skill 检测到 Bus 不可用后停止接受新消息；ChatPlatformSource 返回 503 "Service Unavailable"；/health/ready 返回 503；恢复路径：Agent 重启（Phase 5→0→5），WAL 重放恢复未 ACK 事件 |
 
 ### 18.2 未解决的问题
 
@@ -1833,4 +1833,4 @@ GET /session/{id}/state 可选字段 (trim_info):
 |---------|--------|------|---------|
 | §11.8 与 §15 语义重叠 | 次要 | 精简 §11.8 为纯上下文窗口计算 + 职责分离表；触发时机/策略全部引用 §15；移出触发条件（与 §15.2 重复） | §11.8 |
 | Phase 3 项目数膨胀（14 项） | 次要 | 前移 3 项到 Phase 2：用户级限流（#17）、WAL 持久化+断线重连（#18）、Phase 4.5 排水（#19）；各附前移理由；Phase 3 从 14 项减至 11 项（#20-#30）；Phase 2 从 16d 增至 ~21d（3-4 周） | §19 Phase 2/3 |
-| 基础设施错误恢复缺失 | 次要 | 新增 3 条风险项：WAL 写入失败（返回 507，不进入 Event Bus）、State Store 写入失败（重试 3 次→降级为仅内存）、Event Bus 崩溃（Aman 级灾难，引用 Agent 重启恢复路径） | §18.1 |
+| 基础设施错误恢复缺失 | 次要 | 新增 3 条风险项：WAL 写入失败（返回 507，不进入 Event Bus）、State Store 写入失败（重试 3 次→降级为仅内存）、Event Bus 崩溃（aman 级灾难，引用 Agent 重启恢复路径） | §18.1 |

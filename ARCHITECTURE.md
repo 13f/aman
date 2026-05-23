@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Aman is an event-driven agent framework composed of 19+ Rust crates organized into a layered architecture.
+aman is an event-driven agent framework composed of 19+ Rust crates organized into a layered architecture.
 
 ## Layer Diagram
 

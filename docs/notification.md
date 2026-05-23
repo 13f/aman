@@ -1,6 +1,6 @@
 # Notification Center
 
-User-facing alert system for the Aman agent runtime. Provides severity-classed
+User-facing alert system for the aman agent runtime. Provides severity-classed
 notifications (critical/warning) that appear as in-app overlays in the Tauri UI.
 
 ## Architecture

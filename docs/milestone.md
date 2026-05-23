@@ -1,4 +1,4 @@
-# Aman Agent Framework — Milestone Roadmap
+# aman Agent Framework — Milestone Roadmap
 
 > 基于 [agent-design.md](./agent-design.md) 和 [architect-design.md](./architect-design.md)
 > 每个里程碑包含可直接分配给开发者的具体任务。
@@ -1254,7 +1254,7 @@ M13 集成与打磨       ██████████████████
 
 ### 12.7 桌面增强
 
-- [x] 菜单栏：File（Reload Skills Ctrl+R / 分隔线 / Quit）、Help（About Aman / Toggle DevTools Ctrl+Shift+I）
+- [x] 菜单栏：File（Reload Skills Ctrl+R / 分隔线 / Quit）、Help（About aman / Toggle DevTools Ctrl+Shift+I）
 - [x] 键盘快捷键：`menu:reload_skills` → Skill Editor 前端事件监听触发热加载
 - [x] 应用图标：全部平台格式（32x32 / 128x128 / 256x256 / icns / ico）
 - [x] 窗口配置：最小尺寸 900x600、窗口居中、macOS 最低版本 12.0

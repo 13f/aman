@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-#![doc = "Event bus primitives for the Aman agent framework."]
+#![doc = "Event bus primitives for the aman agent framework."]
 
 mod backpressure;
 mod dedup;

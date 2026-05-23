@@ -1,6 +1,6 @@
 # HTTP API Reference
 
-Aman exposes an HTTP API on `127.0.0.1:9090` (configurable via `http.bind`).
+aman exposes an HTTP API on `127.0.0.1:9090` (configurable via `http.bind`).
 
 ## Authentication
 

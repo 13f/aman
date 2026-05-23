@@ -1,6 +1,6 @@
 # Agent Harness — 架构设计
 
-> Agent Harness 是连接 Aman 事件响应式基础设施与 LLM Agent 行为的桥梁层。
+> Agent Harness 是连接 aman 事件响应式基础设施与 LLM Agent 行为的桥梁层。
 > 它将"万物皆事件"的设计公理延伸到 Agent 的思考-行动-观察循环中。
 
 ---
@@ -21,7 +21,7 @@ Agent Harness 是 LLM Agent 的运行时执行引擎，负责将**一个用户�
 │  Session Manager   │  Context Assembler  │  Token Budget  │
 │  Multi-Agent Bus   │  Memory Integrator  │  Interrupt Ctrl│
 ├──────────────────────────────────────────────────────────┤
-│               Aman 事件响应式基础设施                          │
+│               aman 事件响应式基础设施                          │
 │                                                           │
 │  Event Bus  │  Dispatcher  │  Pipeline  │  Workflow      │
 │  ToolRunner │  Plugin Sys  │  SOUL      │  State Store   │
@@ -50,9 +50,9 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 
 ---
 
-## 2. Harness 能力与 Aman 能力映射
+## 2. Harness 能力与 aman 能力映射
 
-| # | Harness 能力 | 定义 | Aman 已有组件 | 实现状态 | 差距 |
+| # | Harness 能力 | 定义 | aman 已有组件 | 实现状态 | 差距 |
 |---|-------------|------|-------------|---------|------|
 | 1 | **Agent 身份与生命周期** | Agent 的注册、创建、销毁、配置管理 | `config.yaml` agents 段 + SOUL 系统 + `~/.aman/agents/` 目录 + `AgentRegistry` | ✅ 已实现 | 无运行时动态创建/销毁 API（仅通过 config 加载） |
 | 2 | **ReAct 循环引擎** | Think-Act-Observe 迭代：LLM 响应 → 解析 Tool Calls → 执行 → 反馈 → 继续 | `AgentHarness` + `LlmReActEngine` + `ToolExecutor` | ✅ 已实现 | — |
@@ -183,7 +183,7 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 
 ### 3.3 ReAct 循环的事件流
 
-每次 LLM 调用和 Tool 执行都通过 Event Bus 发布事件，保持 Aman 的"万物皆事件"原则：
+每次 LLM 调用和 Tool 执行都通过 Event Bus 发布事件，保持 aman 的"万物皆事件"原则：
 
 ```
 Agent ReAct 循环事件序列（一次用户消息 → 最终回复）：
@@ -369,7 +369,7 @@ impl AgentRegistry {
 | `agent:status_changed` | Agent 状态变化时（Idle↔Busy↔Error） |
 | `agent:removed` | Agent 从 Registry 移除时 |
 
-> **命名约定**：遵循 Aman 现有事件系统的 `namespace:event` 命名风格（参考 `llm:call_started`、`tool:invoke`、`session:started`）。Harness 引入的所有新事件均使用 `agent:` 前缀。
+> **命名约定**：遵循 aman 现有事件系统的 `namespace:event` 命名风格（参考 `llm:call_started`、`tool:invoke`、`session:started`）。Harness 引入的所有新事件均使用 `agent:` 前缀。
 
 #### T1.4 — Tauri IPC 添加 Agent 管理端点
 
@@ -797,7 +797,7 @@ LLM Plugin（`crates/plugins/llm-plugin/`）已被移除。AgentHarness 现在�
 - **阶段 B — 前端迁移**：Chat.svelte 迁移到 AgentHarness 事件，LLM Plugin 订阅禁用（rig-core tokio runtime 冲突）
 - **阶段 C — 移除 Plugin**：LLM Plugin 从 workspace 移除，`build_llm_config` 替换为 `get_llm_api_key_and_base_url`，`chat_validator_health` 端点删除
 
-### 5.1 符合 Aman 设计理念
+### 5.1 符合 aman 设计理念
 
 - **万物皆事件**：AgentHarness 的所有关键操作（LLM 调用开始/结束、Tool 执行、循环迭代）都通过 Event Bus 发布事件，不引入新的执行模型
 - **响应即行为**：AgentHarness 本身是事件处理器——它响应 `MESSAGE_RECEIVED`、`RETRY_CMD`、`STOP_GENERATION` 等事件，不主动轮询

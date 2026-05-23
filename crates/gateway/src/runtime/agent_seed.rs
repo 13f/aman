@@ -62,7 +62,7 @@ fn existing_agent_count(dir: &Path) -> usize {
         .map(|entries| {
             entries
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().map_or(false, |t| t.is_dir()))
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
                 .count()
         })
         .unwrap_or(0)
@@ -123,7 +123,7 @@ pub fn discover_filesystem_agents() -> Vec<String> {
     let mut discovered = Vec::new();
 
     for entry in entries.flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_dir()) {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let key = entry.file_name().to_string_lossy().to_string();
@@ -239,11 +239,10 @@ pub fn seed_builtin_agents() -> Vec<String> {
     }
 
     // Update config.yaml with the seeded agents.
-    if !seeded.is_empty() {
-        if let Err(e) = update_config_with_agents(&seeded) {
+    if !seeded.is_empty()
+        && let Err(e) = update_config_with_agents(&seeded) {
             tracing::warn!(error = %e, "failed to update config.yaml with seeded agents");
         }
-    }
 
     seeded
 }

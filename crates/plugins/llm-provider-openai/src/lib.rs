@@ -155,7 +155,7 @@ impl LlmOpenaiProvider {
             .timeout(std::time::Duration::from_secs(STREAM_TIMEOUT_SECS))
             .build()
             .map_err(|e| {
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                Error::Io(std::io::Error::other(e.to_string()))
             })?;
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -170,7 +170,7 @@ impl LlmOpenaiProvider {
             .send()
             .await
             .map_err(|e| {
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                Error::Io(std::io::Error::other(e.to_string()))
             })?;
 
         if !response.status().is_success() {
@@ -192,17 +192,13 @@ impl LlmOpenaiProvider {
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| {
-                Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                Error::Io(std::io::Error::other(e.to_string()))
             })?;
             let chunk_str = String::from_utf8_lossy(&chunk);
             buffer.push_str(&chunk_str);
 
             // Process complete lines in buffer
-            loop {
-                let newline_pos = match buffer.find('\n') {
-                    Some(p) => p,
-                    None => break,
-                };
+            while let Some(newline_pos) = buffer.find('\n') {
                 let line = buffer[..newline_pos].to_string();
                 buffer = buffer[newline_pos + 1..].to_string();
 
@@ -225,18 +221,18 @@ impl LlmOpenaiProvider {
 
                 // Extract delta content (text)
                 if let Some(delta) = choice.get("delta") {
-                    if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
-                        if !content.is_empty() {
-                            full_content.push_str(content);
-                            cb(StreamEvent::Chunk(content.to_owned()));
-                        }
+                    if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                        && !content.is_empty()
+                    {
+                        full_content.push_str(content);
+                        cb(StreamEvent::Chunk(content.to_owned()));
                     }
 
                     // Capture reasoning_content (DeepSeek thinking mode)
-                    if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str()) {
-                        if !rc.is_empty() {
-                            reasoning_content.push_str(rc);
-                        }
+                    if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str())
+                        && !rc.is_empty()
+                    {
+                        reasoning_content.push_str(rc);
                     }
 
                     // Accumulate tool call deltas
@@ -279,13 +275,14 @@ impl LlmOpenaiProvider {
                 }
 
                 // Check finish_reason
-                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
-                    if !reason.is_empty() && reason != "null" {
-                        finish_reason = reason.to_owned();
-                        cb(StreamEvent::Done {
-                            finish_reason: finish_reason.clone(),
-                        });
-                    }
+                if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str())
+                    && !reason.is_empty()
+                    && reason != "null"
+                {
+                    finish_reason = reason.to_owned();
+                    cb(StreamEvent::Done {
+                        finish_reason: finish_reason.clone(),
+                    });
                 }
             }
         }

@@ -351,39 +351,39 @@ fn extract_duckduckgo_results(data: Value) -> Value {
     let mut results: Vec<Value> = Vec::new();
 
     // Abstract result (main answer)
-    if let Some(abstract_text) = data.get("AbstractText").and_then(Value::as_str) {
-        if !abstract_text.is_empty() {
-            results.push(json!({
-                "title": data.get("Heading").and_then(Value::as_str).unwrap_or(""),
-                "url": data.get("AbstractURL").and_then(Value::as_str).unwrap_or(""),
-                "content": abstract_text,
-            }));
-        }
+    if let Some(abstract_text) = data.get("AbstractText").and_then(Value::as_str)
+        && !abstract_text.is_empty()
+    {
+        results.push(json!({
+            "title": data.get("Heading").and_then(Value::as_str).unwrap_or(""),
+            "url": data.get("AbstractURL").and_then(Value::as_str).unwrap_or(""),
+            "content": abstract_text,
+        }));
     }
 
     // Related topics
     if let Some(topics) = data.get("RelatedTopics").and_then(Value::as_array) {
         for topic in topics {
-            if let Some(text) = topic.get("Text").and_then(Value::as_str) {
-                if !text.is_empty() {
-                    results.push(json!({
-                        "title": topic.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
-                        "url": topic.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
-                        "content": text,
-                    }));
-                }
+            if let Some(text) = topic.get("Text").and_then(Value::as_str)
+                && !text.is_empty()
+            {
+                results.push(json!({
+                    "title": topic.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
+                    "url": topic.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
+                    "content": text,
+                }));
             }
             // Some topics have a "Topics" sub-array (categories)
             if let Some(sub_topics) = topic.get("Topics").and_then(Value::as_array) {
                 for sub in sub_topics {
-                    if let Some(text) = sub.get("Text").and_then(Value::as_str) {
-                        if !text.is_empty() {
-                            results.push(json!({
-                                "title": sub.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
-                                "url": sub.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
-                                "content": text,
-                            }));
-                        }
+                    if let Some(text) = sub.get("Text").and_then(Value::as_str)
+                        && !text.is_empty()
+                    {
+                        results.push(json!({
+                            "title": sub.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
+                            "url": sub.get("FirstURL").and_then(Value::as_str).unwrap_or(""),
+                            "content": text,
+                        }));
                     }
                 }
             }
@@ -469,7 +469,7 @@ async fn search_x(query: &str, count: usize) -> Value {
         return no_key_error("x (Twitter)");
     }
 
-    let max_results = count.min(10).max(1); // API allows 10-100; use min 10
+    let max_results = count.clamp(1, 10); // API allows 10-100; use min 10
     let client = http_client();
     let response = match client
         .get("https://api.twitter.com/2/tweets/search/recent")

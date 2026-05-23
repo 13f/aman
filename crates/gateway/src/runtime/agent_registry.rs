@@ -372,8 +372,7 @@ impl AgentRegistry {
         let agents = self.agents.read().await;
         agents
             .get(agent_id)
-            .map(|a| a.descriptor.allowed_tools.clone())
-            .flatten()
+            .and_then(|a| a.descriptor.allowed_tools.clone())
     }
 
     /// 检查该 Agent 是否有权限使用指定的 Tool。

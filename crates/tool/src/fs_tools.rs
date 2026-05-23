@@ -217,9 +217,7 @@ impl Tool for ReadTool {
         let truncated = end_idx < total_lines;
 
         let selected: String = lines[start_idx..end_idx]
-            .iter()
-            .copied()
-            .collect::<Vec<_>>()
+            .to_vec()
             .join("\n");
 
         // Redact sensitive patterns from content
@@ -961,20 +959,20 @@ fn parse_rg_json_output(output: &[u8], max_results: u64) -> (Vec<Value>, u64) {
             Err(_) => continue,
         };
 
-        if parsed["type"] == "match" {
-            if let Some(data) = parsed.get("data") {
-                let file = data["path"]["text"].as_str().unwrap_or("");
-                let line_number = data["line_number"].as_u64().unwrap_or(0);
-                let raw_text = data["lines"]["text"].as_str().unwrap_or("");
-                let text = raw_text.trim_end_matches('\n').trim_end_matches('\r');
+        if let Some(data) = parsed.get("data")
+            && parsed["type"] == "match"
+        {
+            let file = data["path"]["text"].as_str().unwrap_or("");
+            let line_number = data["line_number"].as_u64().unwrap_or(0);
+            let raw_text = data["lines"]["text"].as_str().unwrap_or("");
+            let text = raw_text.trim_end_matches('\n').trim_end_matches('\r');
 
-                seen_files.insert(file.to_owned());
-                results.push(json!({
-                    "path": file,
-                    "line_number": line_number,
-                    "text": text,
-                }));
-            }
+            seen_files.insert(file.to_owned());
+            results.push(json!({
+                "path": file,
+                "line_number": line_number,
+                "text": text,
+            }));
         }
     }
 

@@ -57,7 +57,7 @@ impl HookRegistry {
             .filter(|h| h.hook_points().contains(&point))
             .cloned()
             .collect();
-        matched.sort_by(|a, b| b.priority().cmp(&a.priority()));
+        matched.sort_by_key(|h| std::cmp::Reverse(h.priority()));
         matched
     }
 

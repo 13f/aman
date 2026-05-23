@@ -28,7 +28,7 @@ pub fn current_date_string() -> String {
         let days_in_next = (year + 1 - 1970) * 365 + leap_days_since_1970(year + 1);
         if days < days_in_next {
             let day_of_year = days - days_in_years;
-            let is_leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+            let is_leap = (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
             let month_days: [u64; 12] = [
                 31,
                 if is_leap { 29 } else { 28 },

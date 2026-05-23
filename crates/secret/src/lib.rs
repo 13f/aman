@@ -243,7 +243,7 @@ impl SecretBackend for KeychainBackend {
         {
             let cache = KEYCHAIN_CACHE.lock().unwrap();
             if let Some(secret) = cache.get(key) {
-                return Ok(Some(String::from_utf8_lossy(&*secret.borrow()).to_string()));
+                return Ok(Some(String::from_utf8_lossy(&secret.borrow()).to_string()));
             }
         }
 

@@ -909,8 +909,8 @@ impl AgentHarness {
             }
 
             // Check interrupt (M6)
-            if let Some(flag) = interrupt {
-                if flag.is_interrupted() {
+            if let Some(flag) = interrupt
+                && flag.is_interrupted() {
                     let _ = self
                         .publish_to_agent_bus(
                             &ctx.agent_id,
@@ -927,7 +927,6 @@ impl AgentHarness {
                         .await;
                     return Ok(ReactOutcome::Interrupted(String::new()));
                 }
-            }
 
             // M4: Check token budget and compress history if needed
             if token_budget.needs_trim() {
@@ -1045,14 +1044,13 @@ impl AgentHarness {
                     ctx.history.extend(results);
 
                     // Inject activation note if read_skill was called
-                    if has_read_skill {
-                        if let Some(call) = calls.iter().find(|c| c.tool_name == "read_skill") {
+                    if has_read_skill
+                        && let Some(call) = calls.iter().find(|c| c.tool_name == "read_skill") {
                             let skill_name = call.args.get("skill")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("skill");
                             ctx.history.push(skill::formatting::build_read_skill_reinforcement(skill_name));
                         }
-                    }
 
                     // If a skill was loaded in a previous turn (via read_skill) and this
                     // turn has finished gathering data, remind the LLM of the output format

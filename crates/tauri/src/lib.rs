@@ -227,11 +227,10 @@ pub fn run() {
                                     // Events are newest-first from EventStore::recent().
                                     // Reverse to oldest-first so stream_start arrives before chunks.
                                     for event_val in events.iter().rev() {
-                                        if let Some(id) = event_val["id"].as_str() {
-                                            if seen.insert(id.to_owned()) {
+                                        if let Some(id) = event_val["id"].as_str()
+                                            && seen.insert(id.to_owned()) {
                                                 let _ = handle2.emit("event:processed", event_val.clone());
                                             }
-                                        }
                                     }
                                 }
                             }

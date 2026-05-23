@@ -504,6 +504,12 @@ impl Dispatcher {
     }
 }
 
+impl Default for Dispatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[must_use]
 pub fn match_condition_from_subscription_filter(
     filter: &event_bus::SubscriptionFilter,

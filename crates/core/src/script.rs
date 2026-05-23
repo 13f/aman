@@ -124,7 +124,7 @@ impl ScriptRuntime {
 
         // Write JSON input to stdin.
         if let Some(ref mut stdin) = child.stdin {
-            serde_json::to_writer(stdin, input).map_err(|e| Error::SerdeJson(e))?;
+            serde_json::to_writer(stdin, input).map_err(Error::SerdeJson)?;
         }
 
         let output = child

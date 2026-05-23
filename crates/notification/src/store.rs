@@ -45,12 +45,11 @@ impl NotificationStore {
     /// Returns `true` if the notification was found and was dismissible.
     pub fn dismiss(&self, id: &str) -> bool {
         let mut inner = self.inner.lock().expect("notification store lock");
-        if let Some(n) = inner.entries.iter_mut().find(|n| n.id == id) {
-            if n.dismissible {
+        if let Some(n) = inner.entries.iter_mut().find(|n| n.id == id)
+            && n.dismissible {
                 n.dismissed = true;
                 return true;
             }
-        }
         false
     }
 

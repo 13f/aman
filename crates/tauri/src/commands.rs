@@ -679,18 +679,17 @@ pub async fn chat_session_list_db(
             Err(_) => return 0,
         };
         for entry in entries.flatten() {
-            if !entry.file_type().map_or(false, |t| t.is_dir()) {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let path = entry.path().join("sessions").join(format!("{session_id}.jsonl"));
-            if path.exists() {
-                if let Ok(s) = std::fs::read_to_string(&path) {
+            if path.exists()
+                && let Ok(s) = std::fs::read_to_string(&path) {
                     let count = s.lines().count();
                     if count > 0 {
                         return count;
                     }
                 }
-            }
         }
         0
     }
@@ -700,7 +699,7 @@ pub async fn chat_session_list_db(
     fn jsonl_session_title(agents_root: &std::path::Path, session_id: &str) -> Option<String> {
         let entries = std::fs::read_dir(agents_root).ok()?;
         for entry in entries.flatten() {
-            if !entry.file_type().map_or(false, |t| t.is_dir()) {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let path = entry.path().join("sessions").join(format!("{session_id}.jsonl"));
@@ -1316,7 +1315,7 @@ fn sync_filesystem_agents_to_config() -> Result<(), String> {
     let mut changed = false;
 
     for entry in entries.flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_dir()) {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let key = entry.file_name().to_string_lossy().to_string();
@@ -1378,17 +1377,17 @@ pub async fn list_agents(
             let summary = crate::agent_fs::soul_summary(&key);
             // Count session directories on disk (approximate, P4 will use sessions.db).
             let agent_dir = crate::agent_fs::agents_dir().join(&key).join("sessions");
-            let session_count = agent_dir.exists().then(|| {
+            let session_count = if agent_dir.exists() { {
                 let mut count = 0u64;
                 if let Ok(entries) = std::fs::read_dir(&agent_dir) {
                     for entry in entries.flatten() {
-                        if entry.file_type().map_or(false, |t| t.is_dir()) {
+                        if entry.file_type().is_ok_and(|t| t.is_dir()) {
                             count += 1;
                         }
                     }
                 }
                 count
-            }).unwrap_or(0);
+            } } else { 0 };
 
             let is_active = active_key.as_deref() == Some(&key);
             crate::models::AgentEntry {
@@ -1555,13 +1554,12 @@ pub async fn select_agent(
     }
 
     // Block selection of agents without a configured provider.
-    if let Some(entry) = aman_config.agents.get(&key) {
-        if entry.provider.is_empty() {
+    if let Some(entry) = aman_config.agents.get(&key)
+        && entry.provider.is_empty() {
             return Err(format!(
                 "Agent '{key}' 尚未配置 Provider，请先在 Agents 页面配置。"
             ));
         }
-    }
 
     let mut active = state.active_agent_key.lock().await;
     *active = Some(key.clone());

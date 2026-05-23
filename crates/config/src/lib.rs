@@ -1124,10 +1124,10 @@ impl AgentConfig {
                     self.idle.arousal.half_life_secs = v;
                 }
             }
-            if let Some(context) = idle.context {
-                if let Some(v) = context.max_output_buffer {
-                    self.idle.context.max_output_buffer = v;
-                }
+            if let Some(context) = idle.context
+                && let Some(v) = context.max_output_buffer
+            {
+                self.idle.context.max_output_buffer = v;
             }
             if let Some(sleep) = idle.sleep {
                 if let Some(v) = sleep.short_term_retention_days {

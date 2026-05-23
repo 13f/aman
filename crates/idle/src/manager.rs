@@ -141,11 +141,11 @@ impl AgentIdleManager {
 
                 // Throttle: respect poll_interval
                 let delay_secs = effective.poll_interval.next_delay(detector.idle_depth);
-                if let Some(last) = detector.last_poll {
-                    if last.elapsed().as_secs_f64() < delay_secs {
-                        sleep(Duration::from_millis(50)).await;
-                        continue;
-                    }
+                if let Some(last) = detector.last_poll
+                    && last.elapsed().as_secs_f64() < delay_secs
+                {
+                    sleep(Duration::from_millis(50)).await;
+                    continue;
                 }
 
                 // Check if agent's local bus has pending (non-idle) events

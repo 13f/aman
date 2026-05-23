@@ -322,16 +322,14 @@ impl SleepRunner {
             };
             if meta.is_dir() {
                 let _ = Self::walk_and_clean(&path, cutoff, cancel, deleted, bytes_freed);
-            } else if meta.is_file() {
-                if let Ok(modified) = meta.modified() {
-                    if modified < *cutoff {
+            } else if meta.is_file()
+                && let Ok(modified) = meta.modified()
+                    && modified < *cutoff {
                         *bytes_freed += meta.len();
                         if std::fs::remove_file(&path).is_ok() {
                             *deleted += 1;
                         }
                     }
-                }
-            }
         }
         Ok(())
     }

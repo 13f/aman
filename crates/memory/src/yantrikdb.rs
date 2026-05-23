@@ -115,6 +115,7 @@ impl YantrikdbProvider {
         kernel::Error::Unrecoverable { message: format!("yantrikdb: {e}") }
     }
 
+    #[allow(dead_code)]
     fn now_ms() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -190,7 +191,7 @@ impl MemoryProvider for YantrikdbProvider {
             Ok(results) => results
                 .iter()
                 .filter(|r| r.namespace == agent_id)
-                .map(|r| Self::convert_recall_result(r))
+                .map(Self::convert_recall_result)
                 .collect(),
             Err(e) => {
                 warn!(agent_id, error = %e, "Recall failed");
@@ -397,10 +398,10 @@ impl MemoryProvider for YantrikdbProvider {
 
 impl Drop for YantrikdbProvider {
     fn drop(&mut self) {
-        if let Some(db) = self.db.take() {
-            if let Err(e) = db.close() {
-                tracing::error!(error = %e, "Error closing yantrikdb");
-            }
+        if let Some(db) = self.db.take()
+            && let Err(e) = db.close()
+        {
+            tracing::error!(error = %e, "Error closing yantrikdb");
         }
     }
 }

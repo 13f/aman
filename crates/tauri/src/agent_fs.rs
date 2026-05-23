@@ -69,11 +69,10 @@ pub fn list_agent_dirs() -> Vec<String> {
     let mut keys = Vec::new();
     if let Ok(entries) = fs::read_dir(&dir) {
         for entry in entries.flatten() {
-            if entry.file_type().map_or(false, |t| t.is_dir()) {
-                if let Ok(name) = entry.file_name().into_string() {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && let Ok(name) = entry.file_name().into_string() {
                     keys.push(name);
                 }
-            }
         }
     }
     keys.sort();

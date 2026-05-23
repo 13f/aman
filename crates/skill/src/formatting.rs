@@ -32,10 +32,10 @@ pub fn build_skill_activation_message(skill: &SkillInfo) -> Option<String> {
 #[must_use]
 pub fn strip_frontmatter(raw: &str) -> &str {
     let s = raw.trim_start();
-    if s.starts_with("---") {
+    if let Some(stripped) = s.strip_prefix("---") {
         // Find the closing `---` (first `\n---` after the opening delimiter)
-        if let Some(end) = s[3..].find("\n---") {
-            return s[3 + end + 4..].trim_start();
+        if let Some(end) = stripped.find("\n---") {
+            return stripped[end + 4..].trim_start();
         }
     }
     s

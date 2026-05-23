@@ -1247,16 +1247,14 @@ async fn push_event(
     let event_type = EventType::from(req.event_type.clone());
     let mut event = Event::new(req.source.clone(), event_type, req.payload);
 
-    if let Some(ref p) = req.priority {
-        if let Ok(priority) = serde_json::from_value(Value::String(p.clone())) {
+    if let Some(ref p) = req.priority
+        && let Ok(priority) = serde_json::from_value(Value::String(p.clone())) {
             event.priority = priority;
         }
-    }
-    if let Some(ref d) = req.delivery {
-        if let Ok(delivery) = serde_json::from_value(Value::String(d.clone())) {
+    if let Some(ref d) = req.delivery
+        && let Ok(delivery) = serde_json::from_value(Value::String(d.clone())) {
             event.delivery = delivery;
         }
-    }
     if let Some(ttl) = req.ttl_ms {
         event.metadata.ttl_ms = Some(ttl);
     }
@@ -1532,7 +1530,7 @@ impl From<NotificationModel> for NotificationResponse {
     fn from(n: NotificationModel) -> Self {
         Self {
             id: n.id,
-            severity: serde_json::to_value(&n.severity)
+            severity: serde_json::to_value(n.severity)
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .unwrap_or_default(),
@@ -1650,11 +1648,10 @@ async fn notifications_test(
         ),
     };
 
-    if let Some(label) = req.action_label {
-        if let Some(route) = req.action_route {
+    if let Some(label) = req.action_label
+        && let Some(route) = req.action_route {
             n = n.with_action(label, route);
         }
-    }
 
     runtime.notifications().push(n);
     StatusCode::OK.into_response()
@@ -2342,8 +2339,8 @@ async fn chat_session_send(
         .get("version")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    if let Some(expected) = req.expected_version {
-        if current_ver != expected {
+    if let Some(expected) = req.expected_version
+        && current_ver != expected {
             return (
                 StatusCode::CONFLICT,
                 Json(ErrorBody {
@@ -2355,7 +2352,6 @@ async fn chat_session_send(
             )
                 .into_response();
         }
-    }
 
     // Sanitize input.
     let sanitizer = InputSanitizer::new();
@@ -2507,8 +2503,8 @@ async fn chat_session_send(
 
     // Persist to SQLite store so the session list in the frontend shows
     // the correct message count even while the session is still open.
-    if let Some(store) = runtime.session_store() {
-        if let Some(inst) = runtime.workflow_engine().get_instance(&id) {
+    if let Some(store) = runtime.session_store()
+        && let Some(inst) = runtime.workflow_engine().get_instance(&id) {
             let session_type = inst.data.get("session_type")
                 .and_then(|v| v.as_str()).unwrap_or("persistent");
             let created_at = inst.data.get("created_at")
@@ -2524,7 +2520,6 @@ async fn chat_session_send(
                 session_type: session_type.to_owned(),
             });
         }
-    }
 
     runtime.audit().record(
         operator,
@@ -2586,8 +2581,8 @@ async fn chat_session_close(
             )).await;
 
             // Persist session record to the SQLite store.
-            if let Some(store) = runtime.session_store() {
-                if let Some(inst) = runtime.workflow_engine().get_instance(&id) {
+            if let Some(store) = runtime.session_store()
+                && let Some(inst) = runtime.workflow_engine().get_instance(&id) {
                     let session_type = inst.data.get("session_type")
                         .and_then(|v| v.as_str()).unwrap_or("persistent");
                     let created_at = inst.data.get("created_at")
@@ -2605,7 +2600,6 @@ async fn chat_session_close(
                         session_type: session_type.to_owned(),
                     });
                 }
-            }
 
             (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
         }
@@ -2723,8 +2717,8 @@ async fn chat_session_edit(
         .get("version")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    if let Some(expected) = req.expected_version {
-        if current_ver != expected {
+    if let Some(expected) = req.expected_version
+        && current_ver != expected {
             return (
                 StatusCode::CONFLICT,
                 Json(ErrorBody {
@@ -2736,7 +2730,6 @@ async fn chat_session_edit(
             )
                 .into_response();
         }
-    }
 
     // Verify the message exists in event store.
     if runtime.event_store().get(&req.message_event_id).is_none() {

@@ -107,6 +107,12 @@ impl IdleSystemPlugin {
     }
 }
 
+impl Default for IdleSystemPlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait::async_trait]
 impl Plugin for IdleSystemPlugin {
     fn name(&self) -> &str {

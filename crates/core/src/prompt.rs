@@ -60,7 +60,7 @@ pub fn current_date_string() -> String {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 /// Prompt pipeline — builds the system prompt for the LLM.
@@ -134,10 +134,10 @@ impl PromptPipeline for DefaultPromptPipeline {
             );
         }
 
-        if let Some(mem) = memory {
-            if !mem.is_empty() {
-                parts.push(format!("\n## Retrieved Memories\n{mem}"));
-            }
+        if let Some(mem) = memory
+            && !mem.is_empty()
+        {
+            parts.push(format!("\n## Retrieved Memories\n{mem}"));
         }
 
         parts.join("\n\n")

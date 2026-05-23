@@ -112,7 +112,7 @@ impl SkillParser {
     /// Parse SKILL.md content from a string.
     pub fn parse_str(&self, content: &str) -> Result<Skill, ParseError> {
         let (frontmatter_str, body) = self.split_frontmatter(content)?;
-        let raw = self.parse_frontmatter(&frontmatter_str)?;
+        let raw = self.parse_frontmatter(frontmatter_str)?;
 
         // Validate and convert name
         let name = SkillName::new(&raw.name).map_err(|e| ParseError::Validation {
@@ -121,13 +121,13 @@ impl SkillParser {
         })?;
 
         // Validate description
-        if raw.description.is_empty() {
-            if self.strict {
-                return Err(ParseError::Validation {
-                    path: Default::default(),
-                    source: ValidationError::EmptyDescription,
-                });
-            }
+        if raw.description.is_empty()
+            && self.strict
+        {
+            return Err(ParseError::Validation {
+                path: Default::default(),
+                source: ValidationError::EmptyDescription,
+            });
         }
 
         if raw.description.len() > 2000 {
@@ -261,9 +261,9 @@ fn flatten_yaml_value(value: &YamlValue, prefix: &str, out: &mut HashMap<String,
         YamlValue::Sequence(seq) => {
             let items: Vec<String> = seq
                 .iter()
-                .filter_map(|v| match v {
-                    YamlValue::String(s) => Some(s.clone()),
-                    other => Some(format!("{other:?}")),
+                .map(|v| match v {
+                    YamlValue::String(s) => s.clone(),
+                    other => format!("{other:?}"),
                 })
                 .collect();
             out.insert(prefix.to_string(), items.join(", "));

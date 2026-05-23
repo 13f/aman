@@ -110,7 +110,7 @@ async fn run() -> Result<(), i32> {
     })?;
 
     // Write PID file for lifecycle management.
-    if let Some(home) = std::env::var("HOME").ok() {
+    if let Ok(home) = std::env::var("HOME") {
         let pid_path = PathBuf::from(&home).join(PID_FILE);
         if let Some(parent) = pid_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -181,7 +181,7 @@ async fn run() -> Result<(), i32> {
     server.shutdown();
 
     // Clean up PID file.
-    if let Some(home) = std::env::var("HOME").ok() {
+    if let Ok(home) = std::env::var("HOME") {
         let pid_path = PathBuf::from(&home).join(PID_FILE);
         let _ = std::fs::remove_file(pid_path);
     }

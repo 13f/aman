@@ -133,15 +133,14 @@ impl EventStore {
             // Follow trace_prev backward (ancestor).
             if let Some(ids) = inner.trace_index.get(&current) {
                 for event_id in ids.iter() {
-                    if let Some(event) = inner.by_id.get(event_id) {
-                        if let Some(prev) = event
+                    if let Some(event) = inner.by_id.get(event_id)
+                        && let Some(prev) = event
                             .payload
                             .get("trace_prev")
                             .and_then(|v| v.as_str())
                         {
                             queue.push_back(prev.to_owned());
                         }
-                    }
                 }
             }
 

@@ -51,7 +51,7 @@ impl SlidingWindowRateLimiter {
         let now = Instant::now();
         let mut logs = self.logs.write().expect("rate limiter lock poisoned");
 
-        let entries = logs.entry(key.to_owned()).or_insert_with(Vec::new);
+        let entries = logs.entry(key.to_owned()).or_default();
 
         // Evict entries outside the window (they've expired).
         let cutoff = now - self.window;

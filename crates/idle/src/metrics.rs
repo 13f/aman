@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! IdleMetrics — 空闲系统指标收集。
 //!
 //! Architecture ref: idle-design.md §12

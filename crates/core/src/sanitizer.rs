@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! InputSanitizer — three-tier user message sanitization (§8.1).
 //!
 //! Strategies (priority low→high):

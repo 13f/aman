@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use config::AgentConfig;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use std::process::Command;

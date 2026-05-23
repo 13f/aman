@@ -194,4 +194,4 @@ agent-design → architect-design → milestone
 
 ## License
 
-MIT
+[AGPL-3.0](LICENSE)

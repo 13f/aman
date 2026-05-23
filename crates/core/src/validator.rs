@@ -1,4 +1,8 @@
 #![forbid(unsafe_code)]
+
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! OutputValidator — LLM reply validation with fail_closed semantics (§8.2).
 //!
 //! Validates complete LLM replies (LLM_STREAM_DONE) for:

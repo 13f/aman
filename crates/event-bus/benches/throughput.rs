@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig, SubscriptionFilter};
 use kernel::event::{Event, EventType};

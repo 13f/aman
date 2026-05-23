@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Tool registry, runner, and builtin tools for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 pub mod auth;
 pub mod fs_tools;

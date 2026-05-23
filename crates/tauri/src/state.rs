@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::process::Child;

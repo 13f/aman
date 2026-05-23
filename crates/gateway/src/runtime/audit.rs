@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use kernel::types::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;

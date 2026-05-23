@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use config::AmanConfig;
 use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 use idle::AgentIdleManager;

@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "SOUL model, parser, boundary checks, and hot reload for aman."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use kernel::context::{BaseContext, PipelineContext, SkillContext, ToolContext};
 use kernel::event::{Event, EventType};

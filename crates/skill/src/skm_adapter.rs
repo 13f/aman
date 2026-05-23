@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Adapter that wraps skm-core's `SkillParser` for SKILL.md discovery and loading.
 //!
 //! Produces the same [`SkillInfo`] type so all callers remain unchanged.

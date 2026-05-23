@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use event_bus::EventBus;
 use kernel::context::{BaseContext, SourceContext};
 use kernel::event::Event;

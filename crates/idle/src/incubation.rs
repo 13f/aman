@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Incubation 后台线程管理。
 //!
 //! Architecture ref: idle-design.md §5.5

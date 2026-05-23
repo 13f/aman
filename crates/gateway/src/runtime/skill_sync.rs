@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Built-in skill syncing.
 //!
 //! Syncs built-in skills (embedded via `include_str!`) from the repo to the user's

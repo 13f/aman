@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 use crate::Error;
 use async_trait::async_trait;

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Hello Skill — an example aman plugin demonstrating the Skill, Tool, and Plugin traits.
 #![allow(dead_code)]
 //!

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use async_trait::async_trait;
 use kernel::memory::MemoryEntry;
 use std::collections::{HashMap, HashSet};

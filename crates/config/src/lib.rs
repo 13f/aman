@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Configuration model and layered loader for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use idle::IdlePersonality;
 use kernel::event::{Event, EventType};

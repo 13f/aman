@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Skill registry, loader, and trigger execution for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use kernel::context::SkillContext;
 use kernel::event::Event;

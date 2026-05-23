@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use kernel::event::Event;
 use kernel::types::Timestamp;
 use kernel::{AmanResult, Error};

@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Workflow state machine engine for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use async_trait::async_trait;
 use kernel::event::{Event, EventType};

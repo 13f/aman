@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Core types and traits for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 /// Canonical project name used throughout the framework.
 pub const PKG_NAME: &str = "aman";

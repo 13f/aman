@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Pipeline engine primitives for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use kernel::context::{BaseContext, PipelineContext, ToolContext};
 use kernel::event::Event;

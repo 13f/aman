@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Build script for the gateway crate.
 //!
 //! Reads `predefined/skills/builtin-skills.json` and generates Rust code that embeds all

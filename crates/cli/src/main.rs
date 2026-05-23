@@ -1,4 +1,7 @@
 #![forbid(unsafe_code)]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use config::{ConfigLoader, AgentConfig};
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};

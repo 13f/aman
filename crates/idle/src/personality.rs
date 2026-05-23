@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! IdlePersonality 聚合逻辑（由 types.rs 提供核心类型）。
 //!
 //! 当前扩展方法定义在 types.rs 中；此模块预留用于更复杂的

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! IdleCoordination 结构体——跨组件共享状态。
 //!
 //! Architecture ref: idle-design.md §3.5

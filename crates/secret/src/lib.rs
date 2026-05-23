@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Secret resolution and prompt-injection safeguards for aman."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use kernel::{AmanResult, Error};
 use kernel::retry::RetryBackoff;

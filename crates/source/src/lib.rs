@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Event source registry and built-in sources for the aman framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 mod cron;
 mod file_watch;

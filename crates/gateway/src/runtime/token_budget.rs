@@ -1,4 +1,8 @@
 #![allow(dead_code)]
+
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use std::collections::HashMap;
 
 /// Known context window sizes for common models (in tokens).

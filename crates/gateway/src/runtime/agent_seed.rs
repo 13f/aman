@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Built-in agent seeding.
 //!
 //! Seeds predefined agents from `predefined/agents/` into the user's

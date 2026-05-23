@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use proptest::prelude::*;
 use proptest::test_runner::Config as ProptestConfig;
 use workflow::{

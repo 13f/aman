@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 #[test]
 fn ui_macros_compile() {
     let tests = trybuild::TestCases::new();

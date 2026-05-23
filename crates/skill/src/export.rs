@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Export skills to a spec-compliant directory tree consumable by Claude Code,
 //! Cursor, Codex, or any agent that follows the agentskills.io specification.
 //!

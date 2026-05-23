@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! IdleDetector — EventSource 实现。
 //!
 //! Architecture ref: idle-design.md §5.3

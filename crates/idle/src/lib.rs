@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Idle state system for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 pub mod arousal;
 pub mod config;

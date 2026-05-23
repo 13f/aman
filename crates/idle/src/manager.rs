@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Per-agent idle manager — bundles coordination, detection, and a background loop
 //! that monitors the agent's local event bus and publishes idle events to it.
 //!

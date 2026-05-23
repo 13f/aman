@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use crate::types::TraceId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

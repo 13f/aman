@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 use chat_source::ChatPlatformSource;
 use config::{AgentConfig, BusMode};
 use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};

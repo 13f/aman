@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "aman Agent Framework SDK.
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 This crate provides a single-dependency entry point for external Skill and Plugin
 developers. Re-exports the most important public types from across the framework.

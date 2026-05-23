@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 //! Skill validation against the agentskills.io specification.
 //!
 //! Provides spec-compliant validation of SKILL.md files with 10 rules covering

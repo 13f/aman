@@ -1,3 +1,6 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 /// Known context window sizes for common models (in tokens).
 fn known_context_windows() -> Vec<(&'static str, usize)> {
     vec![

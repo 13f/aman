@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Runtime orchestration and control plane for aman (inlined into gateway)."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 mod agent_harness;
 mod agent_registry;

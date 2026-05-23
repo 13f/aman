@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Plugin manifest, dependency graph, and lifecycle loader for aman."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;

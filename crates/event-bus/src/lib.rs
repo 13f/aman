@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 #![doc = "Event bus primitives for the aman agent framework."]
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
 
 mod backpressure;
 mod dedup;

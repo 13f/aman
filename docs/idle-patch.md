@@ -13,7 +13,7 @@
 |------|------|------|----------|--------|--------|
 | 0 | **Daze** | Pipeline | 纯状态声明 (no-op)，idle 序列锚点 | 无 | ✅ 已完成 |
 | 1 | **Boredom** | Pipeline | 扫描 pending 任务 + 随机浏览记忆 | deferred task queue / kanban | ❌ 等 kanban 机制 |
-| 2 | **Waiting** | Pipeline | 等待外部条件满足（timer / async / 用户回复） | 无 | ✅ 立即可做 (no-op) |
+| 2 | **Waiting** | Pipeline | 等待外部条件满足（timer / async / 用户回复） | 无 | ⚠️ 被动，可能用不到 |
 | 3 | **Sleep** | Workflow | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | MemoryProvider（已落地），think() 桥接 | ⚠️ 部分就绪 |
 | 5 | **Exploration** | Workflow | 外部信息探索，产出 idea / 新闻 / 论文 | RSS/Atom 源，web search API，兴趣度评分器 | ❌ 等外部源 |
 | 7 | **Reflection** | Pipeline | 即时复盘：连锁任务 + 错误分类 + 经验提取 + **session→YantrikDB 提取** | LLM config（已有） | ✅ 核心逻辑可做 |
@@ -25,7 +25,7 @@
 ```
 Phase 1 (现在) ── 无外部依赖，立即可做
     Daze        纯状态声明 (no-op)，idle 序列锚点 ✅ 已完成
-    Waiting     纯条件检查，no-op 即可
+    Waiting     被动，no-op 即可（depth+arousal 机制不涉及，可能永远用不到）
     Reflection  lessons_learned + session_extract → YantrikDB
 
 Phase 2 (短期) ── 桥接完成后
@@ -276,6 +276,8 @@ step 8: 任务饥饿度评估
 ---
 
 ## 3. Waiting
+
+> **注意**：`depth_schedule` 和 `resolve_with_arousal()` 均未涉及 Waiting，当前 idle 状态机永远不会产生 `IdleKind::Waiting`。保留此状态仅为未来可能的条件驱动入口（如 pending operations tracking），目前只需 no-op 桩。
 
 **路由**: `pipeline:idle-waiting`
 **类型**: Pipeline（同步，条件检查 <1ms）
@@ -1042,7 +1044,7 @@ pipeline 部分 (<1ms):
 **Milestone 1: Phase 1 实现 — Daze + Waiting + Reflection**（1–2 周）
 - [x] Daze skill: 纯状态声明 (no-op)，idle 序列锚点。IdleDetector 内存跟踪 metrics + UI 同步
 - [x] idle→Daze→skill dispatch 链路验证通过
-- [ ] Waiting skill: 纯条件检查 (no-op stub)
+- [x] Waiting skill: no-op 桩（depth+arousal 机制已覆盖所有状态流转，Waiting 可能永远用不到）
 - [ ] Reflection step 4 (`session_extract`): JSONL → LLM 提取 → YantrikDB.store() + relate()
 - [ ] Reflection step 3 (`lessons_learned`): 经验提取 → YantrikDB.store()
 - [ ] Reflection step 1 (`chain_tasks`): stub 实现（无 TraceStore 时用规则表）
@@ -1068,10 +1070,11 @@ pipeline 部分 (<1ms):
 - [ ] Exploration skill 全流程（memory_gaps + entity_gaps + 外部搜索 + 结果存储）
 - [ ] 验证: Exploration → provider.recall() → 外部搜索 → provider.store()
 
-**Milestone 4: Boredom + Waiting 完整**
+**Milestone 4: Boredom + Waiting 完整**（Waiting 可能取消）
 - [ ] `DeferredTaskQueue`（kanban 机制）
 - [ ] `TimerRegistry`
-- [ ] Boredom 完整模式、Waiting 条件等待
+- [ ] Boredom 完整模式
+- [ ] Waiting 条件等待 — 需先确认是否有条件驱动入口的必要；若长期无此类场景，可考虑移除此状态
 
 **Milestone 5: Meditation + Incubation（远期）**
 - [ ] `TraceStore`（`crates/persistence/`）

@@ -489,6 +489,7 @@ impl Dispatcher {
                             last_result_summary: String::new(),
                             arousal_level: coord.arousal.current(),
                             reflection_consecutive_count,
+                            agent_id: None,
                         };
 
                         let _ = event_bus.publish(drained.into()).await;
@@ -980,6 +981,7 @@ mod tests {
             last_result_summary: String::new(),
             arousal_level: 0.5,
             reflection_consecutive_count: 0,
+            agent_id: None,
         };
         let qd_event: Event = qd.into();
         assert!(qd_event.is_queue_drained());
@@ -998,6 +1000,7 @@ mod tests {
             last_result_summary: String::new(),
             arousal_level: 0.0,
             reflection_consecutive_count: 0,
+            agent_id: None,
         }
         .into();
 

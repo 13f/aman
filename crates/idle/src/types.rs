@@ -91,6 +91,9 @@ pub struct QueueDrained {
     pub last_result_summary: String,
     pub arousal_level: f64,
     pub reflection_consecutive_count: u32,
+    /// Agent that produced this event (set by AgentIdleManager).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +528,7 @@ mod tests {
             last_result_summary: "ok".into(),
             arousal_level: 0.8,
             reflection_consecutive_count: 0,
+            agent_id: None,
         };
         let event: Event = qd.into();
         assert_eq!(event.event_type, EventType::QueueDrained);
@@ -554,6 +558,7 @@ mod tests {
             last_result_summary: "ok".into(),
             arousal_level: 0.0,
             reflection_consecutive_count: 0,
+            agent_id: None,
         };
         let event: Event = qd.into();
         assert!(!event.is_from_external_source());
@@ -568,6 +573,7 @@ mod tests {
             last_result_summary: "done".into(),
             arousal_level: 0.5,
             reflection_consecutive_count: 3,
+            agent_id: Some("test-agent".into()),
         };
         let json = serde_json::to_value(&qd).expect("serialize");
         // Verify camelCase field names

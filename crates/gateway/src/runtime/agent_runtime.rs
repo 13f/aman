@@ -559,24 +559,41 @@ impl AgentRuntimeBuilder {
         // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
-        // ── Memory store (M5) — yantrikdb-backed persistent memory ──
+        // ── Memory store (M5) — pluggable memory provider ──────────
         let memory_dir = super::skill_sync::aman_data_dir().join("memory");
-        let embedding_config = config::AmanConfig::from_default_path()
-            .ok()
+        let aman_cfg = config::AmanConfig::from_default_path().ok();
+        let provider_name = aman_cfg
             .as_ref()
-            .map(|c| resolve_embedding_config(c))
-            .unwrap_or_default();
-        let memory_config = MemoryConfig {
-            db_path: memory_dir.to_string_lossy().into_owned(),
-            agent_id: "default".to_owned(),
-            embedding: embedding_config,
+            .and_then(|c| c.memory.as_ref())
+            .map(|m| m.provider.as_str())
+            .unwrap_or("yantrikdb");
+
+        let memory_store: Arc<dyn kernel::memory::MemoryProvider> = if provider_name == "yantrikdb" {
+            let embedding_config = aman_cfg
+                .as_ref()
+                .map(|c| resolve_embedding_config(c))
+                .unwrap_or_default();
+            let memory_config = MemoryConfig {
+                db_path: memory_dir.to_string_lossy().into_owned(),
+                agent_id: "default".to_owned(),
+                embedding: embedding_config,
+            };
+            Arc::new(
+                YantrikdbProvider::open(&memory_config)
+                    .expect("Failed to open yantrikdb memory store"),
+            )
+        } else {
+            tracing::info!(
+                provider = provider_name,
+                "Using in-memory fallback (yantrikdb not configured)"
+            );
+            Arc::new(super::memory_store::MemoryStore::new())
         };
-        let memory_store = Arc::new(
-            YantrikdbProvider::open(&memory_config)
-                .expect("Failed to open yantrikdb memory store"),
-        );
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
+        // Clone for ReflectionRunner before moving into AgentHarness
+        let llm_for_reflection = Arc::clone(&llm_provider);
+
         let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
@@ -588,6 +605,45 @@ impl AgentRuntimeBuilder {
             Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
         ));
+
+        // ── Reflection runner (QueueDrained → session_extract) ────────
+        let reflection_runner = Arc::new(super::reflection::ReflectionRunner::new());
+        if let Some(ref store) = session_store {
+            reflection_runner.set_session_store(Arc::clone(store));
+        }
+        reflection_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        reflection_runner.set_llm_provider(llm_for_reflection);
+        let memory_llm_cfg = aman_cfg
+            .as_ref()
+            .and_then(|c| c.memory.as_ref())
+            .and_then(|m| m.llm.clone());
+        if let Some(cfg) = memory_llm_cfg {
+            reflection_runner.set_memory_llm(cfg);
+        }
+
+        // Subscribe to QueueDrained events on the global bus.
+        {
+            struct ReflectionSub {
+                runner: Arc<super::reflection::ReflectionRunner>,
+            }
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for ReflectionSub {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    self.runner.handle(event).await
+                }
+            }
+            let _ = pollster::block_on(bus.subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![kernel::event::EventType::QueueDrained]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(ReflectionSub {
+                    runner: reflection_runner,
+                }),
+            ));
+        }
 
         // ── Subscribe STOP_GENERATION handler for agent interrupt (M6) ──
         struct StopGenerationHandler {

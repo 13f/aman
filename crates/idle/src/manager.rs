@@ -15,7 +15,7 @@ use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, info};
 
 use event_bus::EventBus;
 use kernel::AmanResult;
@@ -23,7 +23,7 @@ use kernel::AmanResult;
 use crate::coordination::IdleCoordination;
 use crate::detector::IdleDetector;
 use crate::incubation::IncubationManager;
-use crate::types::{IdleContext, IdleEvent, IdleKind, IdlePersonality};
+use crate::types::{IdleContext, IdleEvent, IdleKind, IdlePersonality, QueueDrained};
 
 /// Manages the full idle lifecycle for a single agent.
 ///
@@ -112,6 +112,12 @@ impl AgentIdleManager {
                 personality,
             );
 
+            // Track busy→empty transitions for QueueDrained production.
+            let mut was_busy = false;
+            let mut reflection_count: u32 = 0;
+            // Circuit breaker: skip QueueDrained when count exceeds threshold.
+            const BREAKER_THRESHOLD: u32 = 20;
+
             loop {
                 if stop_token.is_cancelled() {
                     break;
@@ -149,12 +155,57 @@ impl AgentIdleManager {
                     + metrics.queue_depth.low;
 
                 if pending > 0 {
+                    // Bus is busy — reset idle depth, note that we were busy
+                    was_busy = true;
+                    reflection_count = 0; // reset circuit breaker on real activity
                     detector.idle_depth = 0;
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
 
-                // Bus is empty — progress idle state
+                // Bus is empty. If we were previously busy, produce QueueDrained.
+                if was_busy {
+                    was_busy = false;
+                    detector.idle_depth = 0;
+                    detector.last_poll = Some(Instant::now());
+
+                    // Circuit breaker: skip if too many consecutive reflections
+                    if reflection_count < BREAKER_THRESHOLD {
+                        let qd = QueueDrained {
+                            last_event_type: String::new(),
+                            last_trace_id: String::new(),
+                            last_result_summary: String::new(),
+                            arousal_level: coord.arousal.current(),
+                            reflection_consecutive_count: reflection_count,
+                            agent_id: Some(agent_id.clone()),
+                        };
+                        reflection_count += 1;
+
+                        let qd_event: kernel::event::Event = qd.into();
+                        debug!(
+                            agent_id = %agent_id,
+                            reflection_count,
+                            arousal = coord.arousal.current(),
+                            "Producing QueueDrained event"
+                        );
+                        let _ = local_bus.publish(qd_event.clone()).await;
+                        if let Some(ref global) = global_bus {
+                            let _ = global.publish(qd_event).await;
+                        }
+                    } else {
+                        info!(
+                            agent_id = %agent_id,
+                            reflection_count,
+                            "QueueDrained circuit breaker: cooldown (skip)"
+                        );
+                        // Reset count after cooldown — next real event will also reset it
+                    }
+
+                    sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+
+                // Bus is empty, no recent activity — progress idle state
                 let kind = if detector.idle_depth == 0 {
                     IdleKind::Daze
                 } else {

@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 use async_trait::async_trait;
-use kernel::memory::MemoryEntry;
+use kernel::memory::{
+    EntityProfile, MemoryEntry, MemoryFilter, MemoryRecord, MemoryStats,
+    SessionSummary,
+};
+use kernel::AmanResult;
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -123,6 +127,134 @@ fn tokenize(text: &str) -> HashSet<String> {
         .filter(|s| !s.is_empty() && s.len() >= 2)
         .map(String::from)
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// MemoryProvider impl — delegates CRUD to MemoryRetrieval, stubs the rest
+// ---------------------------------------------------------------------------
+
+impl MemoryStore {
+    fn entry_to_record(&self, entry: &MemoryEntry) -> MemoryRecord {
+        MemoryRecord {
+            rid: entry.id.to_string(),
+            content: entry.content.clone(),
+            tags: entry.tags.clone(),
+            created_at_ms: entry.created_at_ms,
+            domain: None,
+            importance: None,
+        }
+    }
+}
+
+#[async_trait]
+impl kernel::memory::MemoryProvider for MemoryStore {
+    fn name(&self) -> &str {
+        "in-memory"
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+
+    fn store(&self, agent_id: &str, content: &str, tags: Vec<String>) -> String {
+        let id = <Self as kernel::memory::MemoryRetrieval>::store(self, agent_id, content, tags);
+        id.to_string()
+    }
+
+    async fn recall(&self, agent_id: &str, query: &str, limit: usize) -> Vec<MemoryRecord> {
+        let entries = <Self as kernel::memory::MemoryRetrieval>::retrieve(self, agent_id, query).await;
+        entries.iter().take(limit).map(|e| self.entry_to_record(e)).collect()
+    }
+
+    fn list(&self, agent_id: &str, _filter: Option<&MemoryFilter>) -> Vec<MemoryRecord> {
+        let entries = <Self as kernel::memory::MemoryRetrieval>::list(self, agent_id);
+        entries.iter().map(|e| self.entry_to_record(e)).collect()
+    }
+
+    fn forget(&self, agent_id: &str, rid: &str) -> bool {
+        let id: u64 = rid.parse().unwrap_or(0);
+        <Self as kernel::memory::MemoryRetrieval>::delete(self, agent_id, id)
+    }
+
+    async fn session_start(&self, _agent_id: &str, _session_type: &str) -> AmanResult<String> {
+        Ok(format!("mem-{}", SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()))
+    }
+
+    async fn session_end(&self, _agent_id: &str, session_id: &str) -> AmanResult<SessionSummary> {
+        Ok(SessionSummary {
+            session_id: session_id.to_owned(),
+            memory_count: 0,
+            duration_secs: 0.0,
+            topics: Vec::new(),
+        })
+    }
+
+    async fn session_history(&self, _agent_id: &str, _limit: usize) -> AmanResult<Vec<SessionSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn relate(&self, _from: &str, _to: &str, _rel_type: &str) -> AmanResult<()> {
+        Ok(())
+    }
+
+    async fn get_edges(&self, _entity: &str) -> AmanResult<Vec<(String, String, String)>> {
+        Ok(Vec::new())
+    }
+
+    async fn search_entities(&self, _query: &str, _limit: usize) -> AmanResult<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn entity_profile(&self, _entity: &str) -> AmanResult<Option<EntityProfile>> {
+        Ok(None)
+    }
+
+    async fn stale_memories(&self, _agent_id: &str, _days: u32) -> AmanResult<Vec<MemoryRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn upcoming_memories(&self, _agent_id: &str, _days: u32) -> AmanResult<Vec<MemoryRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn store_procedural(
+        &self,
+        _agent_id: &str,
+        _name: &str,
+        _schema: &str,
+        _kind: &str,
+    ) -> AmanResult<String> {
+        Ok(String::new())
+    }
+
+    async fn surface_procedural(
+        &self,
+        _agent_id: &str,
+        _context: &str,
+        _limit: usize,
+    ) -> AmanResult<Vec<MemoryRecord>> {
+        Ok(Vec::new())
+    }
+
+    async fn stats(&self, _agent_id: &str) -> AmanResult<MemoryStats> {
+        let count = self
+            .memories
+            .read()
+            .expect("memories lock")
+            .values()
+            .map(|v| v.len() as u64)
+            .sum();
+        Ok(MemoryStats {
+            total_entries: count,
+            index_size_bytes: 0,
+            graph_nodes: 0,
+            graph_edges: 0,
+            pending_conflicts: 0,
+        })
+    }
 }
 
 #[cfg(test)]

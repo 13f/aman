@@ -3,7 +3,7 @@
 > 目标：将每个 idle 子状态的 skill 从「只有 description 的空壳」落实为「可逐步执行的步骤」。
 > 基准文档：`idle-design.md`，特别是 §14 Idle State Activity Catalog。
 > 约束：本文只处理执行步骤 + 缺失组件指认，不修改 idle-design.md 的架构设计。
-> **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地，本文据此重构核心交互。
+> **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生。
 
 ---
 
@@ -16,7 +16,7 @@
 | 2 | **Waiting** | Pipeline | 等待外部条件满足（timer / async / 用户回复） | 无 | ⚠️ 被动，可能用不到 |
 | 3 | **Sleep** | Workflow | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | MemoryProvider（已落地），think() 桥接 | ⚠️ 部分就绪 |
 | 5 | **Exploration** | Workflow | 外部信息探索，产出 idea / 新闻 / 论文 | RSS/Atom 源，web search API，兴趣度评分器 | ❌ 等外部源 |
-| 7 | **Reflection** | Pipeline | 即时复盘：连锁任务 + 错误分类 + 经验提取 + **session→YantrikDB 提取** | LLM config（已有） | ✅ 核心逻辑可做 |
+| 7 | **Reflection** | EventHandler | 即时复盘：**session→YantrikDB 提取** + 过期记忆检查 | LLM config（已有），SessionStore（已有） | ✅ session_extract 已实现 |
 | 8 | **Incubation** | Pipeline+Thread | 创意孵化 / 跨域联想，产出假设性洞察 | 综合记忆 + kanban + 新闻 + idea + 论文 | ❌ 等一切就绪 |
 | 10 | **Meditation** | Workflow | 深度内省，提炼经验 → 更新启发式，think() deep scan | TraceStore，模式提取引擎，进化机制 | ❌ 等 trace store |
 
@@ -26,7 +26,8 @@
 Phase 1 (现在) ── 无外部依赖，立即可做
     Daze        纯状态声明 (no-op)，idle 序列锚点 ✅ 已完成
     Waiting     被动，no-op 即可（depth+arousal 机制不涉及，可能永远用不到）
-    Reflection  lessons_learned + session_extract → YantrikDB
+    Reflection  session_extract ✅ 已完成 (QueueDrained → LLM → YantrikDB)
+                chain_tasks / immediate_errors / lessons_learned → 待 TraceStore
 
 Phase 2 (短期) ── 桥接完成后
     Sleep       phase 1: 回填 Reflection 遗漏的 session
@@ -67,7 +68,7 @@ Reflection 承接 session 提取的原因：刚结束的对话上下文最热，
 
 ## 0. MemoryProvider 架构（基础层）
 
-> **状态：已实现。** `MemoryProvider` trait 定义在 `crates/core/src/memory.rs`，`YantrikdbProvider` 实现在 `crates/memory/src/yantrikdb.rs`，已在 `AgentHarness` 中默认注入。
+> **状态：已实现。** `MemoryProvider` trait 定义在 `crates/core/src/memory.rs`，`YantrikdbProvider` 实现在 `crates/memory/src/yantrikdb.rs`，`MemoryStore` 作为 in-memory 备选。根据 `memory.provider` 配置自动选择（`"yantrikdb"` → YantrikdbProvider，其他 → MemoryStore）。
 
 ### 0.1 MemoryProvider trait（当前实现）
 
@@ -730,90 +731,72 @@ phase 7: 收尾
 
 ---
 
-## 7. Reflection
+### 0.6 QueueDrained → Reflection 触发机制
 
-**路由**: `pipeline:reflection`
-**类型**: Pipeline（select! 模式，60s timeout）
-**可打断**: 是（select! 被新事件抢先）
-**触发**: Dispatcher 发布 QueueDrained 事件
-**MemoryProvider 依赖**: `store()` (写入提取摘要)、`relate()` (创建实体关联)、`session_history()` (回顾近期会话)、`stale_memories()` (找到未处理项)
-
-### 执行步骤
+> **状态：已实现。** `AgentIdleManager` 的后台循环检测 agent local bus 的 busy→empty 转换，在转换点上产生 `QueueDrained` 事件（含 `agent_id` 和 `reflection_consecutive_count`），发布到 global bus。`ReflectionRunner` 订阅全局 QueueDrained 事件，执行反射逻辑。断路器在连续 20 次无实际事件时冷却。
 
 ```
-step 0: 从 QueueDrained 事件读取 reflection_consecutive_count
-        if count >= 10:
-            log!("Reflection breaker: full skip + cooldown")
-            return Empty  // 完全跳过
-        skip_lessons = count >= 5
+AgentIdleManager 后台循环
+  │
+  ├─ pending > 0  → was_busy = true, depth = 0
+  │
+  └─ pending == 0 && was_busy
+       │
+       ├─ 断路器: reflection_count >= 20 → skip
+       │
+       └─ 产生 QueueDrained { agent_id, reflection_consecutive_count, arousal_level }
+            │
+            ▼
+       Global EventBus → ReflectionRunner.handle()
+            │
+            ├─ count >= 10 → full skip (circuit breaker)
+            ├─ session_extract (always)
+            └─ session_review (count == 0 only)
+```
 
-step 1: chain_tasks (始终执行)
-    1.1 从 trace_store 加载 last_trace_id 对应的 trace
-    1.2 分析 trace 中的 task 完成状态:
-        - task 类型是什么？（deploy / codegen / research / review / ...）
-        - 是否有未完成的 sub-task？
-        - 输出是否触发了隐式依赖？（如 "部署到 staging → 谁来部署到 prod？"）
-    1.3 生成连锁任务候选:
-        for candidate in chain_candidates:
-            task = {
-                parent_trace_id: last_trace_id,
-                description: candidate.description,
-                priority: candidate.is_blocking ? High : Medium,
-                dedup_key: hash(candidate.description)
-            }
-    1.4 每个候选去重（dedup_key 在最近 N 条任务中已存在 → 跳过）
-    1.5 将连锁任务发布为 Event 到 Local EventBus
+`ReflectionRunner` 实现在 `crates/gateway/src/runtime/reflection.rs`，依赖通过 `OnceLock` 注入（SessionStore, MemoryProvider, LlmProvider, MemoryLlmConfig），模式与 `ReadSkillTool` 一致。
 
-step 2: immediate_errors (始终执行)
-    2.1 从 trace_store 加载 last_trace_id 的 error 子记录
-    2.2 错误分类:
-        - Recovered: 已恢复的错误（如 retry 成功）→ 标记为 "已验证恢复路径"
-        - Unrecovered: 未恢复的错误 → 升级 priority
-        - Warning: 非致命警告 → 聚合统计
-        - Silent: 工具返回了成功但输出异常 → 标记为需要人工审查
-    2.3 对 Unrecovered 错误:
-        emit ErrorEvent { severity: High, trace_id, error_summary }
-    2.4 对 Silent 异常:
-        emit ReviewEvent { severity: Medium, trace_id, anomaly_description }
+---
 
-step 3: lessons_learned (count < 5 时执行)
-    3.1 从 trace_store 加载 last_trace_id 完整 trace
-    3.2 提取经验:
-        - 决策质量: 选择了非最优路径？为什么？
-        - 惊喜发现: 发现了没想到的解决方案？
-        - 可复用模式: 这个 task 的解决模式是否可以泛化？
-    3.3 写入 MemoryProvider:
-        provider.store(agent_id,
-            format!("[Lesson] {}: {}", lesson_type, extracted_lesson),
-            vec!["lesson".into(), "reflection".into(), domain.into()]
-        )
-    3.4 产出: 无 Event（经验写入 store 即完成，不需要立即处理）
+## 7. Reflection
 
-step 4: session_extract ★ (当次 session 结束后触发，主提取路径)
-    4.1 从 SessionStore 加载当次 session 的完整 JSONL
-    4.2 使用 memory.llm 配置的模型提取结构化摘要:
-        - 对话意图 (intent)
-        - 关键决策 (decisions[])
-        - 产出 (outputs[])
-        - 错误及恢复 (errors[])
-        - 标签 (tags[])
-    4.3 写入 YantrikDB:
-        provider.store(agent_id, summary_json, vec!["session_compressed".into(), session_id])
-    4.4 对摘要中涉及的实体创建知识图谱关联:
-        for entity in extracted_entities:
-            provider.relate(&entity, &session_id, "appears_in")
-    4.5 标记 session 为 compressed（SessionStore 操作）
-    4.6 如果 60s timeout 不够（长对话）→ spawn 后台任务继续
-    // 注：这是 session→YantrikDB 的主路径。Reflection 在 QueueDrained 后立即触发，
-    //     对话上下文最新鲜，LLM 提取质量最高。Sleep 仅回填遗漏。
+**路由**: `ReflectionRunner` (EventHandler，订阅 QueueDrained)
+**类型**: 事件处理器（非 Pipeline，避免依赖注入复杂度）
+**可打断**: 否（同步执行，session_extract 仅处理一个 session 以控制延迟）
+**触发**: `AgentIdleManager` 在 busy→empty 转换时产生 QueueDrained 事件
+**MemoryProvider 依赖**: `store()` (写入提取摘要)、`relate()` (创建实体关联)、`stale_memories()` (找到未处理项)
 
-step 5: session_review (可选，仅当 reflection_consecutive_count == 0)
-    5.1 回顾近期 session 摘要:
-        sessions = provider.session_history(agent_id, limit=5).await
-    5.2 检查是否有未跟进的 stale 记忆:
-        stale = provider.stale_memories(agent_id, days=14).await
-        if !stale.is_empty():
-            log!("Reflection: {} stale memories need attention", stale.len())
+### 执行步骤（✅ = 已实现，🔧 = stub，⏳ = 待 TraceStore）
+
+```
+step 0: ✅ circuit breaker
+        从 QueueDrained 事件读取 reflection_consecutive_count
+        if count >= 10: full skip
+        (AgentIdleManager 层面: count >= 20 → 不产生 QueueDrained)
+
+step 1: ⏳ chain_tasks (待 TraceStore)
+        ...
+
+step 2: ⏳ immediate_errors (待 TraceStore)
+        ...
+
+step 3: ⏳ lessons_learned (待 TraceStore)
+        ...
+
+step 4: ✅ session_extract ★ (主提取路径)
+        4.1 从 SessionStore 列出所有 session，找最近有消息的
+        4.2 使用 memory.llm 配置的模型提取结构化 JSON:
+            - intent, decisions[], outputs[], errors[], tags[], entities[]
+        4.3 写入 MemoryProvider:
+            provider.store(agent_id, summary_json, ["session_extract", session_id])
+        4.4 对提取的实体创建 KG 关联:
+            for entity in entities:
+                provider.relate(entity, session_id, "appears_in")
+        4.5 每次 QueueDrained 只处理一个 session（控制延迟）
+
+step 5: ✅ session_review (count == 0 时)
+        检查 stale 记忆:
+        stale = provider.stale_memories(agent_id, days=14)
 ```
 
 ### YantrikDB 内置能力覆盖
@@ -829,16 +812,15 @@ step 5: session_review (可选，仅当 reflection_consecutive_count == 0)
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `TraceStore` | **未实现** | 同 Meditation。Reflection 和 Meditation 共享同一套 trace 存储 |
-| `ChainTaskDetector` | **未实现** | 分析 task 完成状态 → 检测连锁任务。需要 task 类型分类器 + 隐式依赖知识库。初期可用硬编码规则表（task_type → possible_chain_tasks） |
-| `ErrorClassifier` | **未实现** | 错误四分类（Recovered/Unrecovered/Warning/Silent）。依赖 trace 中的 error 元数据 richness |
-| `SilentAnomalyDetector` | **未实现** | 检测 "工具返回成功但输出异常" 的情况。需要 per-tool 的输出 schema + 异常检测规则 |
-| `DomainClassifier` | **未实现** | 任务领域分类。初期可用简单的关键词匹配（deploy → ops, codegen → dev, review → qa） |
-| `SessionExtractor` (step 4) | **已配置，未实现** | 使用 `memory.llm` 配置的模型提取 session 结构化摘要。LLM config 已就绪，需实现 JSONL 加载 + LLM 调用 + 结果写入 YantrikDB 的逻辑。timeout 超时后 spawn 后台任务 |
+| `ReflectionRunner` | ✅ **已实现** | `crates/gateway/src/runtime/reflection.rs` — 订阅 QueueDrained，session_extract + session_review |
+| `TraceStore` | **未实现** | 同 Meditation。Reflection 和 Meditation 共享同一套 trace 存储。chain_tasks / immediate_errors / lessons_learned 依赖此组件 |
+| `ChainTaskDetector` | **未实现** | 分析 task 完成状态 → 检测连锁任务。需要 task 类型分类器 + 隐式依赖知识库 |
+| `ErrorClassifier` | **未实现** | 错误四分类（Recovered/Unrecovered/Warning/Silent） |
+| `SessionExtractor` (step 4) | ✅ **已实现** | JSONL 加载 + LLM 调用 + structured JSON 解析 + YantrikDB store/relate。每次 QD 处理一个 session |
 
 ### 优先级
 
-**Phase 1** — 空闲系统的入口（QueueDrained 后立即触发）。`session_extract`（step 4）和 `lessons_learned`（step 3）是核心价值，LLM config 已就绪可直接实现。`chain_tasks` 和 `immediate_errors` 初期可用 stub（无 TraceStore 时用规则表），完整实现等 Phase 4。
+**Phase 1** — `session_extract`（step 4）已实现：QueueDrained 触发 → SessionStore 加载 JSONL → LLM 提取 → YantrikDB。`chain_tasks` / `immediate_errors` / `lessons_learned` 待 TraceStore 后实现。
 
 ---
 
@@ -981,8 +963,11 @@ pipeline 部分 (<1ms):
  4       YantrikdbProvider (默认)         ✅ 已实现               MemoryProvider trait     所有 idle skill
  5       memory.llm / memory.embedding 配置✅ 已实现               config crate             Reflection, Sleep
  6       RemoteEmbedder (云端 embedding)  ✅ 已实现               reqwest                   YantrikdbProvider
- ── Phase 2 (短期 — 桥接 + Sleep + Reflection) ──
- 7       SessionExtractor (Reflection)    LLM config 已就绪       memory.llm + SessionStore Reflection
+ 6a      MemoryStore MemoryProvider 适配   ✅ 已实现              memory_store.rs          in-memory 备选
+ 6b      QueueDrained 生产 (AgentIdleMgr)  ✅ 已实现              idle crate               Reflection
+ 6c      ReflectionRunner (session_extract)✅ 已实现              reflection.rs            Reflection
+ ── Phase 2 (短期 — 桥接 + Sleep) ──
+ 7       SessionExtractor (Reflection)    ✅ 已实现               ReflectionRunner         Reflection
  8       think() 桥接 (yantrikdb→Provider) 未实现                YantrikdbProvider        Sleep, Meditation, Incubation
  9       CacheStore (文件系统 TTL)         未实现                  无                       Sleep (phase 3)
 10       Health snapshot 存储              未实现                  SQLite 或 JSON 文件       Sleep (phase 6)
@@ -1036,20 +1021,26 @@ pipeline 部分 (<1ms):
 - [x] `MemoryProvider` trait 定义（`crates/core/src/memory.rs`）
 - [x] `MemoryRecord` / `MemoryStats` / `SessionSummary` / `ThinkConfig` / `ThinkResult` 等类型
 - [x] `YantrikdbProvider` 实现（`crates/memory/src/yantrikdb.rs`）
-- [x] `AgentHarness` / `AgentRuntime` 注入 YantrikdbProvider 作为默认 MemoryProvider
+- [x] `MemoryStore` MemoryProvider 适配（in-memory 备选）
+- [x] 根据 `memory.provider` 配置自动选择后端
+- [x] `AgentHarness` / `AgentRuntime` 注入 MemoryProvider
 - [x] `memory.llm` / `memory.embedding` 配置（config crate）
 - [x] `RemoteEmbedder` — 云端 embedding（零本地下载）
+- [x] `AgentIdleManager` 产生 QueueDrained（busy→empty 转换 + 断路器）
+- [x] `ReflectionRunner` 实现（`crates/gateway/src/runtime/reflection.rs`）
 - [x] workspace build 通过
 
-**Milestone 1: Phase 1 实现 — Daze + Waiting + Reflection**（1–2 周）
+**Milestone 1: Phase 1 实现 — Daze + Waiting + Reflection**（基本完成）
 - [x] Daze skill: 纯状态声明 (no-op)，idle 序列锚点。IdleDetector 内存跟踪 metrics + UI 同步
 - [x] idle→Daze→skill dispatch 链路验证通过
 - [x] Waiting skill: no-op 桩（depth+arousal 机制已覆盖所有状态流转，Waiting 可能永远用不到）
-- [ ] Reflection step 4 (`session_extract`): JSONL → LLM 提取 → YantrikDB.store() + relate()
-- [ ] Reflection step 3 (`lessons_learned`): 经验提取 → YantrikDB.store()
-- [ ] Reflection step 1 (`chain_tasks`): stub 实现（无 TraceStore 时用规则表）
-- [ ] Reflection step 2 (`immediate_errors`): stub 实现
-- [ ] 验证: QueueDrained → Reflection → session JSONL → LLM 提取 → YantrikDB 可见
+- [x] QueueDrained 生产：AgentIdleManager busy→empty 转换 + 断路器
+- [x] Reflection step 4 (`session_extract`): JSONL → LLM 提取 → YantrikDB.store() + relate()
+- [x] Reflection step 5 (`session_review`): 过期记忆检查
+- [ ] Reflection step 3 (`lessons_learned`): 经验提取 → YantrikDB.store() — 待 TraceStore
+- [ ] Reflection step 1 (`chain_tasks`): 连锁任务检测 — 待 TraceStore
+- [ ] Reflection step 2 (`immediate_errors`): 错误分类 — 待 TraceStore
+- [ ] 验证: QueueDrained → Reflection → session JSONL → LLM 提取 → YantrikDB 可见（端到端测试）
 
 **Milestone 2: think() 桥接 + Sleep**（1–2 周）
 - [ ] 确定 YantrikdbProvider::think() 桥接方案

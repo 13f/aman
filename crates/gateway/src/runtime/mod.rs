@@ -9,7 +9,6 @@ mod agent_registry;
 mod agent_runtime;
 mod date_util;
 mod history_compressor;
-mod memory_store;
 mod reflection;
 mod sleep;
 mod token_budget;

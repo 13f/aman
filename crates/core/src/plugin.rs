@@ -4,6 +4,7 @@
 use crate::context::PluginContext;
 use crate::error::AmanResult;
 use crate::hook::Hook;
+use crate::memory::MemoryProvider;
 use crate::skill::Skill;
 use crate::source::EventSource;
 use crate::tool::Tool;
@@ -32,6 +33,9 @@ pub trait Plugin: Send + Sync {
     fn skills(&self) -> Vec<Arc<dyn Skill>>;
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
     fn hooks(&self) -> Vec<Arc<dyn Hook>> {
+        vec![]
+    }
+    fn memory_providers(&self) -> Vec<Arc<dyn MemoryProvider>> {
         vec![]
     }
 }

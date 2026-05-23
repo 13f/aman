@@ -11,6 +11,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use kernel::context::{BaseContext, PluginContext, PluginTrackedResources};
 use kernel::hook::Hook;
+use kernel::memory::MemoryProvider;
 use kernel::plugin::{Plugin, PluginDependency};
 use kernel::skill::Skill;
 use kernel::source::EventSource;
@@ -86,6 +87,8 @@ pub struct PluginExports {
     pub event_sources: Vec<String>,
     #[serde(default)]
     pub hooks: Vec<String>,
+    #[serde(default)]
+    pub memory_providers: Vec<String>,
 }
 
 impl PluginManifest {
@@ -704,6 +707,7 @@ pub struct RegisteredExports {
     pub tools: Vec<String>,
     pub event_sources: Vec<String>,
     pub hooks: Vec<String>,
+    pub memory_providers: Vec<String>,
 }
 
 enum LoadedPluginRuntime {
@@ -806,6 +810,9 @@ pub trait PluginExportRegistrar: Send + Sync {
 
     fn register_hook(&self, hook: Arc<dyn Hook>) -> AmanResult<()>;
     fn unregister_hook(&self, hook_name: &str) -> AmanResult<()>;
+
+    fn register_memory_provider(&self, provider: Arc<dyn MemoryProvider>) -> AmanResult<()>;
+    fn unregister_memory_provider(&self, provider_name: &str) -> AmanResult<()>;
 }
 
 #[derive(Default)]
@@ -841,6 +848,14 @@ impl PluginExportRegistrar for NoopPluginRegistrar {
     }
 
     fn unregister_hook(&self, _hook_name: &str) -> AmanResult<()> {
+        Ok(())
+    }
+
+    fn register_memory_provider(&self, _provider: Arc<dyn MemoryProvider>) -> AmanResult<()> {
+        Ok(())
+    }
+
+    fn unregister_memory_provider(&self, _provider_name: &str) -> AmanResult<()> {
         Ok(())
     }
 }
@@ -1273,11 +1288,24 @@ impl PluginLoader {
                 return Err(error);
             }
         }
+        for provider in plugin.memory_providers() {
+            exports.memory_providers.push(provider.name().to_owned());
+            if let Err(error) = self.registrar.register_memory_provider(provider) {
+                self.unregister_exports(&exports, plugin.name())?;
+                return Err(error);
+            }
+        }
         Ok(exports)
     }
 
     fn unregister_exports(&self, exports: &RegisteredExports, plugin_name: &str) -> AmanResult<()> {
         let mut first_error = None;
+        for provider_name in &exports.memory_providers {
+            if let Err(error) = self.registrar.unregister_memory_provider(provider_name)
+                && first_error.is_none() {
+                    first_error = Some(error);
+                }
+        }
         for hook_name in &exports.hooks {
             if let Err(error) = self.registrar.unregister_hook(hook_name)
                 && first_error.is_none() {
@@ -1309,11 +1337,12 @@ impl PluginLoader {
             plugin_name,
             PluginAuditEventType::RollbackReleased,
             format!(
-                "released exports skills={}, tools={}, event_sources={}, hooks={}",
+                "released exports skills={}, tools={}, event_sources={}, hooks={}, memory_providers={}",
                 exports.skills.len(),
                 exports.tools.len(),
                 exports.event_sources.len(),
-                exports.hooks.len()
+                exports.hooks.len(),
+                exports.memory_providers.len()
             ),
         );
         Ok(())
@@ -1777,7 +1806,7 @@ mod tests {
                     skills: skills.iter().map(|item| item.name().to_owned()).collect(),
                     tools: tools.iter().map(|item| item.name().to_owned()).collect(),
                     event_sources: sources.iter().map(|item| item.id().to_owned()).collect(),
-                    hooks: vec![],
+                    ..Default::default()
                 },
                 config_schema: None,
                 isolation: None,

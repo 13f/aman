@@ -1,0 +1,17 @@
+name: memory-store
+version: "1.0.0"
+description: In-memory memory provider with keyword-based retrieval
+author: aman
+depends_on:
+  - name: core
+    version_range: ">=0.1.0"
+exports:
+  skills: []
+  tools: []
+  event_sources: []
+  hooks: []
+  memory_providers:
+    - in-memory
+lifecycle:
+  on_load: init
+  on_unload: shutdown

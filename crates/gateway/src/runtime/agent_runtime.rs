@@ -9,6 +9,7 @@ use kernel::event::{Event, EventType};
 use kernel::hook::Hook;
 use kernel::llm::LlmProvider;
 use memory::{MemoryConfig, YantrikdbProvider};
+use memory_store::MemoryStorePlugin;
 use kernel::prompt::DefaultPromptPipeline;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
@@ -421,9 +422,7 @@ impl AgentRuntimeBuilder {
                         "idle-waiting".to_owned(),
                         "idle-incubation".to_owned(),
                     ],
-                    tools: vec![],
-                    event_sources: vec![],
-                    hooks: vec![],
+                    ..Default::default()
                 },
                 config_schema: None,
                 isolation: Some(PluginIsolationMode::InProcess),
@@ -438,14 +437,42 @@ impl AgentRuntimeBuilder {
             wasm_module_bytes: None,
         };
 
-        // Load the built-in LLM plugin, idle-system plugin (and any extra plugins from builder).
-        let mut all_candidates = vec![idle_candidate];
+        // Load the built-in memory-store plugin (in-memory keyword-based provider).
+        let memory_store_plugin = MemoryStorePlugin::new();
+        let memory_store_candidate = PluginCandidate {
+            manifest: PluginManifest {
+                name: "memory-store".to_owned(),
+                version: memory_store_plugin.version().clone(),
+                depends_on: vec![],
+                lifecycle: PluginLifecycleConfig { auto_start: true },
+                exports: PluginExports {
+                    memory_providers: vec!["in-memory".to_owned()],
+                    ..Default::default()
+                },
+                config_schema: None,
+                isolation: Some(PluginIsolationMode::InProcess),
+                subprocess: None,
+                wasm_path: None,
+                capabilities: vec![],
+                ui: None,
+            },
+            plugin: Box::new(memory_store_plugin),
+            isolation: PluginIsolationMode::InProcess,
+            subprocess: None,
+            wasm_module_bytes: None,
+        };
+
+        // Load the built-in LLM plugin, idle-system plugin, memory-store plugin
+        // (and any extra plugins from builder).
+        let mut all_candidates = vec![idle_candidate, memory_store_candidate];
         all_candidates.extend(self.extra_plugins);
         let hook_registry = Arc::new(hook::HookRegistry::new());
+        let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
         let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
             Arc::clone(&hook_registry),
+            Arc::clone(&memory_provider_registry),
         )));
         if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
             tracing::error!(error = %e, "failed to load built-in plugins");
@@ -576,33 +603,41 @@ impl AgentRuntimeBuilder {
             .join(&agent_key)
             .join("memory");
 
-        let provider_name = aman_cfg
-            .as_ref()
-            .and_then(|c| c.memory.as_ref())
-            .map(|m| m.provider.as_str())
-            .unwrap_or("yantrikdb");
-
-        let memory_store: Arc<dyn kernel::memory::MemoryProvider> = if provider_name == "yantrikdb" {
+        // Register the built-in YantrikdbProvider directly (always available).
+        {
             let embedding_config = aman_cfg
                 .as_ref()
-                .map(|c| resolve_embedding_config(c))
+                .map(resolve_embedding_config)
                 .unwrap_or_default();
             let memory_config = MemoryConfig {
                 db_path: memory_dir.to_string_lossy().into_owned(),
                 agent_id: agent_key.clone(),
                 embedding: embedding_config,
             };
-            Arc::new(
-                YantrikdbProvider::open(&memory_config)
-                    .expect("Failed to open yantrikdb memory store"),
-            )
-        } else {
-            tracing::info!(
-                provider = provider_name,
-                "Using in-memory fallback (yantrikdb not configured)"
-            );
-            Arc::new(super::memory_store::MemoryStore::new())
-        };
+            let yantrikdb = YantrikdbProvider::open(&memory_config)
+                .expect("Failed to open yantrikdb memory store");
+            if let Err(e) = memory_provider_registry.register(Arc::new(yantrikdb)) {
+                tracing::warn!(error = %e, "yantrikdb provider already registered");
+            }
+        }
+
+        let provider_name = aman_cfg
+            .as_ref()
+            .and_then(|c| c.memory.as_ref())
+            .map(|m| m.provider.as_str())
+            .unwrap_or("yantrikdb");
+
+        let memory_store: Arc<dyn kernel::memory::MemoryProvider> = memory_provider_registry
+            .get(provider_name)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    provider = provider_name,
+                    "Configured memory provider not found, falling back to yantrikdb"
+                );
+                memory_provider_registry
+                    .get("yantrikdb")
+                    .expect("yantrikdb provider must be registered")
+            });
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
         // Clone for ReflectionRunner before moving into AgentHarness
@@ -1274,7 +1309,7 @@ impl AgentRuntime {
         let first_ts = events.first().and_then(|e| e["timestamp_ms"].as_i64()).unwrap_or(0);
         let last_ts = events.last().and_then(|e| e["timestamp_ms"].as_i64()).unwrap_or(0);
         let msg_count = events.iter().filter(|e| {
-            e["event_type"].as_str().map_or(false, |et| {
+            e["event_type"].as_str().is_some_and(|et| {
                 et == "MessageReceived" || et.contains("reply_ready") || et == "llm_reply_ready"
             })
         }).count() as u64;
@@ -1697,11 +1732,10 @@ impl AgentRuntime {
     pub async fn has_capability(&self, capability: &str) -> bool {
         // The chat capability is available whenever a chat-platform source is
         // configured, even if no plugin explicitly registers it.
-        if capability == "chat" {
-            if self.chat_sender.is_some() {
+        if capability == "chat"
+            && self.chat_sender.is_some() {
                 return true;
             }
-        }
         self.capability_registry
             .read()
             .await
@@ -2317,6 +2351,7 @@ struct RuntimePluginRegistrar {
     tools: Arc<tool::ToolRegistry>,
     source_ids: StdMutex<BTreeSet<String>>,
     hooks: Arc<hook::HookRegistry>,
+    memory_providers: Arc<memory::MemoryProviderRegistry>,
 }
 
 impl RuntimePluginRegistrar {
@@ -2324,12 +2359,14 @@ impl RuntimePluginRegistrar {
         skills: Arc<skill::SkillRegistry>,
         tools: Arc<tool::ToolRegistry>,
         hooks: Arc<hook::HookRegistry>,
+        memory_providers: Arc<memory::MemoryProviderRegistry>,
     ) -> Self {
         Self {
             skills,
             tools,
             source_ids: StdMutex::new(BTreeSet::new()),
             hooks,
+            memory_providers,
         }
     }
 }
@@ -2376,6 +2413,15 @@ impl PluginExportRegistrar for RuntimePluginRegistrar {
         self.hooks.unregister(hook_name);
         Ok(())
     }
+
+    fn register_memory_provider(&self, provider: Arc<dyn kernel::memory::MemoryProvider>) -> AmanResult<()> {
+        self.memory_providers.register(provider)
+    }
+
+    fn unregister_memory_provider(&self, provider_name: &str) -> AmanResult<()> {
+        self.memory_providers.unregister(provider_name);
+        Ok(())
+    }
 }
 
 struct StoreAllEventsHandler {
@@ -2389,8 +2435,8 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
         // Persist session-related events to JSONL so conversation history
         // survives gateway restarts.
         let session_id = event.payload.get("session_id").and_then(|v| v.as_str());
-        if let Some(sid) = session_id {
-            if let Some(ref store) = self.session_store {
+        if let Some(sid) = session_id
+            && let Some(ref store) = self.session_store {
                 let entry = serde_json::json!({
                     "event_id": event.id.to_string(),
                     "event_type": format!("{:?}", event.event_type),
@@ -2400,7 +2446,6 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
                 });
                 let _ = store.append_session_event(sid, &entry);
             }
-        }
 
         self.store.record(event);
         Ok(())
@@ -2625,8 +2670,6 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
     }
 }
 
-/// Build LlmConfig from AmanConfig (providers, model / agents) + Keychain API key.
-
 /// Map an embedder name to its expected output dimension.
 ///
 /// Covers the four models registered in yantrikdb's embedder-download registry.
@@ -2761,7 +2804,7 @@ fn create_llm_provider() -> Arc<dyn LlmProvider> {
             if let Some(p) = aman.providers.get(&agent.provider) {
                 let api_key = get_llm_api_key_or_inline(&agent.provider, Some(p));
                 let api_type = llm_api_type
-                    .or_else(|| p.api_type.as_deref())
+                    .or(p.api_type.as_deref())
                     .unwrap_or("openai");
                 tracing::info!(
                     agent_key = %_key,
@@ -2839,13 +2882,11 @@ fn get_llm_api_key_or_inline(
     if !key.is_empty() {
         return key;
     }
-    if let Some(config) = provider_config {
-        if let Some(ref inline) = config.api_key {
-            if !inline.is_empty() {
+    if let Some(config) = provider_config
+        && let Some(ref inline) = config.api_key
+            && !inline.is_empty() {
                 return inline.clone();
             }
-        }
-    }
     String::new()
 }
 

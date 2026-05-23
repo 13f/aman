@@ -1,0 +1,17 @@
+[package]
+name = "memory-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "In-memory MemoryProvider plugin — keyword-based retrieval for development and testing"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kernel = { path = "../../core" }
+async-trait = "0.1"
+semver = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["sync", "rt", "macros"] }

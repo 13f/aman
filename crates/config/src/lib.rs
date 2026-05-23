@@ -468,6 +468,8 @@ pub struct AmanConfig {
     #[serde(default, deserialize_with = "deserialize_null_map")]
     pub agents: HashMap<String, AgentEntryConfig>,
     pub llm: Option<LlmConfig>,
+    /// Memory subsystem configuration (provider, embedding, extraction LLM).
+    pub memory: Option<MemoryTopConfig>,
     /// Script hooks triggered on events.
     /// Each hook runs a script via the specified runtime when its event fires.
     #[serde(default)]
@@ -487,6 +489,79 @@ pub struct AmanConfig {
 pub struct LlmConfig {
     #[serde(default = "default_api_type")]
     pub api_type: String,
+}
+
+/// Memory subsystem configuration.
+///
+/// ```yaml
+/// memory:
+///   provider: yantrikdb
+///   embedding:
+///     embedder: potion-multilingual-128M  # download mode fallback
+///     provider: lmstudio                 # cloud mode (optional)
+///     model: qwen3-embedding-8b-dwq     # cloud mode (optional)
+///   llm:
+///     provider: deepseek
+///     model: deepseek-v4-flash
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryTopConfig {
+    /// Memory backend provider (e.g. "yantrikdb").
+    #[serde(default = "default_memory_provider")]
+    pub provider: String,
+    /// Embedding model configuration.
+    #[serde(default)]
+    pub embedding: MemoryEmbeddingConfig,
+    /// LLM for memory extraction / summarization.
+    #[serde(default)]
+    pub llm: Option<MemoryLlmConfig>,
+}
+
+fn default_memory_provider() -> String {
+    "yantrikdb".to_owned()
+}
+
+/// Embedding model reference for the memory subsystem.
+///
+/// Two modes (mutually exclusive):
+/// - **Download mode**: set `embedder` (default: "potion-multilingual-128M").
+///   YantrikDB downloads and caches the model locally.
+/// - **Cloud mode**: set `provider` + `model`. Calls a remote embedding API
+///   (OpenAI-compatible `/v1/embeddings`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEmbeddingConfig {
+    /// Named yantrikdb embedder for download mode.
+    #[serde(default = "default_embedder_name")]
+    pub embedder: String,
+    /// Provider key in the `providers` map (cloud mode).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Global model ID (cloud mode).
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+impl Default for MemoryEmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            embedder: default_embedder_name(),
+            provider: None,
+            model: None,
+        }
+    }
+}
+
+fn default_embedder_name() -> String {
+    "potion-multilingual-128M".to_owned()
+}
+
+/// LLM model reference for memory extraction / summarization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryLlmConfig {
+    /// Provider key in the `providers` map.
+    pub provider: String,
+    /// Global model ID.
+    pub model: String,
 }
 
 /// A single script-based hook that fires on one or more named events.

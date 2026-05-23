@@ -11,7 +11,7 @@ use kernel::agent::{AgentInstance, AgentStatus};
 use kernel::budget::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest, LlmProvider};
-use kernel::memory::MemoryRetrieval;
+use kernel::memory::MemoryProvider;
 use kernel::prompt::PromptPipeline;
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
@@ -474,7 +474,7 @@ pub struct AgentHarness {
     engine: LlmReActEngine,
     bus: Arc<dyn EventBus>,
     /// Pluggable memory retrieval for long-term recall.
-    memory_store: Arc<dyn MemoryRetrieval>,
+    memory_store: Arc<dyn MemoryProvider>,
     /// Per-session conversation history for cross-turn continuity.
     session_history: Box<dyn SessionHistoryStore>,
     /// Per-session interrupt flags for external stop (M6).
@@ -493,7 +493,7 @@ impl AgentHarness {
         registry: Arc<AgentRegistry>,
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
-        memory_store: Arc<dyn MemoryRetrieval>,
+        memory_store: Arc<dyn MemoryProvider>,
         llm_provider: Arc<dyn LlmProvider>,
         prompt_pipeline: Box<dyn PromptPipeline>,
         session_history: Box<dyn SessionHistoryStore>,
@@ -767,7 +767,7 @@ impl AgentHarness {
         token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
 
         // 6. Retrieve memories relevant to user input (M5 T5.1)
-        let memory_results = self.memory_store.retrieve(agent_id, user_text).await;
+        let memory_results = self.memory_store.recall(agent_id, user_text, 10).await;
         let memory_context = if memory_results.is_empty() {
             None
         } else {

@@ -26,6 +26,7 @@ hook = { path = "../hook", version = "0.1.0" }
 idle = { path = "../idle", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
 llm-provider-openai = { path = "../plugins/llm-provider-openai", version = "0.1.0" }
+	memory = { path = "../memory", version = "0.1.0" }
 notification = { path = "../notification", version = "0.1.0" }
 persistence = { path = "../persistence", version = "0.1.0" }
 pipeline = { path = "../pipeline", version = "0.1.0" }
@@ -49,6 +50,6 @@ tower = { version = "0.5.2", features = ["util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["async-await"] }

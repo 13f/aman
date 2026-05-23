@@ -8,6 +8,7 @@ use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
 use kernel::hook::Hook;
 use kernel::llm::LlmProvider;
+use memory::{MemoryConfig, YantrikdbProvider};
 use kernel::prompt::DefaultPromptPipeline;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
@@ -558,15 +559,29 @@ impl AgentRuntimeBuilder {
         // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
-        // ── Memory store (M5) ──────────────────────────────────
-        let memory_store = Arc::new(super::memory_store::MemoryStore::new());
+        // ── Memory store (M5) — yantrikdb-backed persistent memory ──
+        let memory_dir = super::skill_sync::aman_data_dir().join("memory");
+        let embedding_config = config::AmanConfig::from_default_path()
+            .ok()
+            .as_ref()
+            .map(|c| resolve_embedding_config(c))
+            .unwrap_or_default();
+        let memory_config = MemoryConfig {
+            db_path: memory_dir.to_string_lossy().into_owned(),
+            agent_id: "default".to_owned(),
+            embedding: embedding_config,
+        };
+        let memory_store = Arc::new(
+            YantrikdbProvider::open(&memory_config)
+                .expect("Failed to open yantrikdb memory store"),
+        );
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
         let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
             Arc::clone(&bus),
-            Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryRetrieval>,
+            Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>,
             llm_provider,
             Box::new(DefaultPromptPipeline),
             Box::new(InMemorySessionHistory::new()),
@@ -2501,6 +2516,105 @@ fn source_context_for_cron() -> kernel::context::SourceContext {
         base: kernel::context::BaseContext::new(kernel::types::TraceId::new()),
         source_name: Some("cron_manager".to_owned()),
     }
+}
+
+/// Build LlmConfig from AmanConfig (providers, model / agents) + Keychain API key.
+
+/// Map an embedder name to its expected output dimension.
+///
+/// Covers the four models registered in yantrikdb's embedder-download registry.
+/// Returns `None` for unrecognized names (caller should fall back gracefully).
+fn embedder_dim(name: &str) -> Option<usize> {
+    match name {
+        "potion-base-2M" => Some(64),
+        "potion-base-8M" => Some(256),
+        "potion-base-32M" => Some(512),
+        "potion-multilingual-128M" => Some(256),
+        _ => None,
+    }
+}
+
+/// Resolve a [`memory::EmbeddingConfig`] from the top-level Aman config.
+///
+/// Cloud-mode (provider + model set) takes priority over download-mode (embedder
+/// name fallback). When neither provider nor model is set, falls back to the
+/// named embedder with its known dimension.
+fn resolve_embedding_config(aman: &config::AmanConfig) -> memory::EmbeddingConfig {
+    if let Some(ref mem) = aman.memory {
+        let emb = &mem.embedding;
+        let has_cloud = emb.provider.is_some() && emb.model.is_some();
+
+        if has_cloud {
+            let provider_key = emb.provider.as_ref().unwrap();
+            let model_id = emb.model.as_ref().unwrap();
+
+            // Resolve provider config (base_url, api_key).
+            if let Some(p) = aman.providers.get(provider_key) {
+                let api_model = p
+                    .models
+                    .iter()
+                    .find(|m| m.id == *model_id)
+                    .map(|m| m.model_id.clone())
+                    .unwrap_or_else(|| model_id.clone());
+
+                let api_key =
+                    get_llm_api_key_or_inline(provider_key, Some(p));
+
+                // Detect dimension via a probe call.
+                match memory::RemoteEmbedder::detect_dim(
+                    &p.base_url,
+                    &api_key,
+                    &api_model,
+                ) {
+                    Ok(dim) => {
+                        tracing::info!(
+                            provider = %provider_key,
+                            model = %api_model,
+                            dim,
+                            "Resolved remote embedding config (dim auto-detected)"
+                        );
+                        return memory::EmbeddingConfig::Remote {
+                            base_url: p.base_url.clone(),
+                            api_key,
+                            model: api_model,
+                            dim,
+                        };
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            provider = %provider_key,
+                            model = %api_model,
+                            error = %e,
+                            "Failed to detect embedding dimension; \
+                             falling back to download mode"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    provider = %provider_key,
+                    "Memory embedding provider not found in providers map; \
+                     falling back to download mode"
+                );
+            }
+        }
+
+        // Download mode: use the named embedder.
+        let dim = embedder_dim(&emb.embedder).unwrap_or(256);
+        tracing::info!(
+            embedder = %emb.embedder,
+            dim,
+            "Resolved download embedding config"
+        );
+        return memory::EmbeddingConfig::Download {
+            name: emb.embedder.clone(),
+            dim,
+        };
+    }
+
+    // No memory section at all — use the default (multilingual download).
+    tracing::info!("No memory config found; using default potion-multilingual-128M download");
+    memory::EmbeddingConfig::default()
 }
 
 /// Build LlmConfig from AmanConfig (providers, model / agents) + Keychain API key.

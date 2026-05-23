@@ -9,7 +9,10 @@ pub use crate::context::{
 pub use crate::error::{AmanResult, Error};
 pub use crate::event::{Event, EventMetadata, EventType};
 pub use crate::hook::{Hook, HookPoint};
-pub use crate::memory::{MemoryEntry, MemoryRetrieval};
+pub use crate::memory::{
+    EntityProfile, MemoryEntry, MemoryFilter, MemoryInitOpts, MemoryProvider, MemoryRecord,
+    MemoryRetrieval, MemoryStats, SessionSummary, ThinkConfig, ThinkResult,
+};
 pub use crate::pipeline::{Pipeline, PipelineResult, PipelineStep, StepType};
 pub use crate::plugin::{Plugin, PluginDependency};
 pub use crate::router::AgentRouter;

@@ -29,7 +29,7 @@ pub use event_store::EventStore;
 pub use http::{serve, HttpServerConfig, HttpServerHandle};
 pub use metrics::MetricsRegistry;
 pub use kernel::memory::MemoryEntry;
-pub use memory_store::MemoryStore;
+
 pub use session_store::{SessionRecord, SessionStore};
 pub use soul_runtime::SoulRuntime;
 pub use tracing_setup::init_tracing;

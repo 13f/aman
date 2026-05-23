@@ -35,6 +35,7 @@ members = [
   "crates/plugins/idle-system",
   "crates/gateway",
   "crates/idle",
+  "crates/memory",
   "crates/notification",
   "crates/skm-core-patched",
 ]
@@ -64,6 +65,7 @@ default-members = [
   "crates/plugins/idle-system",
   "crates/gateway",
   "crates/idle",
+  "crates/memory",
   "crates/notification",
 ]
 

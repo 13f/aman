@@ -122,6 +122,7 @@ pub trait MemoryProvider: Send + Sync {
 - **会话管理** — 按 session 分组记忆（`session_start`, `session_end`, `session_history`）
 - **程序记忆** — 策略/模式存储与召回（`store_procedural`, `surface_procedural`）
 - **认知循环** — 内置 `think()` 机制（trigger 检测、冲突扫描、consolidation、pattern mining）—— **当前 YantrikdbProvider 暂未桥接，`think()` 返回空结果，待后续设计**
+- **双模式 Embedding**：`Remote`（云端 API，零本地下载，默认）或 `Download`（`potion-multilingual-128M`，256-dim，101 语言）
 
 **YantrikDB 内置能力 vs Provider 方法对照：**
 
@@ -209,7 +210,7 @@ step 4: 返回 None（空 Pipeline，不产出事件）
 
 ### 优先级
 
-**P0 — 先跑通**。Daze 是最简单的状态，用它验证 idle→skill dispatch 整条链路是否通畅。
+**Phase 1** — 最简状态，零依赖。用它验证 idle→skill dispatch 整条链路是否通畅。
 
 ---
 
@@ -275,7 +276,7 @@ step 8: 任务饥饿度评估
 
 ### 优先级
 
-**P1** — 聊天模式已可用（纯 no-op）。完整模式需要 `DeferredTaskQueue` 和 `TimerRegistry`。MemoryProvider 随机浏览能力已就绪（`recall` with wildcard query）。
+**Phase 3** — 聊天模式已可用（纯 no-op）。完整模式需要 `DeferredTaskQueue`（kanban 机制）和 `TimerRegistry`。MemoryProvider 随机浏览能力已就绪（`recall` with wildcard query）。
 
 ---
 
@@ -337,7 +338,7 @@ step 4: 仍未满足 → no-op（下一次 poll 继续检查）
 
 ### 优先级
 
-**P2** — Waiting 是条件触发的中间态，不是深度驱动的主路径。可以先 stub 为 no-op。
+**Phase 1** — 条件触发的中间态，不是深度驱动的主路径。先 stub 为 no-op 即可跑通链路。
 
 ---
 
@@ -474,7 +475,7 @@ phase 6: 健康报告
 
 ### 优先级
 
-**P0 — 核心依赖就绪**。`MemoryProvider` trait + `YantrikdbProvider` 已实现并默认注入。Sleep 的 phase 1/2/4/6 可以立即实现（不依赖 `think()` 桥接）。phase 5（consolidation）需要 `think()` 桥接后才能发挥完整作用——当前可先记录空结果，`think()` 桥接后自动提升。
+**Phase 2** — MemoryProvider 已就绪。phase 1/2/4/6 可立即实现（不依赖 think 桥接）。phase 5（consolidation）需要 `think()` 桥接后才能发挥完整作用——当前可先记录空结果，桥接后自动提升。session 提取的主路径已移至 Reflection，Sleep 仅做回填。
 
 ---
 
@@ -584,7 +585,7 @@ phase 4: 降级模式 (on_quota_exhausted = fallback)
 
 ### 优先级
 
-**P1** — MemoryProvider 能力已就绪（`recall`, `search_entities`, `entity_profile`, `stale_memories`）。主要缺失是 `ExternalSearchEngine`（网络 I/O）和 `ErrorLog` 查询。
+**Phase 3** — MemoryProvider 能力已就绪（`recall`, `search_entities`, `entity_profile`, `stale_memories`）。主要缺失是 `ExternalSearchEngine`（网络 I/O）和 RSS/Atom 源。
 
 ---
 
@@ -728,7 +729,7 @@ phase 7: 收尾
 
 ### 优先级
 
-**P2** — 需要 TraceStore（独立基础设施）。MemoryProvider 能力已就绪（entity_profile, get_edges, surface_procedural, stats）。`think()` 桥接后将大幅提升价值（冲突检测 + pattern mining）。
+**Phase 4** — 需要 TraceStore（独立基础设施）+ 模式提取引擎 + 进化机制。MemoryProvider 能力已就绪（entity_profile, get_edges, surface_procedural, stats）。`think()` 桥接后将大幅提升价值（冲突检测 + pattern mining）。
 
 ---
 
@@ -840,7 +841,7 @@ step 5: session_review (可选，仅当 reflection_consecutive_count == 0)
 
 ### 优先级
 
-**P1** — Reflection 是空闲系统的入口（在深度序列之前触发）。`chain_tasks` 和 `immediate_errors` 提供即时价值。`lessons_learned` 可延后。MemoryProvider 能力已就绪。
+**Phase 1** — 空闲系统的入口（QueueDrained 后立即触发）。`session_extract`（step 4）和 `lessons_learned`（step 3）是核心价值，LLM config 已就绪可直接实现。`chain_tasks` 和 `immediate_errors` 初期可用 stub（无 TraceStore 时用规则表），完整实现等 Phase 4。
 
 ---
 
@@ -852,7 +853,7 @@ step 5: session_review (可选，仅当 reflection_consecutive_count == 0)
 **Arousal**: Engaged (×0.1)
 **MemoryProvider 依赖**: `recall()` (随机跨域采样)、`search_entities()` (跨域实体发现)、`relate()` (创建跨域链接)、`surface_procedural()` (策略联想)、`think()` (认知循环)
 
-> **注意**：idle-design.md §13 Open Questions 明确说 Incubation 的灵感机制 Phase 1 跳过。以下为完整设计规格，供 Phase 2+ 参考。
+> **注意**：idle-design.md §13 Open Questions 明确说 Incubation 的灵感机制在 idle-design 的 Phase 1 跳过。本文的 Phase 1 指 Daze/Waiting/Reflection。Incubation 实现排在 Phase 4（远期），以下为完整设计规格供远期参考。
 
 ### 执行步骤
 
@@ -965,7 +966,7 @@ pipeline 部分 (<1ms):
 
 ### 优先级
 
-**P3 (Phase 2+)** — 已被明确标记为 Phase 1 跳过。MemoryProvider 能力已就绪（`recall`, `search_entities`, `relate`, `surface_procedural`）。需要 `IncubationManager` + `FeasibilityEstimator`。
+**Phase 4** — 依赖综合记忆 + kanban + 新闻 + idea + 论文等全部数据源就绪后才能实施。MemoryProvider 能力已就绪（`recall`, `search_entities`, `relate`, `surface_procedural`）。
 
 ---
 
@@ -983,33 +984,37 @@ pipeline 部分 (<1ms):
  4       YantrikdbProvider (默认)         ✅ 已实现               MemoryProvider trait     所有 idle skill
  5       memory.llm / memory.embedding 配置✅ 已实现               config crate             Reflection, Sleep
  6       RemoteEmbedder (云端 embedding)  ✅ 已实现               reqwest                   YantrikdbProvider
- ── Phase 2 (短期 — 桥接 + Sleep) ──
+ ── Phase 2 (短期 — 桥接 + Sleep + Reflection) ──
  7       IdleMetrics 写入端点             未实现                  无                       Daze, UI
  8       UI idle-status 端点              未实现                  IdleMetrics              前端状态图表
- 9       SessionExtractor (Reflection)    未实现                  memory.llm + SessionStore Reflection
+ 9       SessionExtractor (Reflection)    LLM config 已就绪       memory.llm + SessionStore Reflection
 10       think() 桥接 (yantrikdb→Provider) 未实现                YantrikdbProvider        Sleep, Meditation, Incubation
-11       CPU time tracker                 未实现                  无                       Sleep, Exploration, Meditation
-12       AtomicWrite                      未实现                  无                       全局复用
+11       CacheStore (文件系统 TTL)         未实现                  无                       Sleep (phase 3)
+12       Health snapshot 存储              未实现                  SQLite 或 JSON 文件       Sleep (phase 6)
+13       CPU time tracker                 未实现                  无                       Sleep, Exploration, Meditation
+14       AtomicWrite                      未实现                  无                       全局复用
  ── Phase 3 (中期 — 外部组件) ──
-13       DeferredTaskQueue                未实现                  无                       Boredom
-14       TimerRegistry                    部分实现                无                       Boredom, Waiting
-15       RateLimiter                      未实现                  无                       Exploration
-16       ExternalSearchEngine             未实现                  HTTP client              Exploration
-17       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration
-18       InterestScorer                   未实现                  embedding / BM25         Exploration
-19       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration
-20       SkillAuditReport                 未实现                  文件系统                   Exploration
+15       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
+16       TimerRegistry                    部分实现                无                       Boredom, Waiting
+17       RateLimiter                      未实现                  无                       Exploration
+18       ExternalSearchEngine             未实现                  HTTP client              Exploration
+19       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration
+20       InterestScorer                   未实现                  embedding / BM25         Exploration
+21       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration
+22       SkillAuditReport                 未实现                  文件系统                   Exploration
  ── Phase 4 (远期 — 深度认知) ──
-21       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
-22       ErrorClassifier                  未实现                  TraceStore               Reflection
-23       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
-24       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
-25       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
-26       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
-27       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
-28       Narrative 报告目录               未实现                  文件系统                   Meditation
-29       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
-30       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
+23       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
+24       ErrorClassifier                  未实现                  TraceStore               Reflection
+25       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
+26       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
+27       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
+28       PendingAsyncCalls 注册表         未实现                  无                       Waiting (完整模式)
+29       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
+30       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
+31       Narrative 报告目录               未实现                  文件系统                   Meditation
+32       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
+33       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
+34       IdleConfig 各子项配置            部分实现                 config crate             Daze, Boredom, Waiting, Sleep, Exploration, Meditation, Incubation
 ```
 
 ### YantrikDB 已覆盖的能力（原方案中需要手动实现的组件）
@@ -1024,7 +1029,7 @@ pipeline 部分 (<1ms):
 | CacheStore (文件系统 TTL) | 仍需要（文件系统操作，非 memory 范畴） |
 | MemoryHealthReporter | `stats()` 方法 |
 | KnowledgeGraph (手动实现) | yantrikdb 内置 knowledge graph |
-| EmbeddingEngine (外部 API) | yantrikdb 内置 `potion-base-2M` embedder (dim=64) |
+| EmbeddingEngine (外部 API) | `RemoteEmbedder` — 云端 embedding API，或 `potion-multilingual-128M` 本地下载 (dim=256, 101 语言) |
 | PatternExtractor (统计聚类) | `think()` pattern mining (待桥接) |
 | Conflict detection (手动) | `think()` conflict scan (待桥接) |
 

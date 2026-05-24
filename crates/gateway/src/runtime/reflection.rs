@@ -203,9 +203,14 @@ impl ReflectionRunner {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
             let payload = event.get("payload").map(|p| p.to_string()).unwrap_or_default();
-            // Truncate large payloads
+            // Truncate large payloads at a char boundary
             let payload = if payload.len() > 2000 {
-                format!("{}…(truncated)", &payload[..2000])
+                let trunc_byte = payload
+                    .char_indices()
+                    .nth(2000)
+                    .map(|(i, _)| i)
+                    .unwrap_or(payload.len());
+                format!("{}…(truncated)", &payload[..trunc_byte])
             } else {
                 payload
             };

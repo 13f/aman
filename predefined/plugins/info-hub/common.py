@@ -206,3 +206,50 @@ def extract_main_content(html: str) -> str:
 
     # Limit to 1500 chars for AI context
     return text[:1500]
+
+
+# ── Article enrichment ────────────────────────────────────────────────
+
+def enrich_articles(
+    articles: list,
+    min_content_len: int = 100,
+    timeout: int = 8,
+) -> int:
+    """Ensure each article has sufficient content for AI processing.
+
+    For articles whose ``raw.content`` is shorter than *min_content_len*,
+    fetch the article's URL and extract the main text. The fetched content
+    is written back into ``raw.content`` and ``summary``.
+
+    Returns the number of articles that were enriched.
+    """
+    enriched = 0
+    for a in articles:
+        content = a.get("raw", {}).get("content", "")
+        if len(content) >= min_content_len:
+            continue
+        url = a.get("url", "")
+        if not url:
+            continue
+        fetched = fetch_article_content(url, timeout=timeout)
+        if fetched:
+            a.setdefault("raw", {})["content"] = fetched
+            a["summary"] = fetched
+            enriched += 1
+    return enriched
+
+
+def article_to_api_input(article: dict, index: int) -> dict:
+    """Convert a fusion-style article dict to the standard gateway API format.
+
+    Returns ``{index, title, description, source_name, link}`` suitable for
+    ``info_tag_articles``, ``info_score_articles``, etc.
+    """
+    raw = article.get("raw", {})
+    return {
+        "index": index,
+        "title": article.get("title", ""),
+        "description": raw.get("content", "") or article.get("summary", ""),
+        "source_name": article.get("source", ""),
+        "link": article.get("url", ""),
+    }

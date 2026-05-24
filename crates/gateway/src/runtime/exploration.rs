@@ -511,7 +511,7 @@ impl EventHandler for ExplorationRunner {
         if kind != "exploration" {
             return Ok(());
         }
-        let Some(agent_id) = event.payload.get("agentId").and_then(|v| v.as_str()) else {
+        let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str()) else {
             return Ok(());
         };
         if agent_id.is_empty() {

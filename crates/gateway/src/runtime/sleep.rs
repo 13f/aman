@@ -583,7 +583,7 @@ impl EventHandler for SleepRunner {
         if kind != "sleep" {
             return Ok(());
         }
-        let Some(agent_id) = event.payload.get("agentId").and_then(|v| v.as_str()) else {
+        let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str()) else {
             return Ok(());
         };
         if agent_id.is_empty() {
@@ -838,7 +838,7 @@ mod tests {
         let event = Event::new(
             "idle.system",
             EventType::Idle,
-            serde_json::json!({"kind": "sleep", "depth": 20, "agentId": "agent-1"}),
+            serde_json::json!({"kind": "sleep", "depth": 20, "agent_id": "agent-1"}),
         );
         let result = runner.handle(event).await;
         assert!(result.is_ok());

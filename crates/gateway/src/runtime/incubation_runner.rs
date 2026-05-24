@@ -126,7 +126,7 @@ impl EventHandler for IncubationRunner {
         }
         let Some(agent_id) = event
             .payload
-            .get("agentId")
+            .get("agent_id")
             .and_then(|v| v.as_str())
         else {
             return Ok(());

@@ -18,16 +18,19 @@ const PREDEFINED_AGENTS: &[PredefinedAgent] = &[
         key: "aman",
         display_name: "aman",
         soul_md: include_str!("../../../../predefined/agents/aman/SOUL.md"),
+        interests_md: include_str!("../../../../predefined/agents/aman/INTERESTS.md"),
     },
     PredefinedAgent {
         key: "health",
         display_name: "健康顾问",
         soul_md: include_str!("../../../../predefined/agents/health/SOUL.md"),
+        interests_md: include_str!("../../../../predefined/agents/health/INTERESTS.md"),
     },
     PredefinedAgent {
         key: "money",
         display_name: "投资顾问",
         soul_md: include_str!("../../../../predefined/agents/money/SOUL.md"),
+        interests_md: include_str!("../../../../predefined/agents/money/INTERESTS.md"),
     },
 ];
 
@@ -35,6 +38,7 @@ struct PredefinedAgent {
     key: &'static str,
     display_name: &'static str,
     soul_md: &'static str,
+    interests_md: &'static str,
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +260,10 @@ fn seed_one_agent(agent_dir: PathBuf, agent: &PredefinedAgent) -> Result<(), Str
     let content = agent.soul_md.replace("{name}", agent.display_name);
     std::fs::write(agent_dir.join("SOUL.md"), &content)
         .map_err(|e| format!("write SOUL.md: {e}"))?;
+
+    let interests_content = agent.interests_md.replace("{name}", agent.display_name);
+    std::fs::write(agent_dir.join("INTERESTS.md"), &interests_content)
+        .map_err(|e| format!("write INTERESTS.md: {e}"))?;
     Ok(())
 }
 

@@ -4,10 +4,16 @@ use std::collections::HashMap;
 use crate::ai::LlmConfig;
 
 /// Top-level config for the info-hub plugin.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Accepts two YAML/JSON formats:
+/// 1. Object: `{ timeout_ms: 5000, sources: [...], llm: {...} }`
+/// 2. Bare array: `[ { name: ..., type: ... }, ... ]` — sources directly,
+///    timeout defaults to 10s, no LLM.
+#[derive(Debug, Clone, Serialize)]
 pub struct InfoHubConfig {
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default)]
     pub sources: Vec<SourceConfig>,
     #[serde(default)]
     pub llm: Option<LlmConfig>,
@@ -23,6 +29,44 @@ impl Default for InfoHubConfig {
             timeout_ms: default_timeout_ms(),
             sources: Vec::new(),
             llm: None,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for InfoHubConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum RawConfig {
+            Object {
+                #[serde(default = "default_timeout_ms")]
+                timeout_ms: u64,
+                #[serde(default)]
+                sources: Vec<SourceConfig>,
+                #[serde(default)]
+                llm: Option<LlmConfig>,
+            },
+            Array(Vec<SourceConfig>),
+        }
+
+        match RawConfig::deserialize(deserializer)? {
+            RawConfig::Object {
+                timeout_ms,
+                sources,
+                llm,
+            } => Ok(Self {
+                timeout_ms,
+                sources,
+                llm,
+            }),
+            RawConfig::Array(sources) => Ok(Self {
+                timeout_ms: default_timeout_ms(),
+                sources,
+                llm: None,
+            }),
         }
     }
 }

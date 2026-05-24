@@ -5,10 +5,14 @@
 //!
 //! Architecture ref: idle-design.md §3.5
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+use crate::types::IdleKind;
 
 /// 跨组件共享的空闲协调状态。
 pub struct IdleCoordination {
@@ -22,6 +26,8 @@ pub struct IdleCoordination {
     pub idle_cancel_token: Arc<RwLock<CancellationToken>>,
     /// 队列已清空，IdleDetector 应重置 depth（由 Dispatcher 在产生 QueueDrained 时设置）
     pub pending_depth_reset: Arc<AtomicBool>,
+    /// Per-kind cooldown expiry timestamps (per-agent, not global).
+    pub kind_cooldowns: Arc<RwLock<HashMap<IdleKind, Instant>>>,
 }
 
 impl IdleCoordination {
@@ -34,6 +40,7 @@ impl IdleCoordination {
             last_source_type: Arc::new(AtomicU8::new(0)), // SourceType::Unknown = 0
             idle_cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
             pending_depth_reset: Arc::new(AtomicBool::new(false)),
+            kind_cooldowns: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -51,13 +58,25 @@ impl IdleCoordination {
     pub fn signal_queue_drained(&self) {
         self.pending_depth_reset.store(true, Ordering::SeqCst);
     }
+
+    /// Set a cooldown for `kind` — it will not be produced until `cooldown_secs` elapses.
+    pub async fn set_kind_cooldown(&self, kind: IdleKind, cooldown_secs: u64) {
+        let expiry = Instant::now() + std::time::Duration::from_secs(cooldown_secs);
+        self.kind_cooldowns.write().await.insert(kind, expiry);
+    }
+
+    /// Check whether `kind` is currently on cooldown.
+    pub async fn is_kind_on_cooldown(&self, kind: IdleKind) -> bool {
+        match self.kind_cooldowns.read().await.get(&kind) {
+            Some(expiry) => Instant::now() < *expiry,
+            None => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ArousalTracker（引用自 ArousalBehavior）
 // ---------------------------------------------------------------------------
-
-use std::time::Instant;
 
 /// 指数衰减的 Arousal 跟踪器。
 pub struct ArousalTracker {

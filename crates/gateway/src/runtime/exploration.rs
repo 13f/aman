@@ -14,6 +14,7 @@
 use async_trait::async_trait;
 use config::ExplorationConfig;
 use event_bus::EventHandler;
+use idle::IdleKind;
 use info_hub::adapters;
 use info_hub::config::InfoHubConfig;
 use info_hub::merge;
@@ -21,6 +22,7 @@ use info_hub::types::{InfoItem, InfoSearchInput};
 use kernel::event::{Event, EventType};
 use kernel::memory::MemoryProvider;
 use kernel::AmanResult;
+use rand::seq::SliceRandom;
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -124,6 +126,23 @@ impl ExplorationRunner {
         let max = 30usize;
         queries.truncate(max);
 
+        // 1d. Cold-start fallback: if no queries from memories/entities,
+        //     pick random primary interests from INTERESTS.md
+        if queries.is_empty() {
+            let interests = self.load_primary_interests(agent_id);
+            if !interests.is_empty() {
+                let mut rng = rand::thread_rng();
+                let n = 3.min(interests.len());
+                let picks: Vec<_> =
+                    interests.choose_multiple(&mut rng, n).cloned().collect();
+                for interest in &picks {
+                    queries.push(format!(
+                        "latest developments about {interest}"
+                    ));
+                }
+            }
+        }
+
         debug!(
             agent_id,
             count = queries.len(),
@@ -131,6 +150,37 @@ impl ExplorationRunner {
         );
 
         queries
+    }
+
+    /// Parse primary interests from an agent's INTERESTS.md.
+    fn load_primary_interests(&self, agent_id: &str) -> Vec<String> {
+        let path = super::agent_seed::aman_data_dir()
+            .join("agents")
+            .join(agent_id)
+            .join("INTERESTS.md");
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut in_primary = false;
+        let mut interests = Vec::new();
+        for line in content.lines() {
+            let t = line.trim();
+            if t.starts_with("## ") {
+                in_primary =
+                    t.contains("核心兴趣") || t.to_lowercase().contains("primary");
+                continue;
+            }
+            if in_primary && t.starts_with("- **") {
+                if let Some(end) = t[4..].find("**") {
+                    let name = t[4..4 + end].trim().to_string();
+                    if !name.is_empty() {
+                        interests.push(name);
+                    }
+                }
+            }
+        }
+        interests
     }
 
     // -- phase 2: execute searches ------------------------------------------
@@ -267,6 +317,30 @@ impl ExplorationRunner {
         }
     }
 
+    // -- cooldown helper ----------------------------------------------------
+
+    async fn signal_cooldown(&self, agent_id: &str) {
+        let Some(registry) = self.agent_registry.get() else {
+            return;
+        };
+        let Some(coord) = registry.get_idle_coordination(agent_id).await else {
+            return;
+        };
+        let cooldown_secs = self
+            .exploration_config
+            .get()
+            .map(|c| c.cooldown_secs)
+            .unwrap_or(3600);
+        coord
+            .set_kind_cooldown(IdleKind::Exploration, cooldown_secs)
+            .await;
+        debug!(
+            agent_id,
+            cooldown_secs,
+            "Exploration: cooldown set",
+        );
+    }
+
     // -- orchestration -------------------------------------------------------
 
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
@@ -286,6 +360,7 @@ impl ExplorationRunner {
 
         // Phase 1: Generate queries from memory gaps
         if cancel_token.is_cancelled() {
+            self.signal_cooldown(agent_id).await;
             return Ok(());
         }
         let queries = self.generate_queries(agent_id).await;
@@ -293,6 +368,7 @@ impl ExplorationRunner {
         if queries.is_empty() {
             debug!(agent_id, "Exploration: no queries generated, falling back to local");
             self.local_fallback(agent_id).await;
+            self.signal_cooldown(agent_id).await;
             return Ok(());
         }
 
@@ -302,11 +378,13 @@ impl ExplorationRunner {
         if results.is_empty() {
             debug!(agent_id, "Exploration: no external results, falling back to local");
             self.local_fallback(agent_id).await;
+            self.signal_cooldown(agent_id).await;
             return Ok(());
         }
 
         // Phase 3: Score & store
         if cancel_token.is_cancelled() {
+            self.signal_cooldown(agent_id).await;
             return Ok(());
         }
         let stored = self.process_results(agent_id, &results).await;
@@ -321,6 +399,7 @@ impl ExplorationRunner {
             "Exploration: cycle complete",
         );
 
+        self.signal_cooldown(agent_id).await;
         Ok(())
     }
 }

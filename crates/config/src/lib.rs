@@ -243,16 +243,21 @@ pub struct ExplorationConfig {
     pub api_rate_per_minute: u32,
     #[serde(default = "default_exploration_fallback")]
     pub on_quota_exhausted: String,
+    /// Minimum seconds between Exploration cycles (default 1 hour).
+    #[serde(default = "default_exploration_cooldown_secs")]
+    pub cooldown_secs: u64,
 }
 
 fn default_api_rate_per_minute() -> u32 { 10 }
 fn default_exploration_fallback() -> String { "fallback".into() }
+fn default_exploration_cooldown_secs() -> u64 { 3600 }
 
 impl Default for ExplorationConfig {
     fn default() -> Self {
         Self {
             api_rate_per_minute: 10,
             on_quota_exhausted: "fallback".into(),
+            cooldown_secs: 3600,
         }
     }
 }
@@ -264,16 +269,37 @@ pub struct IncubationConfig {
     pub max_concurrent: u32,
     #[serde(default)]
     pub enabled: bool,
+    /// Minimum seconds between Incubation cycles (default 3 hours).
+    #[serde(default = "default_incubation_cooldown_secs")]
+    pub cooldown_secs: u64,
 }
 
 fn default_max_concurrent_incubation() -> u32 { 1 }
+fn default_incubation_cooldown_secs() -> u64 { 10800 }
 
 impl Default for IncubationConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 1,
             enabled: false,
+            cooldown_secs: 10800,
         }
+    }
+}
+
+/// Meditation 子配置。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeditationConfig {
+    /// Minimum seconds between Meditation cycles (default 2 hours).
+    #[serde(default = "default_meditation_cooldown_secs")]
+    pub cooldown_secs: u64,
+}
+
+fn default_meditation_cooldown_secs() -> u64 { 7200 }
+
+impl Default for MeditationConfig {
+    fn default() -> Self {
+        Self { cooldown_secs: 7200 }
     }
 }
 
@@ -296,6 +322,8 @@ pub struct IdleConfig {
     pub exploration: ExplorationConfig,
     #[serde(default)]
     pub incubation: IncubationConfig,
+    #[serde(default)]
+    pub meditation: MeditationConfig,
 }
 
 impl Default for IdleConfig {
@@ -309,6 +337,7 @@ impl Default for IdleConfig {
             sleep: SleepConfig::default(),
             exploration: ExplorationConfig::default(),
             incubation: IncubationConfig::default(),
+            meditation: MeditationConfig::default(),
         }
     }
 }
@@ -933,6 +962,7 @@ pub struct PartialIdleConfig {
     pub sleep: Option<PartialSleepConfig>,
     pub exploration: Option<PartialExplorationConfig>,
     pub incubation: Option<PartialIncubationConfig>,
+    pub meditation: Option<PartialMeditationConfig>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -964,12 +994,19 @@ pub struct PartialSleepConfig {
 pub struct PartialExplorationConfig {
     pub api_rate_per_minute: Option<u32>,
     pub on_quota_exhausted: Option<String>,
+    pub cooldown_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialIncubationConfig {
     pub max_concurrent: Option<u32>,
     pub enabled: Option<bool>,
+    pub cooldown_secs: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialMeditationConfig {
+    pub cooldown_secs: Option<u64>,
 }
 
 pub struct ConfigLoader;
@@ -1150,6 +1187,9 @@ impl AgentConfig {
                 if let Some(v) = exploration.on_quota_exhausted {
                     self.idle.exploration.on_quota_exhausted = v;
                 }
+                if let Some(v) = exploration.cooldown_secs {
+                    self.idle.exploration.cooldown_secs = v;
+                }
             }
             if let Some(incubation) = idle.incubation {
                 if let Some(v) = incubation.max_concurrent {
@@ -1158,6 +1198,14 @@ impl AgentConfig {
                 if let Some(v) = incubation.enabled {
                     self.idle.incubation.enabled = v;
                 }
+                if let Some(v) = incubation.cooldown_secs {
+                    self.idle.incubation.cooldown_secs = v;
+                }
+            }
+            if let Some(meditation) = idle.meditation
+                && let Some(v) = meditation.cooldown_secs
+            {
+                self.idle.meditation.cooldown_secs = v;
             }
         }
     }

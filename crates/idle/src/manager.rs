@@ -206,12 +206,24 @@ impl AgentIdleManager {
                 }
 
                 // Bus is empty, no recent activity — progress idle state
-                let kind = if detector.idle_depth == 0 {
+                let mut kind = if detector.idle_depth == 0 {
                     IdleKind::Daze
                 } else {
                     let arousal = coord.arousal.current();
                     effective.resolve_with_arousal(detector.idle_depth, arousal)
                 };
+
+                // Cooldown check: fall back to previous depth tier if kind is on cooldown
+                if coord.is_kind_on_cooldown(kind).await {
+                    let fallback = fallback_kind(detector.idle_depth);
+                    debug!(
+                        agent_id = %agent_id,
+                        original = ?kind,
+                        fallback = ?fallback,
+                        "kind on cooldown, falling back",
+                    );
+                    kind = fallback;
+                }
 
                 let context = IdleContext {
                     last_event_type: String::new(),
@@ -275,5 +287,20 @@ impl AgentIdleManager {
         self.coord.reset_idle_signal().await;
         self.stop().await;
         Ok(())
+    }
+}
+
+/// Fall back to the idle kind for the previous depth tier when a kind is on cooldown.
+fn fallback_kind(depth: u32) -> IdleKind {
+    if depth >= 200 {
+        IdleKind::Meditation
+    } else if depth >= 100 {
+        IdleKind::Exploration
+    } else if depth >= 50 {
+        IdleKind::Sleep
+    } else if depth >= 20 {
+        IdleKind::Boredom
+    } else {
+        IdleKind::Daze
     }
 }

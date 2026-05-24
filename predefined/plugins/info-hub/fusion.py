@@ -8,6 +8,11 @@ DB adapter protocol:
 Standalone mode (--standalone):
   Full pipeline: query DB → score → summarize → generate highlights → output report.
   Reads LLM config from ~/.aman/config.yaml.
+
+Supports two DB schemas:
+  - Fusion RSS reader: reads from `items` JOIN `feeds` tables
+  - Standalone: reads from `articles` table (created if absent)
+AI metadata (scores, summaries) is stored in `article_meta` table.
 """
 
 import argparse
@@ -33,7 +38,6 @@ DEFAULT_TOP_N = 20
 
 
 def open_db(db_path: str) -> sqlite3.Connection:
-    """Open SQLite database, creating tables if they don't exist."""
     path = expand_tilde(db_path)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path)
@@ -43,17 +47,11 @@ def open_db(db_path: str) -> sqlite3.Connection:
 
 
 def _ensure_tables(conn: sqlite3.Connection) -> None:
+    """Create article_meta table for AI-processed metadata."""
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS articles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            link TEXT NOT NULL UNIQUE,
-            pub_date TEXT,
-            description TEXT,
-            source_name TEXT DEFAULT '',
-            source_url TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now')),
+        CREATE TABLE IF NOT EXISTS article_meta (
+            item_key TEXT PRIMARY KEY,
             score REAL DEFAULT 0,
             relevance INTEGER DEFAULT 0,
             quality INTEGER DEFAULT 0,
@@ -67,18 +65,35 @@ def _ensure_tables(conn: sqlite3.Connection) -> None:
     """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date DESC)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_articles_score ON articles(score DESC)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_articles_link ON articles(link)"
+        "CREATE INDEX IF NOT EXISTS idx_article_meta_score ON article_meta(score DESC)"
     )
     conn.commit()
 
 
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _is_fusion_db(conn: sqlite3.Connection) -> bool:
+    return _has_table(conn, "items") and _has_table(conn, "feeds")
+
+
 # ── DB Adapter Protocol ───────────────────────────────────────────────
+
+
+def _unix_to_iso(ts) -> str:
+    """Convert unix timestamp (int) to ISO 8601 date string."""
+    try:
+        ts_int = int(ts)
+        if ts_int <= 0:
+            return ""
+        return datetime.fromtimestamp(ts_int, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, OSError):
+        return str(ts) if ts else ""
+
 
 def search_articles(
     db_path: str,
@@ -86,27 +101,102 @@ def search_articles(
     limit: int = 20,
     offset: int = 0,
 ) -> list[dict]:
-    """Search articles in SQLite DB and return as InfoItem list."""
     conn = open_db(db_path)
     try:
-        if query.strip():
-            sql = """
-                SELECT * FROM articles
-                WHERE title LIKE ? OR description LIKE ? OR summary LIKE ?
-                ORDER BY pub_date DESC
-                LIMIT ? OFFSET ?
-            """
-            pattern = f"%{query}%"
-            rows = conn.execute(sql, (pattern, pattern, pattern, limit, offset)).fetchall()
+        if _is_fusion_db(conn):
+            return _search_fusion(conn, query, limit, offset)
         else:
-            sql = """
-                SELECT * FROM articles
-                ORDER BY score DESC, pub_date DESC
-                LIMIT ? OFFSET ?
-            """
-            rows = conn.execute(sql, (limit, offset)).fetchall()
+            return _search_standalone(conn, query, limit, offset)
     finally:
         conn.close()
+
+
+def _search_fusion(
+    conn: sqlite3.Connection, query: str, limit: int, offset: int
+) -> list[dict]:
+    """Search fusion RSS items table joined with feeds."""
+    if query.strip():
+        sql = """
+            SELECT i.id, i.title, i.link, i.content, i.pub_date,
+                   f.name as feed_name, f.site_url as feed_url
+            FROM items i
+            JOIN feeds f ON i.feed_id = f.id
+            WHERE i.title LIKE ? OR i.content LIKE ?
+            ORDER BY i.pub_date DESC
+            LIMIT ? OFFSET ?
+        """
+        pattern = f"%{query}%"
+        rows = conn.execute(sql, (pattern, pattern, limit, offset)).fetchall()
+    else:
+        sql = """
+            SELECT i.id, i.title, i.link, i.content, i.pub_date,
+                   f.name as feed_name, f.site_url as feed_url
+            FROM items i
+            JOIN feeds f ON i.feed_id = f.id
+            ORDER BY i.pub_date DESC
+            LIMIT ? OFFSET ?
+        """
+        rows = conn.execute(sql, (limit, offset)).fetchall()
+
+    results = []
+    for row in rows:
+        item_key = row["link"] or f"fusion:{row['id']}"
+        meta = conn.execute(
+            "SELECT * FROM article_meta WHERE item_key = ?", (item_key,)
+        ).fetchone()
+
+        item = {
+            "title": row["title"],
+            "url": row["link"],
+            "summary": meta["summary"] if meta else "",
+            "published": _unix_to_iso(row["pub_date"]),
+            "source": row["feed_name"] or "fusion",
+            "raw": {
+                "item_key": item_key,
+                "score": meta["score"] if meta else 0,
+                "relevance": meta["relevance"] if meta else 0,
+                "quality": meta["quality"] if meta else 0,
+                "timeliness": meta["timeliness"] if meta else 0,
+                "category": meta["category"] if meta else "other",
+                "keywords": json.loads(meta["keywords"] if meta else "[]"),
+                "title_zh": meta["title_zh"] if meta else "",
+                "reason": meta["reason"] if meta else "",
+                "content": row["content"] or "",
+            },
+        }
+        results.append(item)
+
+    return results
+
+
+def _search_standalone(
+    conn: sqlite3.Connection, query: str, limit: int, offset: int
+) -> list[dict]:
+    """Search standalone articles table (created if needed)."""
+    _ensure_standalone_articles(conn)
+
+    if query.strip():
+        sql = """
+            SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
+                   m.category, m.keywords, m.title_zh, m.summary, m.reason
+            FROM articles a
+            LEFT JOIN article_meta m ON a.link = m.item_key
+            WHERE a.title LIKE ? OR a.description LIKE ? OR m.summary LIKE ?
+            ORDER BY a.pub_date DESC
+            LIMIT ? OFFSET ?
+        """
+        pattern = f"%{query}%"
+        rows = conn.execute(sql, (pattern, pattern, pattern, limit, offset)).fetchall()
+    else:
+        sql = """
+            SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
+                   m.category, m.keywords, m.title_zh, m.summary, m.reason
+            FROM articles a
+            LEFT JOIN article_meta m ON a.link = m.item_key
+            ORDER BY m.score DESC, a.pub_date DESC
+            LIMIT ? OFFSET ?
+        """
+        rows = conn.execute(sql, (limit, offset)).fetchall()
 
     results = []
     for row in rows:
@@ -115,16 +205,18 @@ def search_articles(
             "url": row["link"],
             "summary": row["summary"] or row["description"] or "",
             "published": row["pub_date"],
-            "source": row["source_name"] or "fusion",
+            "source": row["source_name"] or "standalone",
             "raw": {
-                "score": row["score"],
-                "relevance": row["relevance"],
-                "quality": row["quality"],
-                "timeliness": row["timeliness"],
-                "category": row["category"],
+                "item_key": row["link"],
+                "score": row["score"] or 0,
+                "relevance": row["relevance"] or 0,
+                "quality": row["quality"] or 0,
+                "timeliness": row["timeliness"] or 0,
+                "category": row["category"] or "other",
                 "keywords": json.loads(row["keywords"] or "[]"),
-                "title_zh": row["title_zh"],
-                "reason": row["reason"],
+                "title_zh": row["title_zh"] or "",
+                "reason": row["reason"] or "",
+                "content": row["description"] or "",
             },
         }
         results.append(item)
@@ -132,8 +224,32 @@ def search_articles(
     return results
 
 
+def _ensure_standalone_articles(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            link TEXT NOT NULL UNIQUE,
+            pub_date TEXT,
+            description TEXT,
+            source_name TEXT DEFAULT '',
+            source_url TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_articles_pub_date ON articles(pub_date DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_articles_link ON articles(link)"
+    )
+    conn.commit()
+
+
 def upsert_articles(db_path: str, articles: list[dict]) -> int:
-    """Insert or update articles in SQLite DB. Returns count of new articles."""
+    """Insert or update articles in standalone DB. Returns count of new articles."""
     conn = open_db(db_path)
     new_count = 0
     try:
@@ -164,6 +280,29 @@ def upsert_articles(db_path: str, articles: list[dict]) -> int:
 
 # ── Standalone pipeline ────────────────────────────────────────────────
 
+
+def _persist_meta(conn: sqlite3.Connection, item_key: str, a: dict) -> None:
+    raw = a.get("raw", {})
+    conn.execute(
+        """INSERT OR REPLACE INTO article_meta
+           (item_key, score, relevance, quality, timeliness,
+            category, keywords, title_zh, summary, reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            item_key,
+            a.get("score", 0),
+            raw.get("relevance", 0),
+            raw.get("quality", 0),
+            raw.get("timeliness", 0),
+            raw.get("category", "other"),
+            json.dumps(raw.get("keywords", []), ensure_ascii=False),
+            raw.get("title_zh", ""),
+            raw.get("summary", ""),
+            raw.get("reason", ""),
+        ),
+    )
+
+
 def run_pipeline(
     db_path: str,
     top_n: int = DEFAULT_TOP_N,
@@ -186,12 +325,12 @@ def run_pipeline(
         ai_input.append({
             "index": i,
             "title": a["title"],
-            "description": a.get("summary", ""),
+            "description": a["raw"].get("content", "") or a.get("summary", ""),
             "source_name": a["source"],
             "link": a["url"],
         })
 
-    # Tag (category + keywords) — separate lighter LLM call
+    # Tag (category + keywords)
     tag_results = tag_articles(ai_input)
     tag_map = {r["index"]: r for r in tag_results}
     for i, a in enumerate(articles):
@@ -221,7 +360,7 @@ def run_pipeline(
         summary_input.append({
             "index": i,
             "title": a["title"],
-            "description": a.get("summary", ""),
+            "description": a["raw"].get("content", "") or a.get("summary", ""),
             "source_name": a["source"],
             "link": a["url"],
         })
@@ -237,30 +376,12 @@ def run_pipeline(
             a["raw"]["reason"] = s.get("reason", "")
             a["summary"] = s.get("summary", "")
 
-    # Persist scores and summaries
+    # Persist scores and summaries to article_meta
     conn = open_db(db_path)
     try:
         for a in top_articles:
-            raw = a.get("raw", {})
-            conn.execute(
-                """UPDATE articles SET
-                   score = ?, relevance = ?, quality = ?, timeliness = ?,
-                   category = ?, keywords = ?, title_zh = ?,
-                   summary = ?, reason = ?
-                   WHERE link = ?""",
-                (
-                    a.get("score", 0),
-                    raw.get("relevance", 0),
-                    raw.get("quality", 0),
-                    raw.get("timeliness", 0),
-                    raw.get("category", "other"),
-                    json.dumps(raw.get("keywords", []), ensure_ascii=False),
-                    raw.get("title_zh", ""),
-                    raw.get("summary", ""),
-                    raw.get("reason", ""),
-                    a["url"],
-                ),
-            )
+            item_key = a["raw"].get("item_key", a["url"])
+            _persist_meta(conn, item_key, a)
         conn.commit()
     finally:
         conn.close()
@@ -290,6 +411,7 @@ def run_pipeline(
 
 
 # ── CLI ────────────────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(description="Fusion DB adapter for info-hub")

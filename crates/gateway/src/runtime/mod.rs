@@ -11,6 +11,7 @@ mod date_util;
 mod history_compressor;
 mod reflection;
 mod sleep;
+mod exploration;
 mod token_budget;
 mod audit;
 mod event_store;

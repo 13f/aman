@@ -414,39 +414,6 @@ impl AgentRuntimeBuilder {
             .map_err(|e| tracing::warn!(error = %e, "failed to load config, using defaults"))
             .ok();
 
-        // Load the built-in idle system plugin (handles idle personality progression).
-        let idle_plugin = idle_system::IdleSystemPlugin::new();
-        let idle_candidate = PluginCandidate {
-            manifest: PluginManifest {
-                name: "idle-system".to_owned(),
-                version: idle_plugin.version().clone(),
-                depends_on: vec![],
-                lifecycle: PluginLifecycleConfig { auto_start: true },
-                exports: PluginExports {
-                    skills: vec![
-                        "idle-daze".to_owned(),
-                        "idle-boredom".to_owned(),
-                        "idle-sleep".to_owned(),
-                        "idle-exploration".to_owned(),
-                        "idle-meditation".to_owned(),
-                        "idle-waiting".to_owned(),
-                        "idle-incubation".to_owned(),
-                    ],
-                    ..Default::default()
-                },
-                config_schema: None,
-                isolation: Some(PluginIsolationMode::InProcess),
-                subprocess: None,
-                wasm_path: None,
-                capabilities: vec![],
-                ui: None,
-            },
-            plugin: Box::new(idle_plugin),
-            isolation: PluginIsolationMode::InProcess,
-            subprocess: None,
-            wasm_module_bytes: None,
-        };
-
         // Load the built-in memory-store plugin (in-memory keyword-based provider).
         let memory_store_plugin = MemoryStorePlugin::new();
         let memory_store_candidate = PluginCandidate {
@@ -523,7 +490,7 @@ impl AgentRuntimeBuilder {
             wasm_module_bytes: None,
         };
 
-        let mut all_candidates = vec![idle_candidate, memory_store_candidate, info_hub_candidate];
+        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
         all_candidates.extend(self.extra_plugins);
         let hook_registry = Arc::new(hook::HookRegistry::new());
         let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
@@ -803,6 +770,49 @@ impl AgentRuntimeBuilder {
                 },
                 Box::new(SleepSub {
                     runner: sleep_runner,
+                }),
+            ));
+        }
+
+        // ── Exploration runner (Idle kind=Exploration → external discovery) ──
+        let exploration_runner = Arc::new(super::exploration::ExplorationRunner::new());
+        exploration_runner.set_agent_registry(Arc::clone(&agent_registry));
+        exploration_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        let exploration_cfg = aman_cfg
+            .as_ref()
+            .map(|c| c.runtime.idle.exploration.clone())
+            .unwrap_or_default();
+        exploration_runner.set_exploration_config(exploration_cfg);
+
+        // Pass info-hub config so ExplorationRunner can use its adapters
+        if let Some(ref cfg) = aman_cfg {
+            if let Some(info_hub_value) = &cfg.info_hub {
+                if let Ok(info_cfg) = serde_json::from_value::<info_hub::config::InfoHubConfig>(info_hub_value.clone()) {
+                    exploration_runner.set_info_hub_config(info_cfg);
+                }
+            }
+        }
+
+        // Subscribe to Idle events on the global bus (filtered to kind="exploration" in handle())
+        {
+            struct ExplorationSub {
+                runner: Arc<super::exploration::ExplorationRunner>,
+            }
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for ExplorationSub {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    self.runner.handle(event).await
+                }
+            }
+            let _ = pollster::block_on(bus.subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![kernel::event::EventType::Idle]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(ExplorationSub {
+                    runner: exploration_runner,
                 }),
             ));
         }

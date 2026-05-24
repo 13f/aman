@@ -1,13 +1,6 @@
 {
   "version": 1,
   "skills": [
-    { "name": "idle-daze",             "files": ["idle/idle-daze.yaml"] },
-    { "name": "idle-boredom",          "files": ["idle/idle-boredom.yaml"] },
-    { "name": "idle-sleep",            "files": ["idle/idle-sleep.yaml"] },
-    { "name": "idle-exploration",      "files": ["idle/idle-exploration.yaml"] },
-    { "name": "idle-meditation",       "files": ["idle/idle-meditation.yaml"] },
-    { "name": "idle-waiting",          "files": ["idle/idle-waiting.yaml"] },
-    { "name": "idle-incubation",       "files": ["idle/idle-incubation.yaml"] },
     { "name": "ipo-research",          "files": [
       "investment/ipo-research/SKILL.md",
       "investment/ipo-research/references/tuopu-cnc-07688-deep-dive.md",

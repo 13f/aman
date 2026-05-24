@@ -1,47 +1,45 @@
-# Idle Skill Execution Patch
+# Idle State Execution
 
-> 目标：将每个 idle 子状态的 skill 从「只有 description 的空壳」落实为「可逐步执行的步骤」。
+> 目标：将每个 idle 子状态从「只有 description 的空壳」落实为「可逐步执行的步骤」。
 > 基准文档：`idle-design.md`，特别是 §14 Idle State Activity Catalog。
-> 约束：本文只处理执行步骤 + 缺失组件指认，不修改 idle-design.md 的架构设计。
+> **架构更新 (2026-05-24)**：idle skill 系统已移除（idle-system plugin + 7 个 YAML skill 文件 + workflow.rs stubs）。真正有执行逻辑的 idle 状态全部使用 **EventHandler** 模式（SleepRunner / ReflectionRunner / ExplorationRunner），通过 OnceLock 注入依赖，直接在 global event bus 上订阅 Idle 事件。不经过 Skill trait 路径，避免 Plugin/Skill trait 的依赖注入改造。
 > **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生；**Sleep 已实现**（SleepRunner EventHandler，phase 2/3/4/6 完整实现，phase 1/5 stub 待 think() 桥接）。
 
 ---
 
 ## 8 个 Idle 状态全景
 
-| 深度 | 状态 | 类型 | 核心动作 | 硬依赖 | 就绪度 |
-|------|------|------|----------|--------|--------|
-| 0 | **Daze** | Pipeline | 纯状态声明 (no-op)，idle 序列锚点 | 无 | ✅ 已完成 |
-| 1 | **Boredom** | Pipeline | 扫描 pending 任务 + 随机浏览记忆 | deferred task queue / kanban | ❌ 等 kanban 机制 |
-| 2 | **Waiting** | Pipeline | 等待外部条件满足（timer / async / 用户回复） | 无 | ⚠️ 被动，可能用不到 |
-| 3 | **Sleep** | EventHandler | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | MemoryProvider（已落地），think() 桥接 | ✅ 已实现 (phase 2/3/4/6 完整，1/5 stub) |
-| 5 | **Exploration** | Workflow | 外部信息探索，产出 idea / 新闻 / 论文 | RSS/Atom 源，web search API，兴趣度评分器 | ❌ 等外部源 |
-| 7 | **Reflection** | EventHandler | 即时复盘：**session→YantrikDB 提取** + 过期记忆检查 | LLM config（已有），SessionStore（已有） | ✅ session_extract 已实现 |
-| 8 | **Incubation** | Pipeline+Thread | 创意孵化 / 跨域联想，产出假设性洞察 | 综合记忆 + kanban + 新闻 + idea + 论文 | ❌ 等一切就绪 |
-| 10 | **Meditation** | Workflow | 深度内省，提炼经验 → 更新启发式，think() deep scan | TraceStore，模式提取引擎，进化机制 | ❌ 等 trace store |
+| 深度 | 状态 | 类型 | 核心动作 | 实现位置 | 就绪度 |
+|------|------|------|----------|----------|--------|
+| 0 | **Daze** | no-op | 纯状态声明，idle 序列锚点 | IdleDetector 内存跟踪 | ✅ 已实现 |
+| 1 | **Boredom** | no-op | 后续通过 kanban / deferred task queue | 无（待 kanban 机制） | ❌ 未实现 |
+| 2 | **Waiting** | no-op | 等待外部条件满足 | 无（被动状态） | ⚠️ 不需要 |
+| 3 | **Sleep** | EventHandler | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | `crates/gateway/src/runtime/sleep.rs` | ✅ 已实现 |
+| 5 | **Exploration** | EventHandler | 外部信息探索：memory gap → info-hub 搜索 → 存储发现 | `crates/gateway/src/runtime/exploration.rs` | ✅ 已实现 |
+| 7 | **Reflection** | EventHandler | 即时复盘：session→YantrikDB 提取 + 过期记忆检查 | `crates/gateway/src/runtime/reflection.rs` | ✅ 已实现 |
+| 8 | **Incubation** | no-op | 创意孵化 / 跨域联想 | 无（待综合记忆等基础设施） | ❌ 未实现 |
+| 10 | **Meditation** | no-op | 深度内省，提炼经验 → 更新启发式 | 无（待 TraceStore） | ❌ 未实现 |
 
 ### 实现阶段
 
 ```
-Phase 1 (现在) ── 无外部依赖，立即可做
-    Daze        纯状态声明 (no-op)，idle 序列锚点 ✅ 已完成
-    Waiting     被动，no-op 即可（depth+arousal 机制不涉及，可能永远用不到）
-    Reflection  session_extract ✅ 已完成 (QueueDrained → LLM → YantrikDB)
-                chain_tasks / immediate_errors / lessons_learned → 待 TraceStore
-    Sleep       ✅ phase 2/3/4/6 完整实现，1/5 stub（见 Phase 2）
+Phase 1 (已完成) ── 核心基础设施
+    Daze        no-op（IdleDetector 内存跟踪）
+    Waiting     no-op（被动状态，depth+arousal 机制已覆盖）
+    Reflection  ✅ session_extract (QueueDrained → LLM → YantrikDB)
+    Sleep       ✅ phase 2/3/4/6 完整实现
 
-Phase 2 (短期) ── 已实现 Sleep 核心功能
-    Sleep       phase 1: 回填 Reflection 遗漏的 session ⏳ stub
-                phase 2: temporal housekeeping ✅
-                phase 3: 缓存清理 ✅
-                phase 4: 索引监控 ✅
-                phase 5: think() consolidation ⏳ stub（待 YantrikDB 桥接）
-                phase 6: 健康报告 ✅
-                SleepRunner 作为 EventHandler 实现于 crates/gateway/src/runtime/sleep.rs
+Phase 2 (已完成) ── Sleep 完善 + Exploration
+    Sleep       phase 1: session 回填 (stub)
+                phase 5: think() consolidation (stub，待 YantrikDB 桥接)
+    Exploration ✅ ExplorationRunner EventHandler
+                phase 1: memory gap → 查询生成
+                phase 2: info-hub adapters 外部搜索
+                phase 3: 评分过滤 → MemoryProvider 存储
+                phase 4: 本地 fallback
 
 Phase 3 (中期) ── 引入外部组件后
     Boredom     kanban / deferred task queue
-    Exploration RSS/Atom + web search
 
 Phase 4 (远期) ── 基础设施齐备后
     Meditation  TraceStore + 模式提取 + 进化机制
@@ -485,111 +483,121 @@ phase 6: 健康报告
 
 ## 5. Exploration
 
-**路由**: `workflow:idle-exploration`
-**类型**: Workflow（异步，附 cancel_token）
-**可打断**: 是（断点保存）
+> **状态：已实现。** `ExplorationRunner` 实现在 `crates/gateway/src/runtime/exploration.rs`，作为 EventHandler 订阅全局 Idle 事件（kind="exploration"）。采用与 `SleepRunner` / `ReflectionRunner` 相同的 OnceLock 依赖注入模式。使用 info-hub 插件的 adapter 层执行外部搜索。
+
+**路由**: `event_handler:IdleEvent{kind="exploration"}`
+**类型**: EventHandler（异步，附 cancel_token，通过 AgentRegistry 获取）
+**可打断**: 是（idle_cancel_token，每 phase 前检查）
 **Arousal**: Engaged (×0.0)
-**MemoryProvider 依赖**: `recall()` (语义搜索记忆缺口)、`search_entities()` (外部实体发现)、`stale_memories()` (找到遗忘的知识)
+**MemoryProvider 依赖**: `stale_memories()` (memory gaps)、`search_entities()` (孤立实体发现)、`entity_profile()` (实体关联度)、`store()` (写入发现)
+**外部搜索**: info-hub adapters（API / CLI / DB 三种适配器）
+
+### 架构
+
+```
+IdleDetector → IdleEvent{kind="exploration"} → ExplorationRunner.handle()
+                                                   ├─ MemoryProvider (OnceLock 注入)
+                                                   ├─ InfoHubConfig → adapters (外部搜索)
+                                                   └─ ExplorationConfig (速率/阈值配置)
+```
 
 ### 执行步骤
 
 ```
-phase 1: 收集好奇心查询
-    CHECKPOINT
-    1.1 memory_gaps — 通过 MemoryProvider 找出知识缺口:
-        // 查询近期（7d）内 recall 失败或低分的历史
+phase 1: 查询生成（纯本地，基于 MemoryProvider）
+    1.1 memory_gaps — 从 stale memories 生成查询:
         stale = provider.stale_memories(agent_id, days=7).await
-        gaps = stale.iter()
-            .filter(|m| m.importance > 0.4)  // 重要但长期未访问
-            .map(|m| format!("latest information about: {}", m.content))
-            .collect()
-        queries += gaps
+        for mem in stale:
+            if mem.importance > 0.4:
+                queries += "latest information about: {content_snippet}"
+        // max 15 queries from this source
 
-    1.2 entity_gaps — 搜索知识图谱中的孤立实体:
-        // 发现 degree=0 或缺少最新信息的实体
+    1.2 entity_gaps — 知识图谱孤立实体:
         entities = provider.search_entities("*", limit=10).await
         for entity in entities:
             profile = provider.entity_profile(&entity).await
-            if profile.edge_count == 0 || profile.related_entities.is_empty():
-                queries += f"what is {entity} and how does it relate to other things?"
+            if profile.edge_count == 0:
+                queries += "what is {entity} and how does it relate to other things?"
 
-    1.3 skill_audit:
-        skills = skill_registry.list_all()
-        for skill in skills:
-            freshness = check_upstream_freshness(skill.upstream_url, skill.last_checked)
-            if freshness == Stale:
-                queries += f"latest {skill.name} documentation changes"
+    1.3 去重 + 截断到 top 30
 
-    1.4 recent_failures:
-        failures = error_log.query(range=recent_7d, limit=10)
-        for f in failures:
-            signatures = extract_error_signature(f)
-            queries += signatures.iter().map(|s| f"{s} solution fix").collect()
+phase 2: 外部搜索（通过 info-hub adapters）
+    2.1 从 InfoHubConfig 创建 adapters（API/CLI/DB）
+    2.2 速率限制: sleep(60000 / api_rate_per_minute) ms between queries
+    2.3 逐个 query → 并发查询所有 sources → merge (dedup by url, sort by date)
+    2.4 取 top 20 结果
+    // 如遇 cancel_token → 中断，保留已完成结果
 
-    1.5 去重 + 截断：queries.unique().truncate(30)
-
-phase 2: 执行外部查询
-    CHECKPOINT
-    2.1 初始化 rate_limiter(api_rate_per_minute=10)
-    2.2 results = []
-    2.3 for query in queries:
-        rate_limiter.acquire()  // 阻塞直到配额可用
-        response = external_search(query)  // → web_search / API call
-        if response.error:
-            if response.is_rate_limit:
-                break  // 停止本轮，保留 queries 给下一轮
-            continue
-        2.4 兴趣度评分:
-        relevance = semantic_similarity(query, response.title + response.snippet)
-        freshness = days_since(response.published_date)
-        actionability = contains_actionable_info(response.content)
-        score = relevance * 0.4 + (1.0 / (freshness + 1)) * 0.3 + actionability * 0.3
-        2.5 if score > config.exploration.min_interest_score:
-            results.push({ query, response, score })
-    2.6 按 score 降序，取 top max_results(20)
-
-phase 3: 处理结果 — 写入 MemoryProvider
-    CHECKPOINT
-    3.1 分类: MemoryGapResolution | SkillUpdate | FailureSolution | GeneralSignal
-    3.2 对高价值信号 (score > high_value_threshold):
+phase 3: 评分 & 存储
+    3.1 简单启发式评分（v1）:
+        - title_length (0.3) + summary_length (0.3)
+        - has_url (0.2) + has_date (0.2)
+        - threshold: 0.3
+    3.2 score > 0.3:
         provider.store(agent_id,
-            format!("[Exploration] {}: {}", category, response.summary),
-            vec!["exploration".into(), category.into()]
+            "[Exploration] {title}\nURL: {url}\n{summary}\nSource: {source} | Published: {date}",
+            ["exploration", source_name, ...]
         )
-        包装为 Event { priority: Low, source: "idle.exploration", payload }
-        → publish to Agent Local EventBus
-    3.3 对 MemoryGapResolution:
-        provider.store(agent_id, resolution_content, vec!["memory_gap_resolved".into()])
-    3.4 对 SkillUpdate: 写入 skill_audit_report（文件系统）
-    3.5 对 FailureSolution:
-        provider.store_procedural(agent_id, &solution_name, &solution_schema, "fix").await
+    3.3 score > 0.7: 追加 "high_value" tag
+    // 注：LLM 深度评分（tag/score/summarize）留给 Agent 醒来后通过 info-hub tools 自行调用
 
-phase 4: 降级模式 (on_quota_exhausted = fallback)
-    CHECKPOINT
-    4.1 如果 phase 2 因速率限制提前中断:
-        切换到本地探索模式:
-            - 从 MemoryProvider 做语义搜索:
-              local = provider.recall(agent_id, "interesting new development", limit=20).await
-            - 搜索 Tantivy 索引中未读或标记为 "待深入" 的条目
-            - 产出 LocalDiscovery 事件（价值通常低于外部信号）
+phase 4: 降级模式
+    4.1 如果 info_hub_config 未配置 或 查询结果为空:
+        → provider.recall(agent_id, "interesting developments new information", 10)
+        → 本地探索
 ```
+
+### 与 info-hub 的关系
+
+ExplorationRunner **不**通过 Tool trait 调用 info-hub。它直接使用 info-hub 的 adapter 层：
+
+```
+ExplorationRunner
+  ├─ info_hub::adapters::build_adapter() — 创建搜索适配器
+  ├─ info_hub::types::{InfoItem, InfoSearchInput} — 数据结构
+  └─ info_hub::merge::merge() — 去重排序
+```
+
+info-hub 的 5 个 Tool（info_search / info_tag_articles / info_score_articles / info_summarize_articles / info_generate_highlights）仍然可用，但它们由 **Agent 主动调用**（例如 Agent 醒来后审查 Exploration 发现时），而非在自主探索阶段自动运行。
+
+### 依赖注入
+
+```rust
+// agent_runtime.rs 中的 wiring:
+let exploration_runner = Arc::new(ExplorationRunner::new());
+exploration_runner.set_agent_registry(Arc::clone(&agent_registry));
+exploration_runner.set_memory_provider(Arc::clone(&memory_store));
+exploration_runner.set_info_hub_config(info_cfg);  // 从 aman config 解析
+exploration_runner.set_exploration_config(exploration_cfg);
+// 订阅 Idle 事件到 global bus
+```
+
+### v1 不做（留给后续）
+
+| 项目 | 原因 |
+|---|---|
+| skill_audit（检查上游 skill 更新） | 需 SkillRegistry + upstream URL 元数据 |
+| recent_failures 错误签名提取 | 依赖 ErrorLog 查询接口，属于 Reflection 范畴 |
+| LLM 深度评分（tag/score/summarize） | Agent 醒来后通过 info-hub tools 自行处理 |
+| 高价值事件发布到 Agent EventBus | Agent 醒来后通过 `memory.recall("exploration")` 主动拉取 |
+| 多主题并行 Exploration | 单 runner 已覆盖当前需求 |
 
 ### 缺失组件
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `ExternalSearchEngine` | **未实现** | 统一的外部查询接口。需要支持多种后端：(a) web_search (Brave/Google API)，(b) RSS feed reader，(c) GitHub API，(d) 自定义 API endpoint。建议放在 `crates/tool/` 下作为 built-in tool |
-| `InterestScorer` | **未实现** | 三维评分函数（相关性、新鲜度、可操作性）。相关性需要语义相似度——yantrikdb 的 embedding 可复用于此 |
-| `SkillRegistry::list_all()` | **部分实现** | `crates/skill/` 有技能加载，但不确定是否有 `list_all()` API + `upstream_url` 元数据字段 |
-| `UpstreamFreshnessChecker` | **未实现** | 检查 upstream URL（GitHub release、docs RSS、npm/pip registry）是否有更新。需要 HTTP client + 版本比较 |
-| `ErrorSignatureExtractor` | **未实现** | 从错误日志中提取可搜索的错误签名 |
-| `ErrorLog` 查询接口 | **未实现** | `crates/persistence/` 有 WAL/DLQ，但需要按时间范围 + 类型过滤的错误查询 API |
-| `RateLimiter` | **未实现** | 令牌桶或滑动窗口速率限制器。需要支持 per-minute 配置 |
-| `exploration.min_interest_score` 配置 | **未实现** | 需新增到 IdleConfig。默认值建议：0.4 |
+| `ExternalSearchEngine` | ✅ **已实现** | info-hub adapters 层（API/CLI/DB 三种适配器） |
+| `InterestScorer` | ✅ **已实现** | 简单启发式评分（title/summary/url/date），LLM 深度评分留给 Agent 主动调用 |
+| `RateLimiter` | ✅ **已实现** | 基于 `api_rate_per_minute` 的 inter-query sleep |
+| `exploration.min_interest_score` 配置 | ⚠️ 硬编码 | 当前阈值 0.3 硬编码，可从 ExplorationConfig 扩展 |
+| `SkillRegistry::list_all()` | ❌ 不做 | skill audit 留给后续 |
+| `UpstreamFreshnessChecker` | ❌ 不做 | 同上 |
+| `ErrorSignatureExtractor` | ❌ 不做 | 需要 ErrorLog + TraceStore |
+| `ErrorLog` 查询接口 | ❌ 不做 | 同上 |
 
 ### 优先级
 
-**Phase 3** — MemoryProvider 能力已就绪（`recall`, `search_entities`, `entity_profile`, `stale_memories`）。主要缺失是 `ExternalSearchEngine`（网络 I/O）和 RSS/Atom 源。
+**Phase 2 (已完成)** — ExplorationRunner v1 已实现：memory gap → info-hub 搜索 → 启发式评分 → MemoryProvider 存储。LLM 深度评分留给 Agent 主动调用 info-hub tools。skill audit / error review 属于 Reflection 和后续阶段的范畴。
 
 ---
 
@@ -979,28 +987,29 @@ pipeline 部分 (<1ms):
 10       Health snapshot 存储              ✅ 已实现              JSON 文件 (per-agent)     Sleep (phase 6)
 11       CPU time tracker                 ✅ 已实现              CpuTracker (sleep.rs)     Sleep
 12       AtomicWrite                      未实现                  无                       全局复用
+13       ExplorationRunner                ✅ 已实现              info-hub adapters        Exploration
+14       ExternalSearchEngine (info-hub)   ✅ 已实现              info-hub API/CLI/DB      Exploration
+15       InterestScorer (启发式 v1)        ✅ 已实现              简单规则评分              Exploration
+16       RateLimiter                       ✅ 已实现              inter-query sleep        Exploration
  ── Phase 3 (中期 — 外部组件) ──
-13       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
-14       TimerRegistry                    部分实现                无                       Boredom, Waiting
-15       RateLimiter                      未实现                  无                       Exploration
-16       ExternalSearchEngine             未实现                  HTTP client              Exploration
-17       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration
-18       InterestScorer                   未实现                  embedding / BM25         Exploration
-19       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration
-20       SkillAuditReport                 未实现                  文件系统                   Exploration
+17       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
+18       TimerRegistry                    部分实现                无                       Boredom, Waiting
+19       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration (后续)
+20       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration (后续)
+21       SkillAuditReport                 未实现                  文件系统                   Exploration (后续)
  ── Phase 4 (远期 — 深度认知) ──
-21       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
-22       ErrorClassifier                  未实现                  TraceStore               Reflection
-23       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
-24       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
-25       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
-26       PendingAsyncCalls 注册表         未实现                  无                       Waiting (完整模式)
-27       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
-28       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
-29       Narrative 报告目录               未实现                  文件系统                   Meditation
-30       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
-31       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
-32       IdleConfig 各子项配置            部分实现                 config crate             Daze, Boredom, Waiting, Sleep, Exploration, Meditation, Incubation
+22       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
+23       ErrorClassifier                  未实现                  TraceStore               Reflection
+24       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
+25       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
+26       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
+27       PendingAsyncCalls 注册表         未实现                  无                       Waiting (完整模式)
+28       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
+29       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
+30       Narrative 报告目录               未实现                  文件系统                   Meditation
+31       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
+32       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
+33       IdleConfig 各子项配置            部分实现                 config crate             Daze, Boredom, Waiting, Sleep, Exploration, Meditation, Incubation
 ```
 
 ### YantrikDB 已覆盖的能力（原方案中需要手动实现的组件）
@@ -1036,38 +1045,29 @@ pipeline 部分 (<1ms):
 - [x] `ReflectionRunner` 实现（`crates/gateway/src/runtime/reflection.rs`）
 - [x] workspace build 通过
 
-**Milestone 1: Phase 1 实现 — Daze + Waiting + Reflection**（基本完成）
-- [x] Daze skill: 纯状态声明 (no-op)，idle 序列锚点。IdleDetector 内存跟踪 metrics + UI 同步
-- [x] idle→Daze→skill dispatch 链路验证通过
-- [x] Waiting skill: no-op 桩（depth+arousal 机制已覆盖所有状态流转，Waiting 可能永远用不到）
+**Milestone 1: Phase 1 实现 — Daze + Waiting + Reflection**（已完成）
+- [x] Daze: 纯状态声明 (no-op)，IdleDetector 内存跟踪 metrics + UI 同步
+- [x] Waiting: no-op（depth+arousal 机制已覆盖所有状态流转）
 - [x] QueueDrained 生产：AgentIdleManager busy→empty 转换 + 断路器
 - [x] Reflection step 4 (`session_extract`): JSONL → LLM 提取 → YantrikDB.store() + relate()
 - [x] Reflection step 5 (`session_review`): 过期记忆检查
-- [ ] Reflection step 3 (`lessons_learned`): 经验提取 → YantrikDB.store() — 待 TraceStore
-- [ ] Reflection step 1 (`chain_tasks`): 连锁任务检测 — 待 TraceStore
-- [ ] Reflection step 2 (`immediate_errors`): 错误分类 — 待 TraceStore
-- [ ] 验证: QueueDrained → Reflection → session JSONL → LLM 提取 → YantrikDB 可见（端到端测试）
+- [ ] Reflection step 1-3 (`chain_tasks`/`immediate_errors`/`lessons_learned`): 待 TraceStore
 
-**Milestone 2: think() 桥接 + Sleep**（基本完成）
+**Milestone 2: Sleep + Exploration**（已完成）
 - [ ] 确定 YantrikdbProvider::think() 桥接方案
-- [ ] 实现桥接代码
-- [x] Sleep phase 1: 会话压缩回填 (stub — Reflection 处理主路径，回填待 LLM wiring)
-- [x] Sleep phase 2: temporal housekeeping — `stale_memories(days=7)` → forget/flag
-- [x] Sleep phase 3: 缓存清理 — 递归遍历 `~/.aman/agents/{id}/cache/`，按 mtime 删除
-- [x] Sleep phase 4: 索引监控 — `stats()` 调用，100MB 阈值 warn
-- [x] Sleep phase 5: think() consolidation (stub — `think()` 返回空结果待桥接)
-- [x] Sleep phase 6: 健康报告 — JSON snapshot 写入 `~/.aman/agents/{id}/health/`
-- [x] SleepRunner 架构：EventHandler + OnceLock 注入 + CancellationToken 支持 + CpuTracker
-- [x] 验证: Sleep → provider.stale_memories() → 清理/标记 (unit tested)
-- [ ] 验证: think() → consolidation_count > 0 → 记忆合并 (待 yantrikdb 桥接)
-- [ ] 验证: 端到端 — 启动 gateway，idle depth 达到 Sleep，观察 phase 日志
+- [x] Sleep phase 1-6 完整实现 (phase 1/5 stub)
+- [x] SleepRunner 架构：EventHandler + OnceLock + CancellationToken + CpuTracker
+- [x] Health snapshot 存储 (phase 6)
+- [x] ✅ **idle skill 系统已移除**（idle-system plugin + YAML 文件 + workflow.rs stubs）
+- [x] ✅ **ExplorationRunner 实现**：EventHandler + info-hub adapters 外部搜索 + MemoryProvider 存储
+- [x] info-hub `adapters` / `merge` 模块公开化，供 ExplorationRunner 使用
+- [x] ExplorationRunner 单元测试通过（9 tests）
+- [x] workspace build 通过（0 warnings）
 
-**Milestone 3: Exploration**（1–2 周）
-- [ ] `ExternalSearchEngine` v0（web_search only）
-- [ ] `InterestScorer` v0（复用 yantrikdb embedding 做语义相似度）
-- [ ] `RateLimiter`
-- [ ] Exploration skill 全流程（memory_gaps + entity_gaps + 外部搜索 + 结果存储）
-- [ ] 验证: Exploration → provider.recall() → 外部搜索 → provider.store()
+**Milestone 3: Boredom + 深度 Exploration**（后续）
+- [ ] `DeferredTaskQueue`（kanban 机制）
+- [ ] Exploration 扩展：LLM 深度评分（通过 info-hub tools）
+- [ ] Exploration 扩展：skill_audit + error_signature_extractor
 
 **Milestone 4: Boredom + Waiting 完整**（Waiting 可能取消）
 - [ ] `DeferredTaskQueue`（kanban 机制）

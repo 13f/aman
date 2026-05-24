@@ -1,9 +1,0 @@
-name: idle-sleep
-version: "1.0.0"
-description: >
-  Idle state at depth 3. Engaged arousal decay (multiplier: 0.5) — half-speed attenuation.
-  Long-term memory consolidation: compresses recent context into persistent storage.
-triggers:
-  - event_types: ["idle"]
-    sources: ["idle.system"]
-concurrency: serial

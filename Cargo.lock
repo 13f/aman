@@ -2428,7 +2428,6 @@ dependencies = [
  "futures-util",
  "hook",
  "idle",
- "idle-system",
  "info-hub",
  "kernel",
  "llm-provider-openai",
@@ -3227,18 +3226,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
- "tracing",
-]
-
-[[package]]
-name = "idle-system"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "kernel",
- "semver",
- "serde_json",
- "tokio",
  "tracing",
 ]
 

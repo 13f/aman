@@ -13,7 +13,6 @@ pub mod manager;
 pub mod metrics;
 pub mod personality;
 pub mod types;
-pub mod workflow;
 
 pub use types::{
     ChatMode, IdleContext, IdleEvent, IdleKind, IdlePersonality, QueueDrained, ArousalBehavior,

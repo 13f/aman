@@ -1,7 +1,7 @@
-mod adapters;
+pub mod adapters;
 pub mod ai;
 pub mod config;
-mod merge;
+pub mod merge;
 pub mod types;
 
 use std::sync::{Arc, LazyLock};

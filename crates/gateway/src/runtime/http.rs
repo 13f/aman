@@ -2485,6 +2485,19 @@ async fn explore_pipeline(
             "✨ **Exploration complete!**\n\n{items_found} items found from **{source_name}**\n{items_summarized} articles summarized (scored > 20/30)\n\n_Reflection will process this session automatically._"
         ),
     ).await;
+
+    // Inject a QueueDrained event on the global bus so Reflection
+    // picks up the next unreflected session (this one, or an older one).
+    // ReflectionRunner subscribes to QueueDrained on the global bus.
+    let qd = Event::new(
+        "explore:pipeline",
+        EventType::QueueDrained,
+        json!({
+            "agentId": agent_id,
+            "reflectionConsecutiveCount": 0,
+        }),
+    );
+    let _ = runtime.publish_event(qd).await;
 }
 
 async fn dlq_depth(State(runtime): State<Arc<AgentRuntime>>) -> Response {

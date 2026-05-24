@@ -1,0 +1,21 @@
+[package]
+name = "info-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Info-hub plugin — unified search across API, CLI, and local DB data sources"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kernel = { path = "../../core" }
+async-trait = "0.1"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["process", "sync", "rt", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tracing = "0.1"

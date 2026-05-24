@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build all
 cargo build --workspace
 
-# Release build (all 20 crates)
+# Release build (all 21 crates)
 cargo build --release --workspace
 
 # Run all tests
@@ -34,11 +34,14 @@ cargo run --release --bin aman -- --help
 
 # Fix clippy auto-fixes
 cargo clippy --fix --workspace -- -D warnings
+
+# Info-hub plugin
+cargo test -p info-hub
 ```
 
 ## Codebase Architecture
 
-Workspace with 20 crates under `crates/`:
+Workspace with 21 crates under `crates/`:
 
 | Crate | Purpose |
 |---|---|
@@ -51,6 +54,7 @@ Workspace with 20 crates under `crates/`:
 | `tool` | Tool runner, built-in tools (file/http/exec/db) |
 | `source` | Timer, Cron, FileWatch, Webhook, Signal, Socket |
 | `plugin` | WASM/Subprocess/InProcess plugins, dependency graph |
+| `info-hub` | 信息中心插件: unified search across API, CLI, local DB |
 | `persistence` | WAL, StateStore, DLQ, overflow dir |
 | `secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
 | `config` | 4-layer config loader, validation |

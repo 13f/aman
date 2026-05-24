@@ -1,0 +1,10 @@
+[plugin]
+name = "info-hub"
+version = "0.1.0"
+isolation = "in_process"
+description = "信息中心：统一检索 API、CLI 和本地数据库数据源"
+
+[plugin.exports]
+tools = ["info_search"]
+
+[plugin.dependencies]

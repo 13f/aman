@@ -631,6 +631,74 @@ my-plugin.tar.gz
 
 ---
 
+### 5.7 内置插件：info-hub（信息中心）
+
+info-hub 是一个内置 InProcess 插件，提供统一的信息检索入口。Agent 的 Skill 可以通过 `info_search` 工具搜索用户配置的数据源。
+
+**数据源类型：**
+
+| 类型 | 说明 | 配置示例 |
+|------|------|----------|
+| `api` | HTTP GET 请求，如 RssHub | `api_url`, `api_key` |
+| `cli` | 本地 CLI 工具 | `command`, `args` |
+| `db` | 本地数据库脚本（Python/Node/Deno） | `runtime`, `script`, `db_path` |
+
+**配置方式（config.yaml）：**
+
+```yaml
+info_hub:
+  timeout_ms: 10000
+  sources:
+    - name: rsshub-tech
+      type: api
+      api_url: "https://rsshub.app/feed/{query}"
+      api_key: "Bearer ${RSSHUB_TOKEN}"
+
+    - name: blogwatcher
+      type: cli
+      command: blogwatcher
+      args: ["search", "{query}", "--json", "--limit", "20"]
+
+    - name: fusion-local
+      type: db
+      runtime: python3
+      script: ~/.aman/scripts/fusion_search.py
+      db_path: ~/.fusion/data.db
+```
+
+**支持占位符替换：** `{query}` — 用户搜索词，`{limit}` — 结果上限，`{offset}` — 偏移量。
+
+**DB 脚本协议（stdin/stdout JSON）：**
+
+```
+stdin:  {"query": "...", "limit": 20, "offset": 0, "db_path": "..."}
+stdout: [{"title": "...", "url": "...", "summary": "...", "published": "..."}]
+```
+
+**Skill 调用方式：**
+
+Skill 在 SKILL.md 中自然语言描述即可触发，LLM 在 ReAct 循环中自动调用 `info_search`：
+
+```markdown
+## Method
+When the user asks about recent developments in a topic:
+1. Call info_search with the topic as query
+2. Summarize top results with url and published date
+```
+
+**架构：**
+
+```
+Skill (SKILL.md) → LLM decides to call → info_search tool
+  → [parallel] api adapter / cli adapter / db adapter
+  → merge + dedup by url + sort by published desc
+  → Vec<InfoItem>
+```
+
+设计文档详见 `docs/info-hub.md`。
+
+---
+
 ## 6. 实践指南
 
 ### 6.1 如何选择扩展方式

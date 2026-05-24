@@ -474,6 +474,9 @@ pub struct AmanConfig {
     /// Each hook runs a script via the specified runtime when its event fires.
     #[serde(default)]
     pub hooks: Vec<HookConfig>,
+    /// Info-hub plugin configuration. Raw value deserialized by the info-hub plugin.
+    #[serde(default)]
+    pub info_hub: Option<Value>,
 }
 
 /// Top-level LLM configuration (optional).

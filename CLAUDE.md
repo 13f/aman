@@ -60,7 +60,7 @@ Workspace with 21 crates under `crates/`:
 | `config` | 4-layer config loader, validation |
 | `soul` | SOUL system prompt management |
 | `runtime` | AgentRuntime, HTTP API (27 endpoints), lifecycle |
-| `cli` | `aman` CLI binary |
+| `cli` | `aman` CLI binary (HTTP REST client to gateway) |
 | `sdk` | Pub re-export crate for external devs |
 | `tauri` | Tauri v2 desktop app |
 | `hook`, `dispatcher` | (internal) |
@@ -74,3 +74,21 @@ Workspace with 21 crates under `crates/`:
 - Error recovery in workflows: ERROR → RETRY event → last_active_state
 - Backpressure: L1(80%)→L2(90%)→L3(95%)→L4A(98%/overflow)→L4B(critical)
 - API auth: Bearer token, x-aman-operator, x-aman-confirm for destructive ops
+
+## CLI Architecture
+
+The `aman` CLI (`crates/cli/`) supports three protocols for communicating with the gateway:
+
+- **HTTP REST** (default) — via `reqwest`. Every subcommand talks to the gateway's HTTP API.
+- **stdio JSON-RPC** — `aman serve` reads JSON-RPC 2.0 requests from stdin, writes responses to stdout. Used for MCP integration and subprocess invocation by AI hosts.
+- **gRPC** — protobuf-based API via tonic. Enable with `--grpc` flag on any subcommand. Lower latency for event push, streaming chat replies, and high-throughput metrics.
+
+All three protocols share the same `AgentRuntime` methods — no new business logic per protocol.
+
+**Current output behavior:**
+- Remote queries (metrics, audit-log, plugin list, etc.) → raw JSON response body to stdout
+- Mutating commands (enable, delete, retry, etc.) → silent on success, body to stderr on error
+- `config show` → pretty-printed JSON via `serde_json::to_string_pretty`
+- `skill validate` / `skill export` → human-readable text (local, no gateway needed)
+- `aman run` → prints bind address to stdout, then blocks
+- `metrics` supports `--format json` (only accepted value)

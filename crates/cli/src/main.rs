@@ -3,8 +3,11 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 
+mod grpc_client;
+
 use config::{ConfigLoader, AgentConfig};
-use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, serve_stdio, AgentRuntimeBuilder, HttpServerConfig};
+use grpc_client::GrpcClient;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -75,6 +78,11 @@ async fn main() {
         }
         "cron" => {
             if let Err(code) = cron_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "serve" => {
+            if let Err(code) = serve_cmd(&args[1..]).await {
                 std::process::exit(code);
             }
         }
@@ -175,6 +183,42 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
     Ok(())
 }
 
+async fn serve_cmd(args: &[String]) -> Result<(), i32> {
+    let mut config_path: Option<PathBuf> = None;
+    let mut soul_path: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                let path = args.get(i + 1).ok_or(2)?;
+                config_path = Some(PathBuf::from(path));
+                i += 2;
+            }
+            "--soul" => {
+                let path = args.get(i + 1).ok_or(2)?;
+                soul_path = Some(PathBuf::from(path));
+                i += 2;
+            }
+            _ => return Err(2),
+        }
+    }
+
+    let config = load_config(config_path.as_ref()).map_err(|_| 1)?;
+    let mut builder = AgentRuntimeBuilder::new(config);
+    if let Some(path) = soul_path {
+        builder = builder.with_soul(path);
+    }
+    let runtime = builder.build().map_err(|_| 1)?;
+
+    serve_stdio(runtime)
+        .await
+        .map_err(|e| {
+            eprintln!("stdio server error: {e}");
+            1
+        })
+}
+
 async fn health_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
@@ -183,16 +227,25 @@ async fn health_cmd(args: &[String]) -> Result<(), i32> {
     match sub {
         "ready" => {
             let (opts, _rest) = parse_api_opts(&args[1..])?;
-            let client = build_client()?;
-            let res = opts
-                .apply_headers(client.get(opts.url("/health/ready")))
-                .send()
-                .await
-                .map_err(|_| 1)?;
-            if res.status() == reqwest::StatusCode::OK {
+            if opts.use_grpc {
+                let mut client = connect_grpc(opts.addr).await?;
+                client.health_ready().await.map_err(|e| {
+                    eprintln!("gRPC: {e}");
+                    1
+                })?;
                 Ok(())
             } else {
-                Err(1)
+                let client = build_client()?;
+                let res = opts
+                    .apply_headers(client.get(opts.url("/health/ready")))
+                    .send()
+                    .await
+                    .map_err(|_| 1)?;
+                if res.status() == reqwest::StatusCode::OK {
+                    Ok(())
+                } else {
+                    Err(1)
+                }
             }
         }
         _ => Err(2),
@@ -205,6 +258,8 @@ struct ApiOpts {
     token: Option<String>,
     operator: Option<String>,
     confirm: bool,
+    /// Use gRPC transport instead of HTTP REST.
+    use_grpc: bool,
 }
 
 impl ApiOpts {
@@ -234,11 +289,19 @@ fn build_client() -> Result<reqwest::Client, i32> {
         .map_err(|_| 1)
 }
 
+async fn connect_grpc(addr: SocketAddr) -> Result<GrpcClient, i32> {
+    GrpcClient::connect(addr).await.map_err(|e| {
+        eprintln!("gRPC connect error: {e}");
+        1
+    })
+}
+
 fn parse_api_opts(args: &[String]) -> Result<(ApiOpts, Vec<String>), i32> {
     let mut addr: SocketAddr = "127.0.0.1:8080".parse().expect("default addr");
     let mut token: Option<String> = std::env::var("AMAN_API_TOKEN").ok();
     let mut operator: Option<String> = None;
     let mut confirm = false;
+    let mut use_grpc = false;
 
     let mut rest = Vec::new();
     let mut i = 0;
@@ -263,6 +326,10 @@ fn parse_api_opts(args: &[String]) -> Result<(ApiOpts, Vec<String>), i32> {
                 confirm = true;
                 i += 1;
             }
+            "--grpc" => {
+                use_grpc = true;
+                i += 1;
+            }
             _ => {
                 rest.push(args[i].clone());
                 i += 1;
@@ -276,6 +343,7 @@ fn parse_api_opts(args: &[String]) -> Result<(ApiOpts, Vec<String>), i32> {
             token,
             operator,
             confirm,
+            use_grpc,
         },
         rest,
     ))
@@ -286,6 +354,21 @@ async fn agent_cmd(args: &[String]) -> Result<(), i32> {
         return Err(2);
     };
     let (opts, _rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        let mut client = connect_grpc(opts.addr).await?;
+        match sub {
+            "start" => client.agent_start().await,
+            "shutdown" => client.agent_shutdown().await,
+            _ => return Err(2),
+        }
+        .map_err(|e| {
+            eprintln!("gRPC: {e}");
+            1
+        })?;
+        return Ok(());
+    }
+
     let client = build_client()?;
     let res = match sub {
         "start" => opts
@@ -310,7 +393,34 @@ async fn agent_cmd(args: &[String]) -> Result<(), i32> {
 }
 
 async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
-    let (opts, _rest) = parse_api_opts(args)?;
+    let (opts, rest) = parse_api_opts(args)?;
+
+    // --format: only "json" is supported
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--format" => {
+                let raw = rest.get(i + 1).ok_or(2)?;
+                if raw != "json" {
+                    eprintln!("unsupported format: {raw} (only \"json\" is supported)");
+                    return Err(2);
+                }
+                i += 2;
+            }
+            _ => return Err(2),
+        }
+    }
+
+    if opts.use_grpc {
+        let mut client = connect_grpc(opts.addr).await?;
+        let json = client.get_metrics_json().await.map_err(|e| {
+            eprintln!("gRPC: {e}");
+            1
+        })?;
+        print!("{json}");
+        return Ok(());
+    }
+
     let client = build_client()?;
     let res = opts
         .apply_headers(client.get(opts.url("/metrics")))
@@ -334,8 +444,8 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
     let mut operator: Option<String> = None;
     let mut since_ms: Option<i64> = None;
     let mut until_ms: Option<i64> = None;
-    let mut limit: Option<usize> = None;
-    let mut offset: Option<usize> = None;
+    let mut limit: Option<u32> = None;
+    let mut offset: Option<u32> = None;
 
     let mut i = 0;
     while i < rest.len() {
@@ -357,15 +467,28 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
                 i += 2;
             }
             "--limit" => {
-                limit = Some(rest.get(i + 1).ok_or(2)?.parse::<usize>().map_err(|_| 2)?);
+                limit = Some(rest.get(i + 1).ok_or(2)?.parse::<u32>().map_err(|_| 2)?);
                 i += 2;
             }
             "--offset" => {
-                offset = Some(rest.get(i + 1).ok_or(2)?.parse::<usize>().map_err(|_| 2)?);
+                offset = Some(rest.get(i + 1).ok_or(2)?.parse::<u32>().map_err(|_| 2)?);
                 i += 2;
             }
             _ => return Err(2),
         }
+    }
+
+    if opts.use_grpc {
+        let mut client = connect_grpc(opts.addr).await?;
+        let json = client
+            .audit_log_json(action, operator, since_ms, until_ms, limit, offset)
+            .await
+            .map_err(|e| {
+                eprintln!("gRPC: {e}");
+                1
+            })?;
+        print!("{json}");
+        return Ok(());
     }
 
     let mut url = reqwest::Url::parse(&opts.url("/audit-log")).map_err(|_| 1)?;
@@ -413,6 +536,11 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
         return Err(2);
     };
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return event_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
 
     match sub {
@@ -634,11 +762,149 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "inject" => {
+            let mut source: Option<String> = None;
+            let mut event_type: Option<String> = None;
+            let mut payload: Option<serde_json::Value> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--source" => {
+                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--type" => {
+                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--payload" => {
+                        let raw = rest.get(i + 1).ok_or(2)?;
+                        payload = Some(serde_json::from_str::<serde_json::Value>(raw).map_err(|_| 2)?);
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let payload_bytes = serde_json::to_vec(&payload.ok_or(2)?).map_err(|_| 1)?;
+            let json = client
+                .inject_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "push" => {
+            let mut source: Option<String> = None;
+            let mut event_type: Option<String> = None;
+            let mut payload: Option<serde_json::Value> = None;
+            let mut agent_id: Option<String> = None;
+            let mut payload_stdin: bool = false;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--source" => {
+                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--type" => {
+                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--payload" => {
+                        let raw = rest.get(i + 1).ok_or(2)?;
+                        payload = Some(serde_json::from_str::<serde_json::Value>(raw).map_err(|_| 2)?);
+                        i += 2;
+                    }
+                    "--agent" => {
+                        agent_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--priority" | "--delivery" | "--ttl-ms" => {
+                        // These are not yet in the gRPC proto; skip
+                        i += 2;
+                    }
+                    "--payload-stdin" => {
+                        payload_stdin = true;
+                        i += 1;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            if payload_stdin {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf).map_err(|_| 1)?;
+                payload = Some(serde_json::from_str::<serde_json::Value>(&buf).map_err(|_| 1)?);
+            }
+            let payload_bytes = serde_json::to_vec(&payload.ok_or(2)?).map_err(|_| 1)?;
+            let json = client
+                .push_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes, agent_id)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "types" => {
+            let types = client.event_types().await.map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            let json = serde_json::to_string(&types).unwrap_or_default();
+            print!("{json}");
+            Ok(())
+        }
+        "dump" => {
+            let mut id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let json = client
+                .dump_event_json(id.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "trace" => {
+            let mut trace_id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--trace-id" => {
+                        trace_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let json = client
+                .event_trace_json(trace_id.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        _ => Err(2),
+    }
+}
+
 async fn dlq_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
     };
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return dlq_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
 
     match sub {
@@ -748,11 +1014,101 @@ async fn dlq_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "list" => {
+            let mut reason: Option<String> = None;
+            let mut source: Option<String> = None;
+            let mut event_type: Option<String> = None;
+            let mut limit: Option<u32> = None;
+            let mut offset: Option<u32> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--reason" => {
+                        reason = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--source" => {
+                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--event-type" => {
+                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--limit" => {
+                        limit = Some(rest.get(i + 1).ok_or(2)?.parse::<u32>().map_err(|_| 2)?);
+                        i += 2;
+                    }
+                    "--offset" => {
+                        offset = Some(rest.get(i + 1).ok_or(2)?.parse::<u32>().map_err(|_| 2)?);
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let json = client
+                .dlq_list_json(reason, source, event_type, limit, offset)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "retry" => {
+            let mut id: Option<String> = None;
+            let mut reason: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--reason" => {
+                        reason = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            client
+                .dlq_retry(id.ok_or(2)?, reason)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        "discard" => {
+            let mut id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            client
+                .dlq_discard(id.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        _ => Err(2),
+    }
+}
+
 async fn source_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
     };
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return source_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
     match sub {
         "pause" | "resume" => {
@@ -825,11 +1181,83 @@ async fn source_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "pause" => {
+            let mut id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            client
+                .pause_source(id.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        "resume" => {
+            let mut id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            client
+                .resume_source(id.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        "config" => {
+            let mut id: Option<String> = None;
+            let mut patch: Option<serde_json::Value> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--json" => {
+                        patch = Some(
+                            serde_json::from_str::<serde_json::Value>(rest.get(i + 1).ok_or(2)?)
+                                .map_err(|_| 2)?,
+                        );
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let config_bytes = serde_json::to_vec(&patch.ok_or(2)?).map_err(|_| 1)?;
+            client
+                .source_config(id.ok_or(2)?, config_bytes)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        _ => Err(2),
+    }
+}
+
 async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
     };
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return plugin_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
     match sub {
         "list" => {
@@ -919,6 +1347,61 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "list" => {
+            let json = client
+                .list_plugins_json()
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "enable" | "disable" | "uninstall" => {
+            let mut name: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--name" => {
+                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let name = name.ok_or(2)?;
+            match sub {
+                "enable" => client.enable_plugin(name).await,
+                "disable" => client.disable_plugin(name).await,
+                _ => client.uninstall_plugin(name).await,
+            }
+            .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        "install" => {
+            let mut file: Option<PathBuf> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--file" => {
+                        file = Some(PathBuf::from(rest.get(i + 1).ok_or(2)?));
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let data = std::fs::read(file.ok_or(2)?).map_err(|_| 1)?;
+            let json = client
+                .install_plugin_json(data)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        _ => Err(2),
+    }
+}
+
 async fn skill_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
@@ -933,6 +1416,11 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
 
     // Remote commands (require running gateway)
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return skill_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
     match sub {
         "list" => {
@@ -1046,6 +1534,84 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "list" => {
+            let json = client
+                .list_skills_json()
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "search" => {
+            let mut q: Option<String> = None;
+            let mut limit: Option<u32> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--q" => {
+                        q = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--limit" => {
+                        let raw = rest.get(i + 1).ok_or(2)?;
+                        limit = Some(raw.parse::<u32>().map_err(|_| 2)?);
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let json = client
+                .search_skills_json(q.unwrap_or_default(), limit.unwrap_or(10))
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "info" | "enable" | "disable" | "version" | "rollback" => {
+            let mut name: Option<String> = None;
+            let mut version: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--name" => {
+                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--version" => {
+                        version = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let name = name.ok_or(2)?;
+            match sub {
+                "info" => {
+                    let json = client
+                        .get_skill_json(name)
+                        .await
+                        .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                    print!("{json}");
+                    Ok(())
+                }
+                "enable" => client.enable_skill(name).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+                "disable" => client.disable_skill(name).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+                "rollback" => client.rollback_skill(name, version.ok_or(2)?).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+                "version" => {
+                    // gRPC proto doesn't have a list_skill_versions endpoint yet
+                    eprintln!("gRPC: skill version listing not yet available via gRPC");
+                    Err(1)
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => Err(2),
+    }
+}
+
 /// `aman skills validate [path]` — validate SKILL.md files against the spec.
 fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
     let root = if args.is_empty() {
@@ -1145,6 +1711,11 @@ async fn workflow_cmd(args: &[String]) -> Result<(), i32> {
         return Err(2);
     };
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return workflow_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
     match sub {
         "list" => {
@@ -1208,11 +1779,57 @@ async fn workflow_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "list" => {
+            let json = client
+                .list_workflow_instances_json()
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            print!("{json}");
+            Ok(())
+        }
+        "show" | "retry" | "cancel" => {
+            let mut id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let id = id.ok_or(2)?;
+            match sub {
+                "show" => {
+                    let json = client
+                        .get_workflow_instance_json(id)
+                        .await
+                        .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                    print!("{json}");
+                    Ok(())
+                }
+                "retry" => client.retry_workflow(id).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+                _ => client.cancel_workflow(id).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+            }
+        }
+        _ => Err(2),
+    }
+}
+
 async fn cron_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
     };
     let (opts, rest) = parse_api_opts(&args[1..])?;
+
+    if opts.use_grpc {
+        return cron_cmd_grpc(sub, opts, rest).await;
+    }
+
     let client = build_client()?;
     match sub {
         "add" => {
@@ -1308,6 +1925,78 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
     }
 }
 
+async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(), i32> {
+    let mut client = connect_grpc(opts.addr).await?;
+    match sub {
+        "add" => {
+            let mut id: Option<String> = None;
+            let mut expression: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--expression" => {
+                        expression = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            client
+                .add_cron(id.ok_or(2)?, expression.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        "update" => {
+            let mut id: Option<String> = None;
+            let mut patch: Option<serde_json::Value> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    "--json" => {
+                        patch = Some(
+                            serde_json::from_str::<serde_json::Value>(rest.get(i + 1).ok_or(2)?)
+                                .map_err(|_| 2)?,
+                        );
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let patch_bytes = serde_json::to_vec(&patch.ok_or(2)?).map_err(|_| 1)?;
+            client
+                .update_cron(id.ok_or(2)?, patch_bytes)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        "remove" => {
+            let mut id: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--id" => {
+                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            client
+                .remove_cron(id.ok_or(2)?)
+                .await
+                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+        }
+        _ => Err(2),
+    }
+}
+
 async fn config_cmd(args: &[String]) -> Result<(), i32> {
     let Some(sub) = args.first().map(String::as_str) else {
         return Err(2);
@@ -1383,7 +2072,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
+        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }
 

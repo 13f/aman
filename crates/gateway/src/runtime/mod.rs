@@ -23,6 +23,8 @@ mod plugin_sync;
 mod agent_seed;
 mod soul_runtime;
 mod tracing_setup;
+mod stdio;
+mod grpc;
 
 pub use agent_registry::AgentRegistry;
 pub use date_util::current_date_string;
@@ -35,6 +37,8 @@ pub use kernel::memory::MemoryEntry;
 
 pub use session_store::{SessionRecord, SessionStore};
 pub use soul_runtime::SoulRuntime;
+pub use grpc::{serve_grpc, GrpcServerHandle};
+pub use stdio::serve_stdio;
 pub use tracing_setup::init_tracing;
 
 /// Re-export the notification store type for use in HTTP handlers and Tauri bridge.

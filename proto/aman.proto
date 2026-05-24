@@ -1,0 +1,668 @@
+// Aman gRPC API — single-source-of-truth service definition.
+//
+// Response messages use `bytes data` carrying JSON-encoded payloads to
+// match the existing HTTP REST response shapes. A few simple responses
+// (health, status) use typed fields.
+
+syntax = "proto3";
+
+package aman;
+
+// ── Shared / empty ──
+
+message Empty {}
+
+message Id {
+  string id = 1;
+}
+
+message Name {
+  string name = 1;
+}
+
+// Generic JSON-carrying response (matches HTTP response body shapes).
+message JsonResponse {
+  bytes data = 1;
+}
+
+// ── Health ──
+
+message HealthResponse {
+  bool ok = 1;
+}
+
+// ── Agent ──
+
+message AgentEntry {
+  string key = 1;
+  string display_name = 2;
+  string provider = 3;
+  string model = 4;
+  string soul_summary = 5;
+  uint64 session_count = 6;
+  bool is_active = 7;
+}
+
+message AgentListResponse {
+  repeated AgentEntry agents = 1;
+}
+
+message GetAgentRequest {
+  string agent_id = 1;
+}
+
+message AgentInstance {
+  string agent_id = 1;
+  string display_name = 2;
+  string provider = 3;
+  string model = 4;
+  string status = 5;
+  bool enabled = 6;
+  string active_session_id = 7;
+}
+
+message SetAgentStatusRequest {
+  string agent_id = 1;
+  string status = 2;
+}
+
+message ReloadAgentRequest {
+  string agent_id = 1;
+}
+
+// ── Metrics ──
+
+message MetricsResponse {
+  bytes data = 1;
+}
+
+message DebugMetricsResponse {
+  bytes data = 1;
+}
+
+// ── Audit ──
+
+message AuditLogRequest {
+  optional string action = 1;
+  optional string operator = 2;
+  optional int64 since_ms = 3;
+  optional int64 until_ms = 4;
+  optional uint32 limit = 5;
+  optional uint32 offset = 6;
+}
+
+message AuditLogResponse {
+  bytes data = 1;
+}
+
+// ── Events ──
+
+message InjectEventRequest {
+  string source = 1;
+  string event_type = 2;
+  bytes payload = 3;
+}
+
+message InjectEventResponse {
+  bytes data = 1;
+}
+
+message PushEventRequest {
+  string source = 1;
+  string event_type = 2;
+  bytes payload = 3;
+  optional string agent_id = 4;
+  optional string priority = 5;
+  optional string delivery = 6;
+  optional uint64 ttl_ms = 7;
+}
+
+message PushEventResponse {
+  bytes data = 1;
+}
+
+message EventTypesResponse {
+  repeated string types = 1;
+}
+
+message DumpEventRequest {
+  string event_id = 1;
+}
+
+message Event {
+  string event_id = 1;
+  string event_type = 2;
+  bytes payload = 3;
+  int64 timestamp_ms = 4;
+  string trace_id = 5;
+}
+
+message RecentEventsRequest {
+  optional uint32 limit = 1;
+  optional string source = 2;
+}
+
+message RecentEventsResponse {
+  repeated Event events = 1;
+}
+
+message EventTraceRequest {
+  string trace_id = 1;
+}
+
+message TraceResponse {
+  repeated Event events = 1;
+}
+
+// ── DLQ ──
+
+message ListDlqRequest {
+  optional string reason = 1;
+  optional string source = 2;
+  optional string event_type = 3;
+  optional uint32 limit = 4;
+  optional uint32 offset = 5;
+}
+
+message DlqEntry {
+  string id = 1;
+  string reason = 2;
+  string source = 3;
+  string event_type = 4;
+  bytes payload = 5;
+  int64 timestamp_ms = 6;
+}
+
+message DlqListResponse {
+  repeated DlqEntry entries = 1;
+}
+
+message DlqDepthResponse {
+  uint64 depth = 1;
+}
+
+message RetryDlqRequest {
+  string id = 1;
+  optional string reason = 2;
+}
+
+message DiscardDlqRequest {
+  string id = 1;
+}
+
+// ── Notifications ──
+
+message ListNotificationsRequest {
+  optional uint32 limit = 1;
+  optional uint32 offset = 2;
+}
+
+message ListNotificationsResponse {
+  bytes data = 1;
+}
+
+message UnreadCountResponse {
+  uint64 count = 1;
+}
+
+message DismissNotificationRequest {
+  string id = 1;
+}
+
+message AckNotificationRequest {
+  string id = 1;
+}
+
+message TestNotificationRequest {
+  string message = 1;
+  optional string level = 2;
+}
+
+// ── Config ──
+
+message SetConfigRequest {
+  bytes patch = 1;
+}
+
+// ── Runtime ──
+
+message RuntimeStatusResponse {
+  string phase = 1;
+  bool live = 2;
+  bool ready = 3;
+}
+
+message RuntimeConfigResponse {
+  bytes data = 1;
+}
+
+// ── Skills ──
+
+message SkillSnapshot {
+  string name = 1;
+  string version = 2;
+  string description = 3;
+  bool enabled = 4;
+  string path = 5;
+  repeated string files = 6;
+}
+
+message SkillListResponse {
+  repeated SkillSnapshot items = 1;
+}
+
+message LlmSkillsResponse {
+  repeated SkillSnapshot items = 1;
+}
+
+message SearchSkillsRequest {
+  string q = 1;
+  optional uint32 limit = 2;
+}
+
+message SearchSkillsResponse {
+  repeated SkillSnapshot items = 1;
+}
+
+message GetSkillRequest {
+  string name = 1;
+}
+
+message GetSkillContentRequest {
+  string name = 1;
+}
+
+message SkillContentResponse {
+  string name = 1;
+  bytes content = 2;
+}
+
+message EnableSkillRequest {
+  string name = 1;
+}
+
+message DisableSkillRequest {
+  string name = 1;
+}
+
+message GetSkillVersionsRequest {
+  string name = 1;
+}
+
+message SkillVersion {
+  string version = 1;
+  string hash = 2;
+}
+
+message SkillVersionsResponse {
+  string name = 1;
+  repeated SkillVersion versions = 2;
+}
+
+message RollbackSkillRequest {
+  string name = 1;
+  string version = 2;
+}
+
+message ReloadSkillsRequest {
+  bool force = 1;
+}
+
+// ── Workflows ──
+
+message WorkflowDefinition {
+  string name = 1;
+  string description = 2;
+  repeated string states = 3;
+  string initial_state = 4;
+}
+
+message WorkflowListResponse {
+  repeated WorkflowDefinition workflows = 1;
+}
+
+message GetWorkflowRequest {
+  string name = 1;
+}
+
+message CreateWorkflowInstanceRequest {
+  string workflow_name = 1;
+  optional bytes initial_data = 2;
+}
+
+message WorkflowInstance {
+  string id = 1;
+  string workflow_name = 2;
+  string state = 3;
+  bytes data = 4;
+  int64 created_at = 5;
+}
+
+message WorkflowInstanceListResponse {
+  repeated WorkflowInstance instances = 1;
+}
+
+message GetWorkflowInstanceRequest {
+  string id = 1;
+}
+
+message RetryWorkflowInstanceRequest {
+  string id = 1;
+  optional string reason = 2;
+}
+
+message CancelWorkflowInstanceRequest {
+  string id = 1;
+  optional string reason = 2;
+}
+
+message WorkflowTransitionResponse {
+  bool ok = 1;
+  optional string new_state = 2;
+}
+
+// ── Plugins ──
+
+message PluginEntry {
+  string name = 1;
+  string version = 2;
+  bool enabled = 3;
+  string kind = 4;
+  repeated string capabilities = 5;
+}
+
+message ListPluginsRequest {
+  optional string kind = 1;
+}
+
+message PluginListResponse {
+  repeated PluginEntry plugins = 1;
+}
+
+message EnablePluginRequest {
+  string name = 1;
+}
+
+message DisablePluginRequest {
+  string name = 1;
+}
+
+message UninstallPluginRequest {
+  string name = 1;
+}
+
+message InstallPluginRequest {
+  string file_name = 1;
+  bytes data = 2;
+}
+
+message InstallPluginResponse {
+  bytes data = 1;
+}
+
+// ── Cron ──
+
+message AddCronJobRequest {
+  string id = 1;
+  string expression = 2;
+}
+
+message UpdateCronJobRequest {
+  string id = 1;
+  bytes patch = 2;
+}
+
+message RemoveCronJobRequest {
+  string id = 1;
+}
+
+// ── Sources ──
+
+message PauseSourceRequest {
+  string id = 1;
+}
+
+message ResumeSourceRequest {
+  string id = 1;
+}
+
+message SetSourceConfigRequest {
+  string id = 1;
+  bytes config = 2;
+}
+
+// ── Chat Sessions ──
+
+message ChatSessionEntry {
+  string id = 1;
+  string title = 2;
+  uint64 message_count = 3;
+  string state = 4;
+  int64 created_at = 5;
+  int64 last_active_at = 6;
+}
+
+message ChatSessionListResponse {
+  repeated ChatSessionEntry sessions = 1;
+}
+
+message CreateChatSessionRequest {
+  optional string agent_key = 1;
+}
+
+message ChatSessionCreatedResponse {
+  string session_id = 1;
+}
+
+message GetChatSessionStateRequest {
+  string session_id = 1;
+  optional string agent_key = 2;
+}
+
+message ChatSessionStateResponse {
+  bytes data = 1;
+}
+
+message GetChatSessionHistoryRequest {
+  string session_id = 1;
+  optional uint32 limit = 2;
+}
+
+message ChatSessionHistoryResponse {
+  bytes data = 1;
+}
+
+message SendChatMessageRequest {
+  string session_id = 1;
+  string text = 2;
+  optional string trace_prev = 3;
+}
+
+message SendChatMessageResponse {
+  bytes data = 1;
+}
+
+message CloseChatSessionRequest {
+  string session_id = 1;
+}
+
+message StopChatSessionRequest {
+  string session_id = 1;
+}
+
+message RetryChatSessionRequest {
+  string session_id = 1;
+  optional int64 expected_version = 2;
+}
+
+message EditChatMessageRequest {
+  string session_id = 1;
+  string message_id = 2;
+  string text = 3;
+}
+
+message DeleteChatSessionRequest {
+  string session_id = 1;
+}
+
+// ── Soul ──
+
+message SoulInfoResponse {
+  bytes data = 1;
+}
+
+message SoulRawResponse {
+  bytes data = 1;
+}
+
+message UpdateSoulRequest {
+  string name_or_path = 1;
+}
+
+message SoulSystemPromptResponse {
+  bytes data = 1;
+}
+
+// ── Capabilities ──
+
+message CapabilityEntry {
+  string capability = 1;
+}
+
+message CapabilityListResponse {
+  repeated CapabilityEntry capabilities = 1;
+}
+
+// ── Tools ──
+
+message ExecuteToolRequest {
+  string name = 1;
+  bytes arguments = 2;
+}
+
+message ExecuteToolResponse {
+  bytes data = 1;
+}
+
+message ToolAuthRespondRequest {
+  string auth_id = 1;
+  string response = 2;
+}
+
+// ── Service ──
+
+service Aman {
+  // -- Health (public) --
+  rpc HealthLive(Empty) returns (HealthResponse);
+  rpc HealthReady(Empty) returns (HealthResponse);
+  rpc HealthLlm(Empty) returns (HealthResponse);
+
+  // -- Agent lifecycle --
+  rpc AgentStart(Empty) returns (Empty);
+  rpc AgentShutdown(Empty) returns (Empty);
+
+  // -- Agent management --
+  rpc ListAgents(Empty) returns (AgentListResponse);
+  rpc GetAgent(GetAgentRequest) returns (AgentInstance);
+  rpc SetAgentStatus(SetAgentStatusRequest) returns (Empty);
+  rpc ReloadAgent(ReloadAgentRequest) returns (Empty);
+
+  // -- Metrics --
+  rpc GetMetrics(Empty) returns (MetricsResponse);
+  rpc DebugMetrics(Empty) returns (DebugMetricsResponse);
+
+  // -- Audit --
+  rpc AuditLog(AuditLogRequest) returns (AuditLogResponse);
+
+  // -- Events --
+  rpc InjectEvent(InjectEventRequest) returns (InjectEventResponse);
+  rpc PushEvent(PushEventRequest) returns (PushEventResponse);
+  rpc ListEventTypes(Empty) returns (EventTypesResponse);
+  rpc DumpEvent(DumpEventRequest) returns (Event);
+  rpc RecentEvents(RecentEventsRequest) returns (RecentEventsResponse);
+  rpc EventTrace(EventTraceRequest) returns (TraceResponse);
+
+  // -- DLQ --
+  rpc ListDlq(ListDlqRequest) returns (DlqListResponse);
+  rpc DlqDepth(Empty) returns (DlqDepthResponse);
+  rpc RetryDlq(RetryDlqRequest) returns (Empty);
+  rpc DiscardDlq(DiscardDlqRequest) returns (Empty);
+
+  // -- Notifications --
+  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  rpc UnreadNotificationCount(Empty) returns (UnreadCountResponse);
+  rpc DismissNotification(DismissNotificationRequest) returns (Empty);
+  rpc AckNotification(AckNotificationRequest) returns (Empty);
+  rpc DismissAllNotifications(Empty) returns (Empty);
+  rpc TestNotification(TestNotificationRequest) returns (Empty);
+
+  // -- Config --
+  rpc SetConfig(SetConfigRequest) returns (Empty);
+
+  // -- Runtime --
+  rpc RuntimeStatus(Empty) returns (RuntimeStatusResponse);
+  rpc RuntimeConfig(Empty) returns (RuntimeConfigResponse);
+
+  // -- Skills --
+  rpc ListSkills(Empty) returns (SkillListResponse);
+  rpc LlmSkills(Empty) returns (LlmSkillsResponse);
+  rpc SearchSkills(SearchSkillsRequest) returns (SearchSkillsResponse);
+  rpc GetSkill(GetSkillRequest) returns (SkillSnapshot);
+  rpc GetSkillContent(GetSkillContentRequest) returns (SkillContentResponse);
+  rpc EnableSkill(EnableSkillRequest) returns (Empty);
+  rpc DisableSkill(DisableSkillRequest) returns (Empty);
+  rpc GetSkillVersions(GetSkillVersionsRequest) returns (SkillVersionsResponse);
+  rpc RollbackSkill(RollbackSkillRequest) returns (Empty);
+  rpc ReloadSkills(ReloadSkillsRequest) returns (Empty);
+
+  // -- Workflows --
+  rpc ListWorkflows(Empty) returns (WorkflowListResponse);
+  rpc GetWorkflow(GetWorkflowRequest) returns (WorkflowDefinition);
+  rpc CreateWorkflowInstance(CreateWorkflowInstanceRequest) returns (WorkflowInstance);
+  rpc ListWorkflowInstances(Empty) returns (WorkflowInstanceListResponse);
+  rpc GetWorkflowInstance(GetWorkflowInstanceRequest) returns (WorkflowInstance);
+  rpc RetryWorkflowInstance(RetryWorkflowInstanceRequest) returns (WorkflowTransitionResponse);
+  rpc CancelWorkflowInstance(CancelWorkflowInstanceRequest) returns (WorkflowTransitionResponse);
+
+  // -- Plugins --
+  rpc ListPlugins(ListPluginsRequest) returns (PluginListResponse);
+  rpc EnablePlugin(EnablePluginRequest) returns (Empty);
+  rpc DisablePlugin(DisablePluginRequest) returns (Empty);
+  rpc UninstallPlugin(UninstallPluginRequest) returns (Empty);
+  rpc InstallPlugin(InstallPluginRequest) returns (InstallPluginResponse);
+
+  // -- Cron --
+  rpc AddCronJob(AddCronJobRequest) returns (Empty);
+  rpc UpdateCronJob(UpdateCronJobRequest) returns (Empty);
+  rpc RemoveCronJob(RemoveCronJobRequest) returns (Empty);
+
+  // -- Sources --
+  rpc PauseSource(PauseSourceRequest) returns (Empty);
+  rpc ResumeSource(ResumeSourceRequest) returns (Empty);
+  rpc SetSourceConfig(SetSourceConfigRequest) returns (Empty);
+
+  // -- Chat Sessions --
+  rpc ListChatSessions(Empty) returns (ChatSessionListResponse);
+  rpc CreateChatSession(CreateChatSessionRequest) returns (ChatSessionCreatedResponse);
+  rpc GetChatSessionState(GetChatSessionStateRequest) returns (ChatSessionStateResponse);
+  rpc GetChatSessionHistory(GetChatSessionHistoryRequest) returns (ChatSessionHistoryResponse);
+  rpc SendChatMessage(SendChatMessageRequest) returns (SendChatMessageResponse);
+  rpc CloseChatSession(CloseChatSessionRequest) returns (Empty);
+  rpc StopChatSession(StopChatSessionRequest) returns (Empty);
+  rpc RetryChatSession(RetryChatSessionRequest) returns (Empty);
+  rpc EditChatMessage(EditChatMessageRequest) returns (Empty);
+  rpc DeleteChatSession(DeleteChatSessionRequest) returns (Empty);
+
+  // -- Soul --
+  rpc GetSoulInfo(Empty) returns (SoulInfoResponse);
+  rpc GetSoulRaw(Empty) returns (SoulRawResponse);
+  rpc UpdateSoul(UpdateSoulRequest) returns (Empty);
+  rpc GetSoulSystemPrompt(Empty) returns (SoulSystemPromptResponse);
+
+  // -- Capabilities --
+  rpc ListCapabilities(Empty) returns (CapabilityListResponse);
+
+  // -- Tools --
+  rpc ExecuteTool(ExecuteToolRequest) returns (ExecuteToolResponse);
+  rpc ToolAuthRespond(ToolAuthRespondRequest) returns (Empty);
+}

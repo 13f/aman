@@ -101,6 +101,8 @@ tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
 trybuild = "1.0.112"
 uuid = { version = "1.18.1", features = ["serde", "v7"] }
 proptest = "1.6.0"
+tonic = "0.13"
+prost = "0.13"
 rand = "0.8"
 
 [patch.crates-io]

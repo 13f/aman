@@ -10,6 +10,10 @@
 use std::path::Path;
 
 fn main() {
+    // Compile proto definitions for gRPC server stubs.
+    tonic_build::compile_protos("../../proto/aman.proto")
+        .expect("failed to compile aman.proto");
+
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let predefined_root = Path::new(&manifest_dir).join("../../predefined");
     let skills_root = predefined_root.join("skills");

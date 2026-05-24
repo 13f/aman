@@ -21,6 +21,7 @@ use notification::{Notification as NotificationModel, Severity};
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
 use plugin::PluginManifest;
 use serde::{Deserialize, Serialize};
+use rand::Rng;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
@@ -142,6 +143,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/debug/metrics", get(debug_metrics))
         .route("/tool-auth/respond", post(tool_auth_respond))
         .route("/tools/{name}/execute", post(tool_execute))
+        .route("/explore/start", post(explore_start))
         .route("/agents", get(agent_list))
         .route("/agent/{agent_id}", get(agent_get))
         .route("/agent/{agent_id}/status", post(agent_set_status))
@@ -2039,6 +2041,446 @@ async fn tool_execute(
         )
             .into_response(),
     }
+}
+
+// ── Explore endpoint ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+struct ExploreStartRequest {
+    #[serde(default)]
+    agent_key: Option<String>,
+}
+
+async fn publish_explore_reply(runtime: &Arc<AgentRuntime>, session_id: &str, agent_id: &str, text: &str) {
+    let event = Event::new(
+        "explore:pipeline",
+        EventType::Custom("agent:reply_ready".to_owned()),
+        json!({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "reply": text,
+            "turns_processed": 0,
+        }),
+    );
+    let _ = runtime.publish_event(event).await;
+}
+
+async fn explore_start(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let req = ExploreStartRequest {
+        agent_key: payload.get("agent_key").and_then(|v| v.as_str()).map(String::from),
+    };
+
+    // Resolve agent key
+    let agent_id = match req.agent_key.or_else(|| {
+        config::AmanConfig::from_default_path()
+            .ok()
+            .and_then(|c| c.agents.into_keys().next())
+    }) {
+        Some(k) => k,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "no agent configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Read info-hub config and pick a random source
+    let aman_cfg = match config::AmanConfig::from_default_path() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to read config: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    let info_hub_config: info_hub::config::InfoHubConfig = aman_cfg
+        .info_hub
+        .as_ref()
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let sources = info_hub_config.sources;
+    if sources.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "no info-hub data sources configured"})),
+        )
+            .into_response();
+    }
+
+    let mut rng = rand::thread_rng();
+    let source_name = sources[rng.gen_range(0..sources.len())].name().to_string();
+
+    // Create session
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let data = json!({
+        "session_type": "persistent",
+        "version": 0,
+        "created_at": now_ms,
+        "last_active_at": now_ms,
+    });
+
+    let instance = match runtime.workflow_engine().create_instance("chat-session", data) {
+        Ok(i) => i,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to create session: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    let session_id = instance.id.clone();
+
+    // Persist session
+    if let Some(store) = runtime.session_store() {
+        let _ = store.upsert(&session_store::SessionRecord {
+            id: session_id.clone(),
+            state: instance.current_state.clone(),
+            message_count: 0,
+            created_at: now_ms as i64,
+            last_active_at: now_ms as i64,
+            session_type: "persistent".to_owned(),
+        });
+    }
+
+    // Spawn exploration pipeline in background.
+    // Progress events are published during execution and polled by the frontend.
+    let rt = runtime.clone();
+    let sid = session_id.clone();
+    let aid = agent_id.clone();
+    let src = source_name.clone();
+    tokio::spawn(async move {
+        explore_pipeline(rt, sid, aid, src).await;
+    });
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "session_id": session_id,
+            "source": source_name,
+        })),
+    )
+        .into_response()
+}
+
+async fn explore_pipeline(
+    runtime: Arc<AgentRuntime>,
+    session_id: String,
+    agent_id: String,
+    source_name: String,
+) {
+
+    // Publish initial message
+    publish_explore_reply(
+        &runtime,
+        &session_id,
+        &agent_id,
+        &format!(
+            "🔍 **Exploration Started**\n\nRandomly selected data source: **{source_name}**\nSearching for latest items…"
+        ),
+    )
+    .await;
+
+    // Phase 2: info_search
+    let tools = runtime.tools();
+    let info_search = match tools.get("info_search") {
+        Some(t) => t,
+        None => {
+            publish_explore_reply(&runtime, &session_id, &agent_id, "❌ **Error**: info_search tool not available").await;
+            return;
+        }
+    };
+
+    let ctx = ToolContext {
+        base: BaseContext::new(TraceId::new()),
+        tool_name: Some("info_search".to_string()),
+        working_directory: None,
+    };
+
+    let search_params = json!({
+        "query": "",
+        "limit": 20,
+        "sources": [source_name],
+    });
+
+    let search_output = match info_search.execute(search_params, ctx.clone()).await {
+        Ok(v) => v,
+        Err(e) => {
+            publish_explore_reply(&runtime, &session_id, &agent_id, &format!("❌ **Search failed**: {e}")).await;
+            return;
+        }
+    };
+
+    let items: Vec<Value> = search_output.as_array().cloned().unwrap_or_default();
+    let items_found = items.len();
+
+    if items_found == 0 {
+        publish_explore_reply(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &format!("📋 **No items found** from **{source_name}**.\n\n✨ Exploration complete (no results)."),
+        ).await;
+        return;
+    }
+
+    // Build title list
+    let mut title_list = format!("📋 **Found {items_found} items from {source_name}**\n\n");
+    for (i, item) in items.iter().enumerate() {
+        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("(untitled)");
+        let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        if url.is_empty() {
+            title_list.push_str(&format!("{}. {title}\n", i + 1));
+        } else {
+            title_list.push_str(&format!("{}. [{title}]({url})\n", i + 1));
+        }
+    }
+    publish_explore_reply(&runtime, &session_id, &agent_id, &title_list).await;
+
+    // Build ArticleInput list for tagging
+    let mut articles: Vec<info_hub::ai::ArticleInput> = items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| info_hub::ai::ArticleInput {
+            index: i,
+            title: item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            description: item.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            source_name: item.get("source").and_then(|v| v.as_str()).unwrap_or(&source_name).to_string(),
+            link: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            category: String::new(),
+            keywords: vec![],
+            relevance: 0,
+            quality: 0,
+            timeliness: 0,
+        })
+        .collect();
+
+    // Phase 3: info_tag_articles
+    let tag_tool = tools.get("info_tag_articles");
+    if tag_tool.is_none() {
+        publish_explore_reply(&runtime, &session_id, &agent_id, "⚠️ Tagging tool not available, skipping…").await;
+    }
+
+    if let Some(tag_tool) = tag_tool {
+        publish_explore_reply(&runtime, &session_id, &agent_id, &format!("🏷 **Tagging {items_found} articles…**")).await;
+        let tag_params = json!({
+            "articles": articles.iter().map(|a| json!({
+                "index": a.index,
+                "title": a.title,
+                "description": a.description,
+                "source_name": a.source_name,
+                "link": a.link,
+            })).collect::<Vec<_>>(),
+        });
+        match tag_tool.execute(tag_params, ctx.clone()).await {
+            Ok(v) => {
+                let results: Vec<info_hub::ai::TagResult> = v
+                    .get("results")
+                    .and_then(|r: &Value| serde_json::from_value(r.clone()).ok())
+                    .unwrap_or_default();
+                // Merge tags into articles
+                for tag in &results {
+                    if tag.index < articles.len() {
+                        articles[tag.index].category = tag.category.clone();
+                        articles[tag.index].keywords = tag.keywords.clone();
+                    }
+                }
+                let cat_summary: Vec<String> = results.iter().map(|t: &info_hub::ai::TagResult| t.category.clone()).filter(|c: &String| !c.is_empty()).collect();
+                publish_explore_reply(
+                    &runtime,
+                    &session_id,
+                    &agent_id,
+                    &format!("✅ **Tagged {} articles**\nCategories: {}", results.len(), cat_summary.join(", ")),
+                ).await;
+            }
+            Err(e) => {
+                publish_explore_reply(&runtime, &session_id, &agent_id, &format!("⚠️ Tagging failed: {e}")).await;
+            }
+        }
+    }
+
+    // Phase 4: info_score_articles
+    let score_tool = tools.get("info_score_articles");
+    if score_tool.is_none() {
+        publish_explore_reply(&runtime, &session_id, &agent_id, "⚠️ Scoring tool not available, skipping…").await;
+    }
+
+    if let Some(score_tool) = score_tool {
+        publish_explore_reply(&runtime, &session_id, &agent_id, &format!("📊 **Scoring {items_found} articles…**")).await;
+        let score_params = json!({
+            "articles": articles.iter().map(|a| {
+                let mut j = json!({
+                    "index": a.index,
+                    "title": a.title,
+                    "description": a.description,
+                    "source_name": a.source_name,
+                    "link": a.link,
+                });
+                if !a.category.is_empty() {
+                    j["category"] = json!(a.category);
+                    j["keywords"] = json!(a.keywords);
+                }
+                j
+            }).collect::<Vec<_>>(),
+        });
+        match score_tool.execute(score_params, ctx.clone()).await {
+            Ok(v) => {
+                let results: Vec<info_hub::ai::ScoreResult> = v
+                    .get("results")
+                    .and_then(|r: &Value| serde_json::from_value(r.clone()).ok())
+                    .unwrap_or_default();
+                for sc in &results {
+                    if sc.index < articles.len() {
+                        articles[sc.index].relevance = sc.relevance;
+                        articles[sc.index].quality = sc.quality;
+                        articles[sc.index].timeliness = sc.timeliness;
+                    }
+                }
+                let high_count = articles.iter().filter(|a: &&info_hub::ai::ArticleInput| a.total_score() > 20).count();
+                publish_explore_reply(
+                    &runtime,
+                    &session_id,
+                    &agent_id,
+                    &format!(
+                        "✅ **Scored {} articles**\nScore range: {}-{} / 30\n**{} articles above 20/30**",
+                        results.len(),
+                        articles.iter().map(|a: &info_hub::ai::ArticleInput| a.total_score()).min().unwrap_or(0),
+                        articles.iter().map(|a: &info_hub::ai::ArticleInput| a.total_score()).max().unwrap_or(0),
+                        high_count,
+                    ),
+                ).await;
+            }
+            Err(e) => {
+                publish_explore_reply(&runtime, &session_id, &agent_id, &format!("⚠️ Scoring failed: {e}")).await;
+            }
+        }
+    }
+
+    // Phase 5: info_summarize_articles for high-scoring items
+    let high_score_articles: Vec<&info_hub::ai::ArticleInput> = articles
+        .iter()
+        .filter(|a| a.total_score() > 20)
+        .collect();
+
+    let items_summarized = high_score_articles.len();
+
+    if items_summarized > 0 {
+        let summarize_tool = match tools.get("info_summarize_articles") {
+            Some(t) => t,
+            None => {
+                publish_explore_reply(&runtime, &session_id, &agent_id, "⚠️ Summarization tool not available").await;
+                return;
+            }
+        };
+
+        publish_explore_reply(
+            &runtime,
+            &session_id,
+            &agent_id,
+            &format!("📝 **Summarizing {items_summarized} high-score articles…**"),
+        ).await;
+
+        let summary_articles: Vec<Value> = high_score_articles
+            .iter()
+            .map(|a| {
+                json!({
+                    "index": a.index,
+                    "title": a.title,
+                    "description": a.description,
+                    "source_name": a.source_name,
+                    "link": a.link,
+                    "relevance": a.relevance,
+                    "quality": a.quality,
+                    "timeliness": a.timeliness,
+                })
+            })
+            .collect();
+
+        let summary_params = json!({
+            "articles": summary_articles,
+            "lang": "zh",
+            "min_score": 1,
+        });
+
+        match summarize_tool.execute(summary_params, ctx.clone()).await {
+            Ok(v) => {
+                let summary_results: Vec<info_hub::ai::SummaryResult> = v
+                    .get("results")
+                    .and_then(|r: &Value| serde_json::from_value(r.clone()).ok())
+                    .unwrap_or_default();
+
+                for sr in &summary_results {
+                    let a = high_score_articles
+                        .iter()
+                        .find(|a| a.index == sr.index)
+                        .copied()
+                        .unwrap_or(high_score_articles[0]);
+
+                    let tags_display = if a.category.is_empty() && a.keywords.is_empty() {
+                        String::from("—")
+                    } else {
+                        let mut parts = vec![];
+                        if !a.category.is_empty() {
+                            parts.push(a.category.clone());
+                        }
+                        parts.extend(a.keywords.clone());
+                        parts.join(" · ")
+                    };
+
+                    let msg = if a.link.is_empty() {
+                        format!(
+                            "📝 **{title}**\n🏷 {tags}\n📊 Score: {total}/30 (R:{rel} Q:{qual} T:{time})\n\n💡 {summary}",
+                            title = sr.title_zh,
+                            tags = tags_display,
+                            total = a.total_score(),
+                            rel = a.relevance,
+                            qual = a.quality,
+                            time = a.timeliness,
+                            summary = sr.summary,
+                        )
+                    } else {
+                        format!(
+                            "📝 **[{title}]({url})**\n🏷 {tags}\n📊 Score: {total}/30 (R:{rel} Q:{qual} T:{time})\n\n💡 {summary}",
+                            title = sr.title_zh,
+                            url = a.link,
+                            tags = tags_display,
+                            total = a.total_score(),
+                            rel = a.relevance,
+                            qual = a.quality,
+                            time = a.timeliness,
+                            summary = sr.summary,
+                        )
+                    };
+                    publish_explore_reply(&runtime, &session_id, &agent_id, &msg).await;
+                }
+            }
+            Err(e) => {
+                publish_explore_reply(&runtime, &session_id, &agent_id, &format!("⚠️ Summarization failed: {e}")).await;
+            }
+        }
+    }
+
+    // Phase 6: complete
+    publish_explore_reply(
+        &runtime,
+        &session_id,
+        &agent_id,
+        &format!(
+            "✨ **Exploration complete!**\n\n{items_found} items found from **{source_name}**\n{items_summarized} articles summarized (scored > 20/30)\n\n_Reflection will process this session automatically._"
+        ),
+    ).await;
 }
 
 async fn dlq_depth(State(runtime): State<Arc<AgentRuntime>>) -> Response {

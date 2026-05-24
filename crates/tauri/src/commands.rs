@@ -774,6 +774,15 @@ pub async fn chat_session_create(
     client.chat_session_create(session_type.as_deref()).await
 }
 
+#[tauri::command]
+pub async fn explore_start(
+    state: State<'_, AppState>,
+    agent_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let client = require_gateway(&state).await?;
+    client.explore_start(agent_key.as_deref()).await
+}
+
 /// Create a branch session forked from a specific message in an existing session.
 #[tauri::command]
 pub async fn chat_session_branch(

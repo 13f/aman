@@ -96,6 +96,7 @@
   let currentPage = $state(1);
   let sessionsPerPage = 10;
   let sessionsLoaded = $state(false);
+  let isExploring = $state(false);
   let deletingSessionId = $state<string | null>(null);
 
   const paginatedSessions = $derived(
@@ -436,6 +437,25 @@
     activeSessionId = id;
     // Reset to last page for the new session
     currentPage = totalPages;
+  }
+
+  async function startExplore() {
+    if (isExploring) return;
+    isExploring = true;
+    try {
+      const result = await invoke<{ session_id: string; source: string }>("explore_start", {
+        agentKey: activeAgentKey || null,
+      });
+      // Add the new session to the list
+      const count = sessions.length + 1;
+      sessions = [...sessions, { id: result.session_id, title: `Explore ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }];
+      activeSessionId = result.session_id;
+      currentPage = totalPages;
+    } catch (e) {
+      showToast("error", `Explore failed: ${e}`);
+    } finally {
+      isExploring = false;
+    }
   }
 
   async function deleteSession(id: string) {
@@ -1555,7 +1575,12 @@
   <aside class="session-panel">
     <div class="panel-header">
       <h2>Chat</h2>
-      <button class="new-btn" onclick={createSession} title="New chat">+</button>
+      <div class="panel-header-actions">
+        <button class="explore-btn" onclick={startExplore} title="Explore" disabled={isExploring}>
+          {isExploring ? "⏳" : "🔍"}
+        </button>
+        <button class="new-btn" onclick={createSession} title="New chat">+</button>
+      </div>
     </div>
       <div class="session-list">
         {#each paginatedSessions as session}
@@ -1924,6 +1949,35 @@
 
   .new-btn:hover {
     background: var(--bg-hover);
+  }
+
+  .panel-header-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .explore-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+  }
+
+  .explore-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .explore-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .sidebar-tabs {

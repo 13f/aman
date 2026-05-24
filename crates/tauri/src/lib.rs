@@ -89,6 +89,7 @@ pub fn run() {
             commands::chat_session_list,
             commands::chat_session_list_db,
             commands::chat_session_create,
+            commands::explore_start,
             commands::chat_session_branch,
             commands::chat_session_close,
             commands::chat_session_delete,

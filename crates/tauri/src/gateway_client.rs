@@ -817,6 +817,27 @@ impl GatewayClient {
             Err(status_error("set_agent_status", resp.status()).await)
         }
     }
+
+    pub async fn explore_start(&self, agent_key: Option<&str>) -> Result<Value, String> {
+        let mut body = serde_json::json!({});
+        if let Some(k) = agent_key {
+            body["agent_key"] = serde_json::json!(k);
+        }
+        let resp = self
+            .client
+            .post(self.url("/explore/start"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("explore_start: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("explore_start decode: {e}"))
+        } else {
+            Err(status_error("explore_start", resp.status()).await)
+        }
+    }
 }
 
 async fn status_error(context: &str, status: reqwest::StatusCode) -> String {

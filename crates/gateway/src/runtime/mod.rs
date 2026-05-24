@@ -18,6 +18,7 @@ mod http;
 mod metrics;
 mod session_store;
 mod skill_sync;
+mod plugin_sync;
 mod agent_seed;
 mod soul_runtime;
 mod tracing_setup;

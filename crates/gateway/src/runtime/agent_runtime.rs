@@ -198,6 +198,10 @@ impl AgentRuntimeBuilder {
         if let Err(e) = super::skill_sync::sync_builtin_skills() {
             tracing::error!(error = %e, "failed to sync built-in skills");
         }
+        // Sync built-in plugins from repo to ~/.aman/plugins/ (preserves user modifications)
+        if let Err(e) = super::plugin_sync::sync_builtin_plugins() {
+            tracing::error!(error = %e, "failed to sync built-in plugins");
+        }
         // Seed predefined agents into ~/.aman/agents/ for new users.
         let _seeded_agents = super::agent_seed::seed_builtin_agents();
         // Discover any agents manually copied into ~/.aman/agents/.

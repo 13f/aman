@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "info-hub",
+      "files": [
+        "info-hub/ai.py",
+        "info-hub/common.py",
+        "info-hub/fusion.py",
+        "info-hub/rss.py"
+      ]
+    }
+  ]
+}

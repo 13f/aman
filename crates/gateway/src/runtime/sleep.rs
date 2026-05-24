@@ -15,6 +15,7 @@
 use async_trait::async_trait;
 use config::SleepConfig;
 use event_bus::EventHandler;
+use idle::IdleKind;
 use kernel::event::{Event, EventType};
 use kernel::memory::{MemoryProvider, MemoryStats, ThinkConfig, ThinkResult};
 use kernel::AmanResult;
@@ -613,8 +614,8 @@ impl EventHandler for SleepRunner {
 impl SleepRunner {
     /// Run all 6 Sleep phases sequentially with cancellation and CPU budget checks.
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
-        // Get cancel token from the agent's idle coordination
-        let cancel_token = {
+        // Get cancel token and coord from the agent's idle coordination
+        let (cancel_token, coord) = {
             let Some(registry) = self.agent_registry.get() else {
                 debug!("SleepRunner: no AgentRegistry, skipping");
                 return Ok(());
@@ -623,7 +624,8 @@ impl SleepRunner {
                 debug!(agent_id, "SleepRunner: no idle coordination for agent, skipping");
                 return Ok(());
             };
-            coord.idle_cancel_token.read().await.clone()
+            let token = coord.idle_cancel_token.read().await.clone();
+            (token, Arc::clone(&coord))
         };
 
         // Get sleep config (with defaults if not injected)
@@ -691,6 +693,11 @@ impl SleepRunner {
             total_cpu_secs = total_cpu,
             "SleepRunner: all phases complete"
         );
+
+        // Set cooldown so Sleep events don't re-fire every poll cycle.
+        coord
+            .set_kind_cooldown(IdleKind::Sleep, 60)
+            .await;
 
         Ok(())
     }

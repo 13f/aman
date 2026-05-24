@@ -1725,14 +1725,14 @@ impl AgentRuntime {
         self.plugin_loader.lock().await
     }
 
-    #[instrument(skip(self), fields(event_id = %event.id, source = %event.source, event_type = ?event.event_type))]
+    #[instrument(skip(self, event), fields(event_id = %event.id, source = %event.source, event_type = ?event.event_type))]
     pub async fn publish_event(&self, event: kernel::event::Event) -> AmanResult<()> {
         self.bus.publish(event).await
     }
 
     /// Publish an event to a specific agent's local bus, falling back to
     /// the global bus if the agent has no dedicated local bus.
-    #[instrument(skip(self), fields(event_id = %event.id, agent_id = %agent_id))]
+    #[instrument(skip(self, event), fields(event_id = %event.id, agent_id = %agent_id))]
     pub async fn publish_event_to_agent(
         &self,
         agent_id: &str,

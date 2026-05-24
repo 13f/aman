@@ -632,7 +632,7 @@ impl InMemoryBus {
 
 #[async_trait]
 impl EventBus for InMemoryBus {
-    #[instrument(skip(self), fields(event_id = %event.id, source = %event.source))]
+    #[instrument(skip(self, event), fields(event_id = %event.id, source = %event.source))]
     async fn publish(&self, event: Event) -> AmanResult<()> {
         {
             let mut state = self.lock_state();

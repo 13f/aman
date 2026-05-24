@@ -715,7 +715,7 @@ impl AgentRuntimeBuilder {
             reflection_runner.set_memory_llm(cfg);
         }
 
-        // Subscribe to QueueDrained events on the global bus.
+        // Subscribe to Idle events on the global bus (filtered to kind=sleep in handle())
         {
             struct ReflectionSub {
                 runner: Arc<super::reflection::ReflectionRunner>,
@@ -728,7 +728,7 @@ impl AgentRuntimeBuilder {
             }
             let _ = pollster::block_on(bus.subscribe(
                 event_bus::SubscriptionFilter {
-                    event_types: Some(vec![kernel::event::EventType::QueueDrained]),
+                    event_types: Some(vec![kernel::event::EventType::Idle]),
                     sources: None,
                     priorities: None,
                     payload_match: None,

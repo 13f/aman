@@ -1,13 +1,10 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-//! Reflection runner — triggered by QueueDrained events after each real event
-//! is processed. Extracts structured summaries from session JSONL and stores
-//! them in the memory provider for long-term retention.
-//!
-//! QueueDrained is produced by [`AgentIdleManager`](idle::AgentIdleManager) on
-//! the busy→empty transition of the agent's local event bus. Reflection runs
-//! inline (not as a pipeline) to keep dependency injection simple.
+//! Reflection runner — triggered by Idle(sleep) events during cognitive
+//! housekeeping. Extracts structured summaries from one unreflected session
+//! per sleep cycle via LLM and stores them in the memory provider for
+//! long-term retention.
 
 use async_trait::async_trait;
 use config::MemoryLlmConfig;
@@ -18,6 +15,7 @@ use kernel::llm::{LlmChatRequest, LlmProvider};
 use kernel::memory::MemoryProvider;
 use kernel::AmanResult;
 use std::sync::{Arc, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 use super::session_store::SessionStore;
@@ -62,8 +60,9 @@ impl ReflectionRunner {
 
     // -- session_extract ------------------------------------------------------
 
-    /// Load session JSONL, extract structured summary via LLM, and store in
-    /// the memory provider with knowledge graph relationships.
+    /// Query one unreflected session, extract structured summary via LLM, and
+    /// store in the memory provider. Mark the session as reflected on success.
+    /// Processes at most one session per invocation.
     async fn session_extract(&self, agent_id: &str) {
         let Some(store) = self.session_store.get() else {
             debug!("Reflection: no SessionStore, skipping session_extract");
@@ -78,59 +77,58 @@ impl ReflectionRunner {
             return;
         };
 
-        // List all sessions; process the most recent active one
-        let sessions = match store.list_all() {
-            Ok(s) => s,
+        let session = match store.list_unreflected() {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                debug!("Reflection: no unreflected sessions");
+                return;
+            }
             Err(e) => {
-                warn!(error = %e, "Reflection: failed to list sessions");
+                warn!(error = %e, "Reflection: failed to list unreflected sessions");
                 return;
             }
         };
 
-        // Find the most recent session with messages that hasn't been extracted
-        for session in &sessions {
-            if session.message_count == 0 {
-                continue;
+        // Load persisted events from JSONL
+        let events = store.load_session_events(&session.id);
+        if events.len() < 2 {
+            // Mark as reflected even if not enough content — don't retry forever
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let _ = store.mark_reflected(&session.id, now);
+            return;
+        }
+
+        debug!(
+            agent_id,
+            session_id = %session.id,
+            event_count = events.len(),
+            "Reflection: extracting session",
+        );
+
+        match self.extract_and_store(llm, memory, agent_id, &session.id, &events).await {
+            Ok(()) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let _ = store.mark_reflected(&session.id, now);
+                info!(
+                    agent_id,
+                    session_id = %session.id,
+                    "Reflection: session extracted to memory"
+                );
             }
-
-            // Load persisted events from JSONL
-            let events = store.load_session_events(&session.id);
-            if events.is_empty() {
-                continue;
+            Err(e) => {
+                warn!(
+                    agent_id,
+                    session_id = %session.id,
+                    error = %e,
+                    "Reflection: session_extract failed"
+                );
             }
-
-            // Only process sessions with enough messages to be worth extracting
-            if events.len() < 2 {
-                continue;
-            }
-
-            debug!(
-                agent_id,
-                session_id = %session.id,
-                event_count = events.len(),
-                "Reflection: extracting session",
-            );
-
-            match self.extract_and_store(llm, memory, agent_id, &session.id, &events).await {
-                Ok(()) => {
-                    info!(
-                        agent_id,
-                        session_id = %session.id,
-                        "Reflection: session extracted to memory"
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        agent_id,
-                        session_id = %session.id,
-                        error = %e,
-                        "Reflection: session_extract failed"
-                    );
-                }
-            }
-
-            // Phase 1: only process one session per QueueDrained to keep latency low
-            break;
         }
     }
 
@@ -230,68 +228,39 @@ impl ReflectionRunner {
 Respond with ONLY valid JSON, no markdown or explanation."#
             .to_owned()
     }
-
-    // -- session_review -------------------------------------------------------
-
-    async fn session_review(&self, agent_id: &str) {
-        let Some(memory) = self.memory_provider.get() else {
-            return;
-        };
-
-        match memory.stale_memories(agent_id, 14).await {
-            Ok(stale) if !stale.is_empty() => {
-                info!(
-                    agent_id,
-                    count = stale.len(),
-                    "Reflection: stale memories found"
-                );
-            }
-            Ok(_) => {}
-            Err(e) => {
-                warn!(agent_id, error = %e, "Reflection: stale check failed");
-            }
-        }
-    }
 }
 
 #[async_trait]
 impl EventHandler for ReflectionRunner {
     async fn handle(&self, event: Event) -> AmanResult<()> {
-        if event.event_type != EventType::QueueDrained {
+        // Only process Idle events with kind=sleep
+        if event.event_type != EventType::Idle {
             return Ok(());
         }
 
-        let count = event
+        let kind = event
             .payload
-            .get("reflectionConsecutiveCount")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if kind != "sleep" {
+            return Ok(());
+        }
 
         let agent_id = event
             .payload
-            .get("agentId")
+            .get("agent_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
         debug!(
             agent_id,
-            count,
-            "Reflection: QueueDrained received"
+            "Reflection: Idle(sleep) received"
         );
 
-        // Step 0: Circuit breaker — full skip at 10 consecutive
-        if count >= 10 {
-            debug!("Reflection breaker: full skip at count={count}");
-            return Ok(());
-        }
-
-        // Step 4: session_extract — always run (primary path for session→YantrikDB)
+        // Extract one unreflected session per sleep cycle
         self.session_extract(agent_id).await;
-
-        // Step 5: session_review — only at count 0
-        if count == 0 {
-            self.session_review(agent_id).await;
-        }
 
         Ok(())
     }

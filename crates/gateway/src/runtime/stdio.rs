@@ -1006,6 +1006,7 @@ async fn chat_session_create(runtime: &AgentRuntime, params: Option<&Value>) -> 
             created_at: now,
             last_active_at: now,
             session_type: "persistent".into(),
+            reflected_at: None,
         });
     }
     Ok(serde_json::json!({ "session_id": session_id }))
@@ -1060,6 +1061,7 @@ async fn chat_session_close(runtime: &AgentRuntime, params: Option<&Value>) -> A
             created_at: 0,
             last_active_at: 0,
             session_type: "persistent".into(),
+            reflected_at: None,
         });
     }
     Ok(serde_json::json!({ "ok": true }))

@@ -830,6 +830,7 @@ impl Aman for AmanServiceImpl {
                 created_at: now,
                 last_active_at: now,
                 session_type: "persistent".into(),
+                reflected_at: None,
             });
         }
         Ok(Response::new(ChatSessionCreatedResponse { session_id }))
@@ -899,6 +900,7 @@ impl Aman for AmanServiceImpl {
                 created_at: 0,
                 last_active_at: 0,
                 session_type: "persistent".into(),
+                reflected_at: None,
             });
         }
         Ok(Response::new(Empty {}))

@@ -26,6 +26,10 @@ pub struct SessionRecord {
     pub created_at: i64,
     pub last_active_at: i64,
     pub session_type: String,
+    /// When this session was last extracted by Reflection (millis since epoch).
+    /// NULL means never reflected.
+    #[serde(default)]
+    pub reflected_at: Option<i64>,
 }
 
 /// Wraps a `rusqlite::Connection` to `sessions.db` plus the sessions
@@ -54,6 +58,8 @@ impl SessionStore {
             );",
         )
         .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store schema: {e}") })?;
+        // Migration: add reflected_at column (ignore error if already exists)
+        let _ = db.execute("ALTER TABLE sessions ADD COLUMN reflected_at INTEGER", []);
         Ok(Self { db: std::sync::Mutex::new(db), sessions_dir: sessions_dir.to_owned() })
     }
 
@@ -103,7 +109,7 @@ impl SessionStore {
         let db = self.db.lock().expect("session store lock");
         let mut stmt = db
             .prepare(
-                "SELECT id, state, message_count, created_at, last_active_at, session_type
+                "SELECT id, state, message_count, created_at, last_active_at, session_type, reflected_at
                  FROM sessions ORDER BY last_active_at DESC",
             )
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store query: {e}") })?;
@@ -116,6 +122,7 @@ impl SessionStore {
                     created_at: row.get(3)?,
                     last_active_at: row.get(4)?,
                     session_type: row.get(5)?,
+                    reflected_at: row.get(6)?,
                 })
             })
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store rows: {e}") })?;
@@ -126,6 +133,50 @@ impl SessionStore {
             );
         }
         Ok(records)
+    }
+
+    /// Return the oldest unreflected session with at least one message, if any.
+    pub fn list_unreflected(&self) -> AmanResult<Option<SessionRecord>> {
+        let db = self.db.lock().expect("session store lock");
+        let mut stmt = db
+            .prepare(
+                "SELECT id, state, message_count, created_at, last_active_at, session_type, reflected_at
+                 FROM sessions
+                 WHERE reflected_at IS NULL AND message_count > 0
+                 ORDER BY last_active_at ASC
+                 LIMIT 1",
+            )
+            .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store unreflected: {e}") })?;
+        let mut rows = stmt
+            .query_map([], |row| {
+                Ok(SessionRecord {
+                    id: row.get(0)?,
+                    state: row.get(1)?,
+                    message_count: row.get(2)?,
+                    created_at: row.get(3)?,
+                    last_active_at: row.get(4)?,
+                    session_type: row.get(5)?,
+                    reflected_at: row.get(6)?,
+                })
+            })
+            .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store unreflected rows: {e}") })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row.map_err(|e| kernel::Error::ConfigInvalid {
+                message: format!("session store unreflected row: {e}"),
+            })?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Mark a session as reflected at the given timestamp (millis since epoch).
+    pub fn mark_reflected(&self, id: &str, timestamp_ms: i64) -> AmanResult<()> {
+        let db = self.db.lock().expect("session store lock");
+        db.execute(
+            "UPDATE sessions SET reflected_at = ?1 WHERE id = ?2",
+            rusqlite::params![timestamp_ms, id],
+        )
+        .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store mark_reflected: {e}") })?;
+        Ok(())
     }
 
     /// JSONL file path for a session's persisted events.

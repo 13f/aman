@@ -2065,7 +2065,7 @@ async fn publish_explore_reply(runtime: &Arc<AgentRuntime>, session_id: &str, ag
     // Publish to global bus for persistence (JSONL) and frontend polling.
     let _ = runtime.publish_event(event.clone()).await;
     // Also publish to agent's local bus so AgentIdleManager sees the
-    // busy→empty transition and produces QueueDrained → Reflection.
+    // busy→empty transition and produces Idle events → Reflection during sleep.
     let _ = runtime.publish_event_to_agent(agent_id, event).await;
 }
 
@@ -2156,6 +2156,7 @@ async fn explore_start(
             created_at: now_ms as i64,
             last_active_at: now_ms as i64,
             session_type: "persistent".to_owned(),
+            reflected_at: None,
         });
     }
 
@@ -2482,22 +2483,9 @@ async fn explore_pipeline(
         &session_id,
         &agent_id,
         &format!(
-            "✨ **Exploration complete!**\n\n{items_found} items found from **{source_name}**\n{items_summarized} articles summarized (scored > 20/30)\n\n_Reflection will process this session automatically._"
+            "✨ **Exploration complete!**\n\n{items_found} items found from **{source_name}**\n{items_summarized} articles summarized (scored > 20/30)\n\n_Reflection will process this session during the next sleep cycle._"
         ),
     ).await;
-
-    // Inject a QueueDrained event on the global bus so Reflection
-    // picks up the next unreflected session (this one, or an older one).
-    // ReflectionRunner subscribes to QueueDrained on the global bus.
-    let qd = Event::new(
-        "explore:pipeline",
-        EventType::QueueDrained,
-        json!({
-            "agentId": agent_id,
-            "reflectionConsecutiveCount": 0,
-        }),
-    );
-    let _ = runtime.publish_event(qd).await;
 }
 
 async fn dlq_depth(State(runtime): State<Arc<AgentRuntime>>) -> Response {
@@ -2570,6 +2558,7 @@ async fn chat_session_create(
                     created_at,
                     last_active_at,
                     session_type: session_type.to_owned(),
+                    reflected_at: None,
                 });
             }
             (StatusCode::OK, Json(json!({ "id": instance.id }))).into_response()
@@ -3016,6 +3005,7 @@ async fn chat_session_send(
                 created_at,
                 last_active_at: now_ms as i64,
                 session_type: session_type.to_owned(),
+                reflected_at: None,
             });
         }
 
@@ -3096,6 +3086,7 @@ async fn chat_session_close(
                         created_at,
                         last_active_at,
                         session_type: session_type.to_owned(),
+                        reflected_at: None,
                     });
                 }
 

@@ -1547,8 +1547,6 @@
             </div>
           </div>
         {/each}
-        <div class="agent-section-label">Code Agents</div>
-        <div class="agents-empty-sub">Coming soon</div>
       {/if}
     </div>
   </aside>

@@ -267,7 +267,15 @@
 
       {#if codeAgents.length > 0}
         <hr class="section-divider" />
-        <h3 class="section-label">Code Agents</h3>
+        <h3 class="section-label">
+          Code Agents
+          <span class="terminal-hint" title="Opens a new terminal window for these code agents">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 17 10 11 4 5"></polyline>
+              <line x1="12" y1="19" x2="20" y2="19"></line>
+            </svg>
+          </span>
+        </h3>
         <div class="code-agent-grid">
           {#each codeAgents as ca}
             <button
@@ -592,6 +600,15 @@
     letter-spacing: 0.05em;
     color: var(--fg-dim);
     margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .terminal-hint {
+    display: inline-flex;
+    align-items: center;
+    color: var(--fg-dim);
+    cursor: help;
   }
 
   .code-agent-grid {

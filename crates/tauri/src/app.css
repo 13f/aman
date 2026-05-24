@@ -154,7 +154,7 @@ body { min-height: 100vh; }
 /* Main content */
 .main {
   flex: 1;
-  padding: 24px 32px;
+  padding-left: 20px;
   overflow-y: auto;
 }
 

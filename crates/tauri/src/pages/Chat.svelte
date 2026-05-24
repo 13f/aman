@@ -144,10 +144,14 @@
     try {
       await invoke("select_agent", { key: activeAgentKey });
       showToast("info", `Switched to agent: ${activeAgentKey}`);
-      // Clear current chat view and reload sessions for the newly selected agent.
       activeSessionId = "";
       messages = [];
       await loadSessions();
+      if (sessions.length > 0) {
+        selectSession(sessions[0].id);
+      } else {
+        await createSession();
+      }
     } catch (e) {
       showToast("error", `Failed to select agent: ${e}`);
     }
@@ -162,6 +166,12 @@
       activeSessionId = "";
       messages = [];
       await loadSessions();
+      // Auto-select most recent session if history exists, otherwise create one
+      if (sessions.length > 0) {
+        selectSession(sessions[0].id);
+      } else {
+        await createSession();
+      }
     } catch (e) {
       showToast("error", `Failed to select agent: ${e}`);
     }

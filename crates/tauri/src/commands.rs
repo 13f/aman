@@ -1719,6 +1719,20 @@ pub async fn set_runtime_agent_status(
     client.set_agent_status(&agent_id, &status).await
 }
 
+// ---------------------------------------------------------------------------
+// Code Agents — external CLI tools (Claude Code, Codex, OpenCode, Gemini)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn list_code_agents() -> Result<Vec<crate::models::CodeAgentEntry>, String> {
+    crate::code_agents::load_code_agents()
+}
+
+#[tauri::command]
+pub async fn launch_code_agent(command: String) -> Result<(), String> {
+    crate::code_agents::launch_code_agent(&command)
+}
+
 fn default_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".aman").join("config.yaml")

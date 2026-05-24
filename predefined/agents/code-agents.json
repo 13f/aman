@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "key": "claude-code",
+      "display_name": "Claude Code",
+      "command": "claude",
+      "description": "Anthropic's official CLI for Claude. Best for complex refactors, architectural changes, and multi-file edits. Use Claude Code when the task requires deep reasoning about code structure.",
+      "tool_args": ["-p", "{prompt}"]
+    },
+    {
+      "key": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "description": "OpenAI's Codex CLI. Best for quick scripts, API integrations, and OpenAI-ecosystem tasks. Use Codex for rapid prototyping and straightforward coding.",
+      "tool_args": ["exec", "{prompt}"]
+    },
+    {
+      "key": "opencode",
+      "display_name": "OpenCode",
+      "command": "opencode",
+      "description": "Open-source coding agent. Best for codebase exploration, security audits, and grep-heavy analysis. Use OpenCode when you need to understand unfamiliar code.",
+      "tool_args": ["{prompt}"]
+    },
+    {
+      "key": "gemini-cli",
+      "display_name": "Gemini",
+      "command": "gemini",
+      "description": "Google's Gemini in the terminal. Best for long-context analysis (1M+ tokens), Google Cloud integration, and large-scale refactors. Use Gemini CLI when context size matters.",
+      "tool_args": ["{prompt}"]
+    }
+  ]
+}

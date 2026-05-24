@@ -12,6 +12,10 @@
       "investment/unlisted-ecosystem-analysis/references/unitree-example.md"
     ]},
     { "name": "chaotic-reasoning",     "files": ["reasoning/chaotic-reasoning/SKILL.md"] },
-    { "name": "discover-facts",        "files": ["research/discover-facts/SKILL.md"] }
+    { "name": "discover-facts",        "files": ["research/discover-facts/SKILL.md"] },
+    { "name": "claude-code",           "files": ["code/claude-code/SKILL.md"] },
+    { "name": "codex-cli",             "files": ["code/codex-cli/SKILL.md"] },
+    { "name": "opencode",              "files": ["code/opencode/SKILL.md"] },
+    { "name": "gemini-cli",            "files": ["code/gemini-cli/SKILL.md"] }
   ]
 }

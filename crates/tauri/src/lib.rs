@@ -5,6 +5,7 @@
 
 
 pub mod agent_fs;
+pub mod code_agents;
 pub mod commands;
 pub mod gateway_client;
 pub mod models;
@@ -133,6 +134,9 @@ pub fn run() {
             commands::list_runtime_agents,
             commands::get_runtime_agent,
             commands::set_runtime_agent_status,
+            // Code agents — external CLI tools
+            commands::list_code_agents,
+            commands::launch_code_agent,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Build menu bar

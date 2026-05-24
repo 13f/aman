@@ -222,6 +222,8 @@ impl AgentRuntimeBuilder {
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
         let _ = tool::install_builtin_tools(&tools);
+        // Register code agent tools for available CLI coding tools (claude, codex, etc.)
+        tool::install_code_agent_tools(&tools);
         // Register read_skill tool so the LLM can load SKILL.md instructions on demand.
         // Store the Arc so we can wire agent_registry after its creation (line ~574+).
         let read_skill_tool = Arc::new(ReadSkillTool {

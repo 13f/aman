@@ -4,6 +4,17 @@
   import { onMount, onDestroy } from "svelte";
   import IdleRing from "./IdleRing.svelte";
   import AgentSelector from "./AgentSelector.svelte";
+  import claudeIcon from "../lib/assets/code-agents/claude.svg?raw";
+  import codexIcon from "../lib/assets/code-agents/codex.svg?raw";
+  import opencodeIcon from "../lib/assets/code-agents/opencode.svg?raw";
+  import geminiIcon from "../lib/assets/code-agents/gemini.svg?raw";
+
+  const CODE_AGENT_ICONS: Record<string, string> = {
+    "claude-code": claudeIcon,
+    "codex": codexIcon,
+    "opencode": opencodeIcon,
+    "gemini-cli": geminiIcon,
+  };
 
   let {
     onNavigate = (_page: string) => {},
@@ -21,6 +32,14 @@
     soul_summary: string;
     session_count: number;
     is_active: boolean;
+  }
+
+  interface CodeAgentEntry {
+    key: string;
+    display_name: string;
+    command: string;
+    description: string;
+    available: boolean;
   }
 
   type Mode = "idle" | "reflection" | "processing";
@@ -67,6 +86,7 @@
   }
 
   let agents = $state<AgentEntry[]>([]);
+  let codeAgents = $state<CodeAgentEntry[]>([]);
   let loading = $state(true);
   let activeTab = $state<"agents" | "finance">("agents");
   let idleStates = $state<Record<string, AgentIdleState>>({});
@@ -132,6 +152,17 @@
     }
   }
 
+  async function launchCodeAgent(ca: CodeAgentEntry) {
+    if (!ca.available) return;
+    try {
+      await invoke("launch_code_agent", { command: ca.command });
+    } catch (e) {
+      if (String(e) !== "CANCELLED") {
+        console.error("launch_code_agent failed:", e);
+      }
+    }
+  }
+
   function onFinanceClick(skillName: string) {
     selectedSkillName = skillName;
     modalError = "";
@@ -167,6 +198,13 @@
     } finally {
       loading = false;
     }
+
+    try {
+      codeAgents = await invoke<CodeAgentEntry[]>("list_code_agents");
+    } catch {
+      // code agents file missing or unparseable
+    }
+
     unlisteners.push(await listen("event:processed", handleIdleEvent));
   });
 
@@ -226,6 +264,28 @@
           </button>
         {/each}
       </div>
+
+      {#if codeAgents.length > 0}
+        <hr class="section-divider" />
+        <h3 class="section-label">Code Agents</h3>
+        <div class="code-agent-grid">
+          {#each codeAgents as ca}
+            <button
+              class="code-agent-card"
+              class:unavailable={!ca.available}
+              onclick={() => launchCodeAgent(ca)}
+            >
+              <div class="code-agent-icon">{@html CODE_AGENT_ICONS[ca.key] || ""}</div>
+              <span class="agent-avatar-name">{ca.display_name}</span>
+              {#if ca.available}
+                <span class="badge ok" style="margin-top:2px;font-size:10px;">available</span>
+              {:else}
+                <span class="badge dim" style="margin-top:2px;font-size:10px;">not found</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
     {/if}
   </div>
 {:else}
@@ -516,5 +576,81 @@
     border-radius: 6px;
     margin-bottom: 16px;
     font-size: 13px;
+  }
+
+  /* Code agents section */
+  .section-divider {
+    margin: 28px 0 20px;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .section-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-dim);
+    margin-bottom: 12px;
+  }
+
+  .code-agent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 16px;
+  }
+
+  .code-agent-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 20px 16px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: border-color 0.2s, transform 0.15s;
+    text-align: center;
+  }
+
+  .code-agent-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+
+  .code-agent-card.unavailable {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .code-agent-card.unavailable:hover {
+    border-color: var(--border);
+    transform: none;
+  }
+
+  .code-agent-icon {
+    width: 56px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    border-radius: 14px;
+    font-size: 28px;
+    line-height: 1;
+    color: var(--fg);
+  }
+  .code-agent-icon :global(svg) {
+    width: 28px;
+    height: 28px;
+  }
+
+  .badge.dim {
+    background: var(--bg-hover, rgba(255,255,255,0.06));
+    color: var(--fg-dim);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
   }
 </style>

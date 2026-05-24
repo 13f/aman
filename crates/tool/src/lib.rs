@@ -5,6 +5,7 @@
 
 
 pub mod auth;
+pub mod code_agent;
 pub mod fs_tools;
 pub mod security;
 pub mod web_search;
@@ -403,6 +404,18 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     registry.register(Arc::new(ExecTool))?;
     registry.register(Arc::new(DbTool))?;
     registry.register(Arc::new(WebSearchTool))
+}
+
+/// Register all code agent CLI tools that are available on PATH.
+///
+/// Scans `predefined/agents/code-agents.json` and registers a tool for each
+/// CLI coding agent whose command is found on the system.
+pub fn install_code_agent_tools(registry: &ToolRegistry) {
+    for config in code_agent::available_code_agent_configs() {
+        let tool = Arc::new(code_agent::CodeAgentTool::new(&config));
+        // Best-effort: skip duplicates (user may have overridden)
+        let _ = registry.register(tool);
+    }
 }
 
 struct HttpTool;

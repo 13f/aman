@@ -232,6 +232,16 @@ pub struct AgentEntry {
     pub is_active: bool,
 }
 
+/// A code agent entry — external CLI coding tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct CodeAgentEntry {
+    pub key: String,
+    pub display_name: String,
+    pub command: String,
+    pub description: String,
+    pub available: bool,
+}
+
 /// Agent runtime instance exposed via Tauri IPC.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentInstanceInfo {

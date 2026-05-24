@@ -11,11 +11,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 use crate::config::{EmbeddingConfig, MemoryConfig};
+use crate::ollama_embedder::OllamaEmbedder;
 use crate::remote_embedder::RemoteEmbedder;
 
 // ---------------------------------------------------------------------------
 // YantrikdbProvider
 // ---------------------------------------------------------------------------
+
+enum EmbedKind {
+    Remote,
+    Ollama,
+    Download,
+}
+
+impl EmbedKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            EmbedKind::Remote => "remote",
+            EmbedKind::Ollama => "ollama",
+            EmbedKind::Download => "download",
+        }
+    }
+}
 
 /// Memory provider backed by [yantrikdb](https://github.com/yantrikos/yantrikdb).
 ///
@@ -36,16 +53,17 @@ impl YantrikdbProvider {
     /// - [`EmbeddingConfig::Download`]: creates the database at the embedder's
     ///   known dim, then calls [`yantrikdb::YantrikDB::set_embedder_named`].
     pub fn open(config: &MemoryConfig) -> AmanResult<Self> {
-        let (dim, needs_remote) = match &config.embedding {
-            EmbeddingConfig::Remote { dim, .. } => (*dim, true),
-            EmbeddingConfig::Download { dim, .. } => (*dim, false),
+        let (dim, embed_kind): (usize, EmbedKind) = match &config.embedding {
+            EmbeddingConfig::Remote { dim, .. } => (*dim, EmbedKind::Remote),
+            EmbeddingConfig::Ollama { dim, .. } => (*dim, EmbedKind::Ollama),
+            EmbeddingConfig::Download { dim, .. } => (*dim, EmbedKind::Download),
         };
 
         info!(
             agent_id = %config.agent_id,
             db_path = %config.db_path,
             dim,
-            embed_mode = if needs_remote { "remote" } else { "download" },
+            embed_mode = embed_kind.as_str(),
             "Opening yantrikdb memory store",
         );
 
@@ -55,33 +73,53 @@ impl YantrikdbProvider {
             }
         })?;
 
-        if needs_remote {
-            let EmbeddingConfig::Remote {
-                base_url,
-                api_key,
-                model,
-                dim: _,
-            } = &config.embedding
-            else {
-                unreachable!()
-            };
-            let remote = RemoteEmbedder::new(base_url, api_key, model, dim);
-            db.set_embedder(Box::new(remote)).map_err(|e| {
-                kernel::Error::Unrecoverable {
-                    message: format!("yantrikdb set_embedder (remote): {e}"),
-                }
-            })?;
-            debug!("Attached RemoteEmbedder");
-        } else {
-            let EmbeddingConfig::Download { name, dim: _ } = &config.embedding else {
-                unreachable!()
-            };
-            db.set_embedder_named(name).map_err(|e| {
-                kernel::Error::Unrecoverable {
-                    message: format!("yantrikdb set_embedder_named({name}): {e}"),
-                }
-            })?;
-            debug!(embedder = %name, "Attached downloaded embedder");
+        match embed_kind {
+            EmbedKind::Remote => {
+                let EmbeddingConfig::Remote {
+                    base_url,
+                    api_key,
+                    model,
+                    dim: _,
+                } = &config.embedding
+                else {
+                    unreachable!()
+                };
+                let remote = RemoteEmbedder::new(base_url, api_key, model, dim);
+                db.set_embedder(Box::new(remote)).map_err(|e| {
+                    kernel::Error::Unrecoverable {
+                        message: format!("yantrikdb set_embedder (remote): {e}"),
+                    }
+                })?;
+                debug!("Attached RemoteEmbedder");
+            }
+            EmbedKind::Ollama => {
+                let EmbeddingConfig::Ollama {
+                    base_url,
+                    model,
+                    dim: _,
+                } = &config.embedding
+                else {
+                    unreachable!()
+                };
+                let ollama = OllamaEmbedder::new(base_url, model, dim);
+                db.set_embedder(Box::new(ollama)).map_err(|e| {
+                    kernel::Error::Unrecoverable {
+                        message: format!("yantrikdb set_embedder (ollama): {e}"),
+                    }
+                })?;
+                debug!("Attached OllamaEmbedder");
+            }
+            EmbedKind::Download => {
+                let EmbeddingConfig::Download { name, dim: _ } = &config.embedding else {
+                    unreachable!()
+                };
+                db.set_embedder_named(name).map_err(|e| {
+                    kernel::Error::Unrecoverable {
+                        message: format!("yantrikdb set_embedder_named({name}): {e}"),
+                    }
+                })?;
+                debug!(embedder = %name, "Attached downloaded embedder");
+            }
         }
 
         debug!(agent_id = %config.agent_id, "Yantrikdb opened");

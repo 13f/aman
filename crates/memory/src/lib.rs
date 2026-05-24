@@ -15,10 +15,12 @@ use std::sync::{Arc, RwLock};
 
 pub mod config;
 pub mod remote_embedder;
+pub mod ollama_embedder;
 pub mod yantrikdb;
 
 pub use config::{EmbeddingConfig, MemoryConfig};
 pub use remote_embedder::RemoteEmbedder;
+pub use ollama_embedder::OllamaEmbedder;
 pub use yantrikdb::YantrikdbProvider;
 
 /// Thread-safe registry for [`MemoryProvider`] instances.

@@ -591,7 +591,9 @@ impl AgentRuntimeBuilder {
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Memory store (M5) — pluggable memory provider ──────────
-        let aman_cfg = config::AmanConfig::from_default_path().ok();
+        let aman_cfg = config::AmanConfig::from_default_path()
+            .map_err(|e| tracing::warn!(error = %e, "failed to load ~/.aman/config.yaml, using defaults"))
+            .ok();
         let agent_key = aman_cfg
             .as_ref()
             .and_then(|c| c.agents.keys().next())
@@ -606,8 +608,24 @@ impl AgentRuntimeBuilder {
             .join("agents")
             .join(&agent_key)
             .join("memory");
-        std::fs::create_dir_all(&memory_dir)
-            .unwrap_or_else(|e| tracing::warn!(path = %memory_dir.display(), error = %e, "failed to create memory dir"));
+        // Handle migration: if `memory` is a file (from old yantrikdb path
+        // where db_path pointed directly to the file), rename it to a temp
+        // location, create the memory dir, then move it to memory/yantrik.db.
+        if memory_dir.is_file() {
+            let bak = memory_dir.with_extension("memory.bak");
+            let _ = std::fs::rename(&memory_dir, &bak);
+            let _ = std::fs::create_dir_all(&memory_dir);
+            let new_path = memory_dir.join("yantrik.db");
+            if let Err(e) = std::fs::rename(&bak, &new_path) {
+                tracing::warn!(from = %bak.display(), to = %new_path.display(), error = %e, "failed to migrate yantrikdb to memory/yantrik.db");
+            } else {
+                tracing::info!(path = %new_path.display(), "migrated yantrikdb to memory/yantrik.db");
+            }
+        } else {
+            std::fs::create_dir_all(&memory_dir)
+                .unwrap_or_else(|e| tracing::warn!(path = %memory_dir.display(), error = %e, "failed to create memory dir"));
+        }
+        let db_path = memory_dir.join("yantrik.db");
 
         // Register the built-in YantrikdbProvider directly (always available).
         {
@@ -616,7 +634,7 @@ impl AgentRuntimeBuilder {
                 .map(resolve_embedding_config)
                 .unwrap_or_default();
             let memory_config = MemoryConfig {
-                db_path: memory_dir.to_string_lossy().into_owned(),
+                db_path: db_path.to_string_lossy().into_owned(),
                 agent_id: agent_key.clone(),
                 embedding: embedding_config,
             };
@@ -2716,7 +2734,24 @@ fn resolve_embedding_config(aman: &config::AmanConfig) -> memory::EmbeddingConfi
                 let api_key =
                     get_llm_api_key_or_inline(provider_key, Some(p));
 
-                // Detect dimension via a probe call.
+                // Try Ollama native /api/embed first, then OpenAI-compatible /v1/embeddings.
+                if let Ok(dim) = memory::OllamaEmbedder::detect_dim(
+                    &p.base_url,
+                    &api_model,
+                ) {
+                    tracing::info!(
+                        provider = %provider_key,
+                        model = %api_model,
+                        dim,
+                        "Resolved Ollama embedding config (dim auto-detected)"
+                    );
+                    return memory::EmbeddingConfig::Ollama {
+                        base_url: p.base_url.clone(),
+                        model: api_model,
+                        dim,
+                    };
+                }
+
                 match memory::RemoteEmbedder::detect_dim(
                     &p.base_url,
                     &api_key,

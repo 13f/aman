@@ -39,6 +39,16 @@ pub enum EmbeddingConfig {
         /// Detected output dimension.
         dim: usize,
     },
+    /// Call Ollama's native `/api/embed` endpoint.
+    #[serde(rename = "ollama")]
+    Ollama {
+        /// Ollama base URL (e.g. "http://localhost:11434").
+        base_url: String,
+        /// Model name (e.g. "qwen3-embedding:8b").
+        model: String,
+        /// Detected output dimension.
+        dim: usize,
+    },
 }
 
 impl Default for EmbeddingConfig {

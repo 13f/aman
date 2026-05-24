@@ -253,3 +253,24 @@ def article_to_api_input(article: dict, index: int) -> dict:
         "source_name": article.get("source", ""),
         "link": article.get("url", ""),
     }
+
+
+# ── Score filtering ────────────────────────────────────────────────────
+
+def filter_by_score(articles: list, min_score: int = 18) -> tuple[list, list]:
+    """Filter articles by total score (relevance + quality + timeliness).
+
+    Each article dict must have ``relevance``, ``quality``, ``timeliness``
+    integer fields (1-10 each, from ``info_score_articles``).
+
+    Returns ``(passing, skipped)`` — two lists of the same dicts.
+    """
+    passing = []
+    skipped = []
+    for a in articles:
+        total = a.get("relevance", 0) + a.get("quality", 0) + a.get("timeliness", 0)
+        if total >= min_score:
+            passing.append(a)
+        else:
+            skipped.append(a)
+    return passing, skipped

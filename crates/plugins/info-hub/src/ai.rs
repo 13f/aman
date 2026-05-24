@@ -27,6 +27,19 @@ pub struct ArticleInput {
     /// Pre-assigned keywords from tagging step (used by scoring prompt for context).
     #[serde(default)]
     pub keywords: Vec<String>,
+    /// Score from prior scoring step (used by summarizer to skip low-score articles).
+    #[serde(default)]
+    pub relevance: u32,
+    #[serde(default)]
+    pub quality: u32,
+    #[serde(default)]
+    pub timeliness: u32,
+}
+
+impl ArticleInput {
+    pub fn total_score(&self) -> u32 {
+        self.relevance + self.quality + self.timeliness
+    }
 }
 
 /// Score result for a single article.
@@ -526,6 +539,21 @@ where
 /// Clamp a score to 1..=10
 pub fn clamp_score(v: i64) -> u32 {
     v.clamp(1, 10) as u32
+}
+
+/// Simple truncation helper (public for use in tool fallback messages).
+pub fn truncate_str(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+    let sliced = &text[..max_len];
+    if let Some(pos) = sliced.rfind(['.', '!', '?', '。', '！', '？']) {
+        return sliced[..=pos].trim_end().to_string();
+    }
+    if let Some(pos) = sliced.rfind(' ') {
+        return sliced[..pos].to_string();
+    }
+    sliced.to_string()
 }
 
 pub const VALID_CATEGORIES: &[&str] = &[

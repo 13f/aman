@@ -27,7 +27,7 @@ _plugin_dir = str(Path.home() / ".aman" / "plugins" / "info-hub")
 if _plugin_dir not in sys.path:
     sys.path.insert(0, _plugin_dir)
 
-from ai import generate_highlights, score_articles, summarize_articles, tag_articles  # noqa: E402
+from ai import generate_highlights, score_and_summarize, tag_articles  # noqa: E402
 from common import extract_main_content, strip_html, truncate_description  # noqa: E402
 
 # ── RSS Feed Sources ────────────────────────────────────────────────────
@@ -375,7 +375,7 @@ def run_pipeline(
     t0 = time.time()
 
     # Step 1: Fetch all feeds
-    print("\n[1/4] Fetching feeds...")
+    print("\n[1/3] Fetching feeds...")
     articles = fetch_all_feeds(feeds=feeds, hours=hours)
     if not articles:
         return {
@@ -397,7 +397,7 @@ def run_pipeline(
         })
 
     # Step 2: Tag (category + keywords)
-    print(f"\n[2/4] Tagging {len(articles)} articles...")
+    print(f"\n[2/3] Tagging {len(articles)} articles...")
     tag_results = tag_articles(ai_input)
     tag_map = {r["index"]: r for r in tag_results}
     for i, a in enumerate(articles):
@@ -405,10 +405,13 @@ def run_pipeline(
             a["raw"]["category"] = tag_map[i]["category"]
             a["raw"]["keywords"] = tag_map[i]["keywords"]
 
-    # Step 3: Score (relevance, quality, timeliness)
-    print(f"\n[3/4] Scoring {len(articles)} articles...")
-    score_results = score_articles(ai_input)
+    # Step 3: Score + Summarize (both use LLM, delegated to ai.py)
+    print(f"\n[3/3] Scoring + summarizing {len(articles)} articles (min_score=18)...")
+    score_results, summary_results = score_and_summarize(ai_input, lang=lang, min_score=18)
     score_map = {r["index"]: r for r in score_results}
+    summary_map = {r["index"]: r for r in summary_results}
+
+    # Merge scores and summaries before sorting (index still matches ai_input)
     for i, a in enumerate(articles):
         if i in score_map:
             s = score_map[i]
@@ -416,32 +419,16 @@ def run_pipeline(
             a["raw"]["relevance"] = s["relevance"]
             a["raw"]["quality"] = s["quality"]
             a["raw"]["timeliness"] = s["timeliness"]
-
-    # Sort by score, take top N
-    articles.sort(key=lambda a: a.get("score", 0), reverse=True)
-    top_articles = articles[:top_n]
-
-    # Step 4: Summarize top articles + highlights
-    print(f"\n[4/4] Summarizing top {len(top_articles)} articles...")
-    summary_input = []
-    for i, a in enumerate(top_articles):
-        summary_input.append({
-            "index": i,
-            "title": a["title"],
-            "description": a.get("summary", ""),
-            "source_name": a["source"],
-            "link": a["url"],
-        })
-
-    summary_results = summarize_articles(summary_input, lang=lang)
-    summary_map = {r["index"]: r for r in summary_results}
-    for i, a in enumerate(top_articles):
         if i in summary_map:
             s = summary_map[i]
             a["raw"]["title_zh"] = s.get("title_zh", a["title"])
             a["raw"]["summary"] = s.get("summary", "")
             a["raw"]["reason"] = s.get("reason", "")
             a["summary"] = s.get("summary", "")
+
+    # Sort by score, take top N
+    articles.sort(key=lambda a: a.get("score", 0), reverse=True)
+    top_articles = articles[:top_n]
 
     # Highlights
     highlights_input = json.dumps(

@@ -22,6 +22,7 @@ use ai::{
     ArticleInput, LlmConfig, ScoreResult, SummaryResult, TagResult,
     build_highlights_prompt, build_scoring_prompt, build_summary_prompt,
     build_tagging_prompt, chat_completion_with_retries, parse_json_response,
+    truncate_str,
 };
 use config::InfoHubConfig;
 use types::InfoSearchInput;
@@ -375,7 +376,10 @@ impl Tool for InfoSummarizeArticlesTool {
                                 "title": {"type": "string"},
                                 "description": {"type": "string"},
                                 "source_name": {"type": "string"},
-                                "link": {"type": "string"}
+                                "link": {"type": "string"},
+                                "relevance": {"type": "integer", "description": "Relevance score 1-10 from prior scoring"},
+                                "quality": {"type": "integer", "description": "Quality score 1-10 from prior scoring"},
+                                "timeliness": {"type": "integer", "description": "Timeliness score 1-10 from prior scoring"}
                             }
                         }
                     },
@@ -383,6 +387,11 @@ impl Tool for InfoSummarizeArticlesTool {
                         "type": "string",
                         "description": "Output language (zh or en, default zh)",
                         "default": "zh"
+                    },
+                    "min_score": {
+                        "type": "integer",
+                        "description": "Minimum total score (relevance+quality+timeliness, 3-30) to summarize. Articles below this get fallback. Default 0 (no filter).",
+                        "default": 0
                     }
                 }
             }))
@@ -427,15 +436,49 @@ impl Tool for InfoSummarizeArticlesTool {
             .and_then(|v| v.as_str())
             .unwrap_or("zh");
 
-        let (system, user) = build_summary_prompt(&articles, lang);
-        let text = chat_completion_with_retries(llm, &system, &user, 0.4, 8192, 60, 3).await
-            .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
+        let min_score: u32 = params
+            .get("min_score")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
 
-        let results: Vec<SummaryResult> = parse_json_response::<Value>(&text)
-            .ok()
-            .and_then(|v| v.pointer("/results").cloned())
-            .and_then(|r| serde_json::from_value(r).ok())
-            .unwrap_or_default();
+        // Split: summarize articles meeting threshold, fallback for the rest
+        let (to_summarize, skipped): (Vec<&ArticleInput>, Vec<&ArticleInput>) =
+            articles.iter().partition(|a| min_score == 0 || a.total_score() >= min_score);
+
+        let mut results: Vec<SummaryResult> = Vec::with_capacity(articles.len());
+
+        // Fallback entries first (no LLM call needed)
+        for a in &skipped {
+            results.push(SummaryResult {
+                index: a.index,
+                title_zh: a.title.clone(),
+                summary: format!(
+                    "[skipped: score {}/30 below threshold] {}",
+                    a.total_score(),
+                    truncate_str(&a.description, 120),
+                ),
+                reason: String::new(),
+            });
+        }
+
+        // Only call LLM if there are articles worth summarizing
+        if !to_summarize.is_empty() {
+            let articles_refs: Vec<ArticleInput> = to_summarize.iter().map(|&a| a.clone()).collect();
+            let (system, user) = build_summary_prompt(&articles_refs, lang);
+            let text = chat_completion_with_retries(llm, &system, &user, 0.4, 8192, 60, 3).await
+                .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
+
+            let llm_results: Vec<SummaryResult> = parse_json_response::<Value>(&text)
+                .ok()
+                .and_then(|v| v.pointer("/results").cloned())
+                .and_then(|r| serde_json::from_value(r).ok())
+                .unwrap_or_default();
+
+            results.extend(llm_results);
+        }
+
+        // Sort by original index before returning
+        results.sort_by_key(|r| r.index);
 
         Ok(serde_json::to_value(json!({"results": results})).unwrap())
     }

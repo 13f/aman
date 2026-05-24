@@ -32,7 +32,7 @@ from common import (
     truncate_description,
     write_stdout_result,
 )
-from ai import generate_highlights, score_articles, summarize_articles, tag_articles
+from ai import generate_highlights, score_and_summarize, tag_articles
 
 DEFAULT_TOP_N = 20
 
@@ -338,10 +338,12 @@ def run_pipeline(
             a["raw"]["category"] = tag_map[i]["category"]
             a["raw"]["keywords"] = tag_map[i]["keywords"]
 
-    # Score (relevance, quality, timeliness)
-    score_results = score_articles(ai_input)
+    # Score + Summarize (both use LLM, delegated to ai.py)
+    score_results, summary_results = score_and_summarize(ai_input, lang=lang, min_score=18)
     score_map = {r["index"]: r for r in score_results}
+    summary_map = {r["index"]: r for r in summary_results}
 
+    # Merge scores and summaries before sorting (index still matches ai_input)
     for i, a in enumerate(articles):
         if i in score_map:
             s = score_map[i]
@@ -349,32 +351,16 @@ def run_pipeline(
             a["raw"]["relevance"] = s["relevance"]
             a["raw"]["quality"] = s["quality"]
             a["raw"]["timeliness"] = s["timeliness"]
-
-    # Sort by score desc, take top N
-    articles.sort(key=lambda a: a.get("score", 0), reverse=True)
-    top_articles = articles[:top_n]
-
-    # Summarize top articles
-    summary_input = []
-    for i, a in enumerate(top_articles):
-        summary_input.append({
-            "index": i,
-            "title": a["title"],
-            "description": a["raw"].get("content", "") or a.get("summary", ""),
-            "source_name": a["source"],
-            "link": a["url"],
-        })
-
-    summary_results = summarize_articles(summary_input, lang=lang)
-    summary_map = {r["index"]: r for r in summary_results}
-
-    for i, a in enumerate(top_articles):
         if i in summary_map:
             s = summary_map[i]
             a["raw"]["title_zh"] = s.get("title_zh", a["title"])
             a["raw"]["summary"] = s.get("summary", "")
             a["raw"]["reason"] = s.get("reason", "")
             a["summary"] = s.get("summary", "")
+
+    # Sort by score desc, take top N for report
+    articles.sort(key=lambda a: a.get("score", 0), reverse=True)
+    top_articles = articles[:top_n]
 
     # Persist scores and summaries to article_meta
     conn = open_db(db_path)

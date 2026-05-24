@@ -105,14 +105,18 @@ def score_articles(articles: list) -> list:
 
 # ── Summarization ─────────────────────────────────────────────────────
 
-def summarize_articles(articles: list, lang: str = "zh") -> list:
+def summarize_articles(articles: list, lang: str = "zh", min_score: int = 0) -> list:
     """Summarize articles with title translation, summary, and reason.
 
     Calls info_summarize_articles tool on the aman gateway.
 
     Args:
-        articles: List of dicts with {index, title, description, source_name?, link?}
+        articles: List of dicts with {index, title, description, source_name?, link?,
+                  relevance?, quality?, timeliness?}
         lang: Output language (zh or en)
+        min_score: Minimum total score (relevance+quality+timeliness, 3-30).
+                   Articles below this get a fallback entry instead of consuming LLM tokens.
+                   Default 0 disables filtering.
 
     Returns:
         List of dicts with {index, title_zh, summary, reason}
@@ -123,6 +127,7 @@ def summarize_articles(articles: list, lang: str = "zh") -> list:
     output = _call_tool("info_summarize_articles", {
         "articles": articles,
         "lang": lang,
+        "min_score": min_score,
     })
     return output.get("results", [])
 
@@ -151,6 +156,45 @@ def generate_highlights(articles_json: str, lang: str = "zh") -> str:
 
 
 # ── Orchestration ──────────────────────────────────────────────────────
+
+def score_and_summarize(articles: list, lang: str = "zh", min_score: int = 18):
+    """Score articles, then summarize those meeting the score threshold.
+
+    1. Calls ``info_score_articles`` to get relevance/quality/timeliness (1-10 each).
+    2. Attaches scores to each article dict.
+    3. Calls ``info_summarize_articles``, which filters by *min_score* and only
+       spends LLM tokens on articles worth summarizing.
+
+    Args:
+        articles: List of dicts with {index, title, description, source_name?, link?}
+        lang: Output language (zh or en)
+        min_score: Minimum total score (3-30, default 18 = avg 6 per dimension)
+
+    Returns:
+        (scores, summaries) tuple:
+        - scores: [{index, relevance, quality, timeliness}]
+        - summaries: [{index, title_zh, summary, reason}]
+    """
+    if not articles:
+        return [], []
+
+    scores = score_articles(articles)
+
+    # Attach scores so the summarizer can filter
+    score_map = {r["index"]: r for r in scores}
+    scored_articles = []
+    for a in articles:
+        s = score_map.get(a["index"], {})
+        scored_articles.append({
+            **a,
+            "relevance": s.get("relevance", 0),
+            "quality": s.get("quality", 0),
+            "timeliness": s.get("timeliness", 0),
+        })
+
+    summaries = summarize_articles(scored_articles, lang=lang, min_score=min_score)
+    return scores, summaries
+
 
 def tag_and_score(articles: list) -> list:
     """Tag and score a list of articles — out-of-the-box pipeline.

@@ -2429,6 +2429,7 @@ dependencies = [
  "hook",
  "idle",
  "idle-system",
+ "info-hub",
  "kernel",
  "llm-provider-openai",
  "memory",

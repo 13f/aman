@@ -28,6 +28,7 @@ kernel = { path = "../core", version = "0.1.0" }
 llm-provider-openai = { path = "../plugins/llm-provider-openai", version = "0.1.0" }
 	memory = { path = "../memory", version = "0.1.0" }
 	memory-store = { path = "../plugins/memory-store", version = "0.1.0" }
+	info-hub = { path = "../plugins/info-hub", version = "0.1.0" }
 notification = { path = "../notification", version = "0.1.0" }
 persistence = { path = "../persistence", version = "0.1.0" }
 pipeline = { path = "../pipeline", version = "0.1.0" }

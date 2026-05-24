@@ -231,6 +231,15 @@ impl Tool for InfoTagArticlesTool {
             .and_then(|r| serde_json::from_value(r).ok())
             .unwrap_or_default();
 
+        // Enforce max 3 keywords per article
+        let results: Vec<TagResult> = results
+            .into_iter()
+            .map(|mut r| {
+                r.keywords.truncate(3);
+                r
+            })
+            .collect();
+
         Ok(serde_json::to_value(json!({"results": results})).unwrap())
     }
 }
@@ -263,7 +272,7 @@ impl Tool for InfoScoreArticlesTool {
                 "properties": {
                     "articles": {
                         "type": "array",
-                        "description": "Articles to score",
+                        "description": "Articles to score, optionally with tags from info_tag_articles",
                         "items": {
                             "type": "object",
                             "required": ["index", "title", "description"],
@@ -272,7 +281,9 @@ impl Tool for InfoScoreArticlesTool {
                                 "title": {"type": "string"},
                                 "description": {"type": "string"},
                                 "source_name": {"type": "string"},
-                                "link": {"type": "string"}
+                                "link": {"type": "string"},
+                                "category": {"type": "string", "description": "Pre-assigned category from tagging step"},
+                                "keywords": {"type": "array", "items": {"type": "string"}, "description": "Pre-assigned keywords from tagging step"}
                             }
                         }
                     }

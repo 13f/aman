@@ -454,6 +454,75 @@ async function fetchAllFeedsDirectly(hours: number): Promise<Article[]> {
 }
 
 // ============================================================================
+// Fusion Integration
+// ============================================================================
+
+async function fetchFromFusion(hours: number, config?: IConfig): Promise<Article[]> {
+  const dbPath = config?.fusionDbPath || process.env.FUSION_DB_PATH || '/Users/jerin/apps/fusion/fusion.db';
+  console.log(`[digest] Connecting to fusion database: ${dbPath}`);
+
+  const db = new Database(dbPath);
+
+  try {
+    const cutoffTime = Math.floor(Date.now() / 1000) - hours * 3600;
+
+    const query = `
+      SELECT
+        i.id,
+        i.title,
+        i.link,
+        i.content,
+        i.pub_date,
+        f.name as feed_name,
+        f.site_url as feed_site_url
+      FROM items i
+      JOIN feeds f ON i.feed_id = f.id
+      WHERE i.pub_date > ?
+      ORDER BY i.pub_date DESC
+    `;
+
+    const rows = db.query(query).all(cutoffTime) as Array<{
+      id: number;
+      title: string;
+      link: string;
+      content: string;
+      pub_date: number;
+      feed_name: string;
+      feed_site_url: string;
+    }>;
+
+    console.log(`[digest] Fetched ${rows.length} articles from fusion (last ${hours} hours)`);
+
+    return rows.map(row => ({
+      title: row.title || 'Untitled',
+      link: row.link || '',
+      pubDate: new Date(row.pub_date * 1000),
+      description: stripHtml(row.content || '').slice(0, 2000),
+      sourceName: row.feed_name || 'unknown',
+      sourceUrl: row.feed_site_url || '',
+    }));
+  } finally {
+    db.close();
+  }
+}
+
+async function fetchAllFeeds(hours: number, config?: IConfig): Promise<Article[]> {
+  const dbPath = config?.fusionDbPath || process.env.FUSION_DB_PATH || '/Users/jerin/apps/fusion/fusion.db';
+
+  if (existsSync(dbPath)) {
+    console.log('[digest] Fetching articles from fusion database...');
+    const articles = await fetchFromFusion(hours, config);
+    console.log(`[digest] ✓ Fetched ${articles.length} articles from fusion database`);
+    return articles;
+  }
+
+  console.log('[digest] Fusion database not found, fetching feeds directly...');
+  const articles = await fetchAllFeedsDirectly(hours);
+  console.log(`[digest] ✓ Fetched ${articles.length} articles directly from RSS feeds`);
+  return articles;
+}
+
+// ============================================================================
 // MiniMax API
 // ============================================================================
 

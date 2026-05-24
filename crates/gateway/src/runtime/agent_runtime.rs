@@ -10,6 +10,7 @@ use kernel::hook::Hook;
 use kernel::llm::LlmProvider;
 use memory::{MemoryConfig, YantrikdbProvider};
 use memory_store::MemoryStorePlugin;
+use info_hub::InfoHubPlugin;
 use kernel::prompt::DefaultPromptPipeline;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
@@ -408,6 +409,11 @@ impl AgentRuntimeBuilder {
         let auth_registry = Arc::new(tool::auth::AuthRegistry::new());
         let llm_provider = create_llm_provider();
 
+        // Load config early so plugins that need LLM config can use it.
+        let aman_cfg = config::AmanConfig::from_default_path()
+            .map_err(|e| tracing::warn!(error = %e, "failed to load config, using defaults"))
+            .ok();
+
         // Load the built-in idle system plugin (handles idle personality progression).
         let idle_plugin = idle_system::IdleSystemPlugin::new();
         let idle_candidate = PluginCandidate {
@@ -466,9 +472,58 @@ impl AgentRuntimeBuilder {
             wasm_module_bytes: None,
         };
 
-        // Load the built-in LLM plugin, idle-system plugin, memory-store plugin
-        // (and any extra plugins from builder).
-        let mut all_candidates = vec![idle_candidate, memory_store_candidate];
+        // Resolve LLM config for info-hub (first try info_hub.llm, fall back to memory.llm)
+        let resolve_llm = |llm: &serde_json::Value| -> Option<info_hub::ai::LlmConfig> {
+            let provider_key = llm.get("provider")?.as_str()?;
+            let model_id = llm.get("model")?.as_str()?;
+            let p = aman_cfg.as_ref()?.providers.get(provider_key)?;
+            let api_model = p.models.iter()
+                .find(|m| m.id == model_id)
+                .map(|m| m.model_id.clone())
+                .unwrap_or_else(|| model_id.to_string());
+            let api_key = get_llm_api_key_or_inline(provider_key, Some(p));
+            Some(info_hub::ai::LlmConfig {
+                base_url: p.base_url.clone(),
+                api_key: Some(api_key),
+                model: api_model,
+            })
+        };
+        let info_hub_llm = aman_cfg
+            .as_ref()
+            .and_then(|c| c.info_hub.as_ref())
+            .and_then(|v| v.get("llm"))
+            .and_then(&resolve_llm)
+            .or_else(|| {
+                let llm = aman_cfg.as_ref()?.memory.as_ref()?.llm.as_ref()?;
+                resolve_llm(&serde_json::to_value(llm).ok()?)
+            });
+        let info_hub_plugin = InfoHubPlugin::from_config_with_llm(
+            aman_cfg.as_ref().and_then(|c| c.info_hub.as_ref()),
+            info_hub_llm,
+        );
+        let info_hub_candidate = PluginCandidate {
+            manifest: PluginManifest {
+                name: "info-hub".to_owned(),
+                version: info_hub_plugin.version().clone(),
+                depends_on: vec![],
+                lifecycle: PluginLifecycleConfig { auto_start: true },
+                exports: PluginExports {
+                    ..Default::default()
+                },
+                config_schema: None,
+                isolation: Some(PluginIsolationMode::InProcess),
+                subprocess: None,
+                wasm_path: None,
+                capabilities: vec![],
+                ui: None,
+            },
+            plugin: Box::new(info_hub_plugin),
+            isolation: PluginIsolationMode::InProcess,
+            subprocess: None,
+            wasm_module_bytes: None,
+        };
+
+        let mut all_candidates = vec![idle_candidate, memory_store_candidate, info_hub_candidate];
         all_candidates.extend(self.extra_plugins);
         let hook_registry = Arc::new(hook::HookRegistry::new());
         let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
@@ -591,9 +646,6 @@ impl AgentRuntimeBuilder {
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Memory store (M5) — pluggable memory provider ──────────
-        let aman_cfg = config::AmanConfig::from_default_path()
-            .map_err(|e| tracing::warn!(error = %e, "failed to load ~/.aman/config.yaml, using defaults"))
-            .ok();
         let agent_key = aman_cfg
             .as_ref()
             .and_then(|c| c.agents.keys().next())

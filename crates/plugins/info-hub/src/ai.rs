@@ -21,6 +21,12 @@ pub struct ArticleInput {
     pub source_name: String,
     #[serde(default)]
     pub link: String,
+    /// Pre-assigned category from tagging step (used by scoring prompt for context).
+    #[serde(default)]
+    pub category: String,
+    /// Pre-assigned keywords from tagging step (used by scoring prompt for context).
+    #[serde(default)]
+    pub keywords: Vec<String>,
 }
 
 /// Score result for a single article.
@@ -251,12 +257,24 @@ pub fn build_scoring_prompt(
     let articles_list = articles
         .iter()
         .map(|a| {
+            let tag_line = if !a.category.is_empty() || !a.keywords.is_empty() {
+                let kw_str = a.keywords.join(", ");
+                if !a.category.is_empty() && !kw_str.is_empty() {
+                    format!("[{} | {}] ", a.category, kw_str)
+                } else if !a.category.is_empty() {
+                    format!("[{}] ", a.category)
+                } else {
+                    format!("[{}] ", kw_str)
+                }
+            } else {
+                String::new()
+            };
             format!(
-                "Index {}: [{}] {}\n{}",
+                "Index {}: {tag_line}[{source}] {title}\n{desc}",
                 a.index,
-                a.source_name,
-                a.title,
-                truncate_description(&a.description, DESCRIPTION_MAX_LEN)
+                source = a.source_name,
+                title = a.title,
+                desc = truncate_description(&a.description, DESCRIPTION_MAX_LEN),
             )
         })
         .collect::<Vec<_>>()
@@ -264,6 +282,8 @@ pub fn build_scoring_prompt(
 
     let user = format!(
         r#"请对以下文章进行三个维度的评分（1-10 整数，10 分最高）。
+
+每篇文章前的 [category | keywords] 标签已预先标注，评分时请结合这些标签判断文章在所属领域内的价值。
 
 ## 评分维度
 
@@ -325,18 +345,13 @@ pub fn build_tagging_prompt(
         .join("\n\n---\n\n");
 
     let user = format!(
-        r#"请为每篇文章分配一个分类标签，并提取 2-4 个关键词。
+        r#"请为每篇文章分配一个分类标签，并提取 1-3 个关键词。
 
-## 分类标签（必须从以下选一个）
-- ai-ml: AI、机器学习、LLM、深度学习相关
-- security: 安全、隐私、漏洞、加密相关
-- engineering: 软件工程、架构、编程语言、系统设计
-- tools: 开发工具、开源项目、新发布的库/框架
-- opinion: 行业观点、个人思考、职业发展、文化评论
-- other: 以上都不太适合的
+## 分类标签
+根据文章内容自由选择一个最合适的分类标签（用英文，简短，如 "ai-ml", "security", "engineering", "tools", "opinion", "linux", "rust", "database", "frontend", "career" 等，也可以自创更精确的分类）。
 
 ## 关键词提取
-提取 2-4 个最能代表文章主题的关键词（用英文，简短，如 "Rust", "LLM", "database", "performance"）
+提取 1-3 个最能代表文章主题的关键词（用英文，简短，如 "Rust", "LLM", "database", "performance"）。
 
 ## 待分类文章
 
@@ -348,7 +363,7 @@ pub fn build_tagging_prompt(
     {{
       "index": 0,
       "category": "engineering",
-      "keywords": ["Rust", "compiler", "performance"]
+      "keywords": ["Rust", "compiler"]
     }}
   ]
 }}"#

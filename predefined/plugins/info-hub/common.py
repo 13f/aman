@@ -13,6 +13,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.request import Request, urlopen
+from urllib.error import URLError
+import ssl
 
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -161,3 +164,45 @@ def expand_tilde(path: str) -> str:
     if path.startswith("~"):
         return os.path.expanduser(path)
     return path
+
+
+# ── Web fetch ──────────────────────────────────────────────────────────
+
+def fetch_article_content(url: str, timeout: int = 8) -> str:
+    """Fetch a URL and extract the main text content.
+
+    Returns extracted plain text, or empty string on any error.
+    """
+    if not url or not url.startswith("http"):
+        return ""
+
+    try:
+        ctx = ssl.create_default_context()
+        req = Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; RSS Reader)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        })
+        with urlopen(req, timeout=timeout, context=ctx) as resp:
+            if resp.status >= 400:
+                return ""
+            # Read up to 500KB
+            html = resp.read(500_000).decode("utf-8", errors="replace")
+        return extract_main_content(html)
+    except (URLError, OSError, ValueError, UnicodeDecodeError):
+        return ""
+
+
+def extract_main_content(html: str) -> str:
+    """Extract readable text from HTML, stripping navigation and boilerplate."""
+    # Remove non-content elements
+    for tag in ("script", "style", "nav", "header", "footer", "aside"):
+        html = re.sub(rf"<{tag}[^>]*>[\s\S]*?</{tag}>", " ", html, flags=re.IGNORECASE)
+
+    # Strip all remaining HTML tags
+    text = re.sub(r"<[^>]+>", " ", html)
+
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Limit to 1500 chars for AI context
+    return text[:1500]

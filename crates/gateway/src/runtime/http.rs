@@ -2062,7 +2062,11 @@ async fn publish_explore_reply(runtime: &Arc<AgentRuntime>, session_id: &str, ag
             "turns_processed": 0,
         }),
     );
-    let _ = runtime.publish_event(event).await;
+    // Publish to global bus for persistence (JSONL) and frontend polling.
+    let _ = runtime.publish_event(event.clone()).await;
+    // Also publish to agent's local bus so AgentIdleManager sees the
+    // busy→empty transition and produces QueueDrained → Reflection.
+    let _ = runtime.publish_event_to_agent(agent_id, event).await;
 }
 
 async fn explore_start(

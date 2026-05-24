@@ -23,6 +23,7 @@ pub struct GrpcClient {
     inner: AmanClient<Channel>,
 }
 
+#[allow(dead_code)]
 impl GrpcClient {
     /// Connect to the gRPC server at `addr`.
     pub async fn connect(addr: SocketAddr) -> Result<Self, tonic::transport::Error> {

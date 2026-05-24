@@ -67,8 +67,24 @@ pub async fn serve_stdio(runtime: Arc<AgentRuntime>) -> AmanResult<()> {
             continue;
         }
 
-        let req: Request = match serde_json::from_str(&line) {
-            Ok(r) => r,
+        let req: Request = match serde_json::from_str::<Request>(&line) {
+            Ok(r) => {
+                if r.jsonrpc != "2.0" {
+                    let resp = Response {
+                        jsonrpc: "2.0",
+                        id: r.id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32600,
+                            message: "Invalid Request: jsonrpc must be \"2.0\"".into(),
+                            data: None,
+                        }),
+                    };
+                    println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+                    continue;
+                }
+                r
+            }
             Err(e) => {
                 let resp = Response {
                     jsonrpc: "2.0",

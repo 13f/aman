@@ -12,19 +12,6 @@ package aman;
 
 message Empty {}
 
-message Id {
-  string id = 1;
-}
-
-message Name {
-  string name = 1;
-}
-
-// Generic JSON-carrying response (matches HTTP response body shapes).
-message JsonResponse {
-  bytes data = 1;
-}
-
 // ── Health ──
 
 message HealthResponse {

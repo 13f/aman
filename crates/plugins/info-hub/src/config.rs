@@ -96,14 +96,35 @@ pub enum SourceConfig {
         #[serde(default)]
         db_path: Option<String>,
     },
+    Embedding {
+        name: String,
+        /// OpenAI-compatible embeddings endpoint (e.g. http://127.0.0.1:11434/v1).
+        base_url: String,
+        /// Embedding model name (e.g. qwen3-embedding-8b).
+        model: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        /// Path to SQLite database containing articles for the candidate pool.
+        db_path: String,
+        /// Minimum cosine similarity (0.0–1.0). Results below this are dropped.
+        #[serde(default = "default_embedding_threshold")]
+        threshold: f64,
+        /// Max number of candidate articles to fetch from the DB for embedding.
+        #[serde(default = "default_max_candidates")]
+        max_candidates: usize,
+    },
 }
+
+fn default_embedding_threshold() -> f64 { 0.5 }
+fn default_max_candidates() -> usize { 50 }
 
 impl SourceConfig {
     pub fn name(&self) -> &str {
         match self {
             SourceConfig::Api { name, .. }
             | SourceConfig::Cli { name, .. }
-            | SourceConfig::Db { name, .. } => name,
+            | SourceConfig::Db { name, .. }
+            | SourceConfig::Embedding { name, .. } => name,
         }
     }
 }

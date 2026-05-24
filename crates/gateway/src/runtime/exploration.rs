@@ -136,9 +136,7 @@ impl ExplorationRunner {
                 let picks: Vec<_> =
                     interests.choose_multiple(&mut rng, n).cloned().collect();
                 for interest in &picks {
-                    queries.push(format!(
-                        "latest developments about {interest}"
-                    ));
+                    queries.push(interest.clone());
                 }
             }
         }
@@ -219,6 +217,8 @@ impl ExplorationRunner {
                 sleep(Duration::from_millis(delay_ms)).await;
             }
 
+            // First pass: original query
+            let before = all_items.len();
             let input = InfoSearchInput {
                 query: query.clone(),
                 limit: 5,
@@ -234,6 +234,34 @@ impl ExplorationRunner {
                 match adapter.search(&input).await {
                     Ok(items) => all_items.extend(items),
                     Err(e) => warn!(source = source.name(), error = %e, "Exploration: adapter search failed"),
+                }
+            }
+
+            // Second pass: retry with extracted keywords if original returned nothing
+            if all_items.len() == before {
+                let keywords = extract_keywords(query);
+                if !keywords.is_empty() && keywords != *query {
+                    debug!(
+                        original = %query,
+                        keywords = %keywords,
+                        "Exploration: retrying with extracted keywords",
+                    );
+                    let kw_input = InfoSearchInput {
+                        query: keywords,
+                        limit: 5,
+                        offset: 0,
+                        sources: None,
+                    };
+                    for source in &sources {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        let adapter = adapters::build_adapter(source, timeout_ms);
+                        match adapter.search(&kw_input).await {
+                            Ok(items) => all_items.extend(items),
+                            Err(e) => warn!(source = source.name(), error = %e, "Exploration: keyword retry failed"),
+                        }
+                    }
                 }
             }
         }
@@ -402,6 +430,39 @@ impl ExplorationRunner {
         self.signal_cooldown(agent_id).await;
         Ok(())
     }
+}
+
+/// Strip English filler/stop words from a query, leaving only content-bearing terms.
+///
+/// Queries are often natural-language wrappers like "latest information about: X"
+/// or "what is X and how does it relate to other things?". SQL LIKE and keyword
+/// search engines need just the content words, not the wrapper.
+fn extract_keywords(query: &str) -> String {
+    // English stop words that carry no content signal for keyword search.
+    const STOP: &[&str] = &[
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "does", "do",
+        "did", "has", "have", "had", "what", "who", "when", "where", "why", "how",
+        "which", "about", "for", "of", "to", "in", "on", "at", "with", "from",
+        "by", "and", "or", "but", "it", "its", "this", "that", "these", "those",
+        "latest", "developments", "information", "things", "other", "relate",
+        "related", "does",
+    ];
+
+    // Remove punctuation and split into tokens.
+    let cleaned = query
+        .replace(':', " ")
+        .replace('?', " ")
+        .replace(',', " ")
+        .replace('.', " ");
+    let tokens: Vec<&str> = cleaned
+        .split_whitespace()
+        .filter(|t| {
+            let lower = t.to_lowercase();
+            !STOP.contains(&lower.as_str())
+        })
+        .collect();
+
+    tokens.join(" ")
 }
 
 impl Default for ExplorationRunner {
@@ -732,5 +793,41 @@ mod tests {
         }];
         let stored = runner.process_results("agent-1", &items).await;
         assert_eq!(stored, 0);
+    }
+
+    // -- extract_keywords tests ------------------------------------------
+
+    #[test]
+    fn extract_keywords_strips_english_filler() {
+        let result = extract_keywords("latest information about: Bitcoin Layer 2 scaling solutions");
+        assert_eq!(result, "Bitcoin Layer 2 scaling solutions");
+    }
+
+    #[test]
+    fn extract_keywords_strips_question_words() {
+        let result = extract_keywords("what is rust and how does it relate to other things?");
+        assert_eq!(result, "rust");
+    }
+
+    #[test]
+    fn extract_keywords_preserves_chinese() {
+        let result = extract_keywords("循证医学前沿");
+        assert_eq!(result, "循证医学前沿");
+    }
+
+    #[test]
+    fn extract_keywords_preserves_mixed_content() {
+        let result = extract_keywords("what is GPT-4 and 大语言模型 training?");
+        assert!(result.contains("GPT-4"));
+        assert!(result.contains("大语言模型"));
+        assert!(result.contains("training"));
+        assert!(!result.contains("what"));
+        assert!(!result.contains("and"));
+    }
+
+    #[test]
+    fn extract_keywords_empty_after_stop_words_returns_empty() {
+        let result = extract_keywords("what is the about");
+        assert_eq!(result, "");
     }
 }

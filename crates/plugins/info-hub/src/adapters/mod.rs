@@ -7,6 +7,7 @@ use crate::types::{InfoItem, InfoSearchInput};
 pub mod api;
 pub mod cli;
 pub mod db;
+pub mod embedding;
 
 /// A single data-source adapter. Each variant knows how to query one kind of source.
 #[async_trait]
@@ -62,6 +63,24 @@ pub fn build_adapter(source: &SourceConfig, timeout_ms: u64) -> Box<dyn Adapter>
             runtime.clone(),
             script.clone(),
             db_path.clone(),
+            timeout_ms,
+        )),
+        SourceConfig::Embedding {
+            base_url,
+            model,
+            api_key,
+            db_path,
+            threshold,
+            max_candidates,
+            ..
+        } => Box::new(embedding::EmbeddingAdapter::new(
+            name,
+            base_url.clone(),
+            model.clone(),
+            api_key.clone(),
+            db_path.clone(),
+            *threshold,
+            *max_candidates,
             timeout_ms,
         )),
     }

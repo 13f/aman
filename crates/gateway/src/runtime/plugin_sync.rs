@@ -7,10 +7,13 @@
 //! local `~/.aman/plugins/` directory. Tracks content hashes so user modifications
 //! are detected and preserved across updates.
 //!
-//! Follows the same pattern as [`super::skill_sync`].
+//! Shares `~/.aman/.manifest.json` with [`super::skill_sync`] — plugin hashes are
+//! stored under `hashes.plugins`.
 
 use std::collections::HashMap;
 use std::path::Path;
+
+use super::skill_sync::{load_unified_manifest, save_unified_manifest};
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -22,14 +25,6 @@ struct BuiltinPlugin {
     name: &'static str,
     /// `(rel_path, precomputed_blake3_hex, content)` — one entry per file.
     files: Vec<(&'static str, &'static str, &'static str)>,
-}
-
-/// Manifest file at `~/.aman/.plugin-manifest.json`.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PluginManifest {
-    version: u32,
-    /// Map from `rel_path` → blake3 hex hash of the last-synced built-in content.
-    hashes: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -44,13 +39,6 @@ include!(concat!(env!("OUT_DIR"), "/builtin_plugins.rs"));
 
 fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
-}
-
-fn load_manifest(path: &Path) -> PluginManifest {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(PluginManifest { version: 1, hashes: HashMap::new() })
 }
 
 // ---------------------------------------------------------------------------
@@ -77,8 +65,8 @@ fn sync_builtin_plugins_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Er
     let plugins_dir = data_dir.join("plugins");
     std::fs::create_dir_all(&plugins_dir)?;
 
-    let manifest_path = data_dir.join(".plugin-manifest.json");
-    let prev_manifest = load_manifest(&manifest_path);
+    let manifest_path = data_dir.join(".manifest.json");
+    let mut manifest = load_unified_manifest(&manifest_path);
 
     let plugins = builtin_plugins();
     let mut new_hashes = HashMap::new();
@@ -87,13 +75,13 @@ fn sync_builtin_plugins_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Er
         for &(rel_path, hash, content) in &plugin.files {
             let dest = plugins_dir.join(rel_path);
 
-            // Ensure parent subdirectory exists.
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
 
-            let user_modified = prev_manifest
+            let user_modified = manifest
                 .hashes
+                .plugins
                 .get(rel_path)
                 .map(|prev_hash| {
                     dest.exists()
@@ -126,8 +114,8 @@ fn sync_builtin_plugins_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Er
         }
     }
 
-    let manifest = PluginManifest { version: 1, hashes: new_hashes };
-    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+    manifest.hashes.plugins = new_hashes;
+    save_unified_manifest(&manifest_path, &manifest)?;
 
     Ok(())
 }
@@ -139,6 +127,7 @@ fn sync_builtin_plugins_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::skill_sync::UnifiedManifest;
 
     #[test]
     fn content_hash_is_deterministic() {
@@ -171,7 +160,7 @@ mod tests {
         }
 
         // Manifest should exist
-        assert!(tmp.join(".plugin-manifest.json").exists());
+        assert!(tmp.join(".manifest.json").exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -229,6 +218,29 @@ mod tests {
 
         // Third sync: file now matches built-in (user "reverted").
         sync_builtin_plugins_to(&tmp).expect("third sync");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn plugin_sync_does_not_clobber_skill_hashes() {
+        let tmp = std::env::temp_dir().join(format!("aman-plugin-sync-shared-manifest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let manifest_path = tmp.join(".manifest.json");
+
+        // Pre-populate manifest with a skill hash
+        let mut manifest = UnifiedManifest::default();
+        manifest.hashes.skills.insert("test/skill.yaml".into(), "skill-hash-123".into());
+        save_unified_manifest(&manifest_path, &manifest).expect("save manifest");
+
+        // Run plugin sync
+        sync_builtin_plugins_to(&tmp).expect("sync_to should succeed");
+
+        // Reload and verify skill hash survived
+        let reloaded = load_unified_manifest(&manifest_path);
+        assert_eq!(reloaded.hashes.skills.get("test/skill.yaml").unwrap(), "skill-hash-123");
+        // Plugin hashes should be populated
+        assert!(!reloaded.hashes.plugins.is_empty());
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

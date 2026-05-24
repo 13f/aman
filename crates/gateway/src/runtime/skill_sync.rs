@@ -9,6 +9,9 @@
 //!
 //! The list of built-in skills is defined in `skills/builtin-skills.json` and
 //! compiled into the binary via a build script (build.rs).
+//!
+//! Shares `~/.aman/.manifest.json` with [`super::plugin_sync`] — hashes are
+//! grouped under `hashes.skills` and `hashes.plugins`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,12 +28,23 @@ struct BuiltinSkill {
     files: Vec<(&'static str, &'static str, &'static str)>,
 }
 
-/// Manifest file at `~/.aman/.manifest.json`.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SkillManifest {
+/// Unified manifest file at `~/.aman/.manifest.json`.
+///
+/// Shared by both skill and plugin sync. Each group is a map from `rel_path` →
+/// blake3 hex hash of the last-synced built-in content.
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub(crate) struct UnifiedManifest {
     version: u32,
-    /// Map from `rel_path` → blake3 hex hash of the last-synced built-in content.
-    hashes: HashMap<String, String>,
+    #[serde(default)]
+    pub(crate) hashes: GroupedHashes,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+pub(crate) struct GroupedHashes {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) skills: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) plugins: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,11 +61,21 @@ fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
 }
 
-fn load_manifest(path: &Path) -> SkillManifest {
+/// Load the unified manifest, or return a default if the file doesn't exist
+/// or is unparseable (including old flat-hash format).
+pub(crate) fn load_unified_manifest(path: &Path) -> UnifiedManifest {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(SkillManifest { version: 1, hashes: HashMap::new() })
+        .unwrap_or_default()
+}
+
+/// Write the unified manifest to disk.
+pub(crate) fn save_unified_manifest(path: &Path, manifest: &UnifiedManifest) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(manifest)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +111,7 @@ fn sync_builtin_skills_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Err
     std::fs::create_dir_all(&skills_dir)?;
 
     let manifest_path = data_dir.join(".manifest.json");
-    let prev_manifest = load_manifest(&manifest_path);
+    let mut manifest = load_unified_manifest(&manifest_path);
 
     let skills = builtin_skills();
     let mut new_hashes = HashMap::new();
@@ -96,13 +120,13 @@ fn sync_builtin_skills_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Err
         for &(rel_path, hash, content) in &skill.files {
             let dest = skills_dir.join(rel_path);
 
-            // Ensure parent subdirectory exists.
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
 
-            let user_modified = prev_manifest
+            let user_modified = manifest
                 .hashes
+                .skills
                 .get(rel_path)
                 .map(|prev_hash| {
                     dest.exists()
@@ -135,8 +159,8 @@ fn sync_builtin_skills_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    let manifest = SkillManifest { version: 1, hashes: new_hashes };
-    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+    manifest.hashes.skills = new_hashes;
+    save_unified_manifest(&manifest_path, &manifest)?;
 
     Ok(())
 }
@@ -246,7 +270,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let skills_dir = tmp.join("skills");
 
-        // Pick an arbitrary .yaml file from the manifest to modify
         let skills = builtin_skills();
         let target_skill = skills.iter().find(|s| {
             s.files.iter().any(|(p, _, _)| p.ends_with(".yaml"))
@@ -282,7 +305,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let skills_dir = tmp.join("skills");
 
-        // Pick an arbitrary .yaml file from the manifest
         let skills = builtin_skills();
         let target_skill = skills.iter().find(|s| {
             s.files.iter().any(|(p, _, _)| p.ends_with(".yaml"))
@@ -319,7 +341,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         let skills_dir = tmp.join("skills");
 
-        // Find a skill with multiple files (entry point + supporting files)
         let skills = builtin_skills();
         let multi = skills.iter()
             .find(|s| s.files.len() > 1)
@@ -339,11 +360,33 @@ mod tests {
         let after = std::fs::read_to_string(&supporting_path).unwrap();
         assert_eq!(after, modified, "user modification to supporting file should be preserved");
 
-        // The entry file (SKILL.md) should still be the original (unmodified = overwritten)
         let entry_path = skills_dir.join(entry.0);
         let on_disk = std::fs::read_to_string(&entry_path).unwrap();
         assert_eq!(on_disk, entry.2, "unmodified entry file should be overwritten with latest");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn manifest_serialization_round_trips() {
+        let mut manifest = UnifiedManifest::default();
+        manifest.hashes.skills.insert("test/file.yaml".into(), "abc123".into());
+        manifest.hashes.plugins.insert("test/script.py".into(), "def456".into());
+
+        let json = serde_json::to_string_pretty(&manifest).unwrap();
+        let parsed: UnifiedManifest = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.hashes.skills.get("test/file.yaml").unwrap(), "abc123");
+        assert_eq!(parsed.hashes.plugins.get("test/script.py").unwrap(), "def456");
+    }
+
+    #[test]
+    fn manifest_backward_compat_with_flat_hashes() {
+        // Old flat format: {"version": 1, "hashes": {"a": "b"}}
+        let old = r#"{"version":1,"hashes":{"a":"b"}}"#;
+        let parsed: UnifiedManifest = serde_json::from_str(old).unwrap();
+        // Old flat hash map doesn't map to GroupedHashes, so it's empty.
+        assert!(parsed.hashes.skills.is_empty());
+        assert!(parsed.hashes.plugins.is_empty());
     }
 }

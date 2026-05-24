@@ -606,6 +606,8 @@ impl AgentRuntimeBuilder {
             .join("agents")
             .join(&agent_key)
             .join("memory");
+        std::fs::create_dir_all(&memory_dir)
+            .unwrap_or_else(|e| tracing::warn!(path = %memory_dir.display(), error = %e, "failed to create memory dir"));
 
         // Register the built-in YantrikdbProvider directly (always available).
         {

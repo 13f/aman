@@ -77,9 +77,12 @@ impl RemoteEmbedder {
         let dim = resp["data"][0]["embedding"]
             .as_array()
             .ok_or_else(|| {
+                let body_preview = serde_json::to_string_pretty(&resp)
+                    .unwrap_or_else(|_| String::from("(unable to serialize response)"));
                 format!(
-                    "unexpected embedding API response: missing data[0].embedding array; \
-                     check that {base} is an OpenAI-compatible /v1/embeddings endpoint"
+                    "unexpected embedding API response: missing data[0].embedding array\n\
+                     endpoint: {base}/embeddings\n\
+                     response body:\n{body_preview}"
                 )
             })?
             .len();

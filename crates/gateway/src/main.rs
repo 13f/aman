@@ -91,10 +91,14 @@ async fn run() -> Result<(), i32> {
     }
 
     let runtime = Arc::new(
-        builder.build().map_err(|e| {
-            eprintln!("Runtime build error: {e}");
-            1
-        })?,
+        std::thread::spawn(move || {
+            builder.build().map_err(|e| {
+                eprintln!("Runtime build error: {e}");
+                1
+            })
+        })
+        .join()
+        .expect("build thread panicked")?,
     );
 
     tracing::info!(bind = %bind, "starting gateway");

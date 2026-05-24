@@ -19,6 +19,7 @@ use info_hub::adapters;
 use info_hub::config::InfoHubConfig;
 use info_hub::merge;
 use info_hub::types::{InfoItem, InfoSearchInput};
+use event_bus::EventBus;
 use kernel::event::{Event, EventType};
 use kernel::memory::MemoryProvider;
 use kernel::AmanResult;
@@ -41,6 +42,7 @@ pub struct ExplorationRunner {
     memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
     info_hub_config: OnceLock<InfoHubConfig>,
     exploration_config: OnceLock<ExplorationConfig>,
+    global_bus: OnceLock<Arc<dyn EventBus>>,
     active_runs: RwLock<HashSet<String>>,
 }
 
@@ -51,6 +53,7 @@ impl ExplorationRunner {
             memory_provider: OnceLock::new(),
             info_hub_config: OnceLock::new(),
             exploration_config: OnceLock::new(),
+            global_bus: OnceLock::new(),
             active_runs: RwLock::new(HashSet::new()),
         }
     }
@@ -69,6 +72,10 @@ impl ExplorationRunner {
 
     pub fn set_exploration_config(&self, config: ExplorationConfig) {
         let _ = self.exploration_config.set(config);
+    }
+
+    pub fn set_global_bus(&self, bus: Arc<dyn EventBus>) {
+        let _ = self.global_bus.set(bus);
     }
 
     // -- guard helpers -------------------------------------------------------
@@ -426,6 +433,23 @@ impl ExplorationRunner {
             duration_ms = elapsed.as_millis(),
             "Exploration: cycle complete",
         );
+
+        // Publish idle completion event to global bus for UI notification
+        if stored > 0 {
+            if let Some(bus) = self.global_bus.get() {
+                let event = Event::new(
+                    format!("idle:exploration:{agent_id}"),
+                    EventType::Custom("idle.cycle_completed".to_owned()),
+                    serde_json::json!({
+                        "kind": "exploration",
+                        "agentId": agent_id,
+                        "stored": stored,
+                        "durationMs": elapsed.as_millis(),
+                    }),
+                );
+                let _ = bus.publish(event).await;
+            }
+        }
 
         self.signal_cooldown(agent_id).await;
         Ok(())

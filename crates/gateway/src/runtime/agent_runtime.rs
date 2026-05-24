@@ -785,6 +785,7 @@ impl AgentRuntimeBuilder {
             .map(|c| c.runtime.idle.exploration.clone())
             .unwrap_or_default();
         exploration_runner.set_exploration_config(exploration_cfg);
+        exploration_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
 
         // Pass info-hub config so ExplorationRunner can use its adapters
         if let Some(ref cfg) = aman_cfg {
@@ -815,6 +816,64 @@ impl AgentRuntimeBuilder {
                 },
                 Box::new(ExplorationSub {
                     runner: exploration_runner,
+                }),
+            ));
+        }
+
+        // ── Meditation runner (idle depth 100+) ──────────────────────
+        let meditation_runner = Arc::new(super::meditation::MeditationRunner::new());
+        meditation_runner.set_agent_registry(Arc::clone(&agent_registry));
+        meditation_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        meditation_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
+
+        {
+            struct MeditationSub {
+                runner: Arc<super::meditation::MeditationRunner>,
+            }
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for MeditationSub {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    self.runner.handle(event).await
+                }
+            }
+            let _ = pollster::block_on(bus.subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![kernel::event::EventType::Idle]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(MeditationSub {
+                    runner: meditation_runner,
+                }),
+            ));
+        }
+
+        // ── Incubation runner (idle depth 200+) ──────────────────────
+        let incubation_runner = Arc::new(super::incubation_runner::IncubationRunner::new());
+        incubation_runner.set_agent_registry(Arc::clone(&agent_registry));
+        incubation_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        incubation_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
+
+        {
+            struct IncubationSub {
+                runner: Arc<super::incubation_runner::IncubationRunner>,
+            }
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for IncubationSub {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    self.runner.handle(event).await
+                }
+            }
+            let _ = pollster::block_on(bus.subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![kernel::event::EventType::Idle]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(IncubationSub {
+                    runner: incubation_runner,
                 }),
             ));
         }

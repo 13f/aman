@@ -170,6 +170,41 @@ impl NotificationSubscriber {
                 // Queues draining is normal, not actionable
             }
 
+            // ── Idle cycle completed ────────────────────────────────
+            EventType::Custom(s) if s == "idle.cycle_completed" => {
+                let kind = event
+                    .payload
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let agent_id = event
+                    .payload
+                    .get("agentId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let stored = event
+                    .payload
+                    .get("stored")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let duration_ms = event
+                    .payload
+                    .get("durationMs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+
+                self.store.push(
+                    Notification::info(
+                        Category::Idle,
+                        format!("Agent[{agent_id}] has finished {kind}!"),
+                        format!(
+                            "Stored {stored} new results in {}s",
+                            duration_ms as f64 / 1000.0
+                        ),
+                    ),
+                );
+            }
+
             _ => {}
         }
     }

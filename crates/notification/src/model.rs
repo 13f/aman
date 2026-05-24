@@ -13,6 +13,8 @@ pub enum Severity {
     Critical,
     /// Yellow toast / banner, auto-dismiss or click to dismiss.
     Warning,
+    /// Blue-green toast, auto-dismiss after 3 s, manually dismissible.
+    Info,
 }
 
 /// Category for grouping and filtering notifications in the UI.
@@ -28,6 +30,7 @@ pub enum Category {
     Dlq,
     Gateway,
     Secret,
+    Idle,
 }
 
 impl Category {
@@ -43,6 +46,7 @@ impl Category {
             Self::Dlq => "dlq",
             Self::Gateway => "gateway",
             Self::Secret => "secret",
+            Self::Idle => "idle",
         }
     }
 }
@@ -84,6 +88,29 @@ impl Notification {
         Self {
             id: uuid::Uuid::now_v7().to_string(),
             severity: Severity::Warning,
+            category,
+            created_at: kernel::types::Timestamp::now().as_millis(),
+            title: title.into(),
+            message: message.into(),
+            dismissed: false,
+            dismissible: true,
+            action_label: None,
+            action_route: None,
+            event_id: None,
+            source: None,
+        }
+    }
+
+    /// Build a new info notification — auto-dismiss toast (3 s), manually dismissible.
+    #[must_use]
+    pub fn info(
+        category: Category,
+        title: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::now_v7().to_string(),
+            severity: Severity::Info,
             category,
             created_at: kernel::types::Timestamp::now().as_millis(),
             title: title.into(),

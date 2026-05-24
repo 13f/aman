@@ -5,7 +5,7 @@
 
   interface Notification {
     id: string;
-    severity: "critical" | "warning";
+    severity: "critical" | "warning" | "info";
     category: string;
     title: string;
     message: string;
@@ -25,12 +25,13 @@
     notifications = [...notifications, notif];
     seenIds.add(notif.id);
 
-    if (notif.dismissible && notif.severity === "warning") {
+    if (notif.dismissible) {
+      const timeoutMs = notif.severity === "info" ? 3000 : 5000;
       const timer = setTimeout(() => {
         // Visual-only dismiss — notification stays active in the store
         notifications = notifications.filter((n) => n.id !== notif.id);
         timers.delete(notif.id);
-      }, 5000);
+      }, timeoutMs);
       timers.set(notif.id, timer);
     }
   }
@@ -98,7 +99,7 @@
     {#each notifications as notif (notif.id)}
       <div class="notif-banner severity-{notif.severity}">
         <div class="notif-icon">
-          {#if notif.severity === "critical"}🔴{:else}⚠️{/if}
+          {#if notif.severity === "critical"}🔴{:else if notif.severity === "warning"}⚠️{:else}✅{/if}
         </div>
         <div class="notif-body">
           <div class="notif-title">{notif.title}</div>
@@ -160,6 +161,12 @@
     background: rgba(234, 179, 8, 0.95);
     color: #1a1a1a;
     border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+
+  .severity-info {
+    background: rgba(16, 185, 129, 0.94);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.2);
   }
 
   .notif-icon {

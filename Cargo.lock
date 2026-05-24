@@ -3352,6 +3352,7 @@ name = "info-hub"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "kernel",
  "reqwest 0.12.28",
  "semver",

@@ -1,12 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::ai::LlmConfig;
+
 /// Top-level config for the info-hub plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoHubConfig {
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     pub sources: Vec<SourceConfig>,
+    #[serde(default)]
+    pub llm: Option<LlmConfig>,
 }
 
 fn default_timeout_ms() -> u64 {
@@ -18,6 +22,7 @@ impl Default for InfoHubConfig {
         Self {
             timeout_ms: default_timeout_ms(),
             sources: Vec::new(),
+            llm: None,
         }
     }
 }

@@ -12,8 +12,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use kernel::agent::AgentStatus;
+use kernel::context::{BaseContext, ToolContext};
 use kernel::event::{Event, EventType};
 use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
+use kernel::types::TraceId;
 use kernel::Error;
 use notification::{Notification as NotificationModel, Severity};
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
@@ -139,6 +141,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/dlq/depth", get(dlq_depth))
         .route("/debug/metrics", get(debug_metrics))
         .route("/tool-auth/respond", post(tool_auth_respond))
+        .route("/tools/{name}/execute", post(tool_execute))
         .route("/agents", get(agent_list))
         .route("/agent/{agent_id}", get(agent_get))
         .route("/agent/{agent_id}/status", post(agent_set_status))
@@ -1999,6 +2002,42 @@ async fn tool_auth_respond(
             Json(serde_json::json!({"error": "auth_id not found or already expired"})),
         )
             .into_response()
+    }
+}
+
+async fn tool_execute(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(name): Path<String>,
+    Json(params): Json<Value>,
+) -> Response {
+    let tools = runtime.tools();
+    let tool = match tools.get(&name) {
+        Some(t) => t,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("tool not found: {name}")})),
+            )
+                .into_response();
+        }
+    };
+    let ctx = ToolContext {
+        base: BaseContext::new(TraceId::default()),
+        tool_name: Some(name.clone()),
+        working_directory: None,
+    };
+    let started = std::time::Instant::now();
+    match tool.execute(params, ctx).await {
+        Ok(output) => Json(json!({
+            "tool": name,
+            "duration_ms": started.elapsed().as_millis(),
+            "output": output,
+        })).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 

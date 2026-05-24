@@ -633,7 +633,19 @@ my-plugin.tar.gz
 
 ### 5.7 内置插件：info-hub（信息中心）
 
-info-hub 是一个内置 InProcess 插件，提供统一的信息检索入口。Agent 的 Skill 可以通过 `info_search` 工具搜索用户配置的数据源。
+info-hub 是一个内置 InProcess 插件，提供统一的信息检索入口和 AI 内容处理能力。
+
+**检索工具：** `info_search` — 搜索用户配置的数据源。
+
+**AI 处理工具：**
+
+| 工具 | 说明 |
+|------|------|
+| `info_score_articles` | 多维度评分（相关性/质量/时效性 1-10）+ 分类 + 关键词 |
+| `info_summarize_articles` | 中文标题翻译 + 结构化摘要 + 推荐理由 |
+| `info_generate_highlights` | 今日看点宏观趋势总结 |
+
+AI 工具使用 `memory.llm` 配置的 LLM（OpenAI-compatible API），不需要单独配置。
 
 **数据源类型：**
 
@@ -689,11 +701,21 @@ When the user asks about recent developments in a topic:
 **架构：**
 
 ```
-Skill (SKILL.md) → LLM decides to call → info_search tool
-  → [parallel] api adapter / cli adapter / db adapter
+Skill (SKILL.md) → LLM decides to call → info_search / info_score_articles / ...
+  → [parallel] api adapter / cli adapter / db adapter (for search)
+  → ai.rs: scoring → summarization → highlights (via memory.llm)
   → merge + dedup by url + sort by published desc
-  → Vec<InfoItem>
+  → Vec<InfoItem> + AI results (scores, summaries, highlights)
 ```
+
+**Python 脚本** (`predefined/plugins/info-hub/`)：
+
+| 脚本 | 说明 |
+|------|------|
+| `common.py` | Aman 配置加载、文本工具、DB adapter 协议 |
+| `ai.py` | AI 处理模块，调用 gateway `POST /tools/{name}/execute` 端点 |
+| `fusion.py` | Fusion DB adapter + standalone pipeline |
+| `rss.py` | RSS DB adapter + standalone pipeline |
 
 设计文档详见 `docs/info-hub.md`。
 

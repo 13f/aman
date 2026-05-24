@@ -1510,7 +1510,7 @@ pub fn validate_manifest_exports(manifest: &PluginManifest) -> bool {
 mod tests {
     use super::{
         normalize_version_req, parse_plugin_manifests, plugin_management_router,
-        validate_manifest_exports, DependencyGraph, InMemoryPluginAuditLogger,
+        validate_manifest_exports, DependencyGraph, InMemoryPluginAuditLogger, MemoryProvider,
         NoopPluginRegistrar, PluginAuditEventType, PluginCandidate, PluginExportRegistrar,
         PluginInstaller, PluginIsolationMode, PluginLifecycleState, PluginLoader, PluginLoaderConfig,
         PluginManifest, SubprocessPluginClient, SubprocessPluginConfig, WasmPluginRuntime,
@@ -1685,6 +1685,7 @@ mod tests {
         tools: Mutex<BTreeSet<String>>,
         sources: Mutex<BTreeSet<String>>,
         hooks: Mutex<BTreeSet<String>>,
+        memory_providers: Mutex<BTreeSet<String>>,
         fail_skill: Mutex<Option<String>>,
     }
 
@@ -1756,6 +1757,22 @@ mod tests {
 
         fn unregister_hook(&self, hook_name: &str) -> AmanResult<()> {
             self.hooks.lock().expect("hooks lock").remove(hook_name);
+            Ok(())
+        }
+
+        fn register_memory_provider(&self, provider: Arc<dyn MemoryProvider>) -> AmanResult<()> {
+            self.memory_providers
+                .lock()
+                .expect("memory_providers lock")
+                .insert(provider.name().to_owned());
+            Ok(())
+        }
+
+        fn unregister_memory_provider(&self, provider_name: &str) -> AmanResult<()> {
+            self.memory_providers
+                .lock()
+                .expect("memory_providers lock")
+                .remove(provider_name);
             Ok(())
         }
     }

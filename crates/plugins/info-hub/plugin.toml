@@ -5,6 +5,6 @@ isolation = "in_process"
 description = "信息中心：统一检索 API、CLI 和本地数据库数据源"
 
 [plugin.exports]
-tools = ["info_search"]
+tools = ["info_search", "info_tag_articles", "info_score_articles", "info_summarize_articles", "info_generate_highlights"]
 
 [plugin.dependencies]

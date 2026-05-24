@@ -7,18 +7,19 @@
 ```
 ┌──────────────────────────────────────────────────┐
 │ Skill (SKILL.md)                                  │
-│   "use info_search to find recent AI papers..."   │
+│   "use info_search + info_score_articles..."      │
 └─────────────────────┬────────────────────────────┘
-                      │ LLM decides to call tool
+                      │ LLM decides to call tools
                       ▼
 ┌──────────────────────────────────────────────────┐
 │ ToolRegistry                                      │
-│   info_search  ←── registered by info-hub plugin  │
+│   info_search, info_score_articles,               │
+│   info_summarize_articles, info_generate_highlights│
 └─────────────────────┬────────────────────────────┘
                       │
                       ▼
 ┌──────────────────────────────────────────────────┐
-│ info-hub Plugin (SubprocessPlugin)                │
+│ info-hub Plugin (InProcess)                       │
 │                                                    │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
 │  │ api.rs   │  │ cli.rs   │  │ db.rs    │        │
@@ -33,8 +34,16 @@
 │                 ▼                                  │
 │         merge + dedup (by url)                     │
 │                 │                                  │
-│                 ▼                                  │
-│         Vec<InfoItem>                              │
+│  ┌──────────────┼──────────────────────┐          │
+│  │ ai.rs        │                      │          │
+│  │ score_articles│ summarise_articles  │          │
+│  │ generate_highlights                 │          │
+│  │              │                      │          │
+│  │     memory.llm config               │          │
+│  │     OpenAI-compatible API           │          │
+│  └──────────────┴──────────────────────┘          │
+│                                                    │
+│         → Vec<InfoItem> + AI results              │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -232,6 +241,84 @@ info_search(query, limit, sources_filter)
 | SSRF | API URL 由用户配置，接受风险；可后续加 allowlist |
 | 超时 | 每个 source 独立 timeout，避免某个远端拖死整个查询 |
 
+## AI Processing
+
+info-hub 提供三个 AI 工具，使用 `memory.llm` 配置的 LLM 进行文章处理：
+
+| Tool | Description |
+|---|---|
+| `info_score_articles` | 多维度评分（相关性/质量/时效性 1-10）+ 分类标签 + 关键词提取 |
+| `info_summarize_articles` | 中文标题翻译 + 结构化摘要（4-6 句）+ 推荐理由 |
+| `info_generate_highlights` | 今日看点总结（3-5 句宏观趋势归纳） |
+
+### LLM Config Resolution
+
+```
+memory.llm.provider → providers.<key> → base_url, api_key
+memory.llm.model    → providers.<key>.models[] → API model name
+```
+
+所有 AI 工具通过 OpenAI-compatible `/chat/completions` 接口调用，不绑定特定厂商。
+`api_key` 仅存在于 aman 配置文件中，插件和脚本不接触 API key。
+
+### Gateway Endpoint
+
+外部脚本通过 gateway HTTP API 调用 AI 工具：
+
+```
+POST /tools/{name}/execute
+Authorization: Bearer <aman-api-token>
+Content-Type: application/json
+
+{"articles": [...]}
+```
+
+响应格式：
+
+```json
+{
+  "tool": "info_score_articles",
+  "duration_ms": 1234,
+  "output": {"results": [...]}
+}
+```
+
+Python 脚本直接通过 `~/.aman/config.yaml` 的 `gateway.port` 连接 gateway。
+
+### Prompt Design
+
+- **Scoring**: 中文系统 prompt，三维度评分细则（1-10），6 个分类标签，2-4 个英文关键词
+- **Summarization**: 5 要素摘要结构（问题→论点→方案→发现→结论），支持 zh/en
+- **Highlights**: 宏观趋势归纳，不逐篇列举
+
+JSON 解析支持 markdown fence 剥离、中文智能引号替换、截断 JSON 修复。
+
+## Python Scripts
+
+`predefined/plugins/info-hub/` 下的脚本供 DB adapter 使用，也支持 standalone 模式：
+
+| Script | Purpose |
+|---|---|
+| `common.py` | Aman 配置加载、文本工具（HTML 剥离、截断、日期解析）、DB adapter 协议 |
+| `ai.py` | AI 处理：调用 gateway 的 `POST /tools/{name}/execute` 端点，API key 由 aman 服务端管理 |
+| `fusion.py` | Fusion DB adapter：SQLite 查询 + standalone pipeline（搜索→评分→摘要→亮点） |
+| `rss.py` | RSS DB adapter：SQLite 查询 + standalone pipeline |
+
+### DB Adapter Protocol
+
+```
+stdin:  {"query": "...", "limit": 20, "offset": 0, "db_path": "/path/to/db"}
+stdout: [{"title": "...", "url": "...", "summary": "...", "published": "...", "source": "..."}, ...]
+```
+
+### Standalone Mode
+
+```bash
+python3 fusion.py --standalone --db-path ~/.fusion/data.db --top-n 20 --lang zh
+```
+
+Standalone 模式执行完整 pipeline：DB 查询 → AI 评分 → 排序取 Top N → AI 摘要 → AI 亮点生成 → JSON 输出。
+
 ## Plugin Integration
 
 ```
@@ -239,8 +326,9 @@ info-hub
 ├── Cargo.toml         ← 独立 crate
 ├── plugin.toml        ← plugin 元数据
 └── src/
-    ├── lib.rs         ← Plugin trait impl, register info_search tool
-    ├── config.rs      ← SourceConfig 解析和校验
+    ├── lib.rs         ← Plugin trait impl, register 4 tools
+    ├── config.rs      ← SourceConfig + LlmConfig 解析和校验
+    ├── ai.rs          ← LLM client, prompts, JSON parsing, batch processing
     ├── adapters/
     │   ├── mod.rs     ← Adapter trait
     │   ├── api.rs     ← ApiAdapter
@@ -250,7 +338,7 @@ info-hub
     └── merge.rs       ← 去重、排序、截断
 ```
 
-`Plugin::tools()` 返回 `vec![info_search_tool]`，注册到 ToolRegistry。
+`Plugin::tools()` 返回 `vec![info_search, info_score_articles, info_summarize_articles, info_generate_highlights]`。
 
 ## Skill Integration
 
@@ -270,9 +358,12 @@ LLM 在 ReAct 循环中看到 tool 列表里有 `info_search`，根据 SKILL.md 
 
 ## Implementation Phases
 
-| Phase | Scope | Effort |
+| Phase | Scope | Status |
 |---|---|---|
-| Phase 1 | Plugin skeleton + DB adapter + merge logic | ~2d |
-| Phase 2 | CLI adapter | ~0.5d |
-| Phase 3 | API adapter | ~1d |
-| Phase 4 | Error handling, timeout, tests | ~1d |
+| Phase 1 | Plugin skeleton + DB adapter + merge logic | Done |
+| Phase 2 | CLI adapter | Done |
+| Phase 3 | API adapter | Done |
+| Phase 4 | Error handling, timeout, tests | Done |
+| Phase 5 | AI scoring, summarization, highlights tools | Done |
+| Phase 6 | Python scripts (common, ai, fusion, rss) | Done |
+| Phase 7 | Wire into runtime as built-in plugin | Pending |

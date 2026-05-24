@@ -10,7 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-tauri = { version = "2", default-features = false, features = ["devtools", "wry"] }
+tauri = { version = "2", default-features = false, features = ["devtools", "wry", "image-png"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }

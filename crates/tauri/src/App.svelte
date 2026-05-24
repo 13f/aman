@@ -117,6 +117,11 @@
   }
 
   $effect(() => {
+    // Auto-navigate to Dashboard when gateway is not running
+    if (!runtimeRunning) {
+      currentPage = "dashboard";
+      return;
+    }
     // Refresh active agent on every page change so the idle widget
     // shows/hides correctly regardless of which page the agent is used from.
     void currentPage;
@@ -150,7 +155,7 @@
     {#if expandedGroups[group.name]}
       <div class="menu-items">
         {#each group.items as page}
-          {#if (page.id === "chat" && !runtimeRunning) || page.id === "settings"}
+          {#if !runtimeRunning || page.id === "settings"}
             <span class="sidebar-link disabled" title={page.id === "settings" ? "Settings are being reorganised" : "Start the runtime first"}>
               <span class="status-dot stopped"></span>
               {page.label}
@@ -160,7 +165,7 @@
               class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
               onclick={() => navigateTo(page.id)}
             >
-              <span class="status-dot {runtimeRunning ? 'running' : 'stopped'}"></span>
+              <span class="status-dot running"></span>
               {page.label}
             </button>
           {/if}

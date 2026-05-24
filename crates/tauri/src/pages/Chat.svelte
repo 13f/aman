@@ -153,6 +153,20 @@
     }
   }
 
+  async function handleAgentSelect(key: string) {
+    if (key === activeAgentKey) return;
+    activeAgentKey = key;
+    try {
+      await invoke("select_agent", { key });
+      showToast("info", `Switched to agent: ${key}`);
+      activeSessionId = "";
+      messages = [];
+      await loadSessions();
+    } catch (e) {
+      showToast("error", `Failed to select agent: ${e}`);
+    }
+  }
+
   // ── Skill picker ─────────────────────────────────────────────────────
 
   async function loadSkills() {
@@ -1492,7 +1506,44 @@
 </script>
 
 <div class="chat-layout">
-  <!-- Left Sidebar with Tabs: Sessions / Steps -->
+  <!-- Agents Panel — IM-style contact list -->
+  <aside class="agents-panel">
+    <div class="agents-header">
+      <span>Agents</span>
+    </div>
+    <div class="agents-list">
+      {#if agentList.length === 0}
+        <div class="agents-empty">No agents</div>
+      {:else}
+        <div class="agent-section-label">Chat Agents</div>
+        {#each agentList.filter(a => a.provider) as agent (agent.key)}
+          {@const initials = agent.display_name.charAt(0).toUpperCase()}
+          {@const hue = (agent.key.split('').reduce((h, c) => h + c.charCodeAt(0), 0) * 137) % 360}
+          <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+          <div
+            class="agent-contact"
+            class:active={agent.key === activeAgentKey}
+            onclick={() => handleAgentSelect(agent.key)}
+            onkeydown={(e) => e.key === 'Enter' && handleAgentSelect(agent.key)}
+            role="button"
+            tabindex="0"
+            title={agent.display_name}
+          >
+            <div class="agent-avatar" style="background: hsl({hue}, 55%, 48%);">
+              {initials}
+            </div>
+            <div class="agent-contact-info">
+              <span class="agent-contact-name">{agent.display_name}</span>
+            </div>
+          </div>
+        {/each}
+        <div class="agent-section-label">Code Agents</div>
+        <div class="agents-empty-sub">Coming soon</div>
+      {/if}
+    </div>
+  </aside>
+
+  <!-- Left Sidebar with Sessions -->
   <aside class="session-panel">
     <div class="panel-header">
       <h2>Chat</h2>
@@ -1583,15 +1634,6 @@
         {/if}
       </h2>
       <div class="chat-header-end">
-        {#if agentList.length === 0}
-          <span class="dim">No agents configured</span>
-        {:else}
-          <select class="agent-selector" bind:value={activeAgentKey} onchange={handleAgentChange}>
-            {#each agentList as agent}
-              <option value={agent.key} disabled={!agent.provider}>{agent.display_name}{!agent.provider ? " (needs config)" : ""}</option>
-            {/each}
-          </select>
-        {/if}
         <span class="chat-status" class:loading={isProcessing}>
           {isProcessing ? "Processing..." : "Ready"}
         </span>
@@ -1736,6 +1778,103 @@
     display: flex;
     height: 100%;
     gap: 0;
+  }
+
+  /* ── Agents Panel (IM contact list style) ── */
+  .agents-panel {
+    width: 200px;
+    min-width: 200px;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .agents-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .agents-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px;
+  }
+
+  .agents-empty {
+    padding: 16px 12px;
+    text-align: center;
+    color: var(--fg-dim);
+    font-size: 12px;
+  }
+
+  .agents-empty-sub {
+    padding: 8px 12px;
+    text-align: center;
+    color: var(--fg-dim);
+    font-size: 11px;
+    font-style: italic;
+  }
+
+  .agent-section-label {
+    padding: 8px 10px 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--fg-dim);
+  }
+
+  .agent-contact {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.12s;
+    margin-bottom: 2px;
+  }
+
+  .agent-contact:hover {
+    background: var(--bg-hover);
+  }
+
+  .agent-contact.active {
+    background: var(--bg-hover);
+  }
+
+  .agent-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    flex-shrink: 0;
+    user-select: none;
+  }
+
+  .agent-contact-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .agent-contact-name {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .session-panel {
@@ -2196,22 +2335,6 @@
     margin-left: 1px;
     animation: blink 0.8s step-end infinite;
     vertical-align: text-bottom;
-  }
-
-  .agent-selector {
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 4px 8px;
-    color: var(--fg);
-    font-size: 12px;
-    cursor: pointer;
-    margin-right: 8px;
-    max-width: 140px;
-  }
-  .agent-selector:focus {
-    outline: none;
-    border-color: var(--accent);
   }
 
   .input-area {

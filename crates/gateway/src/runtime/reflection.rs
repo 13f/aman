@@ -1,10 +1,15 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-//! Reflection runner — triggered by Idle(sleep) events during cognitive
-//! housekeeping. Extracts structured summaries from one unreflected session
-//! per sleep cycle via LLM and stores them in the memory provider for
-//! long-term retention.
+//! Reflection runner — triggered by QueueDrained events when the event bus
+//! transitions from busy to empty (or on cold start after a 3–5s grace timer).
+//! Extracts structured summaries from one unreflected session per cycle via
+//! LLM and stores them in the memory provider for long-term retention.
+//!
+//! Reflection is one of the eight idle states but is NOT driven by idle depth.
+//! It is triggered by the Dispatcher (or AgentIdleManager cold-start) via
+//! `system.queue_drained` events, and executed with `tokio::select!` so new
+//! events can preempt it. See docs/idle-design.md §4.1.
 
 use async_trait::async_trait;
 use config::MemoryLlmConfig;
@@ -20,11 +25,19 @@ use tracing::{debug, info, warn};
 
 use super::agent_registry::AgentRegistry;
 
-/// Handles QueueDrained → reflection logic for all agents.
+/// Handles QueueDrained → reflection for all agents.
 ///
-/// Subscribes to the global event bus and processes QueueDrained events from
-/// all agents. Dependencies are injected via the `OnceLock` pattern (same as
-/// `ReadSkillTool`).
+/// Subscribes to the global event bus and processes
+/// [`EventType::QueueDrained`](kernel::event::EventType::QueueDrained) events
+/// from all agents. Dependencies are injected via the `OnceLock` pattern
+/// (same as `ReadSkillTool`).
+///
+/// QueueDrained events are produced in two cases:
+/// 1. **Busy→empty transition**: AgentIdleManager detects the bus was busy then
+///    became empty, meaning the Dispatcher just finished processing events.
+/// 2. **Cold start**: Agent starts with an empty queue — after a 3–5s grace
+///    timer, a synthetic QueueDrained is produced so Reflection runs at least
+///    once before entering the idle depth sequence.
 pub struct ReflectionRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
     memory_llm: OnceLock<MemoryLlmConfig>,
@@ -245,18 +258,8 @@ Respond with ONLY valid JSON, no markdown or explanation."#
 #[async_trait]
 impl EventHandler for ReflectionRunner {
     async fn handle(&self, event: Event) -> AmanResult<()> {
-        // Only process Idle events with kind=sleep
-        if event.event_type != EventType::Idle {
-            return Ok(());
-        }
-
-        let kind = event
-            .payload
-            .get("kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        if kind != "sleep" {
+        // Only process QueueDrained events (busy→empty transition or cold start)
+        if event.event_type != EventType::QueueDrained {
             return Ok(());
         }
 
@@ -268,10 +271,10 @@ impl EventHandler for ReflectionRunner {
 
         info!(
             agent_id,
-            "Reflection: Idle(sleep) received, starting session_extract"
+            "Reflection: QueueDrained received, starting session_extract"
         );
 
-        // Extract one unreflected session per sleep cycle
+        // Extract one unreflected session per cycle
         self.session_extract(agent_id).await;
 
         Ok(())

@@ -3,8 +3,9 @@
 > 将 Windows "空闲进程"的隐喻落地为 aman Agent 框架的正式子系统。
 > 空闲不是无事可做，而是 Agent 在内省、维护、探索、复盘——用未被使用的周期做有价值的事。
 >
-> **八种空闲状态**：七种由 AgentIdleManager 根据空闲深度产生，一种（Reflection）由 Dispatcher
-> 在队列清空时通过 QueueDrained 事件触发。
+> **八种空闲状态**：七种由 AgentIdleManager 根据空闲深度产生，一种（Reflection）由
+> 两种事件触发：(1) Dispatcher 队列清空时的 QueueDrained，或 (2) AgentIdleManager
+> 冷启动（启动后 3–5s 内队列持续为空时的合成 QueueDrained）。
 >
 > **Per-Agent 架构（R8）**：每个 Agent 拥有独立的 idle 系统——自己的 IdleCoordination、
 > IdleDetector（通过 AgentIdleManager）、IncubationManager。Idle 事件发布到 Agent 的
@@ -309,7 +310,10 @@ impl IdleCoordination {
 
 **规则**：
 
-1. **QueueDrained 由 Dispatcher 产生** — 每次处理完一个真实事件且队列为空时触发一次 Reflection。
+1. **QueueDrained 由两个来源产生** —
+   (a) **正常路径**: AgentIdleManager 检测到 busy→empty 转换（Dispatcher 刚处理完事件）。
+   (b) **冷启动路径**: Agent 启动后事件队列持续为空超过 3–5s——AgentIdleManager 产生合成 QueueDrained，
+   确保 Reflection 在进入 idle 深度序列前至少执行一次。两种路径共享同一熔断器。
 2. **Reflection 可被 select! 抢先** — 新事件到达 → cancel Reflection → 处理新事件。抢先时熔断计数重置。
 3. **Reflection 有 timeout 和熔断** — timeout=60s；连续 5 次→跳过 lessons_learned；10 次→完全跳过+cooldown。
 4. **Per-Agent Cancel Token** — 真实事件到达时 AgentHarness 通过 `coord.reset_idle_signal()` 取消令牌。该 Agent 的所有空闲 Workflow 监控此令牌并在 checkpoint 退出。
@@ -662,6 +666,17 @@ async fn idle_loop(
 ) {
     let mut detector = IdleDetector::new(personality, Arc::clone(&coord));
 
+    // Busy→empty tracking for QueueDrained production.
+    let mut was_busy = false;
+    let mut reflection_count: u32 = 0;
+    const BREAKER_THRESHOLD: u32 = 20;
+
+    // Cold-start: produce QueueDrained if bus stays empty for this long
+    // after startup with no prior QueueDrained.
+    let mut cold_start_done = false;
+    let mut cold_start_deadline: Option<Instant> = None;
+    const COLD_START_DELAY_SECS: u64 = 5;
+
     loop {
         // 1. 检查 shutdown 信号
         if stop_token.is_cancelled() {
@@ -685,14 +700,58 @@ async fn idle_loop(
         // 4. 检查 Agent Local EventBus 队列深度
         let metrics = local_bus.metrics().await;
         if metrics.queue_depth > 0 {
-            // 有待处理事件 → 重置深度，等待下次
+            // 有待处理事件 → 重置深度，标记曾 busy
+            was_busy = true;
+            reflection_count = 0;
             detector.idle_depth = 0;
             detector.last_non_idle = Instant::now();
             tokio::time::sleep(poll_interval).await;
             continue;
         }
 
-        // 5. 队列空 → 真实空闲，推进 idle 状态
+        // 5. Busy→empty transition → produce QueueDrained (subject to circuit breaker)
+        if was_busy {
+            was_busy = false;
+            cold_start_done = true; // no longer need cold-start
+            detector.idle_depth = 0;
+
+            if reflection_count < BREAKER_THRESHOLD {
+                let qd = QueueDrained {
+                    reflection_consecutive_count: reflection_count,
+                    agent_id: Some(agent_id.clone()),
+                    ..
+                };
+                reflection_count += 1;
+                let _ = local_bus.publish(qd.into()).await;
+            }
+            continue;
+        }
+
+        // 6. Cold-start: if bus never became busy, wait grace period then
+        //    produce a synthetic QueueDrained before entering idle states.
+        //    Permanently disabled after any QueueDrained is produced.
+        if !cold_start_done {
+            let deadline = *cold_start_deadline.get_or_insert_with(|| {
+                Instant::now() + Duration::from_secs(COLD_START_DELAY_SECS)
+            });
+            if Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            cold_start_done = true;
+            if reflection_count < BREAKER_THRESHOLD {
+                let qd = QueueDrained {
+                    reflection_consecutive_count: reflection_count,
+                    agent_id: Some(agent_id.clone()),
+                    ..
+                };
+                reflection_count += 1;
+                let _ = local_bus.publish(qd.into()).await;
+            }
+            continue;
+        }
+
+        // 7. 队列空 → 真实空闲，推进 idle 状态
         let personality = detector.effective_personality();
         let kind = if detector.idle_depth == 0 {
             IdleKind::Daze
@@ -707,7 +766,7 @@ async fn idle_loop(
         let event = IdleEvent { kind, depth: detector.idle_depth, /* ... */ };
         detector.idle_depth += 1;
 
-        // 6. 发布 idle 事件到 Agent 的 Local EventBus
+        // 8. 发布 idle 事件到 Agent 的 Local EventBus
         let mut event: Event = event.into();
         event.metadata.priority = Priority::Low;
         let _ = local_bus.publish(event).await;

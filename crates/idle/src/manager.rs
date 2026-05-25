@@ -117,6 +117,13 @@ impl AgentIdleManager {
             let mut reflection_count: u32 = 0;
             // Circuit breaker: skip QueueDrained when count exceeds threshold.
             const BREAKER_THRESHOLD: u32 = 20;
+            // Cold-start: produce a QueueDrained if the bus stays empty for this
+            // long after startup with no prior QueueDrained (see idle-design.md §4.1).
+            // Permanently disabled after any QueueDrained is produced (cold-start
+            // or busy→empty), since subsequent transitions are handled normally.
+            let mut cold_start_done = false;
+            let mut cold_start_deadline: Option<Instant> = None;
+            const COLD_START_DELAY_SECS: u64 = 5;
 
             loop {
                 if stop_token.is_cancelled() {
@@ -166,6 +173,7 @@ impl AgentIdleManager {
                 // Bus is empty. If we were previously busy, produce QueueDrained.
                 if was_busy {
                     was_busy = false;
+                    cold_start_done = true; // no longer need cold-start QD
                     detector.idle_depth = 0;
                     detector.last_poll = Some(Instant::now());
 
@@ -201,6 +209,48 @@ impl AgentIdleManager {
                         // Reset count after cooldown — next real event will also reset it
                     }
 
+                    sleep(Duration::from_millis(100)).await;
+                    continue;
+                }
+
+                // ── Cold-start QueueDrained ──────────────────────────────
+                // If the agent starts with an empty queue (no prior busy→empty
+                // transition), wait up to COLD_START_DELAY_SECS then produce a
+                // synthetic QueueDrained so Reflection runs at least once before
+                // entering the idle depth sequence. After the first QueueDrained
+                // (cold-start or busy→empty), this branch is permanently disabled.
+                if !cold_start_done {
+                    let deadline = *cold_start_deadline.get_or_insert_with(|| {
+                        Instant::now() + Duration::from_secs(COLD_START_DELAY_SECS)
+                    });
+                    if Instant::now() < deadline {
+                        sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                    // Deadline reached — produce cold-start QueueDrained.
+                    cold_start_done = true;
+                    cold_start_deadline = None;
+                    if reflection_count < BREAKER_THRESHOLD {
+                        let qd = QueueDrained {
+                            last_event_type: String::new(),
+                            last_trace_id: String::new(),
+                            last_result_summary: String::new(),
+                            arousal_level: coord.arousal.current(),
+                            reflection_consecutive_count: reflection_count,
+                            agent_id: Some(agent_id.clone()),
+                        };
+                        reflection_count += 1;
+                        let qd_event: kernel::event::Event = qd.into();
+                        info!(
+                            agent_id = %agent_id,
+                            "Cold-start QueueDrained (bus empty for {}s)",
+                            COLD_START_DELAY_SECS
+                        );
+                        let _ = local_bus.publish(qd_event.clone()).await;
+                        if let Some(ref global) = global_bus {
+                            let _ = global.publish(qd_event).await;
+                        }
+                    }
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }

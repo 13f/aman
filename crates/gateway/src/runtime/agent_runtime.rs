@@ -824,6 +824,11 @@ impl AgentRuntimeBuilder {
         let meditation_runner = Arc::new(super::meditation::MeditationRunner::new());
         meditation_runner.set_agent_registry(Arc::clone(&agent_registry));
         meditation_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        let meditation_cfg = aman_cfg
+            .as_ref()
+            .map(|c| c.runtime.idle.meditation.clone())
+            .unwrap_or_default();
+        meditation_runner.set_meditation_config(meditation_cfg);
         meditation_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
 
         {
@@ -853,6 +858,11 @@ impl AgentRuntimeBuilder {
         let incubation_runner = Arc::new(super::incubation_runner::IncubationRunner::new());
         incubation_runner.set_agent_registry(Arc::clone(&agent_registry));
         incubation_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
+        let incubation_cfg = aman_cfg
+            .as_ref()
+            .map(|c| c.runtime.idle.incubation.clone())
+            .unwrap_or_default();
+        incubation_runner.set_incubation_config(incubation_cfg);
         incubation_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
 
         {

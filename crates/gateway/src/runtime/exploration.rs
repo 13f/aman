@@ -25,6 +25,7 @@ use kernel::memory::MemoryProvider;
 use kernel::AmanResult;
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
@@ -379,7 +380,7 @@ impl ExplorationRunner {
     // -- orchestration -------------------------------------------------------
 
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
-        let cancel_token = {
+        let (cancel_token, coord) = {
             let Some(registry) = self.agent_registry.get() else {
                 debug!("ExplorationRunner: no AgentRegistry, skipping");
                 return Ok(());
@@ -388,7 +389,8 @@ impl ExplorationRunner {
                 debug!(agent_id, "ExplorationRunner: no idle coordination, skipping");
                 return Ok(());
             };
-            coord.idle_cancel_token.read().await.clone()
+            let token = coord.idle_cancel_token.read().await.clone();
+            (token, Arc::clone(&coord))
         };
 
         let started = Instant::now();
@@ -449,6 +451,8 @@ impl ExplorationRunner {
                 );
                 let _ = bus.publish(event).await;
             }
+            // Signal idle depth reset — productive work completed, restart idle cycle
+            coord.pending_depth_reset.store(true, Ordering::SeqCst);
         }
 
         self.signal_cooldown(agent_id).await;

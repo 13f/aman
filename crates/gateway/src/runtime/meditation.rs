@@ -8,11 +8,14 @@
 //! Follows the same dependency-injection pattern as [`ExplorationRunner`].
 
 use async_trait::async_trait;
+use config::MeditationConfig;
 use event_bus::{EventHandler, EventBus};
+use idle::IdleKind;
 use kernel::event::{Event, EventType};
 use kernel::memory::{MemoryProvider, ThinkConfig, ThinkResult};
 use kernel::AmanResult;
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 use tracing::{debug, info};
@@ -22,6 +25,7 @@ use super::agent_registry::AgentRegistry;
 pub struct MeditationRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
     memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
+    meditation_config: OnceLock<MeditationConfig>,
     global_bus: OnceLock<Arc<dyn EventBus>>,
     active_runs: RwLock<HashSet<String>>,
 }
@@ -31,6 +35,7 @@ impl MeditationRunner {
         Self {
             agent_registry: OnceLock::new(),
             memory_provider: OnceLock::new(),
+            meditation_config: OnceLock::new(),
             global_bus: OnceLock::new(),
             active_runs: RwLock::new(HashSet::new()),
         }
@@ -42,6 +47,10 @@ impl MeditationRunner {
 
     pub fn set_memory_provider(&self, provider: Arc<dyn MemoryProvider>) {
         let _ = self.memory_provider.set(provider);
+    }
+
+    pub fn set_meditation_config(&self, config: MeditationConfig) {
+        let _ = self.meditation_config.set(config);
     }
 
     pub fn set_global_bus(&self, bus: Arc<dyn EventBus>) {
@@ -57,6 +66,28 @@ impl MeditationRunner {
 
     fn release(&self, agent_id: &str) {
         self.active_runs.write().unwrap().remove(agent_id);
+    }
+
+    async fn signal_cooldown(&self, agent_id: &str) {
+        let Some(registry) = self.agent_registry.get() else {
+            return;
+        };
+        let Some(coord) = registry.get_idle_coordination(agent_id).await else {
+            return;
+        };
+        let cooldown_secs = self
+            .meditation_config
+            .get()
+            .map(|c| c.cooldown_secs)
+            .unwrap_or(7200);
+        coord
+            .set_kind_cooldown(IdleKind::Meditation, cooldown_secs)
+            .await;
+        debug!(
+            agent_id,
+            cooldown_secs,
+            "Meditation: cooldown set",
+        );
     }
 
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
@@ -100,8 +131,15 @@ impl MeditationRunner {
                 );
                 let _ = bus.publish(event).await;
             }
+            // Signal idle depth reset — productive work completed, restart idle cycle
+            if let Some(registry) = self.agent_registry.get() {
+                if let Some(coord) = registry.get_idle_coordination(agent_id).await {
+                    coord.pending_depth_reset.store(true, Ordering::SeqCst);
+                }
+            }
         }
 
+        self.signal_cooldown(agent_id).await;
         Ok(())
     }
 }

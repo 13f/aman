@@ -244,7 +244,7 @@ pub struct ExplorationConfig {
     #[serde(default = "default_exploration_fallback")]
     pub on_quota_exhausted: String,
     /// Minimum seconds between Exploration cycles (default 1 hour).
-    #[serde(default = "default_exploration_cooldown_secs")]
+    #[serde(default = "default_exploration_cooldown_secs", alias = "cooldown")]
     pub cooldown_secs: u64,
 }
 
@@ -270,7 +270,7 @@ pub struct IncubationConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Minimum seconds between Incubation cycles (default 3 hours).
-    #[serde(default = "default_incubation_cooldown_secs")]
+    #[serde(default = "default_incubation_cooldown_secs", alias = "cooldown")]
     pub cooldown_secs: u64,
 }
 
@@ -291,7 +291,7 @@ impl Default for IncubationConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeditationConfig {
     /// Minimum seconds between Meditation cycles (default 2 hours).
-    #[serde(default = "default_meditation_cooldown_secs")]
+    #[serde(default = "default_meditation_cooldown_secs", alias = "cooldown")]
     pub cooldown_secs: u64,
 }
 
@@ -994,6 +994,7 @@ pub struct PartialSleepConfig {
 pub struct PartialExplorationConfig {
     pub api_rate_per_minute: Option<u32>,
     pub on_quota_exhausted: Option<String>,
+    #[serde(alias = "cooldown")]
     pub cooldown_secs: Option<u64>,
 }
 
@@ -1001,11 +1002,13 @@ pub struct PartialExplorationConfig {
 pub struct PartialIncubationConfig {
     pub max_concurrent: Option<u32>,
     pub enabled: Option<bool>,
+    #[serde(alias = "cooldown")]
     pub cooldown_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialMeditationConfig {
+    #[serde(alias = "cooldown")]
     pub cooldown_secs: Option<u64>,
 }
 

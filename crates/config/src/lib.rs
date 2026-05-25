@@ -278,21 +278,26 @@ pub struct IncubationConfig {
     /// Score above which an inspiration is published as an event.
     #[serde(default = "default_high_value_threshold")]
     pub high_value_threshold: f64,
+    /// Graceful shutdown timeout for incubation threads (seconds).
+    #[serde(default = "default_incubation_cancel_timeout_secs")]
+    pub cancel_timeout_secs: u64,
 }
 
 fn default_max_concurrent_incubation() -> u32 { 1 }
 fn default_incubation_cooldown_secs() -> u64 { 10800 }
 fn default_incubation_threshold() -> f64 { 0.7 }
 fn default_high_value_threshold() -> f64 { 0.85 }
+fn default_incubation_cancel_timeout_secs() -> u64 { 5 }
 
 impl Default for IncubationConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 1,
-            enabled: false,
+            enabled: true,
             cooldown_secs: 10800,
             incubation_threshold: 0.7,
             high_value_threshold: 0.85,
+            cancel_timeout_secs: 5,
         }
     }
 }
@@ -307,16 +312,21 @@ pub struct MeditationConfig {
     /// triggering). Default 20 ticks; effective interval = ticks × poll_interval.
     #[serde(default = "default_meditation_min_interval_ticks")]
     pub min_interval_ticks: u32,
+    /// Number of recent traces to load for pattern extraction (default 20).
+    #[serde(default = "default_meditation_review_depth")]
+    pub review_depth: usize,
 }
 
 fn default_meditation_cooldown_secs() -> u64 { 7200 }
 fn default_meditation_min_interval_ticks() -> u32 { 20 }
+fn default_meditation_review_depth() -> usize { 20 }
 
 impl Default for MeditationConfig {
     fn default() -> Self {
         Self {
             cooldown_secs: 7200,
             min_interval_ticks: 20,
+            review_depth: 20,
         }
     }
 }

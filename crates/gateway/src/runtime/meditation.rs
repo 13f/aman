@@ -29,9 +29,6 @@ use super::agent_registry::AgentRegistry;
 /// Default poll_interval used to convert min_interval_ticks → seconds.
 const DEFAULT_POLL_INTERVAL_SECS: f64 = 5.0;
 
-/// Number of recent traces to load for pattern extraction.
-const DEFAULT_REVIEW_DEPTH: usize = 20;
-
 /// Max entities to introspect per meditation cycle.
 const MAX_ENTITY_INTROSPECTIONS: usize = 12;
 
@@ -120,6 +117,11 @@ impl MeditationRunner {
         };
 
         // ── Phase 1: 前置检查 ──────────────────────────────────────────
+        let review_depth = self
+            .meditation_config
+            .get()
+            .map(|c| c.review_depth)
+            .unwrap_or(20);
         let min_interval_ticks = self
             .meditation_config
             .get()
@@ -152,7 +154,7 @@ impl MeditationRunner {
 
         // ── Phase 2: 加载经验链 ────────────────────────────────────────
         let traces = match self.trace_store_for(agent_id).await {
-            Some(ts) => match ts.load_recent(agent_id, DEFAULT_REVIEW_DEPTH).await {
+            Some(ts) => match ts.load_recent(agent_id, review_depth).await {
                 Ok(t) => t,
                 Err(e) => {
                     warn!(agent_id, error = %e, "Meditation: failed to load traces");
@@ -180,7 +182,7 @@ impl MeditationRunner {
         let mut entity_introspections: Vec<(String, Option<EntityProfile>, Vec<(String, String, String)>)> = Vec::new();
         if !traces.is_empty() {
             let mut seen = HashSet::new();
-            for trace in traces.iter().take(DEFAULT_REVIEW_DEPTH) {
+            for trace in traces.iter().take(review_depth) {
                 for entity in &trace.entities {
                     if seen.len() >= MAX_ENTITY_INTROSPECTIONS {
                         break;

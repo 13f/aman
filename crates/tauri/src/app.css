@@ -115,25 +115,6 @@ body { min-height: 100vh; }
   padding-left: 28px;
 }
 
-/* Compact toggle button */
-.compact-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  padding: 8px 0;
-  background: none;
-  border: none;
-  color: var(--fg-dim);
-  font-size: 12px;
-  cursor: pointer;
-  transition: color 0.15s;
-  flex-shrink: 0;
-}
-.compact-toggle:hover {
-  color: var(--fg);
-}
-
 /* Compact mode nav items (icon-only) */
 .nav-icon {
   display: flex;

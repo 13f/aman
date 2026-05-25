@@ -148,10 +148,6 @@
 </script>
 
 <nav class="sidebar" class:compact={sidebarCompact}>
-  <button class="compact-toggle" onclick={() => sidebarCompact = !sidebarCompact} title={sidebarCompact ? "Expand sidebar" : "Collapse sidebar"}>
-    {sidebarCompact ? "▷" : "◁"}
-  </button>
-
   {#if sidebarCompact}
     <!-- Compact mode: flat list of icon-only items -->
     {#each menuGroups as group}

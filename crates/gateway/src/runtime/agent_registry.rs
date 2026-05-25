@@ -8,6 +8,7 @@ use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
 use kernel::llm::LlmProvider;
 use kernel::memory::MemoryProvider;
+use kernel::trace::TraceStore;
 use kernel::AmanResult;
 use serde_json::json;
 use std::collections::HashMap;
@@ -38,6 +39,8 @@ pub struct AgentRegistry {
     memory_providers: RwLock<HashMap<String, Arc<dyn MemoryProvider>>>,
     /// Per-agent LLM providers (API client).
     llm_providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
+    /// Per-agent trace stores (task execution traces).
+    trace_stores: RwLock<HashMap<String, Arc<dyn TraceStore>>>,
     bus: Arc<dyn EventBus>,
 }
 
@@ -51,6 +54,7 @@ impl AgentRegistry {
             session_stores: RwLock::new(HashMap::new()),
             memory_providers: RwLock::new(HashMap::new()),
             llm_providers: RwLock::new(HashMap::new()),
+            trace_stores: RwLock::new(HashMap::new()),
             bus,
         }
     }
@@ -432,6 +436,8 @@ impl AgentRegistry {
         memories.clear();
         let mut llms = self.llm_providers.write().await;
         llms.clear();
+        let mut traces = self.trace_stores.write().await;
+        traces.clear();
     }
 
     /// 设置 Agent 的 Local EventBus。
@@ -522,6 +528,20 @@ impl AgentRegistry {
     pub async fn get_llm_provider(&self, agent_id: &str) -> Option<Arc<dyn LlmProvider>> {
         let providers = self.llm_providers.read().await;
         providers.get(agent_id).cloned()
+    }
+
+    // ── Per-agent trace store ─────────────────────────────────────────
+
+    /// Set the trace store for an agent.
+    pub async fn set_trace_store(&self, agent_id: &str, store: Arc<dyn TraceStore>) {
+        let mut stores = self.trace_stores.write().await;
+        stores.insert(agent_id.to_owned(), store);
+    }
+
+    /// Get the trace store for an agent.
+    pub async fn get_trace_store(&self, agent_id: &str) -> Option<Arc<dyn TraceStore>> {
+        let stores = self.trace_stores.read().await;
+        stores.get(agent_id).cloned()
     }
 
     // ── Idle loop management ─────────────────────────────────────────

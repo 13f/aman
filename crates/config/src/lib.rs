@@ -263,7 +263,7 @@ impl Default for ExplorationConfig {
 }
 
 /// Incubation 子配置。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IncubationConfig {
     #[serde(default = "default_max_concurrent_incubation")]
     pub max_concurrent: u32,
@@ -272,10 +272,18 @@ pub struct IncubationConfig {
     /// Minimum seconds between Incubation cycles (default 3 hours).
     #[serde(default = "default_incubation_cooldown_secs", alias = "cooldown")]
     pub cooldown_secs: u64,
+    /// Minimum score to store an inspiration (novelty × 0.6 + feasibility × 0.4).
+    #[serde(default = "default_incubation_threshold")]
+    pub incubation_threshold: f64,
+    /// Score above which an inspiration is published as an event.
+    #[serde(default = "default_high_value_threshold")]
+    pub high_value_threshold: f64,
 }
 
 fn default_max_concurrent_incubation() -> u32 { 1 }
 fn default_incubation_cooldown_secs() -> u64 { 10800 }
+fn default_incubation_threshold() -> f64 { 0.7 }
+fn default_high_value_threshold() -> f64 { 0.85 }
 
 impl Default for IncubationConfig {
     fn default() -> Self {
@@ -283,6 +291,8 @@ impl Default for IncubationConfig {
             max_concurrent: 1,
             enabled: false,
             cooldown_secs: 10800,
+            incubation_threshold: 0.7,
+            high_value_threshold: 0.85,
         }
     }
 }
@@ -293,13 +303,21 @@ pub struct MeditationConfig {
     /// Minimum seconds between Meditation cycles (default 2 hours).
     #[serde(default = "default_meditation_cooldown_secs", alias = "cooldown")]
     pub cooldown_secs: u64,
+    /// Minimum idle ticks between two Meditation runs (prevents back-to-back
+    /// triggering). Default 20 ticks; effective interval = ticks × poll_interval.
+    #[serde(default = "default_meditation_min_interval_ticks")]
+    pub min_interval_ticks: u32,
 }
 
 fn default_meditation_cooldown_secs() -> u64 { 7200 }
+fn default_meditation_min_interval_ticks() -> u32 { 20 }
 
 impl Default for MeditationConfig {
     fn default() -> Self {
-        Self { cooldown_secs: 7200 }
+        Self {
+            cooldown_secs: 7200,
+            min_interval_ticks: 20,
+        }
     }
 }
 
@@ -998,18 +1016,21 @@ pub struct PartialExplorationConfig {
     pub cooldown_secs: Option<u64>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartialIncubationConfig {
     pub max_concurrent: Option<u32>,
     pub enabled: Option<bool>,
     #[serde(alias = "cooldown")]
     pub cooldown_secs: Option<u64>,
+    pub incubation_threshold: Option<f64>,
+    pub high_value_threshold: Option<f64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartialMeditationConfig {
     #[serde(alias = "cooldown")]
     pub cooldown_secs: Option<u64>,
+    pub min_interval_ticks: Option<u32>,
 }
 
 pub struct ConfigLoader;
@@ -1204,11 +1225,20 @@ impl AgentConfig {
                 if let Some(v) = incubation.cooldown_secs {
                     self.idle.incubation.cooldown_secs = v;
                 }
+                if let Some(v) = incubation.incubation_threshold {
+                    self.idle.incubation.incubation_threshold = v;
+                }
+                if let Some(v) = incubation.high_value_threshold {
+                    self.idle.incubation.high_value_threshold = v;
+                }
             }
-            if let Some(meditation) = idle.meditation
-                && let Some(v) = meditation.cooldown_secs
-            {
-                self.idle.meditation.cooldown_secs = v;
+            if let Some(meditation) = idle.meditation {
+                if let Some(v) = meditation.cooldown_secs {
+                    self.idle.meditation.cooldown_secs = v;
+                }
+                if let Some(v) = meditation.min_interval_ticks {
+                    self.idle.meditation.min_interval_ticks = v;
+                }
             }
         }
     }

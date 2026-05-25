@@ -670,6 +670,17 @@ impl AgentRuntimeBuilder {
                 if let Some(llm) = create_per_agent_llm_provider(cfg, agent_id, entry) {
                     pollster::block_on(agent_registry.set_llm_provider(agent_id, llm));
                 }
+
+                // -- TraceStore (task execution traces) --
+                let traces_dir = agents_dir.join("traces");
+                match persistence::JsonlTraceStore::open(&traces_dir) {
+                    Ok(ts) => {
+                        pollster::block_on(agent_registry.set_trace_store(agent_id, Arc::new(ts)));
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, agent = %agent_id, "trace store init skipped");
+                    }
+                }
             }
         }
 
@@ -1420,6 +1431,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn session_store_for_agent(&self, agent_id: &str) -> Option<Arc<super::session_store::SessionStore>> {
         pollster::block_on(self.agent_registry.get_session_store(agent_id))
+    }
+
+    /// Look up the per-agent trace store.
+    pub fn trace_store_for_agent(&self, agent_id: &str) -> Option<Arc<dyn kernel::trace::TraceStore>> {
+        pollster::block_on(self.agent_registry.get_trace_store(agent_id))
     }
 
     /// Return the first available session store (backward compat).

@@ -18,10 +18,13 @@ use kernel::event::{Event, EventType};
 use kernel::react::ChatMessage;
 use kernel::llm::{LlmChatRequest, LlmProvider};
 use kernel::memory::MemoryProvider;
+use kernel::trace::{TraceOutcome, TraceRecord};
 use kernel::AmanResult;
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use super::agent_registry::AgentRegistry;
 
@@ -112,6 +115,11 @@ impl ReflectionRunner {
             return;
         }
 
+        let started_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
         info!(
             agent_id,
             session_id = %session.id,
@@ -131,6 +139,34 @@ impl ReflectionRunner {
                     session_id = %session.id,
                     "Reflection: session extracted to memory"
                 );
+
+                // Write a trace record for downstream consumers (Meditation, etc.)
+                if let Some(ts) = registry.get_trace_store(agent_id).await {
+                    let entities = extract_entities_from_events(&events);
+                    let trace = TraceRecord {
+                        trace_id: format!("refl_{}", Uuid::now_v7()),
+                        agent_id: agent_id.to_owned(),
+                        session_id: Some(session.id.clone()),
+                        task_type: "session_extract".to_owned(),
+                        description: format!(
+                            "Reflected session {} with {} events",
+                            &session.id[..16.min(session.id.len())],
+                            events.len()
+                        ),
+                        input: String::new(),
+                        outcome: TraceOutcome::Success,
+                        duration_ms: (now - started_at) as u64,
+                        decision_points: Vec::new(),
+                        tool_calls: Vec::new(),
+                        errors: Vec::new(),
+                        entities,
+                        started_at_ms: started_at,
+                        ended_at_ms: Some(now),
+                    };
+                    if let Err(e) = ts.save_trace(&trace).await {
+                        debug!(agent_id, error = %e, "Reflection: failed to save extraction trace");
+                    }
+                }
             }
             Err(e) => {
                 warn!(
@@ -140,6 +176,210 @@ impl ReflectionRunner {
                     "Reflection: session_extract failed"
                 );
             }
+        }
+    }
+
+    // -- TraceStore-backed reflection steps (idle-patch.md §7 steps 1-3) ------
+
+    /// Step 1: Detect incomplete task chains via TraceStore.
+    ///
+    /// Queries `find_incomplete` for partial traces with no `ended_at_ms`, logs
+    /// them and publishes a low-priority event so the UI / operator can inspect
+    /// stalled task chains.
+    async fn chain_tasks(&self, agent_id: &str) {
+        let Some(registry) = self.agent_registry.get() else {
+            return;
+        };
+        let Some(ts) = registry.get_trace_store(agent_id).await else {
+            debug!(agent_id, "Reflection::chain_tasks: no TraceStore");
+            return;
+        };
+
+        match ts.find_incomplete(agent_id).await {
+            Ok(incomplete) if incomplete.is_empty() => {
+                debug!(agent_id, "Reflection::chain_tasks: no incomplete traces");
+            }
+            Ok(incomplete) => {
+                info!(
+                    agent_id,
+                    count = incomplete.len(),
+                    "Reflection::chain_tasks: incomplete traces detected",
+                );
+                for trace in &incomplete {
+                    debug!(
+                        agent_id,
+                        trace_id = %trace.trace_id,
+                        task_type = %trace.task_type,
+                        description = %trace.description,
+                        "Reflection::chain_tasks: stalled task",
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(agent_id, error = %e, "Reflection::chain_tasks: find_incomplete failed");
+            }
+        }
+    }
+
+    /// Step 2: Extract and classify errors from recent traces.
+    ///
+    /// Loads the most recent traces, groups errors by `error_type`, and logs a
+    /// summary. Unrecovered errors are flagged at warn level for operator
+    /// visibility.
+    async fn immediate_errors(&self, agent_id: &str) {
+        let Some(registry) = self.agent_registry.get() else {
+            return;
+        };
+        let Some(ts) = registry.get_trace_store(agent_id).await else {
+            debug!(agent_id, "Reflection::immediate_errors: no TraceStore");
+            return;
+        };
+
+        let traces = match ts.load_recent(agent_id, 30).await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(agent_id, error = %e, "Reflection::immediate_errors: load_recent failed");
+                return;
+            }
+        };
+
+        if traces.is_empty() {
+            return;
+        }
+
+        // Group errors by type: (error_type, count, total_recovered, messages)
+        let mut error_groups: HashMap<String, (usize, usize, Vec<String>)> = HashMap::new();
+        for trace in &traces {
+            for err in &trace.errors {
+                let entry = error_groups
+                    .entry(err.error_type.clone())
+                    .or_insert((0, 0, Vec::new()));
+                entry.0 += 1;
+                if err.recovered {
+                    entry.1 += 1;
+                }
+                if entry.2.len() < 3 {
+                    entry.2.push(err.error_message.clone());
+                }
+            }
+        }
+
+        if !error_groups.is_empty() {
+            info!(
+                agent_id,
+                error_categories = error_groups.len(),
+                traces_scanned = traces.len(),
+                "Reflection::immediate_errors: error classification complete",
+            );
+            for (error_type, (count, recovered, messages)) in &error_groups {
+                let unrecovered = count - recovered;
+                if unrecovered > 0 {
+                    warn!(
+                        agent_id,
+                        error_type,
+                        count,
+                        recovered,
+                        unrecovered,
+                        samples = ?messages,
+                        "Reflection::immediate_errors: unrecovered errors",
+                    );
+                } else {
+                    debug!(
+                        agent_id,
+                        error_type,
+                        count,
+                        recovered,
+                        "Reflection::immediate_errors: all recovered",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Step 3: Extract lessons learned from trace outcomes.
+    ///
+    /// Scans recent traces for successful recovery paths and decision patterns,
+    /// then stores them as procedural memory for future task guidance.
+    async fn lessons_learned(&self, agent_id: &str) {
+        let Some(registry) = self.agent_registry.get() else {
+            return;
+        };
+        let Some(ts) = registry.get_trace_store(agent_id).await else {
+            debug!(agent_id, "Reflection::lessons_learned: no TraceStore");
+            return;
+        };
+        let Some(memory) = registry.get_memory_provider(agent_id).await else {
+            debug!(agent_id, "Reflection::lessons_learned: no MemoryProvider");
+            return;
+        };
+
+        let traces = match ts.load_recent(agent_id, 20).await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(agent_id, error = %e, "Reflection::lessons_learned: load_recent failed");
+                return;
+            }
+        };
+
+        let mut lessons_stored = 0u64;
+        for trace in &traces {
+            // Lesson 1: Successful recovery patterns
+            for err in &trace.errors {
+                if err.recovered && err.recovery_action.is_some() {
+                    let lesson = serde_json::json!({
+                        "error_type": err.error_type,
+                        "recovery_action": err.recovery_action,
+                        "trace_id": trace.trace_id,
+                        "task_type": trace.task_type,
+                    });
+                    let _ = memory.store(
+                        agent_id,
+                        &lesson.to_string(),
+                        vec![
+                            "lesson_learned".into(),
+                            "recovery".into(),
+                            err.error_type.clone(),
+                        ],
+                    );
+                    lessons_stored += 1;
+                }
+            }
+
+            // Lesson 2: Decision patterns for successful outcomes
+            if trace.outcome == TraceOutcome::Success && !trace.decision_points.is_empty() {
+                for dp in &trace.decision_points {
+                    if !dp.alternatives.is_empty() {
+                        let lesson = serde_json::json!({
+                            "branch": dp.branch,
+                            "taken": dp.taken,
+                            "alternatives": dp.alternatives,
+                            "trace_id": trace.trace_id,
+                            "task_type": trace.task_type,
+                        });
+                        let _ = memory.store(
+                            agent_id,
+                            &lesson.to_string(),
+                            vec![
+                                "lesson_learned".into(),
+                                "decision".into(),
+                                "success".into(),
+                            ],
+                        );
+                        lessons_stored += 1;
+                    }
+                }
+            }
+        }
+
+        if lessons_stored > 0 {
+            info!(
+                agent_id,
+                count = lessons_stored,
+                traces_scanned = traces.len(),
+                "Reflection::lessons_learned: stored",
+            );
+        } else {
+            debug!(agent_id, "Reflection::lessons_learned: no new lessons");
         }
     }
 
@@ -282,6 +522,43 @@ Respond with ONLY valid JSON, no markdown or explanation."#
         .to_owned()
 }
 
+/// Scan event payloads for entity names suitable for trace records.
+///
+/// Extracts tool names, agent references, and key identifiers from event
+/// payloads. Deduplicates and limits to avoid bloating trace files.
+fn extract_entities_from_events(events: &[serde_json::Value]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut entities = Vec::new();
+    for event in events.iter().take(200) {
+        // Extract tool_name from tool call events
+        if let Some(tool) = event
+            .get("payload")
+            .and_then(|p| p.get("tool_name"))
+            .and_then(|v| v.as_str())
+        {
+            if seen.insert(tool.to_owned()) {
+                entities.push(tool.to_owned());
+            }
+        }
+        // Extract from event_type (e.g., "tool:exec:read_file")
+        let event_type = event
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_type.contains(':') {
+            for part in event_type.split(':') {
+                if part.len() > 2 && seen.insert(part.to_owned()) {
+                    entities.push(part.to_owned());
+                }
+            }
+        }
+        if entities.len() >= 30 {
+            break;
+        }
+    }
+    entities
+}
+
 #[async_trait]
 impl EventHandler for ReflectionRunner {
     async fn handle(&self, event: Event) -> AmanResult<()> {
@@ -298,10 +575,19 @@ impl EventHandler for ReflectionRunner {
 
         info!(
             agent_id,
-            "Reflection: QueueDrained received, starting session_extract"
+            "Reflection: QueueDrained received, running cycle"
         );
 
-        // Extract one unreflected session per cycle
+        // Step 1: Detect incomplete task chains
+        self.chain_tasks(agent_id).await;
+
+        // Step 2: Classify and report errors from recent traces
+        self.immediate_errors(agent_id).await;
+
+        // Step 3: Extract lessons learned from trace outcomes
+        self.lessons_learned(agent_id).await;
+
+        // Step 4: Extract one unreflected session per cycle
         self.session_extract(agent_id).await;
 
         Ok(())

@@ -30,6 +30,7 @@ pub mod script;
 pub mod skill;
 pub mod source;
 pub mod tool;
+pub mod trace;
 pub mod types;
 
 pub use error::{AmanResult, Error};

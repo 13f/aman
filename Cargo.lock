@@ -4965,6 +4965,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "tracing",
  "uuid",
 ]
 

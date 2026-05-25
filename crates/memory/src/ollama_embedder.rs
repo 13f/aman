@@ -1,25 +1,23 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-use reqwest::blocking::Client;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
-/// Build a reqwest blocking client, skipping the proxy only for local/LAN hosts.
+/// Build a ureq Agent, skipping the proxy only for local/LAN hosts.
 ///
 /// System proxies can intercept local traffic even when `no_proxy` is set
 /// inconsistently across shells. We only bypass for hosts where it's safe:
 /// localhost and private-range IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x).
-fn client_for(base_url: &str) -> Client {
+fn agent_for(base_url: &str) -> ureq::Agent {
     let host = url_host(base_url);
     if is_local_or_private(&host) {
-        Client::builder()
-            .no_proxy()
+        ureq::AgentBuilder::new()
+            .try_proxy_from_env(false)
             .build()
-            .expect("build reqwest client")
     } else {
-        Client::new()
+        ureq::Agent::new()
     }
 }
 
@@ -47,12 +45,11 @@ fn is_local_or_private(host: &str) -> bool {
     if let Some(tail) = host.strip_prefix("10.") {
         return tail.split('.').all(|s| s.parse::<u8>().is_ok());
     }
-    if host.starts_with("172.") {
-        if let Some(second) = host.split('.').nth(1) {
-            if let Ok(n) = second.parse::<u8>() {
-                return (16..=31).contains(&n);
-            }
-        }
+    if host.starts_with("172.")
+        && let Some(second) = host.split('.').nth(1)
+        && let Ok(n) = second.parse::<u8>()
+    {
+        return (16..=31).contains(&n);
     }
     false
 }
@@ -67,7 +64,7 @@ fn is_local_or_private(host: &str) -> bool {
 /// Note the plural `embeddings` and the embedding array directly on each
 /// element (no `data[].embedding` nesting).
 pub struct OllamaEmbedder {
-    client: Client,
+    agent: ureq::Agent,
     url: String,
     model: String,
     dim: usize,
@@ -97,7 +94,7 @@ impl OllamaEmbedder {
         debug!(%url, %model, dim, "Created OllamaEmbedder");
 
         Self {
-            client: client_for(base_url),
+            agent: agent_for(base_url),
             url,
             model: model.to_owned(),
             dim,
@@ -116,30 +113,33 @@ impl OllamaEmbedder {
         let base = ollama_root(base_url);
         let url = format!("{base}/api/embed");
 
-        let client = client_for(base_url);
+        let agent = agent_for(base_url);
         let body = serde_json::json!({
             "model": model,
             "input": "dimension detection probe",
         });
 
-        let resp: Value = match client
+        let resp: Value = match agent
             .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
+            .set("Content-Type", "application/json")
+            .send_json(body)
         {
             Ok(r) => {
-                let status = r.status();
-                let text = r.text().unwrap_or_default();
-                serde_json::from_str(&text).map_err(|_| {
-                    let preview = if text.len() > 500 { &text[..500] } else { &text };
-                    format!(
-                        "Ollama /api/embed returned HTTP {status}, not JSON:\n{preview}"
-                    )
+                r.into_json().map_err(|e| {
+                    format!("Ollama /api/embed returned non-JSON response: {e}")
                 })?
             }
+            Err(ureq::Error::Status(status, resp)) => {
+                let text = resp.into_string().unwrap_or_default();
+                let preview = if text.len() > 500 { &text[..500] } else { &text };
+                return Err(format!(
+                    "Ollama /api/embed returned HTTP {status}, not JSON:\n{preview}"
+                ).into());
+            }
             Err(e) => {
-                return Err(format!("Ollama /api/embed request failed: {e}\nCheck that Ollama is running at {url}").into());
+                return Err(format!(
+                    "Ollama /api/embed request failed: {e}\nCheck that Ollama is running at {url}"
+                ).into());
             }
         };
 
@@ -172,14 +172,17 @@ impl yantrikdb::types::Embedder for OllamaEmbedder {
         });
 
         let resp: Value = self
-            .client
+            .agent
             .post(&self.url)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .and_then(|r| r.json())
+            .set("Content-Type", "application/json")
+            .send_json(body)
             .map_err(|e| {
                 warn!(error = %e, url = %self.url, "Ollama embedder HTTP error");
+                Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+            })?
+            .into_json()
+            .map_err(|e| {
+                warn!(error = %e, url = %self.url, "Ollama embedder JSON parse error");
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?;
 

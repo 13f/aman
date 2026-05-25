@@ -1,7 +1,6 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-use reqwest::blocking::Client;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
@@ -14,7 +13,7 @@ use tracing::{debug, warn};
 /// - You want to use a specific cloud embedding model (e.g. qwen3-embedding-8b)
 /// - You already have LM Studio / Ollama / OpenAI serving embeddings locally
 pub struct RemoteEmbedder {
-    client: Client,
+    agent: ureq::Agent,
     url: String,
     api_key: String,
     model: String,
@@ -38,7 +37,7 @@ impl RemoteEmbedder {
         debug!(%url, %model, dim, "Created RemoteEmbedder");
 
         Self {
-            client: Client::new(),
+            agent: ureq::Agent::new(),
             url,
             api_key: api_key.to_owned(),
             model: model.to_owned(),
@@ -58,22 +57,26 @@ impl RemoteEmbedder {
         let base = base_url.trim_end_matches('/');
         let url = format!("{base}/embeddings");
 
-        let client = Client::new();
         let body = serde_json::json!({
             "input": "dimension detection probe",
             "model": model,
         });
 
-        let mut req = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let mut req = ureq::post(&url)
+            .set("Content-Type", "application/json");
 
         if !api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {api_key}"));
+            req = req.set("Authorization", &format!("Bearer {api_key}"));
         }
 
-        let resp: Value = req.send()?.json()?;
+        let resp: Value = req.send_json(body).map_err(|e| {
+            format!("embedding API probe failed for {base}/embeddings: {e}")
+        })?
+        .into_json()
+        .map_err(|e| {
+            format!("embedding API probe: failed to parse JSON response: {e}")
+        })?;
+
         let dim = resp["data"][0]["embedding"]
             .as_array()
             .ok_or_else(|| {
@@ -103,20 +106,23 @@ impl yantrikdb::types::Embedder for RemoteEmbedder {
         });
 
         let mut req = self
-            .client
+            .agent
             .post(&self.url)
-            .header("Content-Type", "application/json")
-            .json(&body);
+            .set("Content-Type", "application/json");
 
         if !self.api_key.is_empty() {
-            req = req.header("Authorization", format!("Bearer {}", self.api_key));
+            req = req.set("Authorization", &format!("Bearer {}", self.api_key));
         }
 
         let resp: Value = req
-            .send()
-            .and_then(|r| r.json())
+            .send_json(body)
             .map_err(|e| {
                 warn!(error = %e, url = %self.url, "Remote embedder HTTP error");
+                Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+            })?
+            .into_json()
+            .map_err(|e| {
+                warn!(error = %e, url = %self.url, "Remote embedder JSON parse error");
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?;
 

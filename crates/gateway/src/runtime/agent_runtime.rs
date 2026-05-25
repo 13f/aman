@@ -2385,6 +2385,8 @@ impl AgentRuntime {
                         .min(self.config.runtime.tool_timeout_sec.saturating_sub(1)),
                 );
                 let started = tokio::time::Instant::now();
+                let mut last_pending = 0usize;
+                let mut stall_ticks = 0u32;
                 loop {
                     let metrics = self.bus.metrics();
                     let pending = metrics.queue_depth.high
@@ -2394,7 +2396,27 @@ impl AgentRuntime {
                     if pending == 0 {
                         break;
                     }
+                    if pending == last_pending {
+                        stall_ticks += 1;
+                        // 2 s of no progress → events are stuck, stop waiting
+                        if stall_ticks >= 40 {
+                            tracing::warn!(
+                                pending,
+                                "Event bus drain stalled — {} events cannot be consumed, proceeding with shutdown",
+                                pending
+                            );
+                            break;
+                        }
+                    } else {
+                        stall_ticks = 0;
+                        last_pending = pending;
+                    }
                     if started.elapsed() >= timeout {
+                        tracing::warn!(
+                            pending,
+                            "Event bus drain timed out after {:?} — {} events still pending",
+                            timeout, pending
+                        );
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;

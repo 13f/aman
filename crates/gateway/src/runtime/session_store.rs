@@ -73,7 +73,8 @@ impl SessionStore {
                 state         = excluded.state,
                 message_count = excluded.message_count,
                 last_active_at = excluded.last_active_at,
-                session_type  = excluded.session_type",
+                session_type  = excluded.session_type,
+                reflected_at  = NULL",
             rusqlite::params![
                 rec.id,
                 rec.state,
@@ -196,7 +197,7 @@ impl SessionStore {
         let count = self.load_session_events(session_id).len() as i64;
         let db = self.db.lock().expect("session store lock");
         db.execute(
-            "UPDATE sessions SET message_count = ?1, last_active_at = ?2 WHERE id = ?3",
+            "UPDATE sessions SET message_count = ?1, last_active_at = ?2, reflected_at = NULL WHERE id = ?3",
             rusqlite::params![count, now_ms, session_id],
         )
         .map_err(|e| kernel::Error::ConfigInvalid {

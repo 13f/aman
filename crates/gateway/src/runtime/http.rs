@@ -2186,6 +2186,17 @@ async fn explore_pipeline(
     agent_id: String,
     source_name: String,
 ) {
+    // Guard: sync session message_count on all exit paths so reflection
+    // can pick up the session even when explore ends early on error.
+    let sync_session = |sid: &str| {
+        if let Some(store) = runtime.session_store() {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let _ = store.sync_message_count(sid, now_ms);
+        }
+    };
 
     // Publish initial message
     publish_explore_reply(
@@ -2204,6 +2215,7 @@ async fn explore_pipeline(
         Some(t) => t,
         None => {
             publish_explore_reply(&runtime, &session_id, &agent_id, "❌ **Error**: info_search tool not available").await;
+            sync_session(&session_id);
             return;
         }
     };
@@ -2224,6 +2236,7 @@ async fn explore_pipeline(
         Ok(v) => v,
         Err(e) => {
             publish_explore_reply(&runtime, &session_id, &agent_id, &format!("❌ **Search failed**: {e}")).await;
+            sync_session(&session_id);
             return;
         }
     };
@@ -2238,6 +2251,7 @@ async fn explore_pipeline(
             &agent_id,
             &format!("📋 **No items found** from **{source_name}**.\n\n✨ Exploration complete (no results)."),
         ).await;
+        sync_session(&session_id);
         return;
     }
 
@@ -2386,6 +2400,7 @@ async fn explore_pipeline(
             Some(t) => t,
             None => {
                 publish_explore_reply(&runtime, &session_id, &agent_id, "⚠️ Summarization tool not available").await;
+                sync_session(&session_id);
                 return;
             }
         };
@@ -2486,6 +2501,9 @@ async fn explore_pipeline(
             "✨ **Exploration complete!**\n\n{items_found} items found from **{source_name}**\n{items_summarized} articles summarized (scored > 20/30)\n\n_Reflection will process this session during the next sleep cycle._"
         ),
     ).await;
+
+    // Guard: ensure reflection can pick up the session.
+    sync_session(&session_id);
 }
 
 async fn dlq_depth(State(runtime): State<Arc<AgentRuntime>>) -> Response {

@@ -60,20 +60,26 @@ impl ReflectionRunner {
 
     // -- session_extract ------------------------------------------------------
 
+    /// Maximum number of recent events to load for extraction.
+    /// Avoids sending multi-megabyte conversations to the LLM.
+    const MAX_EXTRACTION_EVENTS: usize = 200;
+    /// Hard cap on formatted conversation size (chars) sent to LLM.
+    const MAX_CONVERSATION_CHARS: usize = 48000;
+
     /// Query one unreflected session, extract structured summary via LLM, and
     /// store in the memory provider. Mark the session as reflected on success.
     /// Processes at most one session per invocation.
     async fn session_extract(&self, agent_id: &str) {
         let Some(store) = self.session_store.get() else {
-            debug!("Reflection: no SessionStore, skipping session_extract");
+            info!("Reflection: no SessionStore, skipping session_extract");
             return;
         };
         let Some(memory) = self.memory_provider.get() else {
-            debug!("Reflection: no MemoryProvider, skipping session_extract");
+            info!("Reflection: no MemoryProvider, skipping session_extract");
             return;
         };
         let Some(llm) = self.llm_provider.get() else {
-            debug!("Reflection: no LlmProvider, skipping session_extract");
+            info!("Reflection: no LlmProvider, skipping session_extract");
             return;
         };
 
@@ -89,8 +95,8 @@ impl ReflectionRunner {
             }
         };
 
-        // Load persisted events from JSONL
-        let events = store.load_session_events(&session.id);
+        // Load only recent events — full history is too large for LLM context
+        let events = store.load_recent_events(&session.id, Self::MAX_EXTRACTION_EVENTS).await;
         if events.len() < 2 {
             // Mark as reflected even if not enough content — don't retry forever
             let now = SystemTime::now()
@@ -101,14 +107,14 @@ impl ReflectionRunner {
             return;
         }
 
-        debug!(
+        info!(
             agent_id,
             session_id = %session.id,
             event_count = events.len(),
             "Reflection: extracting session",
         );
 
-        match self.extract_and_store(llm, memory, agent_id, &session.id, &events).await {
+        match self.extract_and_store(llm, memory, agent_id, &session.id, &events, Self::MAX_CONVERSATION_CHARS).await {
             Ok(()) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -139,9 +145,10 @@ impl ReflectionRunner {
         agent_id: &str,
         session_id: &str,
         events: &[serde_json::Value],
+        max_chars: usize,
     ) -> AmanResult<()> {
         // Build a compact representation of the conversation
-        let conversation = Self::format_conversation(events);
+        let conversation = Self::format_conversation(events, max_chars);
         let system_prompt = Self::extraction_prompt();
 
         let llm_config = self.memory_llm.get();
@@ -195,8 +202,12 @@ impl ReflectionRunner {
     }
 
     /// Format conversation events into a compact text for LLM extraction.
-    fn format_conversation(events: &[serde_json::Value]) -> String {
-        let mut out = String::new();
+    ///
+    /// Each event is formatted as `[event_type] payload\n`. Payloads over
+    /// 2000 chars are truncated. Formatting stops once `max_chars` is reached
+    /// (the last incomplete line is omitted to avoid garbled output).
+    fn format_conversation(events: &[serde_json::Value], max_chars: usize) -> String {
+        let mut out = String::with_capacity(max_chars.min(65536));
         for event in events {
             let event_type = event
                 .get("event_type")
@@ -214,7 +225,11 @@ impl ReflectionRunner {
             } else {
                 payload
             };
-            out.push_str(&format!("[{event_type}] {payload}\n"));
+            let line = format!("[{event_type}] {payload}\n");
+            if out.len() + line.len() > max_chars {
+                break;
+            }
+            out.push_str(&line);
         }
         out
     }
@@ -259,9 +274,9 @@ impl EventHandler for ReflectionRunner {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 
-        debug!(
+        info!(
             agent_id,
-            "Reflection: Idle(sleep) received"
+            "Reflection: Idle(sleep) received, starting session_extract"
         );
 
         // Extract one unreflected session per sleep cycle

@@ -179,6 +179,21 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Update a session's message_count from the actual event count in its JSONL file.
+    /// Used to finalize explore/background pipeline sessions after all events are written.
+    pub fn sync_message_count(&self, session_id: &str, now_ms: i64) -> AmanResult<()> {
+        let count = self.load_session_events(session_id).len() as i64;
+        let db = self.db.lock().expect("session store lock");
+        db.execute(
+            "UPDATE sessions SET message_count = ?1, last_active_at = ?2 WHERE id = ?3",
+            rusqlite::params![count, now_ms, session_id],
+        )
+        .map_err(|e| kernel::Error::ConfigInvalid {
+            message: format!("session store sync_message_count: {e}"),
+        })?;
+        Ok(())
+    }
+
     /// JSONL file path for a session's persisted events.
     fn jsonl_path(&self, session_id: &str) -> std::path::PathBuf {
         let _ = std::fs::create_dir_all(&self.sessions_dir);
@@ -223,5 +238,30 @@ impl SessionStore {
             .lines()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
             .collect()
+    }
+
+    /// Load at most `max_events` most-recent events from the JSONL file.
+    ///
+    /// Returns events in insertion order (oldest first). For large session
+    /// files this avoids loading thousands of events into memory.
+    pub async fn load_recent_events(&self, session_id: &str, max_events: usize) -> Vec<serde_json::Value> {
+        use std::collections::VecDeque;
+        let path = self.jsonl_path(session_id);
+        if !path.exists() {
+            return Vec::new();
+        }
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            return Vec::new();
+        };
+        let mut recent: VecDeque<serde_json::Value> = VecDeque::with_capacity(max_events);
+        for line in content.lines() {
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+                if recent.len() >= max_events {
+                    recent.pop_front();
+                }
+                recent.push_back(event);
+            }
+        }
+        recent.into()
     }
 }

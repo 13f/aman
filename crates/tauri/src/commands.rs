@@ -5,9 +5,9 @@ use crate::gateway_client::GatewayClient;
 use crate::state::AppState;
 use crate::models::{
     ChatMessageEntry, ChatSessionInfo, ChatSessionState,
-    DlqEntry, MetricsSnapshot, PluginEntry, PluginHealthEntry,
-    QueueDepth, RuntimeConfigInfo, RuntimeStatusInfo,
-    SkillEntry, SoulInfo, WorkflowEntry,
+    DlqEntry, FinanceCardEntry, MetricsSnapshot, PluginEntry,
+    PluginHealthEntry, QueueDepth, RuntimeConfigInfo,
+    RuntimeStatusInfo, SkillEntry, SoulInfo, WorkflowEntry,
 };
 use secret::{KeychainBackend, SecretBackend};
 use serde::Serialize;
@@ -1740,6 +1740,30 @@ pub async fn list_code_agents() -> Result<Vec<crate::models::CodeAgentEntry>, St
 #[tauri::command]
 pub async fn launch_code_agent(command: String) -> Result<(), String> {
     crate::code_agents::launch_code_agent(&command)
+}
+
+// ---------------------------------------------------------------------------
+// Finance Cards — Home page skill cards
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn list_finance_cards() -> Result<Vec<FinanceCardEntry>, String> {
+    crate::finance_cards::load_finance_cards()
+}
+
+#[tauri::command]
+pub async fn add_finance_card(
+    skill_name: String,
+    title: String,
+    subtitle: String,
+    icon: String,
+) -> Result<(), String> {
+    crate::finance_cards::add_finance_card(&skill_name, &title, &subtitle, &icon)
+}
+
+#[tauri::command]
+pub async fn remove_finance_card(skill_name: String) -> Result<(), String> {
+    crate::finance_cards::remove_finance_card(&skill_name)
 }
 
 fn default_config_path() -> std::path::PathBuf {

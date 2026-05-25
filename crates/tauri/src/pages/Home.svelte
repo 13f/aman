@@ -42,6 +42,24 @@
     available: boolean;
   }
 
+  interface FinanceCard {
+    skill_name: string;
+    title: string;
+    subtitle: string;
+    icon: string;
+  }
+
+  interface LlmSkill {
+    name: string;
+    description: string;
+  }
+
+  const ICON_EMOJI: Record<string, string> = {
+    chart: "\u{1F4CA}", search: "\u{1F50D}", default: "\u{1F4CB}",
+    code: "\u{1F4BB}", brain: "\u{1F9E0}", globe: "\u{1F310}",
+    database: "\u{1F5C4}\u{FE0F}", shield: "\u{1F6E1}\u{FE0F}",
+  };
+
   type Mode = "idle" | "reflection" | "processing";
 
   interface AgentIdleState {
@@ -94,6 +112,15 @@
   let showAgentSelector = $state(false);
   let selectedSkillName = $state("");
   let modalError = $state("");
+
+  // Finance cards
+  let financeCards = $state<FinanceCard[]>([]);
+  let financeLoading = $state(true);
+  let showAddSkill = $state(false);
+  let addSkillError = $state("");
+  let addSkillSearch = $state("");
+  let llmSkills = $state<LlmSkill[]>([]);
+  let llmSkillsLoading = $state(false);
 
   function ensureIdleState(key: string) {
     if (!(key in idleStates)) {
@@ -184,6 +211,74 @@
     }
   }
 
+  function iconEmoji(icon: string): string {
+    return ICON_EMOJI[icon] ?? ICON_EMOJI.default;
+  }
+
+  async function loadFinanceCards() {
+    financeLoading = true;
+    try {
+      financeCards = await invoke<FinanceCard[]>("list_finance_cards");
+    } catch {
+      financeCards = [];
+    } finally {
+      financeLoading = false;
+    }
+  }
+
+  async function removeCard(skillName: string) {
+    try {
+      await invoke("remove_finance_card", { skillName });
+      financeCards = financeCards.filter(c => c.skill_name !== skillName);
+    } catch (e) {
+      console.error("remove_finance_card failed:", e);
+    }
+  }
+
+  async function openAddSkill() {
+    addSkillError = "";
+    addSkillSearch = "";
+    if (llmSkills.length === 0) {
+      llmSkillsLoading = true;
+      try {
+        const v = await invoke<any>("list_llm_skills");
+        const items = v?.items as Array<{ name: string; description: string }> | undefined;
+        llmSkills = (items || []).filter(s => s.name && s.description);
+      } catch {
+        addSkillError = "无法加载技能列表，请确认 Gateway 已启动";
+      } finally {
+        llmSkillsLoading = false;
+      }
+    }
+    showAddSkill = true;
+  }
+
+  function addCard(skill: LlmSkill) {
+    const subtitle = skill.description.length > 60
+      ? skill.description.slice(0, 60) + "..."
+      : skill.description;
+    invoke("add_finance_card", {
+      skillName: skill.name,
+      title: skill.name,
+      subtitle,
+      icon: "default",
+    }).then(() => {
+      loadFinanceCards();
+    }).catch((e) => {
+      addSkillError = String(e);
+    });
+    showAddSkill = false;
+  }
+
+  let filteredAddSkills = $derived(
+    addSkillSearch.trim()
+      ? llmSkills.filter(s => {
+          const q = addSkillSearch.toLowerCase();
+          return s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
+        })
+      : llmSkills
+  );
+
   onMount(async () => {
     try {
       agents = await invoke<AgentEntry[]>("list_agents");
@@ -204,6 +299,8 @@
     } catch {
       // code agents file missing or unparseable
     }
+
+    loadFinanceCards();
 
     unlisteners.push(await listen("event:processed", handleIdleEvent));
   });
@@ -298,32 +395,41 @@
   </div>
 {:else}
   <div class="home-section">
-    <div class="finance-cards">
-      <button class="finance-card" onclick={() => onFinanceClick("ipo-research")}>
-        <div class="finance-card-accent"></div>
-        <div class="finance-card-icon"><span>📊</span></div>
-        <div class="finance-card-body">
-          <h3>股票打新</h3>
-          <p class="dim">新股申购分析与研究</p>
-          <div class="finance-card-footer">
-            <span class="finance-skill-tag">ipo-research</span>
-            <span class="finance-card-arrow">→</span>
+    {#if financeLoading}
+      <p class="dim" style="text-align:center;padding:40px;">Loading...</p>
+    {:else}
+      <div class="finance-cards">
+        {#each financeCards as card (card.skill_name)}
+          <button class="finance-card" onclick={() => onFinanceClick(card.skill_name)}>
+            <div class="finance-card-accent"></div>
+            <span
+              class="finance-card-remove"
+              title="移除卡片"
+              role="button"
+              tabindex="0"
+              onclick={(e) => { e.stopPropagation(); removeCard(card.skill_name); }}
+              onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); removeCard(card.skill_name); } }}
+            >&times;</span>
+            <div class="finance-card-icon"><span>{iconEmoji(card.icon)}</span></div>
+            <div class="finance-card-body">
+              <h3>{card.title}</h3>
+              <p class="dim">{card.subtitle}</p>
+              <div class="finance-card-footer">
+                <span class="finance-skill-tag">{card.skill_name}</span>
+                <span class="finance-card-arrow">&rarr;</span>
+              </div>
+            </div>
+          </button>
+        {/each}
+        <button class="finance-card finance-card-add" onclick={openAddSkill}>
+          <div class="finance-card-icon finance-card-add-icon"><span>+</span></div>
+          <div class="finance-card-body">
+            <h3>添加技能卡片</h3>
+            <p class="dim">从可用技能列表中选择</p>
           </div>
-        </div>
-      </button>
-      <button class="finance-card" onclick={() => onFinanceClick("unlisted-ecosystem-analysis")}>
-        <div class="finance-card-accent"></div>
-        <div class="finance-card-icon"><span>🔍</span></div>
-        <div class="finance-card-body">
-          <h3>未上市公司调研</h3>
-          <p class="dim">非上市公司生态分析</p>
-          <div class="finance-card-footer">
-            <span class="finance-skill-tag">unlisted-ecosystem-analysis</span>
-            <span class="finance-card-arrow">→</span>
-          </div>
-        </div>
-      </button>
-    </div>
+        </button>
+      </div>
+    {/if}
   </div>
 {/if}
 
@@ -344,6 +450,47 @@
         variant="compact"
         onSelect={handleFinanceAgentSelect}
       />
+    </div>
+  </div>
+{/if}
+
+{#if showAddSkill}
+  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+  <div class="modal-overlay" onclick={() => showAddSkill = false} onkeydown={() => {}} role="button" tabindex="0">
+    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+    <div class="modal-content" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="dialog" tabindex="-1">
+      <div class="modal-header">
+        <h3>添加技能卡片</h3>
+        <button class="modal-close-btn" onclick={() => showAddSkill = false}>&times;</button>
+      </div>
+      {#if addSkillError}
+        <div class="toast-error">{addSkillError}</div>
+      {/if}
+      {#if llmSkillsLoading}
+        <p class="dim" style="text-align:center;padding:20px;">Loading...</p>
+      {:else}
+        <input
+          type="text"
+          class="add-skill-search"
+          placeholder="搜索技能..."
+          bind:value={addSkillSearch}
+        />
+        <div class="add-skill-list">
+          {#each filteredAddSkills as skill (skill.name)}
+            <button class="add-skill-item" onclick={() => addCard(skill)}>
+              <div class="add-skill-item-body">
+                <span class="add-skill-item-name">{skill.name}</span>
+                <span class="add-skill-item-desc">{skill.description}</span>
+              </div>
+              <span class="add-skill-item-plus">+</span>
+            </button>
+          {:else}
+            <p class="dim" style="text-align:center;padding:20px;">
+              {addSkillSearch ? "无匹配技能" : "没有可用的技能"}
+            </p>
+          {/each}
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
@@ -669,5 +816,133 @@
     padding: 2px 8px;
     border-radius: 4px;
     font-weight: 500;
+  }
+
+  /* Finance card remove button */
+  .finance-card-remove {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    z-index: 2;
+    background: none;
+    border: none;
+    color: var(--fg-dim);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+  }
+  .finance-card:hover .finance-card-remove {
+    opacity: 1;
+  }
+  .finance-card-remove:hover {
+    color: var(--red, #f87171);
+    background: rgba(248,113,113,0.12);
+  }
+
+  /* Add card button */
+  .finance-card-add {
+    border-style: dashed;
+    opacity: 0.7;
+  }
+  .finance-card-add:hover {
+    opacity: 1;
+    border-style: dashed;
+  }
+  .finance-card-add-icon {
+    background: linear-gradient(135deg, rgba(108,140,255,0.06), rgba(167,139,250,0.04));
+  }
+  .finance-card-add-icon span {
+    font-size: 28px;
+    font-weight: 300;
+    color: var(--fg-dim);
+  }
+
+  /* Add skill modal */
+  .add-skill-search {
+    width: 100%;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--fg);
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    box-sizing: border-box;
+  }
+  .add-skill-search:focus {
+    border-color: var(--accent);
+  }
+  .add-skill-search::placeholder {
+    color: var(--fg-dim);
+  }
+
+  .add-skill-list {
+    max-height: 360px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .add-skill-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    color: inherit;
+    width: 100%;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .add-skill-item:hover {
+    border-color: var(--accent);
+    background: var(--bg-card);
+  }
+  .add-skill-item-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .add-skill-item-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .add-skill-item-desc {
+    font-size: 12px;
+    color: var(--fg-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .add-skill-item-plus {
+    flex-shrink: 0;
+    margin-left: 12px;
+    font-size: 20px;
+    font-weight: 300;
+    color: var(--fg-dim);
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    background: rgba(108,140,255,0.08);
+    transition: background 0.15s, color 0.15s;
+  }
+  .add-skill-item:hover .add-skill-item-plus {
+    background: var(--accent, #6c8cff);
+    color: #fff;
   }
 </style>

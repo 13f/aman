@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "cards": [
+    {
+      "skillName": "ipo-research",
+      "title": "股票打新",
+      "subtitle": "新股申购分析与研究",
+      "icon": "chart"
+    },
+    {
+      "skillName": "unlisted-ecosystem-analysis",
+      "title": "未上市公司调研",
+      "subtitle": "非上市公司生态分析",
+      "icon": "search"
+    }
+  ]
+}

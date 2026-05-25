@@ -242,6 +242,15 @@ pub struct CodeAgentEntry {
     pub available: bool,
 }
 
+/// A finance card entry — skill card displayed on the Home page Finance tab.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinanceCardEntry {
+    pub skill_name: String,
+    pub title: String,
+    pub subtitle: String,
+    pub icon: String,
+}
+
 /// Agent runtime instance exposed via Tauri IPC.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentInstanceInfo {

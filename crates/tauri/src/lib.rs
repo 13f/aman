@@ -7,6 +7,7 @@
 pub mod agent_fs;
 pub mod code_agents;
 pub mod commands;
+pub mod finance_cards;
 pub mod gateway_client;
 pub mod models;
 pub mod rate_limiter;
@@ -138,6 +139,10 @@ pub fn run() {
             // Code agents — external CLI tools
             commands::list_code_agents,
             commands::launch_code_agent,
+            // Finance cards
+            commands::list_finance_cards,
+            commands::add_finance_card,
+            commands::remove_finance_card,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Set the window/dock icon explicitly for dev mode.

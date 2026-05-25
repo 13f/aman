@@ -203,6 +203,10 @@ impl AgentRuntimeBuilder {
         if let Err(e) = super::plugin_sync::sync_builtin_plugins() {
             tracing::error!(error = %e, "failed to sync built-in plugins");
         }
+        // Sync built-in configs from repo to ~/.aman/ (preserves user modifications)
+        if let Err(e) = super::config_sync::sync_builtin_configs() {
+            tracing::error!(error = %e, "failed to sync built-in configs");
+        }
         // Seed predefined agents into ~/.aman/agents/ for new users.
         let _seeded_agents = super::agent_seed::seed_builtin_agents();
         // Discover any agents manually copied into ~/.aman/agents/.

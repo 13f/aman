@@ -45,6 +45,8 @@ pub(crate) struct GroupedHashes {
     pub(crate) skills: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) plugins: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) configs: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------

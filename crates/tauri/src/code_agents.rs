@@ -40,9 +40,12 @@ const BUILTIN_JSON: &str = include_str!("../../../predefined/agents/code-agents.
 // Paths
 // ---------------------------------------------------------------------------
 
-fn user_code_agents_path() -> PathBuf {
+fn aman_agents_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".aman").join("code-agents.json")
+    PathBuf::from(home)
+        .join(".aman")
+        .join("agents")
+        .join("code-agents.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -72,35 +75,27 @@ fn check_command_available(command: &str) -> bool {
 // Load / merge
 // ---------------------------------------------------------------------------
 
-/// Load the merged code agent list: built-in base + user overrides.
-///
-/// Built-in agents come from `predefined/agents/code-agents.json` (embedded in
-/// the binary). User overrides are read from `~/.aman/code-agents.json`. User
-/// entries with the same `key` override the built-in; new keys are appended.
+/// Load the code agent list from `~/.aman/agents/code-agents.json` (synced by
+/// gateway with hash comparison — user modifications are preserved across
+/// builtin updates). Falls back to the embedded builtin if the file doesn't
+/// exist (gateway hasn't started yet or first run).
 pub fn load_code_agents() -> Result<Vec<CodeAgentEntry>, String> {
-    let builtin: CodeAgentsFile = serde_json::from_str(BUILTIN_JSON)
-        .map_err(|e| format!("解析内置 code-agents.json 失败: {e}"))?;
+    let path = aman_agents_path();
 
-    let mut map: std::collections::BTreeMap<String, CodeAgentConfig> =
-        std::collections::BTreeMap::new();
-    for c in builtin.agents {
-        map.insert(c.key.clone(), c);
-    }
+    let agents: Vec<CodeAgentConfig> = if path.exists() {
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+        let file: CodeAgentsFile = serde_json::from_str(&raw)
+            .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
+        file.agents
+    } else {
+        let builtin: CodeAgentsFile = serde_json::from_str(BUILTIN_JSON)
+            .map_err(|e| format!("解析内置 code-agents.json 失败: {e}"))?;
+        builtin.agents
+    };
 
-    // Merge user overrides
-    let user_path = user_code_agents_path();
-    if user_path.exists() {
-        let raw = std::fs::read_to_string(&user_path)
-            .map_err(|e| format!("读取 {} 失败: {e}", user_path.display()))?;
-        let user_file: CodeAgentsFile = serde_json::from_str(&raw)
-            .map_err(|e| format!("解析 {} 失败: {e}", user_path.display()))?;
-        for c in user_file.agents {
-            map.insert(c.key.clone(), c);
-        }
-    }
-
-    let entries: Vec<CodeAgentEntry> = map
-        .into_values()
+    let entries: Vec<CodeAgentEntry> = agents
+        .into_iter()
         .map(|c| {
             let available = check_command_available(&c.command);
             CodeAgentEntry {

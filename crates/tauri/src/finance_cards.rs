@@ -3,10 +3,10 @@
 
 //! Finance card manager — skill cards displayed on the Home page Finance tab.
 //!
-//! Cards are defined in `predefined/cards.json` (built-in, kept up-to-date with
-//! each release) and `~/.aman/finance_cards.json` (user edits — additions and
-//! removals). The built-in set provides the default starting list; the user file
-//! stores the full effective list once the user makes any modifications.
+//! Cards are defined in `predefined/cards.json` and synced to `~/.aman/cards.json`
+//! by the gateway on startup (with hash comparison — user modifications are
+//! preserved across builtin updates). The Tauri app reads from `~/.aman/cards.json`
+//! directly and writes user edits (add/remove) back to the same file.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -32,35 +32,33 @@ struct FinanceCardsFile {
     cards: Vec<FinanceCard>,
 }
 
-/// Embedded built-in cards, kept current with each release.
+/// Embedded built-in cards — fallback when the gateway hasn't synced yet.
 const BUILTIN_JSON: &str = include_str!("../../../predefined/cards.json");
 
 // ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 
-fn user_cards_path() -> PathBuf {
+fn aman_cards_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".aman").join("finance_cards.json")
+    PathBuf::from(home).join(".aman").join("cards.json")
 }
 
 // ---------------------------------------------------------------------------
 // Load / save
 // ---------------------------------------------------------------------------
 
-/// Load the effective card list: user overrides if available, otherwise builtin.
-///
-/// On first run (no user file), returns the built-in defaults. Once the user
-/// makes any modification (add or remove), the full effective list is persisted
-/// to `~/.aman/finance_cards.json` and loaded from there on subsequent runs.
+/// Load the effective card list from `~/.aman/cards.json` (synced by gateway).
+/// Falls back to the embedded builtin if the file doesn't exist (gateway hasn't
+/// started yet or first run).
 pub fn load_finance_cards() -> Result<Vec<FinanceCardEntry>, String> {
-    let user_path = user_cards_path();
+    let path = aman_cards_path();
 
-    let cards: Vec<FinanceCard> = if user_path.exists() {
-        let raw = std::fs::read_to_string(&user_path)
-            .map_err(|e| format!("读取 {} 失败: {e}", user_path.display()))?;
+    let cards: Vec<FinanceCard> = if path.exists() {
+        let raw = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
         let file: FinanceCardsFile = serde_json::from_str(&raw)
-            .map_err(|e| format!("解析 {} 失败: {e}", user_path.display()))?;
+            .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
         file.cards
     } else {
         let builtin: FinanceCardsFile = serde_json::from_str(BUILTIN_JSON)
@@ -79,10 +77,10 @@ pub fn load_finance_cards() -> Result<Vec<FinanceCardEntry>, String> {
         .collect())
 }
 
-/// Persist the full effective card list to the user file.
+/// Persist the full effective card list directly to `~/.aman/cards.json`.
 fn save_cards(cards: &[FinanceCard]) -> Result<(), String> {
-    let user_path = user_cards_path();
-    if let Some(parent) = user_path.parent() {
+    let path = aman_cards_path();
+    if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 ~/.aman 目录失败: {e}"))?;
     }
@@ -91,8 +89,8 @@ fn save_cards(cards: &[FinanceCard]) -> Result<(), String> {
     };
     let json = serde_json::to_string_pretty(&file)
         .map_err(|e| format!("序列化卡片数据失败: {e}"))?;
-    std::fs::write(&user_path, json)
-        .map_err(|e| format!("写入 {} 失败: {e}", user_path.display()))
+    std::fs::write(&path, json)
+        .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
 /// Add a card. Loads current list, appends, and persists.
@@ -112,7 +110,6 @@ pub fn add_finance_card(
         })
         .collect();
 
-    // Avoid duplicates
     if cards.iter().any(|c| c.skill_name == skill_name) {
         return Err(format!("技能 '{skill_name}' 已存在"));
     }

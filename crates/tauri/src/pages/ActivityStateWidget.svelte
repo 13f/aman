@@ -37,11 +37,13 @@
     agentId = "",
     agentName = "",
     runtimeRunning = false,
+    compact = false,
   }: {
     visible?: boolean;
     agentId?: string;
     agentName?: string;
     runtimeRunning?: boolean;
+    compact?: boolean;
   } = $props();
 
   // ---------------------------------------------------------------------------
@@ -221,8 +223,8 @@
 </script>
 
 {#if visible}
-  <div class="activity-widget" class:active={runtimeRunning}>
-    {#if agentName}
+  <div class="activity-widget" class:active={runtimeRunning} class:compact>
+    {#if agentName && !compact}
       <div class="agent-label">{agentName}</div>
     {/if}
 
@@ -235,8 +237,10 @@
       {info1}
       {info2}
       {ringColors}
-      size={110}
+      size={compact ? 36 : 110}
       active={runtimeRunning}
+      showLabel={!compact}
+      showInfo={!compact}
     />
 
   </div>
@@ -251,6 +255,9 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+  }
+  .activity-widget.compact {
+    padding: 8px 4px;
   }
   .agent-label {
     font-size: 11px;

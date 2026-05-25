@@ -22,8 +22,9 @@
   let activeAgentName = $state("");
   let chatPrefill = $state("");
   let chatPrefillSeq = $state(0);
+  let sidebarCompact = $state(false);
 
-  type MenuItem = { id: string; label: string };
+  type MenuItem = { id: string; label: string; short: string };
   type MenuGroup = { name: string; label: string; items: MenuItem[] };
 
   const menuGroups: MenuGroup[] = [
@@ -31,28 +32,28 @@
       name: "apps",
       label: "Workspace",
       items: [
-        { id: "home", label: "Home" },
-        { id: "chat", label: "Chat" },
+        { id: "home", label: "Home", short: "Ho" },
+        { id: "chat", label: "Chat", short: "Ch" },
       ],
     },
     {
       name: "platform",
       label: "Services",
       items: [
-        { id: "agents", label: "Agents" },
-        { id: "providers", label: "Providers" },
-        { id: "third-party", label: "Third Party Services" },
-        { id: "dashboard", label: "Dashboard" },
+        { id: "agents", label: "Agents", short: "Ag" },
+        { id: "providers", label: "Providers", short: "Pr" },
+        { id: "third-party", label: "Third Party Services", short: "3P" },
+        { id: "dashboard", label: "Dashboard", short: "Db" },
       ],
     },
     {
       name: "management",
       label: "Management",
       items: [
-        { id: "workflows", label: "Workflow Board" },
-        { id: "plugins", label: "Plugin Manager" },
-        { id: "maintenance", label: "Maintenance" },
-        { id: "settings", label: "Settings" },
+        { id: "workflows", label: "Workflow Board", short: "Wf" },
+        { id: "plugins", label: "Plugin Manager", short: "Pl" },
+        { id: "maintenance", label: "Maintenance", short: "Ma" },
+        { id: "settings", label: "Settings", short: "Se" },
       ],
     },
   ];
@@ -146,34 +147,63 @@
   });
 </script>
 
-<nav class="sidebar">
-  {#each menuGroups as group}
-    <button class="menu-header" onclick={() => toggleGroup(group.name)}>
-      <span class="menu-arrow">{expandedGroups[group.name] ? "▾" : "▸"}</span>
-      {group.label}
-    </button>
-    {#if expandedGroups[group.name]}
-      <div class="menu-items">
-        {#each group.items as page}
-          {#if !runtimeRunning || page.id === "settings"}
-            <span class="sidebar-link disabled" title={page.id === "settings" ? "Settings are being reorganised" : "Start the runtime first"}>
-              <span class="status-dot stopped"></span>
-              {page.label}
-            </span>
-          {:else}
-            <button
-              class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
-              onclick={() => navigateTo(page.id)}
-            >
-              <span class="status-dot running"></span>
-              {page.label}
-            </button>
-          {/if}
-        {/each}
-      </div>
-    {/if}
-  {/each}
-  <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentName={activeAgentName} />
+<nav class="sidebar" class:compact={sidebarCompact}>
+  <button class="compact-toggle" onclick={() => sidebarCompact = !sidebarCompact} title={sidebarCompact ? "Expand sidebar" : "Collapse sidebar"}>
+    {sidebarCompact ? "▷" : "◁"}
+  </button>
+
+  {#if sidebarCompact}
+    <!-- Compact mode: flat list of icon-only items -->
+    {#each menuGroups as group}
+      {#each group.items as page}
+        {#if !runtimeRunning || page.id === "settings"}
+          <span class="nav-icon disabled" title={page.id === "settings" ? "Settings are being reorganised" : page.label + " — Start the runtime first"}>
+            <span class="status-dot stopped"></span>
+            <span class="nav-short">{page.short}</span>
+          </span>
+        {:else}
+          <button
+            class={["nav-icon", currentPage === page.id ? "active" : ""].join(" ")}
+            onclick={() => navigateTo(page.id)}
+            title={page.label}
+          >
+            <span class="status-dot running"></span>
+            <span class="nav-short">{page.short}</span>
+          </button>
+        {/if}
+      {/each}
+    {/each}
+  {:else}
+    <!-- Expanded mode: grouped with headers -->
+    {#each menuGroups as group}
+      <button class="menu-header" onclick={() => toggleGroup(group.name)}>
+        <span class="menu-arrow">{expandedGroups[group.name] ? "▾" : "▸"}</span>
+        {group.label}
+      </button>
+      {#if expandedGroups[group.name]}
+        <div class="menu-items">
+          {#each group.items as page}
+            {#if !runtimeRunning || page.id === "settings"}
+              <span class="sidebar-link disabled" title={page.id === "settings" ? "Settings are being reorganised" : "Start the runtime first"}>
+                <span class="status-dot stopped"></span>
+                {page.label}
+              </span>
+            {:else}
+              <button
+                class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
+                onclick={() => navigateTo(page.id)}
+              >
+                <span class="status-dot running"></span>
+                {page.label}
+              </button>
+            {/if}
+          {/each}
+        </div>
+      {/if}
+    {/each}
+  {/if}
+
+  <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentName={activeAgentName} compact={sidebarCompact} />
 </nav>
 
 <NotificationOverlay onNavigate={(p) => navigateTo(p)} />

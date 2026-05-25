@@ -1,6 +1,9 @@
 {
   "version": 1,
+  "skills": "skills/builtin-skills.json",
+  "plugins": "plugins/builtin-plugins.json",
   "configs": [
-    "cards.json"
+    "cards.json",
+    "agents/code-agents.json"
   ]
 }

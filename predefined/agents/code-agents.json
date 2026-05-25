@@ -28,6 +28,13 @@
       "command": "gemini",
       "description": "Google's Gemini in the terminal. Best for long-context analysis (1M+ tokens), Google Cloud integration, and large-scale refactors. Use Gemini CLI when context size matters.",
       "tool_args": ["{prompt}"]
+    },
+    {
+      "key": "kimi",
+      "display_name": "Kimi (Code)",
+      "command": "kimi",
+      "description": "Moonshot AI's Kimi coding agent. Best for Chinese-language coding tasks, bilingual (CN/EN) codebases, and tasks requiring strong Mandarin language understanding alongside code generation.",
+      "tool_args": ["{prompt}"]
     }
   ]
 }

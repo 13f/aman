@@ -292,7 +292,7 @@ impl EventHandler for ReflectionRunner {
 
         let agent_id = event
             .payload
-            .get("agent_id")
+            .get("agentId")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
 

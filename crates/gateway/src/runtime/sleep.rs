@@ -26,7 +26,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 use super::agent_registry::AgentRegistry;
-use super::session_store::SessionStore;
 
 // ---------------------------------------------------------------------------
 // SleepPhaseOutput
@@ -109,8 +108,6 @@ impl CpuTracker {
 /// as `ReflectionRunner` and `ReadSkillTool`).
 pub struct SleepRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
-    memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
-    session_store: OnceLock<Arc<SessionStore>>,
     sleep_config: OnceLock<SleepConfig>,
     /// Prevents overlapping Sleep runs per agent.
     active_runs: RwLock<HashSet<String>>,
@@ -120,8 +117,6 @@ impl SleepRunner {
     pub fn new() -> Self {
         Self {
             agent_registry: OnceLock::new(),
-            memory_provider: OnceLock::new(),
-            session_store: OnceLock::new(),
             sleep_config: OnceLock::new(),
             active_runs: RwLock::new(HashSet::new()),
         }
@@ -131,16 +126,13 @@ impl SleepRunner {
         let _ = self.agent_registry.set(registry);
     }
 
-    pub fn set_memory_provider(&self, provider: Arc<dyn MemoryProvider>) {
-        let _ = self.memory_provider.set(provider);
-    }
-
-    pub fn set_session_store(&self, store: Arc<SessionStore>) {
-        let _ = self.session_store.set(store);
-    }
-
     pub fn set_sleep_config(&self, config: SleepConfig) {
         let _ = self.sleep_config.set(config);
+    }
+
+    /// Look up the per-agent memory provider from the registry.
+    async fn memory_for(&self, agent_id: &str) -> Option<Arc<dyn MemoryProvider>> {
+        self.agent_registry.get()?.get_memory_provider(agent_id).await
     }
 
     // -- phase 1: session compression backfill ------------------------------
@@ -156,7 +148,7 @@ impl SleepRunner {
         cpu.start_phase();
         let output = SleepPhaseOutput::new("session_backfill");
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!("SleepRunner: no MemoryProvider, skipping phase 1");
             cpu.end_phase();
             return output.with_info(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
@@ -209,7 +201,7 @@ impl SleepRunner {
         cpu.start_phase();
         let output = SleepPhaseOutput::new("temporal_housekeeping");
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!("SleepRunner: no MemoryProvider, skipping phase 2");
             cpu.end_phase();
             return output.with_info(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
@@ -347,7 +339,7 @@ impl SleepRunner {
         cpu.start_phase();
         let output = SleepPhaseOutput::new("index_monitoring");
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!("SleepRunner: no MemoryProvider, skipping phase 4");
             cpu.end_phase();
             return output.with_info(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
@@ -399,7 +391,7 @@ impl SleepRunner {
         cpu.start_phase();
         let output = SleepPhaseOutput::new("cognitive_consolidation");
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!("SleepRunner: no MemoryProvider, skipping phase 5");
             cpu.end_phase();
             return output.with_info(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
@@ -444,10 +436,10 @@ impl SleepRunner {
         cpu.start_phase();
         let output = SleepPhaseOutput::new("health_report");
 
-        let provider = self.memory_provider.get();
+        let provider = self.memory_for(agent_id).await;
 
         // Collect current memory stats
-        let stats = if let Some(p) = provider {
+        let stats = if let Some(ref p) = provider {
             p.stats(agent_id).await.unwrap_or(MemoryStats {
                 total_entries: 0,
                 index_size_bytes: 0,
@@ -465,7 +457,7 @@ impl SleepRunner {
             }
         };
 
-        let recent_memory_count: u64 = if let Some(p) = provider {
+        let recent_memory_count: u64 = if let Some(ref p) = provider {
             p.session_history(agent_id, 100)
                 .await
                 .unwrap_or_default()
@@ -1007,7 +999,11 @@ mod tests {
     async fn phase_2_temporal_housekeeping_no_stale_memories() {
         let provider: Arc<dyn MemoryProvider> = Arc::new(TestMemoryProvider::new());
         let runner = SleepRunner::new();
-        runner.set_memory_provider(provider);
+        let bus: Arc<dyn event_bus::EventBus> =
+            Arc::new(event_bus::InMemoryBus::new(Default::default()));
+        let registry = Arc::new(AgentRegistry::new(bus));
+        pollster::block_on(registry.set_memory_provider("agent-1", provider));
+        runner.set_agent_registry(registry);
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut cpu = CpuTracker::new(300.0);
@@ -1024,7 +1020,11 @@ mod tests {
     async fn phase_4_index_monitoring_returns_stats() {
         let provider: Arc<dyn MemoryProvider> = Arc::new(TestMemoryProvider::new());
         let runner = SleepRunner::new();
-        runner.set_memory_provider(provider);
+        let bus: Arc<dyn event_bus::EventBus> =
+            Arc::new(event_bus::InMemoryBus::new(Default::default()));
+        let registry = Arc::new(AgentRegistry::new(bus));
+        pollster::block_on(registry.set_memory_provider("agent-1", provider));
+        runner.set_agent_registry(registry);
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut cpu = CpuTracker::new(300.0);
@@ -1042,7 +1042,11 @@ mod tests {
     async fn phase_5_cognitive_consolidation_returns_empty() {
         let provider: Arc<dyn MemoryProvider> = Arc::new(TestMemoryProvider::new());
         let runner = SleepRunner::new();
-        runner.set_memory_provider(provider);
+        let bus: Arc<dyn event_bus::EventBus> =
+            Arc::new(event_bus::InMemoryBus::new(Default::default()));
+        let registry = Arc::new(AgentRegistry::new(bus));
+        pollster::block_on(registry.set_memory_provider("agent-1", provider));
+        runner.set_agent_registry(registry);
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut cpu = CpuTracker::new(300.0);

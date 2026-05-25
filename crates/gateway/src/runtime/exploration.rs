@@ -40,7 +40,6 @@ use super::agent_registry::AgentRegistry;
 /// Handles IdleEvent{kind="exploration"} → external information discovery.
 pub struct ExplorationRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
-    memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
     info_hub_config: OnceLock<InfoHubConfig>,
     exploration_config: OnceLock<ExplorationConfig>,
     global_bus: OnceLock<Arc<dyn EventBus>>,
@@ -51,7 +50,6 @@ impl ExplorationRunner {
     pub fn new() -> Self {
         Self {
             agent_registry: OnceLock::new(),
-            memory_provider: OnceLock::new(),
             info_hub_config: OnceLock::new(),
             exploration_config: OnceLock::new(),
             global_bus: OnceLock::new(),
@@ -63,8 +61,9 @@ impl ExplorationRunner {
         let _ = self.agent_registry.set(registry);
     }
 
-    pub fn set_memory_provider(&self, provider: Arc<dyn MemoryProvider>) {
-        let _ = self.memory_provider.set(provider);
+    /// Look up the per-agent memory provider from the registry.
+    async fn memory_for(&self, agent_id: &str) -> Option<Arc<dyn MemoryProvider>> {
+        self.agent_registry.get()?.get_memory_provider(agent_id).await
     }
 
     pub fn set_info_hub_config(&self, config: InfoHubConfig) {
@@ -98,7 +97,7 @@ impl ExplorationRunner {
     async fn generate_queries(&self, agent_id: &str) -> Vec<String> {
         let mut queries: Vec<String> = Vec::new();
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!("ExplorationRunner: no MemoryProvider, skipping query generation");
             return queries;
         };
@@ -286,7 +285,7 @@ impl ExplorationRunner {
         agent_id: &str,
         results: &[InfoItem],
     ) -> usize {
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             return 0;
         };
 
@@ -336,7 +335,7 @@ impl ExplorationRunner {
 
     /// When external sources are unavailable, fall back to local memory search.
     async fn local_fallback(&self, agent_id: &str) {
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             return;
         };
 
@@ -758,7 +757,11 @@ mod tests {
     async fn generate_queries_from_stale_memories() {
         let provider: Arc<dyn MemoryProvider> = Arc::new(TestMemoryProvider::new());
         let runner = ExplorationRunner::new();
-        runner.set_memory_provider(provider);
+        let bus: Arc<dyn event_bus::EventBus> =
+            Arc::new(event_bus::InMemoryBus::new(Default::default()));
+        let registry = Arc::new(AgentRegistry::new(bus));
+        registry.set_memory_provider("agent-1", provider).await;
+        runner.set_agent_registry(registry);
 
         let queries = runner.generate_queries("agent-1").await;
         // Should have at least the stale memory query + entity gap queries
@@ -782,7 +785,11 @@ mod tests {
     async fn process_results_stores_high_quality_items() {
         let provider: Arc<dyn MemoryProvider> = Arc::new(TestMemoryProvider::new());
         let runner = ExplorationRunner::new();
-        runner.set_memory_provider(provider);
+        let bus: Arc<dyn event_bus::EventBus> =
+            Arc::new(event_bus::InMemoryBus::new(Default::default()));
+        let registry = Arc::new(AgentRegistry::new(bus));
+        registry.set_memory_provider("agent-1", provider).await;
+        runner.set_agent_registry(registry);
 
         let items = vec![
             InfoItem {

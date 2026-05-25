@@ -24,7 +24,6 @@ use super::agent_registry::AgentRegistry;
 
 pub struct MeditationRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
-    memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
     meditation_config: OnceLock<MeditationConfig>,
     global_bus: OnceLock<Arc<dyn EventBus>>,
     active_runs: RwLock<HashSet<String>>,
@@ -34,7 +33,6 @@ impl MeditationRunner {
     pub fn new() -> Self {
         Self {
             agent_registry: OnceLock::new(),
-            memory_provider: OnceLock::new(),
             meditation_config: OnceLock::new(),
             global_bus: OnceLock::new(),
             active_runs: RwLock::new(HashSet::new()),
@@ -45,8 +43,9 @@ impl MeditationRunner {
         let _ = self.agent_registry.set(registry);
     }
 
-    pub fn set_memory_provider(&self, provider: Arc<dyn MemoryProvider>) {
-        let _ = self.memory_provider.set(provider);
+    /// Look up the per-agent memory provider from the registry.
+    async fn memory_for(&self, agent_id: &str) -> Option<Arc<dyn MemoryProvider>> {
+        self.agent_registry.get()?.get_memory_provider(agent_id).await
     }
 
     pub fn set_meditation_config(&self, config: MeditationConfig) {
@@ -93,7 +92,7 @@ impl MeditationRunner {
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
         let started = Instant::now();
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!(agent_id, "MeditationRunner: no MemoryProvider");
             return Ok(());
         };

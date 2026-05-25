@@ -10,8 +10,7 @@ use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus};
 use kernel::budget::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
-use kernel::llm::{self, LlmChatRequest, LlmProvider};
-use kernel::memory::MemoryProvider;
+use kernel::llm::{self, LlmChatRequest};
 use kernel::prompt::PromptPipeline;
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
@@ -301,8 +300,6 @@ pub struct LlmReActEngine {
     tool_registry: Arc<ToolRegistry>,
     agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
-    /// The LLM provider implementation (OpenAI, etc.).
-    llm_provider: Arc<dyn LlmProvider>,
     /// Prompt pipeline for building system prompts.
     prompt_pipeline: Box<dyn PromptPipeline>,
 }
@@ -312,14 +309,12 @@ impl LlmReActEngine {
         tool_registry: Arc<ToolRegistry>,
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
-        llm_provider: Arc<dyn LlmProvider>,
         prompt_pipeline: Box<dyn PromptPipeline>,
     ) -> Self {
         Self {
             tool_registry,
             agent_registry,
             bus,
-            llm_provider,
             prompt_pipeline,
         }
     }
@@ -381,7 +376,12 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             max_output_tokens: ctx.token_budget.max_output_tokens as u32,
         };
 
-        let result = self.llm_provider.chat_completion(req, cb).await;
+        let Some(llm_provider) = self.agent_registry.get_llm_provider(&ctx.agent_id).await else {
+            return Err(kernel::react::ReActError::LlmError(
+                format!("no LLM provider configured for agent '{}'", ctx.agent_id)
+            ));
+        };
+        let result = llm_provider.chat_completion(req, cb).await;
 
         // Publish llm:call_ended to local bus
         let _ = self
@@ -473,8 +473,6 @@ pub struct AgentHarness {
     tool_registry: Arc<ToolRegistry>,
     engine: LlmReActEngine,
     bus: Arc<dyn EventBus>,
-    /// Pluggable memory retrieval for long-term recall.
-    memory_store: Arc<dyn MemoryProvider>,
     /// Per-session conversation history for cross-turn continuity.
     session_history: Box<dyn SessionHistoryStore>,
     /// Per-session interrupt flags for external stop (M6).
@@ -493,8 +491,6 @@ impl AgentHarness {
         registry: Arc<AgentRegistry>,
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
-        memory_store: Arc<dyn MemoryProvider>,
-        llm_provider: Arc<dyn LlmProvider>,
         prompt_pipeline: Box<dyn PromptPipeline>,
         session_history: Box<dyn SessionHistoryStore>,
         budget_policy: Box<dyn TokenBudgetPolicy>,
@@ -504,7 +500,6 @@ impl AgentHarness {
             Arc::clone(&tool_registry),
             Arc::clone(&registry),
             Arc::clone(&bus),
-            llm_provider,
             prompt_pipeline,
         );
         Self {
@@ -512,7 +507,6 @@ impl AgentHarness {
             tool_registry,
             engine,
             bus,
-            memory_store,
             session_history,
             active_interrupts: RwLock::new(HashMap::new()),
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
@@ -767,7 +761,10 @@ impl AgentHarness {
         token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
 
         // 6. Retrieve memories relevant to user input (M5 T5.1)
-        let memory_results = self.memory_store.recall(agent_id, user_text, 10).await;
+        let memory_results = match self.registry.get_memory_provider(agent_id).await {
+            Some(provider) => provider.recall(agent_id, user_text, 10).await,
+            None => Vec::new(),
+        };
         let memory_context = if memory_results.is_empty() {
             None
         } else {
@@ -837,7 +834,9 @@ impl AgentHarness {
         // 10. Auto-write memories from [remember: ...] patterns (M5 T5.2)
         let (final_reply, remembered) = process_remember_commands(&raw_reply);
         for content in &remembered {
-            self.memory_store.store(agent_id, content, vec!["auto".to_owned()]);
+            if let Some(provider) = self.registry.get_memory_provider(agent_id).await {
+                provider.store(agent_id, content, vec!["auto".to_owned()]);
+            }
         }
 
         // Sanitize API key patterns from output before publishing.

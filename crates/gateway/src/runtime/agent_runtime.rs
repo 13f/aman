@@ -409,7 +409,6 @@ impl AgentRuntimeBuilder {
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
         let auth_registry = Arc::new(tool::auth::AuthRegistry::new());
-        let llm_provider = create_llm_provider();
 
         // Load config early so plugins that need LLM config can use it.
         let aman_cfg = config::AmanConfig::from_default_path()
@@ -583,25 +582,6 @@ impl AgentRuntimeBuilder {
         // ── Notification store ─────────────────────────────────────
         let notifications = Arc::new(notification::NotificationStore::new(500));
 
-        // ── Session store (SQLite index + JSONL cleanup) ────────────
-        let session_store = std::env::var("HOME").ok().and_then(|home| {
-            let aman_cfg = config::AmanConfig::from_default_path().ok()?;
-            let agent_key = aman_cfg.agents.keys().next()?;
-            let agents_dir = PathBuf::from(&home).join(".aman").join("agents").join(agent_key);
-            let db_path = agents_dir.join("sessions.db");
-            let sessions_dir = agents_dir.join("sessions");
-            match super::session_store::SessionStore::open(&db_path, &sessions_dir) {
-                Ok(store) => {
-                    tracing::info!(path = %db_path.display(), "session store opened");
-                    Some(Arc::new(store))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "session store init skipped");
-                    None
-                }
-            }
-        });
-
         // ── Subscribe notification subscriber ─────────────────────
         let notif_sub = notification::NotificationSubscriber::new(Arc::clone(&notifications));
         let _ = pollster::block_on(bus.subscribe(
@@ -614,86 +594,86 @@ impl AgentRuntimeBuilder {
         // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 
-        // ── Memory store (M5) — pluggable memory provider ──────────
-        let agent_key = aman_cfg
-            .as_ref()
-            .and_then(|c| c.agents.keys().next())
-            .cloned()
-            .unwrap_or_else(|| "default".to_owned());
-
+        // ── Per-agent resources ─────────────────────────────────────
+        // Each agent gets its own SessionStore, YantrikDB, and LlmProvider.
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| "/tmp".to_owned());
-        let memory_dir = PathBuf::from(&home)
-            .join(".aman")
-            .join("agents")
-            .join(&agent_key)
-            .join("memory");
-        // Handle migration: if `memory` is a file (from old yantrikdb path
-        // where db_path pointed directly to the file), rename it to a temp
-        // location, create the memory dir, then move it to memory/yantrik.db.
-        if memory_dir.is_file() {
-            let bak = memory_dir.with_extension("memory.bak");
-            let _ = std::fs::rename(&memory_dir, &bak);
-            let _ = std::fs::create_dir_all(&memory_dir);
-            let new_path = memory_dir.join("yantrik.db");
-            if let Err(e) = std::fs::rename(&bak, &new_path) {
-                tracing::warn!(from = %bak.display(), to = %new_path.display(), error = %e, "failed to migrate yantrikdb to memory/yantrik.db");
-            } else {
-                tracing::info!(path = %new_path.display(), "migrated yantrikdb to memory/yantrik.db");
-            }
-        } else {
-            std::fs::create_dir_all(&memory_dir)
-                .unwrap_or_else(|e| tracing::warn!(path = %memory_dir.display(), error = %e, "failed to create memory dir"));
-        }
-        let db_path = memory_dir.join("yantrik.db");
-
-        // Register the built-in YantrikdbProvider directly (always available).
-        {
-            let embedding_config = aman_cfg
-                .as_ref()
-                .map(resolve_embedding_config)
-                .unwrap_or_default();
-            let memory_config = MemoryConfig {
-                db_path: db_path.to_string_lossy().into_owned(),
-                agent_id: agent_key.clone(),
-                embedding: embedding_config,
-            };
-            let yantrikdb = YantrikdbProvider::open(&memory_config)
-                .expect("Failed to open yantrikdb memory store");
-            if let Err(e) = memory_provider_registry.register(Arc::new(yantrikdb)) {
-                tracing::warn!(error = %e, "yantrikdb provider already registered");
-            }
-        }
-
-        let provider_name = aman_cfg
+        let embedding_config = aman_cfg
             .as_ref()
-            .and_then(|c| c.memory.as_ref())
-            .map(|m| m.provider.as_str())
-            .unwrap_or("yantrikdb");
+            .map(resolve_embedding_config)
+            .unwrap_or_default();
 
-        let memory_store: Arc<dyn kernel::memory::MemoryProvider> = memory_provider_registry
-            .get(provider_name)
-            .unwrap_or_else(|| {
-                tracing::warn!(
-                    provider = provider_name,
-                    "Configured memory provider not found, falling back to yantrikdb"
-                );
-                memory_provider_registry
-                    .get("yantrikdb")
-                    .expect("yantrikdb provider must be registered")
-            });
+        if let Some(ref cfg) = aman_cfg {
+            for (agent_id, entry) in &cfg.agents {
+                let agents_dir = PathBuf::from(&home)
+                    .join(".aman")
+                    .join("agents")
+                    .join(agent_id);
+
+                if !entry.enabled {
+                    pollster::block_on(agent_registry.set_session_store(agent_id, None));
+                    continue;
+                }
+
+                // -- SessionStore --
+                let db_path = agents_dir.join("sessions.db");
+                let sessions_dir = agents_dir.join("sessions");
+                let store = match super::session_store::SessionStore::open(&db_path, &sessions_dir) {
+                    Ok(s) => {
+                        tracing::info!(path = %db_path.display(), agent = %agent_id, "session store opened");
+                        Some(Arc::new(s))
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, agent = %agent_id, "session store init skipped");
+                        None
+                    }
+                };
+                pollster::block_on(agent_registry.set_session_store(agent_id, store));
+
+                // -- MemoryProvider (YantrikDB) --
+                let memory_dir = agents_dir.join("memory");
+                if memory_dir.is_file() {
+                    let bak = memory_dir.with_extension("memory.bak");
+                    let _ = std::fs::rename(&memory_dir, &bak);
+                    let _ = std::fs::create_dir_all(&memory_dir);
+                    let new_path = memory_dir.join("yantrik.db");
+                    if let Err(e) = std::fs::rename(&bak, &new_path) {
+                        tracing::warn!(from = %bak.display(), to = %new_path.display(), error = %e, "failed to migrate yantrikdb");
+                    } else {
+                        tracing::info!(path = %new_path.display(), "migrated yantrikdb to memory/yantrik.db");
+                    }
+                } else {
+                    std::fs::create_dir_all(&memory_dir)
+                        .unwrap_or_else(|e| tracing::warn!(path = %memory_dir.display(), error = %e, "failed to create memory dir"));
+                }
+                let yantrik_path = memory_dir.join("yantrik.db");
+                let memory_config = MemoryConfig {
+                    db_path: yantrik_path.to_string_lossy().into_owned(),
+                    agent_id: agent_id.clone(),
+                    embedding: embedding_config.clone(),
+                };
+                match YantrikdbProvider::open(&memory_config) {
+                    Ok(yantrikdb) => {
+                        pollster::block_on(agent_registry.set_memory_provider(agent_id, Arc::new(yantrikdb)));
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, agent = %agent_id, "yantrikdb open failed, agent will have no memory");
+                    }
+                }
+
+                // -- LlmProvider --
+                if let Some(llm) = create_per_agent_llm_provider(cfg, agent_id, entry) {
+                    pollster::block_on(agent_registry.set_llm_provider(agent_id, llm));
+                }
+            }
+        }
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
-        // Clone for ReflectionRunner before moving into AgentHarness
-        let llm_for_reflection = Arc::clone(&llm_provider);
-
         let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
             Arc::clone(&bus),
-            Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>,
-            llm_provider,
             Box::new(DefaultPromptPipeline),
             Box::new(InMemorySessionHistory::new()),
             Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
@@ -702,11 +682,7 @@ impl AgentRuntimeBuilder {
 
         // ── Reflection runner (QueueDrained → session_extract) ────────
         let reflection_runner = Arc::new(super::reflection::ReflectionRunner::new());
-        if let Some(ref store) = session_store {
-            reflection_runner.set_session_store(Arc::clone(store));
-        }
-        reflection_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
-        reflection_runner.set_llm_provider(llm_for_reflection);
+        reflection_runner.set_agent_registry(Arc::clone(&agent_registry));
         let memory_llm_cfg = aman_cfg
             .as_ref()
             .and_then(|c| c.memory.as_ref())
@@ -742,10 +718,6 @@ impl AgentRuntimeBuilder {
         // ── Sleep runner (Idle kind=Sleep → cognitive housekeeping) ──────
         let sleep_runner = Arc::new(super::sleep::SleepRunner::new());
         sleep_runner.set_agent_registry(Arc::clone(&agent_registry));
-        sleep_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
-        if let Some(ref store) = session_store {
-            sleep_runner.set_session_store(Arc::clone(store));
-        }
         let sleep_cfg = aman_cfg
             .as_ref()
             .map(|c| c.runtime.idle.sleep.clone())
@@ -779,7 +751,6 @@ impl AgentRuntimeBuilder {
         // ── Exploration runner (Idle kind=Exploration → external discovery) ──
         let exploration_runner = Arc::new(super::exploration::ExplorationRunner::new());
         exploration_runner.set_agent_registry(Arc::clone(&agent_registry));
-        exploration_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
         let exploration_cfg = aman_cfg
             .as_ref()
             .map(|c| c.runtime.idle.exploration.clone())
@@ -823,7 +794,6 @@ impl AgentRuntimeBuilder {
         // ── Meditation runner (idle depth 100+) ──────────────────────
         let meditation_runner = Arc::new(super::meditation::MeditationRunner::new());
         meditation_runner.set_agent_registry(Arc::clone(&agent_registry));
-        meditation_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
         let meditation_cfg = aman_cfg
             .as_ref()
             .map(|c| c.runtime.idle.meditation.clone())
@@ -857,7 +827,6 @@ impl AgentRuntimeBuilder {
         // ── Incubation runner (idle depth 200+) ──────────────────────
         let incubation_runner = Arc::new(super::incubation_runner::IncubationRunner::new());
         incubation_runner.set_agent_registry(Arc::clone(&agent_registry));
-        incubation_runner.set_memory_provider(Arc::clone(&memory_store) as Arc<dyn kernel::memory::MemoryProvider>);
         let incubation_cfg = aman_cfg
             .as_ref()
             .map(|c| c.runtime.idle.incubation.clone())
@@ -1183,7 +1152,6 @@ impl AgentRuntimeBuilder {
             llm_skills: StdMutex::new(llm_skills),
             skill_registry,
             cascade_selector,
-            session_store,
             notifications,
             agent_registry,
             agent_harness,
@@ -1406,8 +1374,6 @@ pub struct AgentRuntime {
     cascade_selector: Option<skm_select::CascadeSelector>,
     /// Registry for tool authorization requests (native macOS dialogs).
     auth_registry: Arc<tool::auth::AuthRegistry>,
-    /// SQLite-backed session index (persists across restarts).
-    session_store: Option<Arc<super::session_store::SessionStore>>,
     /// Notification center — user-facing alerts (critical/warning).
     notifications: Arc<notification::NotificationStore>,
     /// Agent runtime registry — manages agent instances and lifecycle.
@@ -1442,18 +1408,36 @@ impl AgentRuntime {
         &self.runtime_dir
     }
 
+    /// Return the session store for the given agent.
     #[must_use]
-    pub fn session_store(&self) -> Option<&super::session_store::SessionStore> {
-        self.session_store.as_ref().map(|arc| arc.as_ref())
+    pub fn session_store_for_agent(&self, agent_id: &str) -> Option<Arc<super::session_store::SessionStore>> {
+        pollster::block_on(self.agent_registry.get_session_store(agent_id))
     }
 
-    /// Restore a persisted chat session into the in-memory WorkflowEngine
-    /// and rebuild the agent's conversation history from JSONL events.
+    /// Return the first available session store (backward compat).
+    #[must_use]
+    pub fn session_store(&self) -> Option<Arc<super::session_store::SessionStore>> {
+        pollster::block_on(self.agent_registry.first_session_store())
+    }
+
+    /// Restore a persisted chat session (searches all per-agent stores).
+    /// Kept backward-compatible for callers without an agent_id.
     ///
-    /// Returns `None` when the session has no persisted events or the
-    /// session store is unavailable.
+    /// Returns `None` when the session has no persisted events or no
+    /// session store could find it.
     pub async fn restore_chat_session(&self, session_id: &str) -> Option<()> {
-        let store = self.session_store()?;
+        // Search all per-agent stores for this session.
+        let store = {
+            let stores = self.agent_registry.all_session_stores().await;
+            let mut found = None;
+            for s in &stores {
+                if s.has_session(session_id) {
+                    found = Some(Arc::clone(s));
+                    break;
+                }
+            }
+            found?
+        };
         let events = store.load_session_events(session_id);
         if events.is_empty() {
             return None;
@@ -2065,7 +2049,7 @@ impl AgentRuntime {
         let subscription_filter = event_bus::SubscriptionFilter::default();
         let handler = Box::new(StoreAllEventsHandler {
             store: Arc::clone(&self.event_store),
-            session_store: self.session_store.clone(),
+            agent_registry: Arc::clone(&self.agent_registry),
         });
         let id = self.bus.subscribe(subscription_filter, handler).await?;
         *self.observer_subscription.lock().await = Some(id);
@@ -2605,7 +2589,7 @@ impl PluginExportRegistrar for RuntimePluginRegistrar {
 
 struct StoreAllEventsHandler {
     store: Arc<EventStore>,
-    session_store: Option<Arc<super::session_store::SessionStore>>,
+    agent_registry: Arc<super::AgentRegistry>,
 }
 
 #[async_trait::async_trait]
@@ -2614,8 +2598,13 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
         // Persist session-related events to JSONL so conversation history
         // survives gateway restarts.
         let session_id = event.payload.get("session_id").and_then(|v| v.as_str());
-        if let Some(sid) = session_id
-            && let Some(ref store) = self.session_store {
+        if let Some(sid) = session_id {
+            let agent_id = event
+                .payload
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
                 let entry = serde_json::json!({
                     "event_id": event.id.to_string(),
                     "event_type": format!("{:?}", event.event_type),
@@ -2625,6 +2614,7 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
                 });
                 let _ = store.append_session_event(sid, &entry);
             }
+        }
 
         self.store.record(event);
         Ok(())
@@ -2963,71 +2953,31 @@ fn resolve_embedding_config(aman: &config::AmanConfig) -> memory::EmbeddingConfi
     memory::EmbeddingConfig::default()
 }
 
-/// Build LlmConfig from AmanConfig (providers, model / agents) + Keychain API key.
+/// Create an LLM provider for a specific agent from its config entry.
 ///
-/// Create an LLM provider from configuration.
-///
-/// Reads the default `aman.model` first. If not set, falls back to the first
-/// configured agent. If no agent is found either, falls back to environment variables.
-/// Uses `api_type` from the matching provider config to select the implementation.
-fn create_llm_provider() -> Arc<dyn LlmProvider> {
-    if let Ok(aman) = config::AmanConfig::from_default_path() {
-        // Priority 0: top-level llm.api_type overrides per-provider api_type
-        let llm_api_type = aman.llm.as_ref().map(|l| l.api_type.as_str());
-
-        // Priority 1: default model config
-        if let Some(model) = &aman.model {
-            let provider_key = &model.provider;
-            let p = aman.providers.get(provider_key);
-            let base_url = p.map(|p| p.base_url.clone())
-                .unwrap_or_else(|| model.base_url.clone());
-            let api_key = get_llm_api_key_or_inline(provider_key, p);
-            let api_type = llm_api_type
-                .or_else(|| p.and_then(|p| p.api_type.as_deref()))
-                .unwrap_or("openai");
-            tracing::info!(
-                provider = %provider_key,
-                model = %model.default,
-                api_key_len = api_key.len(),
-                api_type = %api_type,
-                "create_llm_provider: using default model config"
-            );
-            return build_provider(provider_key, &api_key, &base_url, api_type);
-        }
-
-        // Priority 2: first configured agent (provider + model)
-        for (_key, agent) in &aman.agents {
-            if let Some(p) = aman.providers.get(&agent.provider) {
-                let api_key = get_llm_api_key_or_inline(&agent.provider, Some(p));
-                let api_type = llm_api_type
-                    .or(p.api_type.as_deref())
-                    .unwrap_or("openai");
-                tracing::info!(
-                    agent_key = %_key,
-                    provider = %agent.provider,
-                    model = %agent.model,
-                    api_key_len = api_key.len(),
-                    api_type = %api_type,
-                    "create_llm_provider: using agent config"
-                );
-                return build_provider(&agent.provider, &api_key, &p.base_url, api_type);
-            }
-            tracing::warn!(
-                agent_key = %_key,
-                provider = %agent.provider,
-                "create_llm_provider: agent provider not found in config"
-            );
-        }
-    }
-    // Priority 3: environment variables
-    let api_key = std::env::var("AMAN_DEFAULT_API_KEY").unwrap_or_default();
-    let base_url = std::env::var("AMAN_DEFAULT_BASE_URL")
-        .unwrap_or_else(|_| "https://api.openai.com/v1".to_owned());
+/// Returns `None` when the agent's provider is not found in the config.
+fn create_per_agent_llm_provider(
+    config: &config::AmanConfig,
+    agent_id: &str,
+    agent: &config::AgentEntryConfig,
+) -> Option<Arc<dyn LlmProvider>> {
+    let p = config.providers.get(&agent.provider)?;
+    let api_key = get_llm_api_key_or_inline(&agent.provider, Some(p));
+    let api_type = config
+        .llm
+        .as_ref()
+        .map(|l| l.api_type.as_str())
+        .or(p.api_type.as_deref())
+        .unwrap_or("openai");
     tracing::info!(
+        agent = %agent_id,
+        provider = %agent.provider,
+        model = %agent.model,
         api_key_len = api_key.len(),
-        "create_llm_provider: using env var fallback"
+        api_type = %api_type,
+        "creating per-agent LLM provider"
     );
-    build_provider("default", &api_key, &base_url, "openai")
+    Some(build_provider(&agent.provider, &api_key, &p.base_url, api_type))
 }
 
 /// Build the appropriate LlmProvider based on api_type.

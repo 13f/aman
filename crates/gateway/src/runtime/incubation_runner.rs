@@ -24,7 +24,6 @@ use super::agent_registry::AgentRegistry;
 
 pub struct IncubationRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
-    memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
     incubation_config: OnceLock<IncubationConfig>,
     global_bus: OnceLock<Arc<dyn EventBus>>,
     active_runs: RwLock<HashSet<String>>,
@@ -34,7 +33,6 @@ impl IncubationRunner {
     pub fn new() -> Self {
         Self {
             agent_registry: OnceLock::new(),
-            memory_provider: OnceLock::new(),
             incubation_config: OnceLock::new(),
             global_bus: OnceLock::new(),
             active_runs: RwLock::new(HashSet::new()),
@@ -45,8 +43,9 @@ impl IncubationRunner {
         let _ = self.agent_registry.set(registry);
     }
 
-    pub fn set_memory_provider(&self, provider: Arc<dyn MemoryProvider>) {
-        let _ = self.memory_provider.set(provider);
+    /// Look up the per-agent memory provider from the registry.
+    async fn memory_for(&self, agent_id: &str) -> Option<Arc<dyn MemoryProvider>> {
+        self.agent_registry.get()?.get_memory_provider(agent_id).await
     }
 
     pub fn set_incubation_config(&self, config: IncubationConfig) {
@@ -93,7 +92,7 @@ impl IncubationRunner {
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
         let started = Instant::now();
 
-        let Some(provider) = self.memory_provider.get() else {
+        let Some(provider) = self.memory_for(agent_id).await else {
             debug!(agent_id, "IncubationRunner: no MemoryProvider");
             return Ok(());
         };

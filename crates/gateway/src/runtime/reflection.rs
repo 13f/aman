@@ -18,7 +18,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
-use super::session_store::SessionStore;
+use super::agent_registry::AgentRegistry;
 
 /// Handles QueueDrained → reflection logic for all agents.
 ///
@@ -26,32 +26,20 @@ use super::session_store::SessionStore;
 /// all agents. Dependencies are injected via the `OnceLock` pattern (same as
 /// `ReadSkillTool`).
 pub struct ReflectionRunner {
-    session_store: OnceLock<Arc<SessionStore>>,
-    memory_provider: OnceLock<Arc<dyn MemoryProvider>>,
-    llm_provider: OnceLock<Arc<dyn LlmProvider>>,
+    agent_registry: OnceLock<Arc<AgentRegistry>>,
     memory_llm: OnceLock<MemoryLlmConfig>,
 }
 
 impl ReflectionRunner {
     pub fn new() -> Self {
         Self {
-            session_store: OnceLock::new(),
-            memory_provider: OnceLock::new(),
-            llm_provider: OnceLock::new(),
+            agent_registry: OnceLock::new(),
             memory_llm: OnceLock::new(),
         }
     }
 
-    pub fn set_session_store(&self, store: Arc<SessionStore>) {
-        let _ = self.session_store.set(store);
-    }
-
-    pub fn set_memory_provider(&self, provider: Arc<dyn MemoryProvider>) {
-        let _ = self.memory_provider.set(provider);
-    }
-
-    pub fn set_llm_provider(&self, provider: Arc<dyn LlmProvider>) {
-        let _ = self.llm_provider.set(provider);
+    pub fn set_agent_registry(&self, registry: Arc<AgentRegistry>) {
+        let _ = self.agent_registry.set(registry);
     }
 
     pub fn set_memory_llm(&self, config: MemoryLlmConfig) {
@@ -67,19 +55,23 @@ impl ReflectionRunner {
     const MAX_CONVERSATION_CHARS: usize = 48000;
 
     /// Query one unreflected session, extract structured summary via LLM, and
-    /// store in the memory provider. Mark the session as reflected on success.
-    /// Processes at most one session per invocation.
+    /// store in the per-agent memory provider. Mark the session as reflected
+    /// on success. Processes at most one session per invocation.
     async fn session_extract(&self, agent_id: &str) {
-        let Some(store) = self.session_store.get() else {
-            info!("Reflection: no SessionStore, skipping session_extract");
+        let Some(registry) = self.agent_registry.get() else {
+            info!("Reflection: no AgentRegistry, skipping session_extract");
             return;
         };
-        let Some(memory) = self.memory_provider.get() else {
-            info!("Reflection: no MemoryProvider, skipping session_extract");
+        let Some(store) = registry.get_session_store(agent_id).await else {
+            debug!(agent_id, "Reflection: no SessionStore for agent, skipping");
             return;
         };
-        let Some(llm) = self.llm_provider.get() else {
-            info!("Reflection: no LlmProvider, skipping session_extract");
+        let Some(memory) = registry.get_memory_provider(agent_id).await else {
+            debug!(agent_id, "Reflection: no MemoryProvider for agent, skipping");
+            return;
+        };
+        let Some(llm) = registry.get_llm_provider(agent_id).await else {
+            debug!(agent_id, "Reflection: no LlmProvider for agent, skipping");
             return;
         };
 
@@ -114,7 +106,7 @@ impl ReflectionRunner {
             "Reflection: extracting session",
         );
 
-        match self.extract_and_store(llm, memory, agent_id, &session.id, &events, Self::MAX_CONVERSATION_CHARS).await {
+        match self.extract_and_store(&llm, &memory, agent_id, &session.id, &events, Self::MAX_CONVERSATION_CHARS).await {
             Ok(()) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)

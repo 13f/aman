@@ -6,11 +6,15 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 use idle::AgentIdleManager;
 use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
+use kernel::llm::LlmProvider;
+use kernel::memory::MemoryProvider;
 use kernel::AmanResult;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+use super::session_store::SessionStore;
 
 /// Agent 运行时注册表。
 ///
@@ -28,6 +32,12 @@ pub struct AgentRegistry {
     agents: RwLock<HashMap<String, AgentInstance>>,
     local_buses: RwLock<HashMap<String, Arc<dyn EventBus>>>,
     idle_managers: RwLock<HashMap<String, Arc<AgentIdleManager>>>,
+    /// Per-agent session stores (None for disabled agents).
+    session_stores: RwLock<HashMap<String, Option<Arc<SessionStore>>>>,
+    /// Per-agent memory providers (knowledge graph).
+    memory_providers: RwLock<HashMap<String, Arc<dyn MemoryProvider>>>,
+    /// Per-agent LLM providers (API client).
+    llm_providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
     bus: Arc<dyn EventBus>,
 }
 
@@ -38,6 +48,9 @@ impl AgentRegistry {
             agents: RwLock::new(HashMap::new()),
             local_buses: RwLock::new(HashMap::new()),
             idle_managers: RwLock::new(HashMap::new()),
+            session_stores: RwLock::new(HashMap::new()),
+            memory_providers: RwLock::new(HashMap::new()),
+            llm_providers: RwLock::new(HashMap::new()),
             bus,
         }
     }
@@ -413,6 +426,12 @@ impl AgentRegistry {
         buses.clear();
         let mut managers = self.idle_managers.write().await;
         managers.clear();
+        let mut stores = self.session_stores.write().await;
+        stores.clear();
+        let mut memories = self.memory_providers.write().await;
+        memories.clear();
+        let mut llms = self.llm_providers.write().await;
+        llms.clear();
     }
 
     /// 设置 Agent 的 Local EventBus。
@@ -450,6 +469,62 @@ impl AgentRegistry {
         let managers = self.idle_managers.read().await;
         managers.get(agent_id).map(|m| Arc::clone(m.coordination()))
     }
+
+    // ── Per-agent session store ──────────────────────────────────────
+
+    /// Set the session store for an agent (None if disabled or init failed).
+    pub async fn set_session_store(&self, agent_id: &str, store: Option<Arc<SessionStore>>) {
+        let mut stores = self.session_stores.write().await;
+        stores.insert(agent_id.to_owned(), store);
+    }
+
+    /// Get the session store for an agent.
+    pub async fn get_session_store(&self, agent_id: &str) -> Option<Arc<SessionStore>> {
+        let stores = self.session_stores.read().await;
+        stores.get(agent_id).cloned().flatten()
+    }
+
+    /// Return the first available session store (backward compat).
+    pub async fn first_session_store(&self) -> Option<Arc<SessionStore>> {
+        let stores = self.session_stores.read().await;
+        stores.values().find_map(|v| v.clone())
+    }
+
+    /// Return all non-None session stores (for searching across agents).
+    pub async fn all_session_stores(&self) -> Vec<Arc<SessionStore>> {
+        let stores = self.session_stores.read().await;
+        stores.values().filter_map(|v| v.clone()).collect()
+    }
+
+    // ── Per-agent memory provider ────────────────────────────────────
+
+    /// Set the memory provider for an agent.
+    pub async fn set_memory_provider(&self, agent_id: &str, provider: Arc<dyn MemoryProvider>) {
+        let mut providers = self.memory_providers.write().await;
+        providers.insert(agent_id.to_owned(), provider);
+    }
+
+    /// Get the memory provider for an agent.
+    pub async fn get_memory_provider(&self, agent_id: &str) -> Option<Arc<dyn MemoryProvider>> {
+        let providers = self.memory_providers.read().await;
+        providers.get(agent_id).cloned()
+    }
+
+    // ── Per-agent LLM provider ───────────────────────────────────────
+
+    /// Set the LLM provider for an agent.
+    pub async fn set_llm_provider(&self, agent_id: &str, provider: Arc<dyn LlmProvider>) {
+        let mut providers = self.llm_providers.write().await;
+        providers.insert(agent_id.to_owned(), provider);
+    }
+
+    /// Get the LLM provider for an agent.
+    pub async fn get_llm_provider(&self, agent_id: &str) -> Option<Arc<dyn LlmProvider>> {
+        let providers = self.llm_providers.read().await;
+        providers.get(agent_id).cloned()
+    }
+
+    // ── Idle loop management ─────────────────────────────────────────
 
     /// 启动所有 Agent 的 idle 后台循环（在 Phase 4 调用）。
     pub async fn start_all_idle_loops(&self) {

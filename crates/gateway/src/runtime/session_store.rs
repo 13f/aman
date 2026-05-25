@@ -105,6 +105,17 @@ impl SessionStore {
     }
 
     /// List all sessions ordered by `last_active_at` descending.
+    /// Check whether a session exists in the store.
+    pub fn has_session(&self, id: &str) -> bool {
+        let db = self.db.lock().expect("session store lock");
+        db.query_row(
+            "SELECT 1 FROM sessions WHERE id = ?1",
+            rusqlite::params![id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    }
+
     pub fn list_all(&self) -> AmanResult<Vec<SessionRecord>> {
         let db = self.db.lock().expect("session store lock");
         let mut stmt = db

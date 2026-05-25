@@ -114,6 +114,9 @@ pub struct SleepRunner {
 }
 
 impl SleepRunner {
+    /// Max health report files to retain per agent before pruning oldest.
+    const MAX_HEALTH_FILES: usize = 64;
+
     pub fn new() -> Self {
         Self {
             agent_registry: OnceLock::new(),
@@ -424,6 +427,42 @@ impl SleepRunner {
 
     // -- phase 6: health report ---------------------------------------------
 
+    /// Prune oldest health report files, keeping at most `MAX_HEALTH_FILES`
+    /// most-recent ones.
+    fn prune_old_health_reports(health_dir: &std::path::Path, agent_id: &str) {
+        let mut entries: Vec<(u128, PathBuf)> = match std::fs::read_dir(health_dir) {
+            Ok(iter) => iter
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    // Parse timestamp from "sleep_{ts}.json"
+                    let ts = name
+                        .strip_prefix("sleep_")?
+                        .strip_suffix(".json")?
+                        .parse::<u128>()
+                        .ok()?;
+                    Some((ts, e.path()))
+                })
+                .collect(),
+            Err(_) => return,
+        };
+
+        if entries.len() <= Self::MAX_HEALTH_FILES {
+            return;
+        }
+
+        // Sort by timestamp descending (newest first), keep the top N.
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_ts, path) in entries.iter().skip(Self::MAX_HEALTH_FILES) {
+            if let Err(e) = std::fs::remove_file(path) {
+                warn!(agent_id, path = %path.display(), error = %e, "failed to prune old health report");
+            }
+        }
+
+        let pruned = entries.len().saturating_sub(Self::MAX_HEALTH_FILES);
+        debug!(agent_id, pruned, retained = Self::MAX_HEALTH_FILES.min(entries.len()), "pruned old health reports");
+    }
+
     /// Aggregate stats from all phases + memory provider and write a JSON
     /// health snapshot to `~/.aman/agents/{agent_id}/health/sleep_{timestamp_ms}.json`.
     async fn phase_health_report(
@@ -527,6 +566,7 @@ impl SleepRunner {
                     cpu_secs = cpu.total_elapsed(),
                     "Sleep phase 6: health report written"
                 );
+                Self::prune_old_health_reports(&health_dir, agent_id);
             }
             Err(e) => {
                 warn!(agent_id, error = %e, path = %health_path.display(), "Sleep phase 6: failed to write health report");

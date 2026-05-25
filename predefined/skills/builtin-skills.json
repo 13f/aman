@@ -16,6 +16,7 @@
     { "name": "claude-code",           "files": ["code/claude-code/SKILL.md"] },
     { "name": "codex-cli",             "files": ["code/codex-cli/SKILL.md"] },
     { "name": "opencode",              "files": ["code/opencode/SKILL.md"] },
-    { "name": "gemini-cli",            "files": ["code/gemini-cli/SKILL.md"] }
+    { "name": "gemini-cli",            "files": ["code/gemini-cli/SKILL.md"] },
+    { "name": "create-skill",         "files": ["agent/create-skill/SKILL.md"] }
   ]
 }

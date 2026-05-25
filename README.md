@@ -5,6 +5,8 @@
 
 [![CI](https://github.com/jerin/aman/actions/workflows/ci.yml/badge.svg)](https://github.com/jerin/aman/actions/workflows/ci.yml)
 
+> ⚠️ **This project has no Meme / Token / Coin. Beware of scams.**
+
 An event-driven agent framework for building safe, observable, and extensible autonomous systems.
 
 ## Quick Start

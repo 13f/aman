@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 //! Sleep runner — triggered by IdleEvent{kind="sleep"} events when the agent
-//! reaches idle depth 20+. Runs cognitive housekeeping: memory consolidation,
-//! temporal cleanup, cache expiry, index monitoring, and health reporting.
+//! reaches idle depth 20+. Runs cognitive housekeeping: session backfill
+//! (catches what Reflection missed), memory consolidation, temporal cleanup,
+//! cache expiry, index monitoring, and health reporting.
 //!
 //! Architecture ref: idle-patch.md §4
 //!
@@ -13,7 +14,7 @@
 //! runner subscribes to idle events on the global bus.
 
 use async_trait::async_trait;
-use config::SleepConfig;
+use config::{MemoryLlmConfig, SleepConfig};
 use event_bus::EventHandler;
 use idle::IdleKind;
 use kernel::event::{Event, EventType};
@@ -109,6 +110,8 @@ impl CpuTracker {
 pub struct SleepRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
     sleep_config: OnceLock<SleepConfig>,
+    /// LLM config for Phase 1 session backfill extraction (same model as Reflection).
+    memory_llm: OnceLock<MemoryLlmConfig>,
     /// Prevents overlapping Sleep runs per agent.
     active_runs: RwLock<HashSet<String>>,
 }
@@ -121,6 +124,7 @@ impl SleepRunner {
         Self {
             agent_registry: OnceLock::new(),
             sleep_config: OnceLock::new(),
+            memory_llm: OnceLock::new(),
             active_runs: RwLock::new(HashSet::new()),
         }
     }
@@ -133,6 +137,10 @@ impl SleepRunner {
         let _ = self.sleep_config.set(config);
     }
 
+    pub fn set_memory_llm(&self, config: MemoryLlmConfig) {
+        let _ = self.memory_llm.set(config);
+    }
+
     /// Look up the per-agent memory provider from the registry.
     async fn memory_for(&self, agent_id: &str) -> Option<Arc<dyn MemoryProvider>> {
         self.agent_registry.get()?.get_memory_provider(agent_id).await
@@ -141,53 +149,109 @@ impl SleepRunner {
     // -- phase 1: session compression backfill ------------------------------
 
     /// Backfill sessions that Reflection missed (crash / timeout / restart
-    /// edge cases). Normally empty — Reflection handles this live per-session.
+    /// edge cases). Queries SessionStore for unreflected sessions and runs
+    /// the same LLM extraction pipeline as ReflectionRunner.
     async fn phase_session_backfill(
         &self,
         agent_id: &str,
-        _cancel: &tokio_util::sync::CancellationToken,
+        cancel: &tokio_util::sync::CancellationToken,
         cpu: &mut CpuTracker,
     ) -> SleepPhaseOutput {
         cpu.start_phase();
         let output = SleepPhaseOutput::new("session_backfill");
 
-        let Some(provider) = self.memory_for(agent_id).await else {
-            debug!("SleepRunner: no MemoryProvider, skipping phase 1");
+        let Some(registry) = self.agent_registry.get() else {
+            debug!("SleepRunner: no AgentRegistry, skipping phase 1");
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"status": "skipped", "reason": "no agent registry"}));
+        };
+
+        let Some(store) = registry.get_session_store(agent_id).await else {
+            debug!(agent_id, "Sleep phase 1: no SessionStore, skipping");
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"status": "skipped", "reason": "no session store"}));
+        };
+
+        let Some(llm) = registry.get_llm_provider(agent_id).await else {
+            debug!(agent_id, "Sleep phase 1: no LlmProvider, skipping");
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"status": "skipped", "reason": "no llm provider"}));
+        };
+
+        let Some(memory) = registry.get_memory_provider(agent_id).await else {
+            debug!(agent_id, "Sleep phase 1: no MemoryProvider, skipping");
             cpu.end_phase();
             return output.with_info(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
         };
 
-        // Query recent sessions
-        let sessions = match provider.session_history(agent_id, 20).await {
-            Ok(s) => s,
+        // Process at most one unreflected session per Sleep cycle to keep
+        // CPU budget under control. LLM extraction is expensive.
+        let session = match store.list_unreflected() {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                cpu.end_phase();
+                return output.with_info(serde_json::json!({"extracted": 0, "note": "no unreflected sessions"}));
+            }
             Err(e) => {
-                warn!(agent_id, error = %e, "Sleep phase 1: session_history failed");
+                warn!(agent_id, error = %e, "Sleep phase 1: list_unreflected failed");
                 cpu.end_phase();
                 return output.with_info(serde_json::json!({"error": e.to_string()}));
             }
         };
 
-        if sessions.is_empty() {
-            debug!(agent_id, "Sleep phase 1: no sessions to backfill");
+        if cancel.is_cancelled() {
             cpu.end_phase();
-            return output.with_info(serde_json::json!({"compressions_done": 0}));
+            return output.with_info(serde_json::json!({"status": "cancelled"}));
         }
 
-        // v1: Reflection handles the primary path. Backfill needs
-        // `is_compressed` field on SessionSummary + LLM wiring (deferred).
-        let eligible_count = sessions.len();
-        debug!(
+        // Load recent events for this session
+        let events = store.load_recent_events(&session.id, 200).await;
+        if events.len() < 2 {
+            // Not enough content — mark reflected so we don't retry forever
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let _ = store.mark_reflected(&session.id, now);
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"extracted": 0, "note": "too few events"}));
+        }
+
+        info!(
             agent_id,
-            count = eligible_count,
-            "Sleep phase 1: sessions present (backfill deferred — Reflection handles primary path)"
+            session_id = %session.id,
+            event_count = events.len(),
+            "Sleep phase 1: backfilling unreflected session",
         );
 
-        cpu.end_phase();
-        output.with_info(serde_json::json!({
-            "compressions_done": 0,
-            "eligible_count": eligible_count,
-            "note": "LLM backfill deferred; Reflection handles primary session→YantrikDB path"
-        }))
+        // Run the same LLM extraction pipeline as Reflection
+        match super::reflection::session_extract_and_store(
+            self.memory_llm.get(),
+            &llm,
+            &memory,
+            agent_id,
+            &session.id,
+            &events,
+            48000,
+        )
+        .await
+        {
+            Ok(()) => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let _ = store.mark_reflected(&session.id, now);
+                info!(agent_id, session_id = %session.id, "Sleep phase 1: session backfilled");
+                cpu.end_phase();
+                output.with_info(serde_json::json!({"extracted": 1, "session_id": session.id}))
+            }
+            Err(e) => {
+                warn!(agent_id, session_id = %session.id, error = %e, "Sleep phase 1: extraction failed");
+                cpu.end_phase();
+                output.with_info(serde_json::json!({"error": e.to_string()}))
+            }
+        }
     }
 
     // -- phase 2: temporal housekeeping -------------------------------------

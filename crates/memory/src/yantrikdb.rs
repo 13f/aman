@@ -4,10 +4,13 @@
 use async_trait::async_trait;
 use kernel::memory::{
     EntityProfile, MemoryFilter, MemoryProvider, MemoryRecord, MemoryStats,
-    SessionSummary,
+    SessionSummary, ThinkConfig, ThinkResult,
 };
 use kernel::AmanResult;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::config::{EmbeddingConfig, MemoryConfig};
@@ -40,8 +43,17 @@ impl EmbedKind {
 /// knowledge graph, temporal decay, session management, and background
 /// consolidation.
 pub struct YantrikdbProvider {
-    db: Option<yantrikdb::YantrikDB>,
+    db: Option<Arc<yantrikdb::YantrikDB>>,
     agent_id: String,
+    /// Fire-and-forget channel for think() — sends config to the background
+    /// task that calls yantrikdb's synchronous think() via spawn_blocking.
+    think_tx: Option<mpsc::Sender<yantrikdb::ThinkConfig>>,
+    /// Receiver half of the think channel, stored until the background task
+    /// is lazily spawned on the first async think() call (deferred because
+    /// open() is synchronous and might not run inside a Tokio runtime).
+    think_rx: Mutex<Option<mpsc::Receiver<yantrikdb::ThinkConfig>>>,
+    /// Handle to the background think task, aborted on shutdown/drop.
+    think_handle: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl YantrikdbProvider {
@@ -124,15 +136,24 @@ impl YantrikdbProvider {
 
         debug!(agent_id = %config.agent_id, "Yantrikdb opened");
 
+        let db_arc = Arc::new(db);
+
+        // Create the think channel now (synchronous, no Tokio runtime needed).
+        // The background task is spawned lazily on the first async think() call.
+        let (think_tx, think_rx) = mpsc::channel::<yantrikdb::ThinkConfig>(1);
+
         Ok(Self {
-            db: Some(db),
+            db: Some(db_arc),
             agent_id: config.agent_id.clone(),
+            think_tx: Some(think_tx),
+            think_rx: Mutex::new(Some(think_rx)),
+            think_handle: Mutex::new(None),
         })
     }
 
     /// Access the underlying yantrikdb handle.
     pub fn inner(&self) -> &yantrikdb::YantrikDB {
-        self.db.as_ref().expect("YantrikdbProvider already closed")
+        self.db.as_ref().map(|a| a.as_ref()).expect("YantrikdbProvider already closed")
     }
 
     // -- helpers -----------------------------------------------------------
@@ -146,7 +167,7 @@ impl YantrikdbProvider {
     }
 
     fn db_ref(&self) -> &yantrikdb::YantrikDB {
-        self.db.as_ref().expect("YantrikdbProvider closed")
+        self.db.as_ref().map(|a| a.as_ref()).expect("YantrikdbProvider closed")
     }
 
     fn map_err(e: impl std::fmt::Display) -> kernel::Error {
@@ -426,20 +447,112 @@ impl MemoryProvider for YantrikdbProvider {
         })
     }
 
+    // -- Cognitive pass ----------------------------------------------------
+
+    /// Fire-and-forget trigger for yantrikdb's synchronous `think()`.
+    ///
+    /// Sends the config through an mpsc channel (capacity 1). A background
+    /// task receives it and runs [`YantrikDB::think`] via
+    /// [`tokio::task::spawn_blocking`] so the async runtime is never
+    /// stalled by yantrikdb's CPU-intensive graph computation. If a
+    /// previous think is still running, the new request is silently
+    /// dropped (channel full) to prevent backlog.
+    ///
+    /// The background task is spawned lazily on first call — this avoids
+    /// requiring a Tokio runtime during synchronous [`YantrikdbProvider::open`].
+    async fn think(&self, _agent_id: &str, config: &ThinkConfig) -> AmanResult<ThinkResult> {
+        // Lazy spawn the background task on first call (we're in an async
+        // context so a Tokio runtime is guaranteed to exist).
+        {
+            let mut handle_guard = self.think_handle.lock().unwrap();
+            if handle_guard.is_none() {
+                if let Some(rx) = self.think_rx.lock().unwrap().take() {
+                    let db_weak = Arc::downgrade(
+                        self.db.as_ref().expect("YantrikdbProvider closed"),
+                    );
+                    *handle_guard = Some(tokio::spawn(async move {
+                        think_background(rx, db_weak).await;
+                    }));
+                }
+            }
+        }
+
+        let ydb_config = yantrikdb::ThinkConfig {
+            importance_threshold: config.importance_threshold,
+            run_consolidation: config.run_consolidation,
+            run_conflict_scan: config.run_conflict_scan,
+            ..Default::default()
+        };
+
+        match self.think_tx.as_ref() {
+            Some(tx) => match tx.try_send(ydb_config) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug!("yantrikdb think() triggered (fire-and-forget)");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    warn!("yantrikdb think channel closed, skipping think()");
+                }
+            },
+            None => {
+                debug!("yantrikdb think channel not initialized");
+            }
+        }
+
+        // Always return empty — actual results flow through yantrikdb's
+        // internal consolidation/conflict machinery.
+        Ok(ThinkResult::default())
+    }
+
     // -- Lifecycle ---------------------------------------------------------
 
     async fn shutdown(&self) -> AmanResult<()> {
         info!(agent_id = %self.agent_id, "Shutting down yantrikdb provider");
+        // Abort the background think task so we don't hold a DB ref during close.
+        if let Some(handle) = self.think_handle.lock().unwrap().take() {
+            handle.abort();
+        }
         Ok(())
+    }
+}
+
+/// Background task that drains the think channel and runs yantrikdb's
+/// synchronous `think()` on a blocking thread.
+async fn think_background(
+    mut rx: mpsc::Receiver<yantrikdb::ThinkConfig>,
+    db_weak: std::sync::Weak<yantrikdb::YantrikDB>,
+) {
+    while let Some(config) = rx.recv().await {
+        if let Some(db) = db_weak.upgrade() {
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Err(e) = db.think(&config) {
+                    warn!(error = %e, "yantrikdb think() background task failed");
+                }
+            })
+            .await;
+        } else {
+            break;
+        }
     }
 }
 
 impl Drop for YantrikdbProvider {
     fn drop(&mut self) {
+        // Drop the sender and receiver to unblock the background task.
+        drop(self.think_tx.take());
+        drop(self.think_rx.lock().unwrap().take());
+        // Abort the task to release its Weak<YantrikDB> ref.
+        if let Some(handle) = self.think_handle.lock().unwrap().take() {
+            handle.abort();
+        }
+        // Try to close the DB. If the background task's spawn_blocking still
+        // holds an Arc ref, we can't unwrap — the DB will be leaked but that's
+        // a shutdown edge case (the task is already aborted above).
         if let Some(db) = self.db.take()
-            && let Err(e) = db.close()
+            && let Ok(db) = Arc::try_unwrap(db)
         {
-            tracing::error!(error = %e, "Error closing yantrikdb");
+            if let Err(e) = db.close() {
+                tracing::error!(error = %e, "Error closing yantrikdb");
+            }
         }
     }
 }

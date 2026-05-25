@@ -691,7 +691,7 @@ impl AgentRuntimeBuilder {
             .as_ref()
             .and_then(|c| c.memory.as_ref())
             .and_then(|m| m.llm.clone());
-        if let Some(cfg) = memory_llm_cfg {
+        if let Some(cfg) = memory_llm_cfg.clone() {
             reflection_runner.set_memory_llm(cfg);
         }
 
@@ -728,6 +728,9 @@ impl AgentRuntimeBuilder {
             .map(|c| c.runtime.idle.sleep.clone())
             .unwrap_or_default();
         sleep_runner.set_sleep_config(sleep_cfg);
+        if let Some(cfg) = memory_llm_cfg {
+            sleep_runner.set_memory_llm(cfg);
+        }
 
         // Subscribe to Idle events on the global bus (filtered to kind="sleep" in handle())
         {

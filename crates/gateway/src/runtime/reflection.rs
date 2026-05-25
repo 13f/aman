@@ -152,96 +152,124 @@ impl ReflectionRunner {
         events: &[serde_json::Value],
         max_chars: usize,
     ) -> AmanResult<()> {
-        // Build a compact representation of the conversation
-        let conversation = Self::format_conversation(events, max_chars);
-        let system_prompt = Self::extraction_prompt();
-
-        let llm_config = self.memory_llm.get();
-        let model = llm_config
-            .map(|c| c.model.as_str())
-            .unwrap_or("default");
-
-        let req = LlmChatRequest {
-            model: model.to_owned(),
-            system_prompt,
-            messages: vec![ChatMessage::user(conversation)],
-            tools: Vec::new(),
-            max_output_tokens: 1024,
-        };
-
-        let resp = llm.chat_completion(req, None).await.map_err(|e| {
-            kernel::Error::Unrecoverable {
-                message: format!("Reflection LLM call failed: {e}"),
-            }
-        })?;
-
-        // Parse the structured JSON from LLM response
-        let summary: serde_json::Value =
-            serde_json::from_str(&resp.content).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "intent": "unknown",
-                    "raw": resp.content,
-                })
-            });
-
-        // Store the summary in memory
-        let summary_json = serde_json::to_string(&summary).unwrap_or_default();
-        memory.store(
+        session_extract_and_store(
+            self.memory_llm.get(),
+            llm,
+            memory,
             agent_id,
-            &summary_json,
-            vec!["session_extract".into(), session_id.to_owned()],
-        );
+            session_id,
+            events,
+            max_chars,
+        )
+        .await
+    }
+}
 
-        // Create KG relationships for extracted entities
-        if let Some(entities) = summary.get("entities").and_then(|e| e.as_array()) {
-            for entity in entities {
-                if let Some(name) = entity.as_str() {
-                    let _ = memory
-                        .relate(name, session_id, "appears_in")
-                        .await;
-                }
+// ---------------------------------------------------------------------------
+// Shared extraction helpers — used by both ReflectionRunner (QueueDrained)
+// and SleepRunner Phase 1 (backfill for sessions Reflection missed).
+// ---------------------------------------------------------------------------
+
+/// Run LLM extraction on one session's events and store the structured
+/// summary in the per-agent memory provider. Also creates KG relationships
+/// for extracted entities.
+pub async fn session_extract_and_store(
+    memory_llm: Option<&MemoryLlmConfig>,
+    llm: &Arc<dyn LlmProvider>,
+    memory: &Arc<dyn MemoryProvider>,
+    agent_id: &str,
+    session_id: &str,
+    events: &[serde_json::Value],
+    max_chars: usize,
+) -> AmanResult<()> {
+    let conversation = format_conversation(events, max_chars);
+    let system_prompt = extraction_prompt();
+
+    let model = memory_llm
+        .map(|c| c.model.as_str())
+        .unwrap_or("default");
+
+    let req = LlmChatRequest {
+        model: model.to_owned(),
+        system_prompt,
+        messages: vec![ChatMessage::user(conversation)],
+        tools: Vec::new(),
+        max_output_tokens: 1024,
+    };
+
+    let resp = llm.chat_completion(req, None).await.map_err(|e| {
+        kernel::Error::Unrecoverable {
+            message: format!("Reflection LLM call failed: {e}"),
+        }
+    })?;
+
+    // Parse the structured JSON from LLM response
+    let summary: serde_json::Value =
+        serde_json::from_str(&resp.content).unwrap_or_else(|_| {
+            serde_json::json!({
+                "intent": "unknown",
+                "raw": resp.content,
+            })
+        });
+
+    // Store the summary in memory
+    let summary_json = serde_json::to_string(&summary).unwrap_or_default();
+    memory.store(
+        agent_id,
+        &summary_json,
+        vec!["session_extract".into(), session_id.to_owned()],
+    );
+
+    // Create KG relationships for extracted entities
+    if let Some(entities) = summary.get("entities").and_then(|e| e.as_array()) {
+        for entity in entities {
+            if let Some(name) = entity.as_str() {
+                let _ = memory
+                    .relate(name, session_id, "appears_in")
+                    .await;
             }
         }
-
-        Ok(())
     }
 
-    /// Format conversation events into a compact text for LLM extraction.
-    ///
-    /// Each event is formatted as `[event_type] payload\n`. Payloads over
-    /// 2000 chars are truncated. Formatting stops once `max_chars` is reached
-    /// (the last incomplete line is omitted to avoid garbled output).
-    fn format_conversation(events: &[serde_json::Value], max_chars: usize) -> String {
-        let mut out = String::with_capacity(max_chars.min(65536));
-        for event in events {
-            let event_type = event
-                .get("event_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let payload = event.get("payload").map(|p| p.to_string()).unwrap_or_default();
-            // Truncate large payloads at a char boundary
-            let payload = if payload.len() > 2000 {
-                let trunc_byte = payload
-                    .char_indices()
-                    .nth(2000)
-                    .map(|(i, _)| i)
-                    .unwrap_or(payload.len());
-                format!("{}…(truncated)", &payload[..trunc_byte])
-            } else {
-                payload
-            };
-            let line = format!("[{event_type}] {payload}\n");
-            if out.len() + line.len() > max_chars {
-                break;
-            }
-            out.push_str(&line);
+    Ok(())
+}
+
+/// Format conversation events into a compact text for LLM extraction.
+///
+/// Each event is formatted as `[event_type] payload\n`. Payloads over
+/// 2000 chars are truncated. Formatting stops once `max_chars` is reached
+/// (the last incomplete line is omitted to avoid garbled output).
+pub fn format_conversation(events: &[serde_json::Value], max_chars: usize) -> String {
+    let mut out = String::with_capacity(max_chars.min(65536));
+    for event in events {
+        let event_type = event
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let payload = event.get("payload").map(|p| p.to_string()).unwrap_or_default();
+        // Truncate large payloads at a char boundary
+        let payload = if payload.len() > 2000 {
+            let trunc_byte = payload
+                .char_indices()
+                .nth(2000)
+                .map(|(i, _)| i)
+                .unwrap_or(payload.len());
+            format!("{}…(truncated)", &payload[..trunc_byte])
+        } else {
+            payload
+        };
+        let line = format!("[{event_type}] {payload}\n");
+        if out.len() + line.len() > max_chars {
+            break;
         }
-        out
+        out.push_str(&line);
     }
+    out
+}
 
-    /// System prompt for session extraction.
-    fn extraction_prompt() -> String {
-        r#"You are a memory extraction assistant. Given a conversation log between a user and an AI agent, extract a structured JSON summary with these fields:
+/// System prompt for session extraction.
+pub fn extraction_prompt() -> String {
+    r#"You are a memory extraction assistant. Given a conversation log between a user and an AI agent, extract a structured JSON summary with these fields:
 
 - "intent": the user's primary goal in one sentence
 - "decisions": array of key decisions made during the conversation
@@ -251,8 +279,7 @@ impl ReflectionRunner {
 - "entities": array of named entities mentioned (people, tools, projects, etc.)
 
 Respond with ONLY valid JSON, no markdown or explanation."#
-            .to_owned()
-    }
+        .to_owned()
 }
 
 #[async_trait]

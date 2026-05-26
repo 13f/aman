@@ -2933,6 +2933,7 @@ async fn chat_session_send(
     // Build event payload with optional skill context.
     let mut payload = json!({
         "session_id": id,
+        "agent_id": chat_agent_id,
         "text": effective_text,
         "sender": operator,
         "source": "tauri-desktop",
@@ -2975,7 +2976,9 @@ async fn chat_session_send(
 
     // Persist to SQLite store so the session list in the frontend shows
     // the correct message count even while the session is still open.
-    if let Some(store) = runtime.find_session_store(&id)
+    let store = runtime.agent_registry().get_session_store(chat_agent_id).await
+        .or_else(|| runtime.find_session_store(&id));
+    if let Some(store) = store
         && let Some(inst) = runtime.workflow_engine().get_instance(&id) {
             let session_type = inst.data.get("session_type")
                 .and_then(|v| v.as_str()).unwrap_or("persistent");
@@ -2985,7 +2988,7 @@ async fn chat_session_send(
                 .and_then(|v| v.as_i64()).unwrap_or(0);
             let _ = store.upsert(&session_store::SessionRecord {
                 id: inst.id,
-                agent_id: String::new(),
+                agent_id: chat_agent_id.to_owned(),
                 state: inst.current_state,
                 message_count,
                 created_at,

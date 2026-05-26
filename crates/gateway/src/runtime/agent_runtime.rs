@@ -776,8 +776,17 @@ impl AgentRuntimeBuilder {
                     .map(|activation| format!("{activation}\n\nUser query: {text}"))
                     .unwrap_or(text);
 
-                // Resolve first enabled agent via the harness.
-                let agent = match self.agent_harness.resolve_first_enabled_agent(&text).await {
+                // Prefer the session's owning agent from the event payload,
+                // falling back to first-enabled-agent routing for events
+                // that lack an explicit agent_id (e.g. external sources).
+                let target_agent_id = event.payload.get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|id| !id.is_empty());
+                let agent = match target_agent_id {
+                    Some(aid) => self.agent_harness.resolve_agent(aid).await,
+                    None => self.agent_harness.resolve_first_enabled_agent(&text).await,
+                };
+                let agent = match agent {
                     Some(a) => a,
                     None => {
                         tracing::warn!("MessageReceivedHandler: no enabled agent found");

@@ -2586,6 +2586,27 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
             }
         })
         .collect();
+
+    // Fall back to SQLite when no instances are in memory (e.g. after restart).
+    if items.is_empty() {
+        if let Some(store) = runtime.session_store() {
+            if let Ok(records) = store.list_all() {
+                items = records
+                    .into_iter()
+                    .map(|rec| ChatSessionItem {
+                        id: rec.id,
+                        session_type: rec.session_type,
+                        state: rec.state,
+                        created_at: rec.created_at as u64,
+                        last_active_at: rec.last_active_at as u64,
+                        version: 0,
+                        message_count: rec.message_count as u64,
+                    })
+                    .collect();
+            }
+        }
+    }
+
     items.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
     (StatusCode::OK, Json(json!({ "items": items }))).into_response()
 }

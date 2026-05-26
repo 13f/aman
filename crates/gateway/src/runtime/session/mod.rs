@@ -329,6 +329,58 @@ impl SessionManager {
 
         Ok(id)
     }
+
+    /// Handle a completed agent reply: transition the workflow engine from
+    /// PROCESSING to IDLE and update the SQLite session record.
+    pub async fn handle_reply(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        _reply: &str,
+    ) {
+        // Transition workflow engine: PROCESSING → IDLE
+        let transition_event = Event::new(
+            "session:control",
+            EventType::Custom("LLM_REPLY_READY".to_owned()),
+            json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+            }),
+        );
+        let _ = self.workflow_engine.handle_event(session_id, transition_event).await;
+
+        // Update instance metadata
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let _ = self.workflow_engine.update_instance_data(session_id, |data| {
+            data["last_active_at"] = json!(now_ms);
+            let mc = data.get("message_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            data["message_count"] = json!(mc + 1);
+        });
+
+        // Persist updated session record to SQLite
+        if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
+            if let Some(inst) = self.workflow_engine.get_instance(session_id) {
+                let session_type = inst.data.get("session_type")
+                    .and_then(|v| v.as_str()).unwrap_or("persistent");
+                let created_at = inst.data.get("created_at")
+                    .and_then(|v| v.as_i64()).unwrap_or(0);
+                let message_count = inst.data.get("message_count")
+                    .and_then(|v| v.as_i64()).unwrap_or(0);
+                let _ = store.upsert(&session_store::SessionRecord {
+                    id: inst.id,
+                    state: inst.current_state,
+                    message_count,
+                    created_at,
+                    last_active_at: now_ms as i64,
+                    session_type: session_type.to_owned(),
+                    reflected_at: None,
+                });
+            }
+        }
+    }
 }
 
 // ── System prompt ────────────────────────────────────────────────────────────

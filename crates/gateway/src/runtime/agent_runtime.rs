@@ -527,13 +527,13 @@ impl AgentRuntimeBuilder {
         ));
 
         // ── Session manager ──────────────────────────────────────────
-        let session_manager = super::session::SessionManager::new(
+        let session_manager = Arc::new(super::session::SessionManager::new(
             Arc::clone(&workflow_engine),
             Arc::clone(&agent_registry),
             Arc::clone(&agent_harness),
             Arc::clone(&bus),
             Arc::clone(&audit),
-        );
+        ));
 
         // ── Reflection runner (QueueDrained → session_extract) ────────
         let reflection_runner = Arc::new(super::reflection::ReflectionRunner::new());
@@ -815,6 +815,41 @@ impl AgentRuntimeBuilder {
             Box::new(MessageReceivedHandler {
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
+            }),
+        ));
+
+        // ── Subscribe agent:reply_ready → update session state & persistence ──
+        struct SessionReplyHandler {
+            session_manager: Arc<super::session::SessionManager>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for SessionReplyHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let session_id = event.payload.get("session_id")
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                let agent_id = event.payload.get("agent_id")
+                    .and_then(|v| v.as_str()).unwrap_or("");
+                let reply = event.payload.get("reply")
+                    .and_then(|v| v.as_str()).unwrap_or("");
+
+                if !session_id.is_empty() && !agent_id.is_empty() {
+                    self.session_manager.handle_reply(session_id, agent_id, reply).await;
+                }
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![
+                    EventType::Custom("agent:reply_ready".to_owned()),
+                    EventType::Custom("agent:reply_interrupted".to_owned()),
+                ]),
+                sources: None,
+                priorities: None,
+                payload_match: None,
+            },
+            Box::new(SessionReplyHandler {
+                session_manager: Arc::clone(&session_manager),
             }),
         ));
 
@@ -1240,7 +1275,7 @@ pub struct AgentRuntime {
     agent_harness: Arc<super::agent_harness::AgentHarness>,
     /// Session manager — orchestrates session lifecycle, OCC, persistence,
     /// and system prompt caching independently of the chat transport.
-    session_manager: super::session::SessionManager,
+    session_manager: Arc<super::session::SessionManager>,
 }
 
 impl AgentRuntime {
@@ -2416,7 +2451,13 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
                 .get("agent_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
+            let store = self.agent_registry.get_session_store(agent_id).await;
+            // Fall back to first available store when agent_id is missing
+            // (e.g. MessageReceived events published before agent resolution).
+            let store = store.or_else(|| {
+                pollster::block_on(self.agent_registry.first_session_store())
+            });
+            if let Some(store) = store {
                 let entry = serde_json::json!({
                     "event_id": event.id.to_string(),
                     "event_type": format!("{:?}", event.event_type),

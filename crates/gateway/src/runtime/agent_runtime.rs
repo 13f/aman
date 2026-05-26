@@ -172,6 +172,11 @@ impl AgentRuntimeBuilder {
         std::fs::create_dir_all(&self.runtime_dir)?;
 
         let dlq = Arc::new(InMemoryDeadLetterQueue::new(5));
+        let index_store = Arc::new(persistence::IndexStore::new(persistence::IndexRecord {
+            project: persistence::IndexStore::CANONICAL_PROJECT.to_string(),
+            index_version: persistence::IndexStore::INDEX_VERSION,
+            build_hash: option_env!("AMAN_BUILD_HASH").unwrap_or(env!("CARGO_PKG_VERSION")).to_string(),
+        })?);
         let audit = Arc::new(AuditLogger::new(2_000));
 
         let config = resolve_secrets_in_config(self.config, &self.runtime_dir, &audit)?;
@@ -1042,6 +1047,7 @@ impl AgentRuntimeBuilder {
             cron_manager: Mutex::new(cron_manager),
             plugin_installer,
             dlq,
+            index_store,
             audit,
             event_store,
             observer_attached: AtomicBool::new(false),
@@ -1259,6 +1265,7 @@ pub struct AgentRuntime {
     cron_manager: Mutex<CronManager>,
     plugin_installer: Arc<PluginInstaller>,
     dlq: Arc<InMemoryDeadLetterQueue>,
+    index_store: Arc<persistence::IndexStore>,
     audit: Arc<AuditLogger>,
     event_store: Arc<EventStore>,
     observer_attached: AtomicBool,
@@ -1374,6 +1381,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn dlq(&self) -> Arc<InMemoryDeadLetterQueue> {
         Arc::clone(&self.dlq)
+    }
+
+    #[must_use]
+    pub fn index_store(&self) -> Arc<persistence::IndexStore> {
+        Arc::clone(&self.index_store)
     }
 
     #[must_use]

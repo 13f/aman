@@ -5,6 +5,7 @@
 
 
 mod dlq;
+mod index_store;
 mod overflow;
 mod persistent_bus;
 mod state_store;
@@ -15,6 +16,7 @@ pub use dlq::{
     DeadLetterEntry, DeadLetterQueue, DlqExpiryAlert, DlqFilter, DlqRetryRecord,
     InMemoryDeadLetterQueue,
 };
+pub use index_store::{IndexRecord, IndexStore};
 pub use overflow::OverflowDir;
 pub use persistent_bus::{PersistentBus, PersistentBusConfig};
 pub use state_store::{

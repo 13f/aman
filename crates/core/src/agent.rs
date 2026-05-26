@@ -50,6 +50,23 @@ pub struct AgentDescriptor {
     pub max_output_tokens: Option<usize>,
 }
 
+/// 拟人系统状态 — 表示当前哪个拟人系统在掌控 agent。
+///
+/// 每个系统在进入/退出时原子更新此状态，UI 可直接读取显示。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentSystemState {
+    /// idle 系统掌控中（默认状态）
+    #[default]
+    Idle,
+    /// work 系统掌控中
+    Working,
+    // /// study 系统掌控中
+    // Studying,
+    // /// daily-life 系统掌控中
+    // DailyLife,
+}
+
 /// Agent 运行时状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AgentStatus {
@@ -72,6 +89,9 @@ pub struct AgentInstance {
     pub active_session_id: Option<String>,
     /// 注册到 Registry 的时间
     pub registered_at: Timestamp,
+    /// 当前拟人系统状态（idle / work / …）
+    #[serde(default)]
+    pub system_state: AgentSystemState,
 }
 
 impl AgentInstance {
@@ -87,6 +107,7 @@ impl AgentInstance {
             status,
             active_session_id: None,
             registered_at: Timestamp::now(),
+            system_state: AgentSystemState::default(),
         }
     }
 }

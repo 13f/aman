@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info};
 
 use event_bus::EventBus;
+use kernel::agent::AgentSystemState;
 use kernel::AmanResult;
 
 use crate::coordination::IdleCoordination;
@@ -42,6 +43,8 @@ pub struct AgentIdleManager {
     /// Optional global event bus — idle events are also published here so the
     /// UI (Tauri event bridge) can observe per-agent idle state.
     global_bus: Option<Arc<dyn EventBus>>,
+    /// Shared system state for UI visibility — set to Idle when idle depth > 0.
+    system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
     /// Per-agent incubation manager for background idle threads
     incubation: Arc<IncubationManager>,
     /// Stop signal for the background idle loop
@@ -60,6 +63,7 @@ impl AgentIdleManager {
         personality: IdlePersonality,
         arousal_initial: f64,
         arousal_half_life_secs: f64,
+        system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
     ) -> Self {
         let agent_id = agent_id.into();
         let coord = Arc::new(IdleCoordination::new(arousal_initial, arousal_half_life_secs));
@@ -70,6 +74,7 @@ impl AgentIdleManager {
             personality,
             local_bus,
             global_bus,
+            system_state,
             incubation: Arc::new(IncubationManager::new()),
             stop_token: CancellationToken::new(),
             task: tokio::sync::Mutex::new(None),
@@ -103,6 +108,7 @@ impl AgentIdleManager {
         let personality = self.personality.clone();
         let local_bus = Arc::clone(&self.local_bus);
         let global_bus = self.global_bus.clone();
+        let system_state = self.system_state.clone();
         let stop_token = self.stop_token.clone();
 
         *task_slot = Some(tokio::spawn(async move {
@@ -200,6 +206,12 @@ impl AgentIdleManager {
                         if let Some(ref global) = global_bus {
                             let _ = global.publish(qd_event).await;
                         }
+                        // Agent has entered idle domain
+                        if let Some(ref ss) = system_state {
+                            let mut guard: std::sync::MutexGuard<'_, AgentSystemState> =
+                                ss.lock().expect("system_state lock");
+                            *guard = AgentSystemState::Idle;
+                        }
                     } else {
                         info!(
                             agent_id = %agent_id,
@@ -249,6 +261,12 @@ impl AgentIdleManager {
                         let _ = local_bus.publish(qd_event.clone()).await;
                         if let Some(ref global) = global_bus {
                             let _ = global.publish(qd_event).await;
+                        }
+                        // Agent has entered idle domain
+                        if let Some(ref ss) = system_state {
+                            let mut guard: std::sync::MutexGuard<'_, AgentSystemState> =
+                                ss.lock().expect("system_state lock");
+                            *guard = AgentSystemState::Idle;
                         }
                     }
                     sleep(Duration::from_millis(100)).await;

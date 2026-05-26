@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use event_bus::EventBus;
+use kernel::agent::AgentSystemState;
 use kernel::event::{Event, EventType};
 use kernel::types::Timestamp;
 
@@ -64,6 +65,9 @@ pub struct WorkSystem {
     /// Idle coordination: inject satisfaction/frustration.
     idle_signal_tx: Option<tokio::sync::mpsc::UnboundedSender<IdleSignal>>,
 
+    /// Shared system state for UI visibility — set to Working/Idle on transitions.
+    system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
+
     /// Pending delayed-work-tick handles so we can cancel on interrupt.
     delayed_tick_handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -76,6 +80,7 @@ impl WorkSystem {
         personality: WorkPersonality,
         local_bus: Arc<dyn EventBus>,
         board: Option<Arc<dyn WorkBoardClient>>,
+        system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
     ) -> Self {
         Self {
             agent_id: agent_id.into(),
@@ -84,6 +89,7 @@ impl WorkSystem {
             local_bus,
             board,
             idle_signal_tx: None,
+            system_state,
             delayed_tick_handles: Mutex::new(Vec::new()),
         }
     }
@@ -716,6 +722,14 @@ impl WorkSystem {
             "WorkSystem state transition",
         );
         ctx.state = new_state;
+        // Update shared system state for UI visibility
+        if let Some(ref ss) = self.system_state {
+            let val = match new_state {
+                WorkState::Idle => AgentSystemState::Idle,
+                _ => AgentSystemState::Working,
+            };
+            *ss.lock().expect("system_state lock") = val;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -784,13 +798,13 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 
     #[tokio::test]
     async fn system_starts_at_idle() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None);
+        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
         assert_eq!(sys.current_state().await, WorkState::Idle);
     }
 
     #[tokio::test]
     async fn interrupt_from_any_state_goes_to_idle() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None);
+        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
         // Manually set to executing
         {
             let mut ctx = sys.ctx.lock().await;
@@ -807,7 +821,7 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 
     #[tokio::test]
     async fn idle_ignores_unrelated_events() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None);
+        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
         let result = sys
             .handle(WorkEvent::ExecuteStep {
                 task_id: TaskId::new(),
@@ -821,7 +835,7 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
     #[tokio::test]
     async fn task_board_updated_triggers_start_check() {
         let bus = make_bus();
-        let sys = WorkSystem::new("agent-1", make_personality(), bus.clone(), None);
+        let sys = WorkSystem::new("agent-1", make_personality(), bus.clone(), None, None);
         sys.handle(WorkEvent::TaskBoardUpdated {
             board_id: "kb-1".into(),
             change_type: TaskBoardChangeType::TaskAdded,
@@ -833,7 +847,7 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 
     #[tokio::test]
     async fn work_tick_during_cooldown_is_ignored() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None);
+        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
         // Set last_check_time to now, so cooldown hasn't elapsed
         {
             let mut ctx = sys.ctx.lock().await;
@@ -850,7 +864,7 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 
     #[tokio::test]
     async fn context_snapshot_reflects_current_state() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None);
+        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
         let snap = sys.snapshot().await;
         assert_eq!(snap.state, WorkState::Idle);
         assert_eq!(snap.consecutive_claim_failures, 0);

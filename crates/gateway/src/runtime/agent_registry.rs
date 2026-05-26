@@ -5,7 +5,7 @@ use config::AmanConfig;
 use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 use idle::AgentIdleManager;
 use work::WorkSystem;
-use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus};
+use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus, AgentSystemState};
 use kernel::event::{Event, EventType};
 use kernel::llm::LlmProvider;
 use kernel::memory::MemoryProvider;
@@ -43,6 +43,8 @@ pub struct AgentRegistry {
     llm_providers: RwLock<HashMap<String, Arc<dyn LlmProvider>>>,
     /// Per-agent trace stores (task execution traces).
     trace_stores: RwLock<HashMap<String, Arc<dyn TraceStore>>>,
+    /// Per-agent system state (idle / working / …), updated atomically by each system.
+    system_states: RwLock<HashMap<String, Arc<std::sync::Mutex<AgentSystemState>>>>,
     bus: Arc<dyn EventBus>,
 }
 
@@ -58,6 +60,7 @@ impl AgentRegistry {
             memory_providers: RwLock::new(HashMap::new()),
             llm_providers: RwLock::new(HashMap::new()),
             trace_stores: RwLock::new(HashMap::new()),
+            system_states: RwLock::new(HashMap::new()),
             bus,
         }
     }
@@ -150,6 +153,14 @@ impl AgentRegistry {
             }));
             self.set_local_bus(agent_id, Arc::clone(&local_bus)).await;
 
+            // Per-agent shared system state for UI visibility
+            let system_state: Arc<std::sync::Mutex<AgentSystemState>> =
+                Arc::new(std::sync::Mutex::new(AgentSystemState::default()));
+            {
+                let mut states = self.system_states.write().await;
+                states.insert(agent_id.clone(), Arc::clone(&system_state));
+            }
+
             // Create per-agent idle manager only if both global idle is enabled
             // AND this specific agent is enabled (has a configured provider).
             if idle_enabled && entry.enabled {
@@ -160,6 +171,7 @@ impl AgentRegistry {
                     idle_personality.clone(),
                     arousal_initial,
                     arousal_half_life,
+                    Some(Arc::clone(&system_state)),
                 ));
                 self.set_idle_manager(agent_id, idle_manager).await;
             }
@@ -171,6 +183,7 @@ impl AgentRegistry {
                     config.runtime.work.personality.clone(),
                     local_bus,
                     None, // board client: wired when kanban/team plugin is loaded
+                    Some(Arc::clone(&system_state)),
                 ));
                 self.set_work_system(agent_id, work_system).await;
             }
@@ -263,6 +276,7 @@ impl AgentRegistry {
                 .get_local_bus(agent_id)
                 .await
                 .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+            let ss = self.get_or_create_system_state(agent_id).await;
             let idle_manager = Arc::new(AgentIdleManager::new(
                 agent_id.to_string(),
                 local_bus,
@@ -270,6 +284,7 @@ impl AgentRegistry {
                 config.runtime.idle.personality.clone(),
                 config.runtime.idle.arousal.initial_value,
                 config.runtime.idle.arousal.half_life_secs,
+                Some(ss),
             ));
             self.set_idle_manager(agent_id, idle_manager.clone()).await;
             // Start the idle loop immediately.
@@ -296,11 +311,13 @@ impl AgentRegistry {
                 .get_local_bus(agent_id)
                 .await
                 .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+            let ss = self.get_or_create_system_state(agent_id).await;
             let work_system = Arc::new(WorkSystem::new(
                 agent_id.to_string(),
                 config.runtime.work.personality.clone(),
                 local_bus,
                 None, // board client: wired when kanban/team plugin is loaded
+                Some(ss),
             ));
             self.set_work_system(agent_id, work_system).await;
             tracing::info!(agent = %agent_id, "work system created after reload");
@@ -361,16 +378,28 @@ impl AgentRegistry {
         Ok(())
     }
 
-    /// 获取指定 Agent 的信息。
+    /// 获取指定 Agent 的信息（含当前 system_state）。
     pub async fn get(&self, agent_id: &str) -> Option<AgentInstance> {
         let agents = self.agents.read().await;
-        agents.get(agent_id).cloned()
+        let mut instance = agents.get(agent_id).cloned()?;
+        // Populate live system state
+        if let Some(ss) = self.get_system_state(agent_id).await {
+            instance.system_state = *ss.lock().expect("system_state lock");
+        }
+        Some(instance)
     }
 
-    /// 列出所有已注册的 Agent。
+    /// 列出所有已注册的 Agent（含当前 system_state）。
     pub async fn list(&self) -> Vec<AgentInstance> {
         let agents = self.agents.read().await;
-        agents.values().cloned().collect()
+        let mut instances: Vec<AgentInstance> = agents.values().cloned().collect();
+        let states = self.system_states.read().await;
+        for instance in &mut instances {
+            if let Some(ss) = states.get(&instance.descriptor.agent_id) {
+                instance.system_state = *ss.lock().expect("system_state lock");
+            }
+        }
+        instances
     }
 
     /// 更新 Agent 的状态。
@@ -484,6 +513,8 @@ impl AgentRegistry {
         managers.clear();
         let mut systems = self.work_systems.write().await;
         systems.clear();
+        let mut states = self.system_states.write().await;
+        states.clear();
         let mut stores = self.session_stores.write().await;
         stores.clear();
         let mut memories = self.memory_providers.write().await;
@@ -614,6 +645,27 @@ impl AgentRegistry {
     pub async fn get_trace_store(&self, agent_id: &str) -> Option<Arc<dyn TraceStore>> {
         let stores = self.trace_stores.read().await;
         stores.get(agent_id).cloned()
+    }
+
+    // ── Per-agent system state ───────────────────────────────────────
+
+    /// Get the shared system state for an agent.
+    pub async fn get_system_state(&self, agent_id: &str) -> Option<Arc<std::sync::Mutex<AgentSystemState>>> {
+        let states = self.system_states.read().await;
+        states.get(agent_id).cloned()
+    }
+
+    /// Get or create the shared system state for an agent.
+    async fn get_or_create_system_state(&self, agent_id: &str) -> Arc<std::sync::Mutex<AgentSystemState>> {
+        let states = self.system_states.read().await;
+        if let Some(ss) = states.get(agent_id) {
+            return Arc::clone(ss);
+        }
+        drop(states);
+        let ss = Arc::new(std::sync::Mutex::new(AgentSystemState::default()));
+        let mut states = self.system_states.write().await;
+        states.entry(agent_id.to_owned()).or_insert_with(|| Arc::clone(&ss));
+        ss
     }
 
     // ── Idle loop management ─────────────────────────────────────────

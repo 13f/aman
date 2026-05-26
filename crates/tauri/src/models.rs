@@ -261,4 +261,7 @@ pub struct AgentInstanceInfo {
     pub status: String,
     pub enabled: bool,
     pub active_session_id: Option<String>,
+    /// Current anthropomorphic system state: "idle", "working", etc.
+    #[serde(default)]
+    pub system_state: String,
 }

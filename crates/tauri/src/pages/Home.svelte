@@ -87,6 +87,23 @@
     idle: "\u{1F4A4}", reflection: "\u{1F9E0}", processing: "\u{26A1}",
   };
 
+  // System state visuals (used when NOT idle)
+  const STATE_EMOJI: Record<string, string> = {
+    working: "\u{1F6E0}\u{FE0F}",   // 🛠️ hammer & wrench
+    studying: "\u{1F4DA}",          // 📚 books
+    daily_life: "\u{1F3E0}",        // 🏠 house
+  };
+  const STATE_COLOR: Record<string, string> = {
+    working: "#4ade80",
+    studying: "#a78bfa",
+    daily_life: "#fbbf24",
+  };
+  const STATE_ANIM: Record<string, string> = {
+    working: "anim-spin-slow",
+    studying: "anim-float",
+    daily_life: "anim-pulse-soft",
+  };
+
   const THRESHOLDS = [0, 5, 20, 50, 100, 200];
 
   function depthPct(depth: number): number {
@@ -110,6 +127,7 @@
   let loading = $state(true);
   let activeTab = $state<"agents" | "finance">("agents");
   let idleStates = $state<Record<string, AgentIdleState>>({});
+  let systemStates = $state<Record<string, string>>({});
   let unlisteners: (() => void)[] = [];
   let showAgentSelector = $state(false);
   let selectedSkillName = $state("");
@@ -167,6 +185,24 @@
   function getIdleState(key: string): AgentIdleState {
     return idleStates[key] ?? defaultIdleState();
   }
+
+  function getSystemState(key: string): string {
+    return systemStates[key] ?? "idle";
+  }
+
+  const SYSTEM_STATE_LABEL: Record<string, string> = {
+    idle: "Idle",
+    working: "Working",
+    studying: "Studying",
+    daily_life: "Daily Life",
+  };
+
+  const SYSTEM_STATE_CLASS: Record<string, string> = {
+    idle: "ss-idle",
+    working: "ss-working",
+    studying: "ss-studying",
+    daily_life: "ss-dailylife",
+  };
 
   async function selectAgent(agent: AgentEntry) {
     if (!agent.provider) {
@@ -305,6 +341,16 @@
     loadFinanceCards();
 
     unlisteners.push(await listen("event:processed", handleIdleEvent));
+
+    // Listen for system state updates from the gateway
+    unlisteners.push(await listen("agent_states:updated", (e: any) => {
+      const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
+      const next: Record<string, string> = {};
+      for (const a of list) {
+        next[a.agent_id] = a.system_state;
+      }
+      systemStates = next;
+    }));
   });
 
   onDestroy(() => {
@@ -342,23 +388,35 @@
       <div class="agent-grid">
         {#each agents as agent}
           {@const st = getIdleState(agent.key)}
+          {@const ss = getSystemState(agent.key)}
           <button class="agent-avatar-card" class:needs-config={!agent.provider} onclick={() => selectAgent(agent)}>
-            <IdleRing
-              mode={st.mode}
-              outerPct={st.outerPct}
-              innerPct={st.innerPct}
-              emoji={st.emoji}
-              ringColors={COLORS[st.mode]}
-              size={56}
-              showLabel={false}
-              showInfo={false}
-              active={!!agent.provider}
-            />
+            {#if ss === "idle" || !agent.provider}
+              <IdleRing
+                mode={st.mode}
+                outerPct={st.outerPct}
+                innerPct={st.innerPct}
+                emoji={st.emoji}
+                ringColors={COLORS[st.mode]}
+                size={56}
+                showLabel={false}
+                showInfo={false}
+                active={!!agent.provider}
+              />
+            {:else}
+              <div
+                class="state-visual {STATE_ANIM[ss] ?? ''}"
+                style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:56px; height:56px;"
+              >
+                <span class="state-emoji">{STATE_EMOJI[ss] ?? "\u{1F4CB}"}</span>
+              </div>
+            {/if}
             <span class="agent-avatar-name">{agent.display_name}</span>
             {#if !agent.provider}
               <span class="badge warn" style="margin-top:2px;font-size:10px;">needs config</span>
-            {:else if agent.is_active}
-              <span class="badge ok" style="margin-top:2px;font-size:10px;">active</span>
+            {:else}
+              <span class="system-state-badge {SYSTEM_STATE_CLASS[ss] ?? 'ss-idle'}">
+                {SYSTEM_STATE_LABEL[ss] ?? ss}
+              </span>
             {/if}
           </button>
         {/each}
@@ -946,5 +1004,80 @@
   .add-skill-item:hover .add-skill-item-plus {
     background: var(--accent, #6c8cff);
     color: #fff;
+  }
+
+  /* System state badges */
+  .system-state-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    margin-top: 2px;
+    transition: background 0.3s, color 0.3s;
+  }
+  .ss-idle {
+    background: rgba(108, 140, 255, 0.12);
+    color: #93adff;
+  }
+  .ss-working {
+    background: rgba(74, 222, 128, 0.15);
+    color: #4ade80;
+    animation: workingPulse 2s ease-in-out infinite;
+  }
+  .ss-studying {
+    background: rgba(167, 139, 250, 0.15);
+    color: #a78bfa;
+  }
+  .ss-dailylife {
+    background: rgba(251, 191, 36, 0.15);
+    color: #fbbf24;
+  }
+
+  @keyframes workingPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.65; }
+  }
+
+  /* State visual — emoji circle for non-idle states */
+  .state-visual {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--st-color, #6c8cff) 12%, transparent);
+    border: 2px solid color-mix(in srgb, var(--st-color, #6c8cff) 35%, transparent);
+    flex-shrink: 0;
+  }
+  .state-emoji {
+    font-size: 24px;
+    line-height: 1;
+    user-select: none;
+  }
+
+  /* Animations for non-idle states */
+  .anim-spin-slow {
+    animation: spinSlow 4s linear infinite;
+  }
+  .anim-float {
+    animation: float 3s ease-in-out infinite;
+  }
+  .anim-pulse-soft {
+    animation: pulseSoft 2.5s ease-in-out infinite;
+  }
+
+  @keyframes spinSlow {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-4px); }
+  }
+  @keyframes pulseSoft {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
   }
 </style>

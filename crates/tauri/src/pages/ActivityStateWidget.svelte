@@ -54,6 +54,7 @@
   let idleSnap = $state<IdleSnap | null>(null);
   let reflectSnap = $state<ReflectSnap | null>(null);
   let metrics = $state<MetricsData | null>(null);
+  let systemState = $state<string>("idle");
   let unlisteners: (() => void)[] = [];
 
   $effect(() => {
@@ -137,10 +138,15 @@
     return MODE_ICON[mode];
   });
 
+  const SS_LABEL: Record<string, string> = {
+    idle: "Idle", working: "Working", studying: "Studying", daily_life: "Daily Life",
+  };
+
   let label = $derived.by(() => {
-    if (mode === "idle") return "IDLE" + (idleSnap ? "/" + idleSnap.kind : "");
-    if (mode === "reflection") return "REFLECTION";
-    return "PROCESSING";
+    const ss = SS_LABEL[systemState] ?? systemState;
+    if (mode === "idle") return ss + (idleSnap ? "/" + idleSnap.kind : "");
+    if (mode === "reflection") return ss + "/Reflection";
+    return ss === "Working" ? "Working" : ss + "/Processing";
   });
 
   let info1 = $derived.by(() => {
@@ -215,6 +221,15 @@
   onMount(async () => {
     unlisteners.push(await listen("event:processed", onEvent));
     unlisteners.push(await listen("metrics:updated", onMetrics));
+    unlisteners.push(await listen("agent_states:updated", (e: any) => {
+      const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
+      for (const a of list) {
+        if (!agentId || a.agent_id === agentId) {
+          systemState = a.system_state;
+          break;
+        }
+      }
+    }));
   });
 
   onDestroy(() => {

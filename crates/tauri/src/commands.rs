@@ -1732,6 +1732,7 @@ pub async fn list_runtime_agents(
             status: item["status"].as_str().unwrap_or("").to_owned(),
             enabled: item["descriptor"]["enabled"].as_bool().unwrap_or(false),
             active_session_id: item["active_session_id"].as_str().map(String::from),
+            system_state: item["system_state"].as_str().unwrap_or("idle").to_owned(),
         })
         .collect();
     Ok(agents)
@@ -1752,6 +1753,7 @@ pub async fn get_runtime_agent(
         status: v["status"].as_str().unwrap_or("").to_owned(),
         enabled: v["descriptor"]["enabled"].as_bool().unwrap_or(false),
         active_session_id: v["active_session_id"].as_str().map(String::from),
+        system_state: v["system_state"].as_str().unwrap_or("idle").to_owned(),
     })
 }
 

@@ -29,6 +29,7 @@ pub fn run() {
     let gc_for_metrics = app_state.gateway_client.clone();
     let gc_for_events = app_state.gateway_client.clone();
     let gc_for_notifications = app_state.gateway_client.clone();
+    let gc_for_agents = app_state.gateway_client.clone();
 
     // Create a Tokio runtime for background tasks. Must be created before
     // Tauri's event loop since `setup()` runs on the main thread which has
@@ -179,6 +180,7 @@ pub fn run() {
             let handle1 = app.handle().clone();
             let handle2 = app.handle().clone();
             let handle3 = app.handle().clone();
+            let handle4 = app.handle().clone();
 
             // Background task: emit `metrics:updated` every 2 s.
             rt.spawn(async move {
@@ -282,6 +284,45 @@ pub fn run() {
                                 }
                             }
                             Err(_) => { drop(guard); }
+                        }
+                    } else {
+                        drop(guard);
+                    }
+                }
+            });
+
+            // Background task: emit `agent_states:updated` every 2 s (poll agent system states).
+            rt.spawn(async move {
+                let mut tick = interval(Duration::from_secs(2));
+                loop {
+                    tick.tick().await;
+                    let guard = gc_for_agents.lock().await;
+                    if let Some(client) = guard.as_ref() {
+                        match client.list_agents().await {
+                            Ok(v) => {
+                                drop(guard);
+                                let agents: Vec<serde_json::Value> = v
+                                    .as_array()
+                                    .map(|a| {
+                                        a.iter()
+                                            .map(|item| {
+                                                serde_json::json!({
+                                                    "agent_id": item["agent_id"].as_str().unwrap_or(""),
+                                                    "system_state": item["system_state"].as_str().unwrap_or("idle"),
+                                                    "status": item["status"].as_str().unwrap_or(""),
+                                                })
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let _ = handle4.emit(
+                                    "agent_states:updated",
+                                    serde_json::json!({ "agents": agents }),
+                                );
+                            }
+                            Err(_) => {
+                                drop(guard);
+                            }
                         }
                     } else {
                         drop(guard);

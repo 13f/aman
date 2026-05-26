@@ -372,8 +372,6 @@ impl IncubationRunner {
 
         let result = provider.think(agent_id, &config).await?;
         let stored = result.triggers_fired + result.consolidation_count;
-        // NOTE: YantrikdbProvider::think() 桥接层当前 fire-and-forget，
-        //       ThinkResult 永远返回全零。桥接完成后 stored 才会 > 0。
 
         let elapsed = started.elapsed();
         info!(

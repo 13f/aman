@@ -134,6 +134,10 @@ pub struct ThinkResult {
     pub consolidation_count: usize,
     /// Number of conflicts detected.
     pub conflicts_found: usize,
+    /// New patterns discovered during pattern mining.
+    pub patterns_new: usize,
+    /// Existing patterns updated / reinforced.
+    pub patterns_updated: usize,
     /// Duration of the think pass in milliseconds.
     pub duration_ms: u64,
 }
@@ -298,6 +302,8 @@ pub trait MemoryProvider: Send + Sync {
             triggers_fired: 0,
             consolidation_count: 0,
             conflicts_found: 0,
+            patterns_new: 0,
+            patterns_updated: 0,
             duration_ms: 0,
         })
     }

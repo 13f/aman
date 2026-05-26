@@ -111,6 +111,35 @@ impl MeditationRunner {
     async fn run_phases(&self, agent_id: &str) -> AmanResult<()> {
         let started = Instant::now();
 
+        // Get cancel token from idle coordination so real events can interrupt
+        // deep introspection (design: idle-patch.md §4.4 — "丢弃，temp+rename 文件安全").
+        let cancel_token = {
+            let Some(registry) = self.agent_registry.get() else {
+                debug!(agent_id, "MeditationRunner: no AgentRegistry");
+                return Ok(());
+            };
+            match registry.get_idle_coordination(agent_id).await {
+                Some(coord) => coord.idle_cancel_token.read().await.clone(),
+                None => {
+                    debug!(agent_id, "MeditationRunner: no idle coordination, running uncancellable");
+                    tokio_util::sync::CancellationToken::new()
+                }
+            }
+        };
+
+        macro_rules! check_cancel {
+            ($phase:literal) => {
+                if cancel_token.is_cancelled() {
+                    info!(
+                        agent_id,
+                        phase = $phase,
+                        "Meditation: cancelled by real event, discarding work"
+                    );
+                    return Ok(());
+                }
+            };
+        }
+
         let Some(provider) = self.memory_for(agent_id).await else {
             debug!(agent_id, "MeditationRunner: no MemoryProvider");
             return Ok(());
@@ -152,6 +181,8 @@ impl MeditationRunner {
                 .insert(agent_id.to_owned(), Instant::now());
         }
 
+        check_cancel!(1);
+
         // ── Phase 2: 加载经验链 ────────────────────────────────────────
         let traces = match self.trace_store_for(agent_id).await {
             Some(ts) => match ts.load_recent(agent_id, review_depth).await {
@@ -166,6 +197,8 @@ impl MeditationRunner {
                 Vec::new()
             }
         };
+
+        check_cancel!(2);
 
         // ── Phase 3: 知识图谱内省 ──────────────────────────────────────
         let kg_stats = provider.stats(agent_id).await?;
@@ -183,6 +216,9 @@ impl MeditationRunner {
         if !traces.is_empty() {
             let mut seen = HashSet::new();
             for trace in traces.iter().take(review_depth) {
+                if cancel_token.is_cancelled() {
+                    break;
+                }
                 for entity in &trace.entities {
                     if seen.len() >= MAX_ENTITY_INTROSPECTIONS {
                         break;
@@ -209,6 +245,11 @@ impl MeditationRunner {
             }
         }
 
+        if cancel_token.is_cancelled() {
+            info!(agent_id, "Meditation: cancelled during entity introspection");
+            return Ok(());
+        }
+
         // Conflict detection / pending conflicts from stats
         if kg_stats.pending_conflicts > 0 {
             info!(
@@ -218,6 +259,8 @@ impl MeditationRunner {
             );
         }
 
+        check_cancel!(3);
+
         // ── Phase 4: 模式提取 ──────────────────────────────────────────
         let mut success_patterns: Vec<String> = Vec::new();
         let mut failure_patterns: Vec<String> = Vec::new();
@@ -225,6 +268,9 @@ impl MeditationRunner {
 
         if !traces.is_empty() {
             for trace in &traces {
+                if cancel_token.is_cancelled() {
+                    break;
+                }
                 let context = format!(
                     "{}: {} → {:?}",
                     trace.task_type, trace.description, trace.outcome
@@ -322,6 +368,8 @@ impl MeditationRunner {
             debug!(agent_id, "Meditation: no traces loaded, skipping pattern extraction");
         }
 
+        check_cancel!(4);
+
         // ── Phase 5: 认知循环 (think) ──────────────────────────────────
         let config = ThinkConfig {
             importance_threshold: 0.4,
@@ -331,8 +379,8 @@ impl MeditationRunner {
 
         let think_result: ThinkResult = provider.think(agent_id, &config).await?;
         let stored = think_result.triggers_fired + think_result.consolidation_count;
-        // NOTE: YantrikdbProvider::think() 桥接层当前 fire-and-forget，
-        //       ThinkResult 永远返回全零。桥接完成后 stored 才会 > 0。
+
+        check_cancel!(5);
 
         // ── Phase 6: 冥想报告 ──────────────────────────────────────────
         let report_path = self.write_meditation_report(
@@ -358,9 +406,6 @@ impl MeditationRunner {
         );
 
         // Publish completion event + reset depth if this cycle was productive.
-        // Gate on procedural updates and entity introspections (real Phase 3–4
-        // work) rather than `stored` alone — think() returns all-zeros until
-        // the yantrikdb bridge is complete.
         let productive = procedural_updates > 0
             || !entity_introspections.is_empty()
             || stored > 0;

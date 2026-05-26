@@ -484,8 +484,9 @@ impl SleepRunner {
             "triggers_fired": result.triggers_fired,
             "consolidation_count": result.consolidation_count,
             "conflicts_found": result.conflicts_found,
+            "patterns_new": result.patterns_new,
+            "patterns_updated": result.patterns_updated,
             "duration_ms": result.duration_ms,
-            "note": "think() bridge not yet active; results empty until YantrikdbProvider::think() bridging",
         }))
     }
 
@@ -1161,7 +1162,7 @@ mod tests {
         let json = serde_json::to_value(&output).unwrap();
         assert_eq!(json["label"], "cognitive_consolidation");
         assert_eq!(json["info"]["consolidation_count"], 0);
-        assert!(json["info"]["note"].as_str().unwrap().contains("bridge"));
+        assert!(json["info"]["patterns_new"].is_number());
     }
 
     #[tokio::test]

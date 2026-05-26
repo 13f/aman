@@ -9,7 +9,7 @@ use kernel::memory::{
 use kernel::AmanResult;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -45,13 +45,14 @@ impl EmbedKind {
 pub struct YantrikdbProvider {
     db: Option<Arc<yantrikdb::YantrikDB>>,
     agent_id: String,
-    /// Fire-and-forget channel for think() — sends config to the background
-    /// task that calls yantrikdb's synchronous think() via spawn_blocking.
-    think_tx: Option<mpsc::Sender<yantrikdb::ThinkConfig>>,
+    /// Channel for think() — sends (config, reply_tx) to the background
+    /// task that calls yantrikdb's synchronous think() via spawn_blocking
+    /// and returns the result through the oneshot.
+    think_tx: Option<mpsc::Sender<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>>,
     /// Receiver half of the think channel, stored until the background task
     /// is lazily spawned on the first async think() call (deferred because
     /// open() is synchronous and might not run inside a Tokio runtime).
-    think_rx: Mutex<Option<mpsc::Receiver<yantrikdb::ThinkConfig>>>,
+    think_rx: Mutex<Option<mpsc::Receiver<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>>>,
     /// Handle to the background think task, aborted on shutdown/drop.
     think_handle: Mutex<Option<JoinHandle<()>>>,
 }
@@ -140,7 +141,7 @@ impl YantrikdbProvider {
 
         // Create the think channel now (synchronous, no Tokio runtime needed).
         // The background task is spawned lazily on the first async think() call.
-        let (think_tx, think_rx) = mpsc::channel::<yantrikdb::ThinkConfig>(1);
+        let (think_tx, think_rx) = mpsc::channel::<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>(1);
 
         Ok(Self {
             db: Some(db_arc),
@@ -449,14 +450,15 @@ impl MemoryProvider for YantrikdbProvider {
 
     // -- Cognitive pass ----------------------------------------------------
 
-    /// Fire-and-forget trigger for yantrikdb's synchronous `think()`.
+    /// Run yantrikdb's synchronous `think()` via the background task and
+    /// return the real result.
     ///
-    /// Sends the config through an mpsc channel (capacity 1). A background
-    /// task receives it and runs [`YantrikDB::think`] via
-    /// [`tokio::task::spawn_blocking`] so the async runtime is never
-    /// stalled by yantrikdb's CPU-intensive graph computation. If a
-    /// previous think is still running, the new request is silently
-    /// dropped (channel full) to prevent backlog.
+    /// Sends the config through an mpsc channel (capacity 1) paired with a
+    /// oneshot reply channel. A background task receives it and runs
+    /// [`YantrikDB::think`] via [`tokio::task::spawn_blocking`]. The caller
+    /// awaits the oneshot for the result. If a previous think is still
+    /// running, the new request is silently dropped (channel full) to
+    /// prevent backlog.
     ///
     /// The background task is spawned lazily on first call — this avoids
     /// requiring a Tokio runtime during synchronous [`YantrikdbProvider::open`].
@@ -484,23 +486,43 @@ impl MemoryProvider for YantrikdbProvider {
             ..Default::default()
         };
 
+        let (reply_tx, reply_rx) = oneshot::channel();
+
         match self.think_tx.as_ref() {
-            Some(tx) => match tx.try_send(ydb_config) {
-                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {
-                    debug!("yantrikdb think() triggered (fire-and-forget)");
+            Some(tx) => match tx.try_send((ydb_config, reply_tx)) {
+                Ok(()) => {
+                    debug!("yantrikdb think() sent, awaiting result");
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug!("yantrikdb think channel full, returning empty result");
+                    return Ok(ThinkResult::default());
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                    warn!("yantrikdb think channel closed, skipping think()");
+                    warn!("yantrikdb think channel closed, returning empty result");
+                    return Ok(ThinkResult::default());
                 }
             },
             None => {
                 debug!("yantrikdb think channel not initialized");
+                return Ok(ThinkResult::default());
             }
         }
 
-        // Always return empty — actual results flow through yantrikdb's
-        // internal consolidation/conflict machinery.
-        Ok(ThinkResult::default())
+        // Await the real result from the background task.
+        match reply_rx.await {
+            Ok(ydb_result) => Ok(ThinkResult {
+                triggers_fired: ydb_result.triggers.len(),
+                consolidation_count: ydb_result.consolidation_count,
+                conflicts_found: ydb_result.conflicts_found,
+                patterns_new: ydb_result.patterns_new,
+                patterns_updated: ydb_result.patterns_updated,
+                duration_ms: ydb_result.duration_ms,
+            }),
+            Err(_) => {
+                warn!("yantrikdb think oneshot closed (background task dropped)");
+                Ok(ThinkResult::default())
+            }
+        }
     }
 
     // -- Lifecycle ---------------------------------------------------------
@@ -515,20 +537,27 @@ impl MemoryProvider for YantrikdbProvider {
     }
 }
 
-/// Background task that drains the think channel and runs yantrikdb's
-/// synchronous `think()` on a blocking thread.
+/// Background task that drains the think channel, runs yantrikdb's
+/// synchronous `think()` on a blocking thread, and sends the result back
+/// through the per-request oneshot channel.
 async fn think_background(
-    mut rx: mpsc::Receiver<yantrikdb::ThinkConfig>,
+    mut rx: mpsc::Receiver<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>,
     db_weak: std::sync::Weak<yantrikdb::YantrikDB>,
 ) {
-    while let Some(config) = rx.recv().await {
+    while let Some((config, reply)) = rx.recv().await {
         if let Some(db) = db_weak.upgrade() {
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Err(e) = db.think(&config) {
-                    warn!(error = %e, "yantrikdb think() background task failed");
+            let result = tokio::task::spawn_blocking(move || db.think(&config)).await;
+            match result {
+                Ok(Ok(think_result)) => {
+                    let _ = reply.send(think_result);
                 }
-            })
-            .await;
+                Ok(Err(e)) => {
+                    warn!(error = %e, "yantrikdb think() failed");
+                }
+                Err(join_err) => {
+                    warn!(error = %join_err, "yantrikdb think() spawn_blocking panicked");
+                }
+            }
         } else {
             break;
         }

@@ -107,7 +107,7 @@ pub struct TraceRecord {
 // ---------------------------------------------------------------------------
 
 /// Aggregate statistics across all stored traces.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TraceStatsSummary {
     pub total_traces: u64,
     pub total_agents: u64,
@@ -117,21 +117,6 @@ pub struct TraceStatsSummary {
     pub cancelled_count: u64,
     pub total_errors: u64,
     pub total_tool_calls: u64,
-}
-
-impl Default for TraceStatsSummary {
-    fn default() -> Self {
-        Self {
-            total_traces: 0,
-            total_agents: 0,
-            success_count: 0,
-            failure_count: 0,
-            partial_count: 0,
-            cancelled_count: 0,
-            total_errors: 0,
-            total_tool_calls: 0,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

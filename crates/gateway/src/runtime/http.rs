@@ -2148,9 +2148,10 @@ async fn explore_start(
     let session_id = instance.id.clone();
 
     // Persist session
-    if let Some(store) = runtime.session_store() {
+    if let Some(store) = runtime.session_store_for_agent(&agent_id) {
         let _ = store.upsert(&session_store::SessionRecord {
             id: session_id.clone(),
+            agent_id: agent_id.clone(),
             state: instance.current_state.clone(),
             message_count: 0,
             created_at: now_ms as i64,
@@ -2525,8 +2526,12 @@ async fn chat_session_create(
         .get("session_type")
         .and_then(|v| v.as_str())
         .unwrap_or("persistent");
+    let agent_id = payload
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
 
-    match runtime.session_manager().create_session(operator, session_type).await {
+    match runtime.session_manager().create_session(operator, agent_id, session_type).await {
         Ok(id) => (StatusCode::OK, Json(json!({ "id": id }))).into_response(),
         Err(error) => error_response(error),
     }
@@ -2589,11 +2594,11 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
 
     // Fall back to SQLite when no instances are in memory (e.g. after restart).
     if items.is_empty() {
-        if let Some(store) = runtime.session_store() {
+        let stores = runtime.agent_registry().all_session_stores().await;
+        for store in &stores {
             if let Ok(records) = store.list_all() {
-                items = records
-                    .into_iter()
-                    .map(|rec| ChatSessionItem {
+                for rec in records {
+                    items.push(ChatSessionItem {
                         id: rec.id,
                         session_type: rec.session_type,
                         state: rec.state,
@@ -2601,8 +2606,8 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
                         last_active_at: rec.last_active_at as u64,
                         version: 0,
                         message_count: rec.message_count as u64,
-                    })
-                    .collect();
+                    });
+                }
             }
         }
     }
@@ -2617,8 +2622,8 @@ async fn chat_session_delete(
     Path(id): Path<String>,
 ) -> Response {
     let operator = operator_from_headers(&headers).unwrap_or("api");
-    // Also remove from the persistent session store.
-    if let Some(store) = runtime.session_store() {
+    // Also remove from the persistent session store (search all agents).
+    if let Some(store) = runtime.find_session_store(&id) {
         let _ = store.delete(&id);
     }
     match runtime.workflow_engine().delete_instance(&id) {
@@ -2955,7 +2960,7 @@ async fn chat_session_send(
 
     // Persist to SQLite store so the session list in the frontend shows
     // the correct message count even while the session is still open.
-    if let Some(store) = runtime.session_store()
+    if let Some(store) = runtime.find_session_store(&id)
         && let Some(inst) = runtime.workflow_engine().get_instance(&id) {
             let session_type = inst.data.get("session_type")
                 .and_then(|v| v.as_str()).unwrap_or("persistent");
@@ -2965,6 +2970,7 @@ async fn chat_session_send(
                 .and_then(|v| v.as_i64()).unwrap_or(0);
             let _ = store.upsert(&session_store::SessionRecord {
                 id: inst.id,
+                agent_id: String::new(),
                 state: inst.current_state,
                 message_count,
                 created_at,
@@ -3034,7 +3040,7 @@ async fn chat_session_close(
             )).await;
 
             // Persist session record to the SQLite store.
-            if let Some(store) = runtime.session_store()
+            if let Some(store) = runtime.find_session_store(&id)
                 && let Some(inst) = runtime.workflow_engine().get_instance(&id) {
                     let session_type = inst.data.get("session_type")
                         .and_then(|v| v.as_str()).unwrap_or("persistent");
@@ -3046,6 +3052,7 @@ async fn chat_session_close(
                         .and_then(|v| v.as_i64()).unwrap_or(0);
                     let _ = store.upsert(&session_store::SessionRecord {
                         id: inst.id,
+                        agent_id: String::new(),
                         state: inst.current_state,
                         message_count,
                         created_at,

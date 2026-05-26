@@ -21,6 +21,7 @@ use std::path::Path;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionRecord {
     pub id: String,
+    pub agent_id: String,
     pub state: String,
     pub message_count: i64,
     pub created_at: i64,
@@ -50,6 +51,7 @@ impl SessionStore {
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS sessions (
                 id            TEXT PRIMARY KEY,
+                agent_id      TEXT NOT NULL DEFAULT '',
                 state         TEXT NOT NULL DEFAULT 'active',
                 message_count INTEGER NOT NULL DEFAULT 0,
                 created_at    INTEGER NOT NULL,
@@ -60,6 +62,8 @@ impl SessionStore {
         .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store schema: {e}") })?;
         // Migration: add reflected_at column (ignore error if already exists)
         let _ = db.execute("ALTER TABLE sessions ADD COLUMN reflected_at INTEGER", []);
+        // Migration: add agent_id column (ignore error if already exists)
+        let _ = db.execute("ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''", []);
         Ok(Self { db: std::sync::Mutex::new(db), sessions_dir: sessions_dir.to_owned() })
     }
 
@@ -67,8 +71,8 @@ impl SessionStore {
     pub fn upsert(&self, rec: &SessionRecord) -> AmanResult<()> {
         let db = self.db.lock().expect("session store lock");
         db.execute(
-            "INSERT INTO sessions (id, state, message_count, created_at, last_active_at, session_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO sessions (id, agent_id, state, message_count, created_at, last_active_at, session_type)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
                 state         = excluded.state,
                 message_count = excluded.message_count,
@@ -77,6 +81,7 @@ impl SessionStore {
                 reflected_at  = NULL",
             rusqlite::params![
                 rec.id,
+                rec.agent_id,
                 rec.state,
                 rec.message_count,
                 rec.created_at,
@@ -121,7 +126,7 @@ impl SessionStore {
         let db = self.db.lock().expect("session store lock");
         let mut stmt = db
             .prepare(
-                "SELECT id, state, message_count, created_at, last_active_at, session_type, reflected_at
+                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, reflected_at
                  FROM sessions ORDER BY last_active_at DESC",
             )
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store query: {e}") })?;
@@ -129,12 +134,13 @@ impl SessionStore {
             .query_map([], |row| {
                 Ok(SessionRecord {
                     id: row.get(0)?,
-                    state: row.get(1)?,
-                    message_count: row.get(2)?,
-                    created_at: row.get(3)?,
-                    last_active_at: row.get(4)?,
-                    session_type: row.get(5)?,
-                    reflected_at: row.get(6)?,
+                    agent_id: row.get(1)?,
+                    state: row.get(2)?,
+                    message_count: row.get(3)?,
+                    created_at: row.get(4)?,
+                    last_active_at: row.get(5)?,
+                    session_type: row.get(6)?,
+                    reflected_at: row.get(7)?,
                 })
             })
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store rows: {e}") })?;
@@ -152,7 +158,7 @@ impl SessionStore {
         let db = self.db.lock().expect("session store lock");
         let mut stmt = db
             .prepare(
-                "SELECT id, state, message_count, created_at, last_active_at, session_type, reflected_at
+                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, reflected_at
                  FROM sessions
                  WHERE reflected_at IS NULL AND message_count > 0
                  ORDER BY last_active_at ASC
@@ -163,12 +169,13 @@ impl SessionStore {
             .query_map([], |row| {
                 Ok(SessionRecord {
                     id: row.get(0)?,
-                    state: row.get(1)?,
-                    message_count: row.get(2)?,
-                    created_at: row.get(3)?,
-                    last_active_at: row.get(4)?,
-                    session_type: row.get(5)?,
-                    reflected_at: row.get(6)?,
+                    agent_id: row.get(1)?,
+                    state: row.get(2)?,
+                    message_count: row.get(3)?,
+                    created_at: row.get(4)?,
+                    last_active_at: row.get(5)?,
+                    session_type: row.get(6)?,
+                    reflected_at: row.get(7)?,
                 })
             })
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store unreflected rows: {e}") })?;

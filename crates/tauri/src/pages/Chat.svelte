@@ -438,7 +438,7 @@
   async function createSession() {
     let id: string;
     try {
-      id = await invoke<string>("chat_session_create");
+      id = await invoke<string>("chat_session_create", { agentKey: activeAgentKey || null });
     } catch {
       // Runtime not running — create a local-only session
       // Short 12-char hex ID similar to xid format
@@ -1111,7 +1111,7 @@
 
   async function handleSessionNew(_args: string[]) {
     try {
-      const id = await invoke<string>("chat_session_create");
+      const id = await invoke<string>("chat_session_create", { agentKey: activeAgentKey || null });
       const count = sessions.length + 1;
       sessions = [{ id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
       activeSessionId = id;
@@ -1480,7 +1480,7 @@
       }
     }
 
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       sendMessage();
     }
@@ -1488,7 +1488,7 @@
 
   function handleGlobalKeydown(e: KeyboardEvent) {
     // Ctrl+Enter or Meta+Enter: send message
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !e.isComposing) {
       e.preventDefault();
       sendMessage();
     }

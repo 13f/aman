@@ -279,6 +279,7 @@ impl SessionManager {
     pub async fn create_session(
         &self,
         operator: &str,
+        agent_id: &str,
         session_type: &str,
     ) -> AmanResult<String> {
         let now_ms = std::time::SystemTime::now()
@@ -310,14 +311,15 @@ impl SessionManager {
         // Publish to global bus.
         let _ = self.bus.publish(session_started_event.clone()).await;
 
-        // Persist to the first available session store.
+        // Persist to the agent's session store.
         let created_at = instance.data.get("created_at")
             .and_then(|v| v.as_i64()).unwrap_or(0);
         let last_active_at = instance.data.get("last_active_at")
             .and_then(|v| v.as_i64()).unwrap_or(0);
-        if let Some(store) = self.agent_registry.first_session_store().await {
+        if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
             let _ = store.upsert(&session_store::SessionRecord {
                 id: id.clone(),
+                agent_id: agent_id.to_owned(),
                 state: instance.current_state,
                 message_count: 0,
                 created_at,
@@ -371,6 +373,7 @@ impl SessionManager {
                     .and_then(|v| v.as_i64()).unwrap_or(0);
                 let _ = store.upsert(&session_store::SessionRecord {
                     id: inst.id,
+                    agent_id: agent_id.to_owned(),
                     state: inst.current_state,
                     message_count,
                     created_at,

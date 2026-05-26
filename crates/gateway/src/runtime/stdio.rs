@@ -992,15 +992,18 @@ async fn chat_sessions(runtime: &AgentRuntime, params: Option<&Value>) -> AmanRe
 }
 
 async fn chat_session_create(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult<Value> {
-    let _agent_key = get_param_str(params, "agent_key");
+    let agent_key = get_param_str(params, "agent_key").unwrap_or_else(|| "default".to_owned());
     let session_id = uuid::Uuid::new_v4().to_string();
-    if let Some(store) = runtime.session_store() {
+    let store = runtime.session_store_for_agent(&agent_key)
+        .or_else(|| runtime.session_store());
+    if let Some(store) = store {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
         let _ = store.upsert(&super::session_store::SessionRecord {
             id: session_id.clone(),
+            agent_id: agent_key.clone(),
             state: "active".into(),
             message_count: 0,
             created_at: now,
@@ -1053,9 +1056,10 @@ async fn chat_send(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult
 
 async fn chat_session_close(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult<Value> {
     let session_id = require_param_str(params, "session_id")?;
-    if let Some(store) = runtime.session_store() {
+    if let Some(store) = runtime.find_session_store(&session_id) {
         let _ = store.upsert(&super::session_store::SessionRecord {
             id: session_id.clone(),
+            agent_id: String::new(),
             state: "closed".into(),
             message_count: 0,
             created_at: 0,

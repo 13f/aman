@@ -768,10 +768,11 @@ pub async fn chat_session_list_db(
 #[tauri::command]
 pub async fn chat_session_create(
     state: State<'_, AppState>,
+    agent_key: Option<String>,
     session_type: Option<String>,
 ) -> Result<String, String> {
     let client = require_gateway(&state).await?;
-    client.chat_session_create(session_type.as_deref()).await
+    client.chat_session_create(agent_key.as_deref(), session_type.as_deref()).await
 }
 
 #[tauri::command]
@@ -789,6 +790,7 @@ pub async fn chat_session_branch(
     state: State<'_, AppState>,
     session_id: String,
     message_id: String,
+    agent_key: Option<String>,
     session_type: Option<String>,
 ) -> Result<String, String> {
     if session_id.trim().is_empty() {
@@ -799,7 +801,7 @@ pub async fn chat_session_branch(
     }
 
     let client = require_gateway(&state).await?;
-    client.chat_session_create_branch(&session_id, &message_id, session_type.as_deref()).await
+    client.chat_session_create_branch(&session_id, &message_id, agent_key.as_deref(), session_type.as_deref()).await
 }
 
 #[tauri::command]

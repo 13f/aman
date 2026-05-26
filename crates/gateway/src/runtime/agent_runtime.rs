@@ -1321,6 +1321,21 @@ impl AgentRuntime {
         pollster::block_on(self.agent_registry.first_session_store())
     }
 
+    /// Find the session store that owns `session_id`, searching all agents.
+    #[must_use]
+    pub fn find_session_store(&self, session_id: &str) -> Option<Arc<super::session_store::SessionStore>> {
+        pollster::block_on(async {
+            let stores = self.agent_registry.all_session_stores().await;
+            for s in &stores {
+                if s.has_session(session_id) {
+                    return Some(Arc::clone(s));
+                }
+            }
+            // Fall back to first store (backward compat for pre-migration sessions).
+            self.agent_registry.first_session_store().await
+        })
+    }
+
     /// Restore a persisted session (searches all per-agent stores).
     pub async fn restore_chat_session(&self, session_id: &str) -> Option<()> {
         self.session_manager.restore_session(session_id).await
@@ -2449,13 +2464,21 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
             let agent_id = event
                 .payload
                 .get("agent_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let store = self.agent_registry.get_session_store(agent_id).await;
-            // Fall back to first available store when agent_id is missing
-            // (e.g. MessageReceived events published before agent resolution).
+                .and_then(|v| v.as_str());
+            let store = match agent_id {
+                Some(aid) => self.agent_registry.get_session_store(aid).await,
+                None => None,
+            };
+            // Fall back: search all stores for the session (handles events
+            // published before agent resolution, e.g. MessageReceived).
             let store = store.or_else(|| {
-                pollster::block_on(self.agent_registry.first_session_store())
+                let stores = pollster::block_on(self.agent_registry.all_session_stores());
+                for s in &stores {
+                    if s.has_session(sid) {
+                        return Some(Arc::clone(s));
+                    }
+                }
+                None
             });
             if let Some(store) = store {
                 let entry = serde_json::json!({

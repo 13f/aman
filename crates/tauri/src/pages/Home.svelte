@@ -9,6 +9,7 @@
   import opencodeIcon from "../lib/assets/code-agents/opencode.svg?raw";
   import geminiIcon from "../lib/assets/code-agents/gemini.svg?raw";
   import kimiIcon from "../lib/assets/code-agents/kimi.svg?raw";
+  import grokIcon from "../lib/assets/code-agents/grok.svg?raw";
 
   const CODE_AGENT_ICONS: Record<string, string> = {
     "claude-code": claudeIcon,
@@ -16,6 +17,7 @@
     "opencode": opencodeIcon,
     "gemini-cli": geminiIcon,
     "kimi": kimiIcon,
+    "grok": grokIcon,
   };
 
   let {

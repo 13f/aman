@@ -195,6 +195,69 @@ pub struct ThinkResult {
 
 ---
 
+## 0.5 TraceStore — 任务执行追踪（基础层）
+
+**实现**: `JsonlTraceStore` (`crates/persistence/src/trace_store.rs`)
+**Trait**: `kernel::trace::TraceStore` (`crates/core/src/trace.rs`)
+**存储路径**: `~/.aman/agents/{agent_id}/traces/{trace_id}.json`
+
+### 设计定位
+
+TraceStore 是通用的任务级执行追踪层，与 MemoryProvider 同为 idle 认知处理的两大基础依赖。设计语义接近 OpenTelemetry Span，提供 `begin_trace → append_* → end_trace` 生命周期。**数据模型零 idle 耦合** — `task_type` 是自由字符串，任何场景（LLM 调用、插件执行、workflow 步骤、ReAct 决策链）都可以接入。
+
+### TraceRecord 结构
+
+| 分类 | 字段 | 说明 |
+|------|------|------|
+| **身份** | `trace_id` | UUID v7 唯一标识 |
+| | `agent_id` | 归属 agent |
+| | `session_id` | 可选，关联会话 |
+| **任务** | `task_type` | 自由字符串，如 `"session_extract"`、`"skill_run"` |
+| | `description` | 任务描述 |
+| | `input` | 输入摘要 |
+| | `outcome` | `Success` / `Failure` / `Partial` / `Cancelled` |
+| | `duration_ms` | 执行耗时 |
+| **决策** | `decision_points[]` | 决策分支：上下文 `branch`、选择 `taken`、备选 `alternatives`、时间戳 |
+| **工具** | `tool_calls[]` | 工具调用链：工具名、输入/输出摘要、耗时、成功与否 |
+| **错误** | `errors[]` | 错误与恢复：`error_type`、`error_message`、`recovery_action`、`recovered` |
+| **实体** | `entities[]` | 从执行上下文中提取的命名实体 |
+| **时间** | `started_at_ms` / `ended_at_ms` | UNIX 毫秒时间戳 |
+
+### TraceStore trait — 四阶段操作
+
+| 阶段 | 方法 | 用途 |
+|------|------|------|
+| **A. CRUD** | `save_trace`, `begin_trace`, `end_trace`, `load_recent`, `load_by_session`, `is_empty` | 基本读写，按最近时间/会话查询 |
+| **B. 决策+错误** | `append_decision_point`, `append_error`, `load_recent_errors` | 运行时逐步追加决策点和错误 |
+| **C. 链+工具** | `append_tool_call`, `find_incomplete`, `detect_chains` | 工具调用记录 + 未完成任务链检测 |
+| **D. 管理** | `count`, `list_all`, `delete_trace`, `stats_summary`, `prune` | 运维和统计 |
+
+### 各 idle 状态的使用方式
+
+| 状态 | 使用方式 |
+|------|---------|
+| **Meditation** | `load_recent(review_depth)` 加载最近 traces → 实体遍历 KG 内省 → 按 success/failure 模式提取 → `think()` 写入 procedural memory |
+| **Reflection** | Step 0 `save_trace()` 写入 session 摘要；Step 1 `find_incomplete()` 检测未完成任务链；Step 2 `load_recent(30)` 错误聚合；Step 3 扫描恢复模式提炼经验 |
+
+### 存储实现细节
+
+- **文件系统即索引**: 目录列表按 mtime 降序排列，无需额外索引
+- **原子写入**: 通过 `temp → fsync → rename` 防止写入中途崩溃损坏数据
+- **Per-agent 分区**: `{agent_id}.traces/` 子目录自然隔离
+- **读-改-写模式**: 每个 `append_*` 调用做全量 JSON 重写 — 当前 idle 场景（周期末低频写入）下完全够用
+
+### 已知局限
+
+| 局限 | 说明 |
+|------|------|
+| **写入性能** | `append_*` 每次 read-modify-write 全量 JSON，高频场景（如 ReAct 每步都记录）会有瓶颈。当前仅 idle 周期末低频调用，未暴露 |
+| **查询能力** | 仅支持按最近时间、session_id、是否有错误查询，不支持按 `task_type`、时间范围、工具名过滤。扩展查询或换后端（如 SQLite）均较直接 |
+| **无调用方** | `append_decision_point` / `append_tool_call` 已定义但暂无生产代码调用 — 预留基础设施，随时可接入 workflow 引擎或 ReAct harness |
+| **无 prune 调用** | `prune()` 方法存在但无 runner 调用，trace 文件会无限增长 |
+| **Partial/Cancelled 跳过** | Meditation 模式提取跳过非 Success/Failure 的 trace，中断频繁的 agent 可能遗漏模式 |
+
+---
+
 ## 1. Daze ✅ 已完成
 
 **路由**: `pipeline:idle-daze`

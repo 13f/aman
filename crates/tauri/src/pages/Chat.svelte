@@ -423,6 +423,18 @@
     }
   }
 
+  function updateSessionTitleFromMessages(sessionId: string) {
+    const session = sessions.find(s => s.id === sessionId);
+    // Only update if the title is still the default placeholder.
+    if (!session || !session.title.startsWith("Chat ") && !session.title.startsWith("Session ")) return;
+    const firstUserMsg = messages.find(m => m.sessionId === sessionId && m.type === "user_text");
+    if (firstUserMsg) {
+      const text = firstUserMsg.content.trim();
+      const title = text.length <= 40 ? text : text.slice(0, 40) + '…';
+      sessions = sessions.map(s => s.id === sessionId ? { ...s, title } : s);
+    }
+  }
+
   async function createSession() {
     let id: string;
     try {
@@ -433,10 +445,9 @@
       id = Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
     }
     const count = sessions.length + 1;
-    sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }];
+    sessions = [{ id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
     activeSessionId = id;
-    // Reset to last page for the new session
-    currentPage = totalPages;
+    currentPage = 1;
   }
 
   async function startExplore() {
@@ -446,11 +457,10 @@
       const result = await invoke<{ session_id: string; source: string }>("explore_start", {
         agentKey: activeAgentKey || null,
       });
-      // Add the new session to the list
       const count = sessions.length + 1;
-      sessions = [...sessions, { id: result.session_id, title: `Explore ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }];
+      sessions = [{ id: result.session_id, title: `Explore ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
       activeSessionId = result.session_id;
-      currentPage = totalPages;
+      currentPage = 1;
     } catch (e) {
       showToast("error", `Explore failed: ${e}`);
     } finally {
@@ -579,6 +589,7 @@
     updateMessage(data.original_message_id, { status: "completed", channelType });
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");
+    updateSessionTitleFromMessages(data.session_id);
     if (data.soul_name) {
       currentSoulName = data.soul_name;
       // Show SOUL intro on first reply
@@ -722,6 +733,7 @@
     }
     isLoading = false;
     updateSessionStatus(sid, "idle");
+    updateSessionTitleFromMessages(sid);
   }
 
   function handleAgentToolCall(data: any) {
@@ -1101,7 +1113,7 @@
     try {
       const id = await invoke<string>("chat_session_create");
       const count = sessions.length + 1;
-      sessions = [...sessions, { id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }];
+      sessions = [{ id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
       activeSessionId = id;
     } catch (err: any) {
       messages = [...messages, {
@@ -1517,8 +1529,10 @@
     // Load agents first (sets activeAgentKey, triggers session load for the right agent).
     await loadAgents();
 
-    // Ensure there's at least one session
-    if (sessions.length === 0) {
+    // Ensure there's at least one session. When arriving with a prefill
+    // (e.g. from a skill card), create a fresh session so the command
+    // doesn't leak into an existing conversation.
+    if (sessions.length === 0 || (prefillInput && prefillInput.length > 0)) {
       await createSession();
     } else {
       selectSession(sessions[0].id);
@@ -1701,7 +1715,7 @@
             class:archived={isArchived}
           >
             {#if isAssistant}
-              <span class="msg-label">Aman</span>
+              <span class="msg-label">{agentList.find(a => a.key === activeAgentKey)?.display_name ?? "Assistant"}</span>
             {/if}
             {#if isToolCall && msg.toolCall}
               <ToolCallCard tool={msg.toolCall} />

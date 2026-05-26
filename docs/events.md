@@ -24,6 +24,9 @@ pub enum EventType {
     SecretRotated,
     // Security events
     InjectionDetected,
+    // Idle/Work system events
+    Idle,
+    QueueDrained,
     // Dynamic events
     Custom(String),
 }
@@ -102,6 +105,8 @@ Responsible for high-throughput, agent-internal events:
 | Token tracking | `agent:token_used` |
 | ReAct internal | `agent:got_tool_calls`, `agent:tool_results_fed_back`, `agent:history_compressed`, `agent:config_warning` |
 | Interrupt (internal) | `agent:reply_interrupted` (within `react_loop`) |
+| **Work System** | `work.start_check`, `work.claim_task`, `work.claim_response`, `work.execute_step`, `work.step_complete`, `work.step_failed`, `work.review_task`, `work.review_complete`, `work.submit_result`, `work.cycle_done`, `work.delayed_work_tick`, `work.interrupt` |
+| **Idle System** | `idle.system` (idle events from AgentIdleManager) |
 
 ### Why Two Layers?
 
@@ -365,6 +370,184 @@ Published by the SOUL hot-reload manager when the SOUL.md file changes. Contains
 | `retry` | Auto-retry by workflow engine | `{"auto_retry":true, "attempt":N}` | `crates/workflow/src/lib.rs:1027` |
 
 Published by HTTP handlers and the workflow engine's auto-retry mechanism.
+
+---
+
+## Work System Events
+
+The Work System (`crates/work/`) models task discovery, claiming, execution, and review as an event-driven state machine. Each agent instance owns a private WorkSystem that publishes internal flow events to the agent's **Local Bus**. External board events originate from kanban/team plugins on the **Global Bus** and are injected into the agent's Local Bus for processing.
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      Agent Local Bus                              │
+│                                                                   │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │                    Work System State Machine                  │ │
+│  │                                                               │ │
+│  │  IDLE ──▶ CHECKING ──▶ CLAIMING ──▶ EXECUTING ──▶ REVIEWING  │ │
+│  │    ▲                      │              │            │       │ │
+│  │    │                      ▼              ▼            ▼       │ │
+│  │    └──── Interrupt ──── (any state) ──── saves checkpoint    │ │
+│  │                                                               │ │
+│  │  Chain: ExecuteStep(0) → StepComplete → ExecuteStep(1) → ...  │ │
+│  │  (keeps Bus non-empty → Idle System won't trigger)           │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                   │
+│  Work internal events (work.*) ──▶ Local Bus only                 │
+│  External board events ──▶ routed from Global Bus                 │
+└──────────────────────────────────────────────────────────────────┘
+                                 ▲
+                                 │ (TaskBoardUpdated, WorkTick)
+┌────────────────────────────────┴─────────────────────────────────┐
+│                      Global Event Bus                             │
+│  kanban.plugin ──▶ publish(TaskBoardUpdated)                      │
+│  team.plugin   ──▶ publish(WorkTick)                              │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Event Routing
+
+Work events are routed to the agent's Local Bus by the agent's event handler:
+
+| Event Kind | Bus | Direction |
+|-----------|-----|-----------|
+| `kanban.task_board_updated` | Global → Local (injected) | External → Work System |
+| `team.work_tick` | Global → Local (injected) | External → Work System |
+| `work.work_tick` | Global → Local (injected) | External → Work System |
+| `work.delayed_work_tick` | Local (self-scheduled) | Timer → Work System |
+| `work.start_check` through `work.cycle_done` | Local | Internal state machine |
+| `work.interrupt` | Local | AgentScheduler → Work System |
+
+### Work State Machine
+
+Five states, fully event-driven. The `Interrupt` event is highest priority — any active state receiving `Interrupt` saves a checkpoint and returns to `IDLE`.
+
+| Current State | Event | Next State | Notes |
+|---|---|---|---|
+| `IDLE` | `TaskBoardUpdated` / `WorkTick` / `DelayedWorkTick` (cooldown passed) | `CHECKING` | Ignores tick if cooldown not elapsed |
+| `CHECKING` | `StartCheck` + tasks available | `CLAIMING` | Selects best task via personality strategy |
+| `CHECKING` | `StartCheck` + no tasks | `IDLE` | Schedules `DelayedWorkTick` for next poll |
+| `CLAIMING` | `ClaimResponse(success=true)` | `EXECUTING` | Decomposes task into steps, posts first `ExecuteStep` |
+| `CLAIMING` | `ClaimResponse(success=false)` | `IDLE` | Injects frustration, applies backoff |
+| `EXECUTING` | `StepComplete` + more steps | `EXECUTING` | Chains next `ExecuteStep` (keeps Bus non-empty) |
+| `EXECUTING` | `StepComplete` + last step | `REVIEWING` | Posts `ReviewTask` |
+| `EXECUTING` | `StepFailed` (retryable) | `EXECUTING` | Retries same step |
+| `EXECUTING` | `StepFailed` (non-retryable) | `IDLE` | Abandons task |
+| `REVIEWING` | `ReviewComplete(passed=true)` | `IDLE` | Submits result, injects satisfaction |
+| `REVIEWING` | `ReviewComplete(passed=false)` | `IDLE` | Submits failed result, injects disappointment |
+| **Any active** | **`Interrupt`** | **`IDLE`** | Saves checkpoint, cancels delayed ticks |
+
+### Work System Event Reference
+
+All work events are published as `EventType::Custom("<kind>")` with the event payload serialized as JSON under the `work_event_type` tag.
+
+#### External / Board Events
+
+| Kind | Source | Payload | Producer |
+|------|--------|---------|----------|
+| `kanban.task_board_updated` | kanban plugin | `{"work_event_type":"task_board_updated","board_id":"...","change_type":"task_added\|task_removed\|task_updated\|stage_bulk_move"}` | kanban plugin on Global Bus |
+| `team.work_tick` | team plugin | `{"work_event_type":"work_tick","triggered_by":"cron\|webhook\|manual"}` | team plugin on Global Bus |
+
+#### Delayed Timer Events
+
+| Kind | Source | Payload | Producer |
+|------|--------|---------|----------|
+| `work.delayed_work_tick` | `work.system` | `{"work_event_type":"delayed_work_tick","fire_at":<timestamp_ms>,"reason":"..."}` | `WorkSystem::schedule_delayed_tick()` via `tokio::spawn` |
+
+#### Internal State Machine Events
+
+| Kind | Source | Payload | Producer |
+|------|--------|---------|----------|
+| `work.start_check` | `work.system` | `{"work_event_type":"start_check"}` | `WorkSystem::handle()` after transitioning to `CHECKING` |
+| `work.claim_task` | `work.system` | `{"work_event_type":"claim_task",...task_brief}` | `WorkSystem::handle()` after task selection |
+| `work.claim_response` | `work.system` | `{"work_event_type":"claim_response","task":{...},"success":bool,"reason":...}` | `WorkSystem::handle_claim_task()` after board response |
+| `work.execute_step` | `work.system` | `{"work_event_type":"execute_step","task_id":"...","step_index":N}` | `WorkSystem::handle()` to execute each step |
+| `work.step_complete` | `work.system` | `{"work_event_type":"step_complete","task_id":"...","step_index":N,"output":{...}}` | `WorkSystem::handle_execute_step()` on step success |
+| `work.step_failed` | `work.system` | `{"work_event_type":"step_failed","task_id":"...","step_index":N,"error":{...}}` | `WorkSystem::handle_execute_step()` on step failure |
+| `work.review_task` | `work.system` | `{"work_event_type":"review_task",...task_brief}` | `WorkSystem::handle()` when all steps complete |
+| `work.review_complete` | `work.system` | `{"work_event_type":"review_complete","task_id":"...","passed":bool,"feedback":...}` | `WorkSystem::handle_review_task()` after verification |
+| `work.submit_result` | `work.system` | `{"work_event_type":"submit_result","task_id":"...","result":{...}}` | `WorkSystem::handle_review_task()` to board |
+| `work.cycle_done` | `work.system` | `{"work_event_type":"cycle_done","task_id":"...","outcome":"completed\|failed\|abandoned","duration":{...}}` | `WorkSystem::handle_review_task()` on work cycle end |
+
+#### System Interrupt Events
+
+| Kind | Source | Payload | Producer |
+|------|--------|---------|----------|
+| `work.interrupt` | AgentScheduler | `{"work_event_type":"interrupt","reason":"user_query\|study_activated\|daily_activated\|shutdown","by_system":"core\|study\|daily_life"}` | `AgentScheduler::activate_system()` when switching subsystems |
+
+### Work System Trace Events
+
+In addition to EventBus events, the Work System records structured trace events for observability. These are written to the agent's private `TraceStore`:
+
+| Trace Event | When | Fields |
+|------------|------|--------|
+| `CheckStarted` | Task board poll begins | `candidates_count` |
+| `ClaimAttempted` | Claim request sent/received | `task_id`, `outcome` (Success / TaskTakenByOther / PermissionDenied / BoardUnavailable) |
+| `StepExecuted` | Each step completes (success or failure) | `task_id`, `step_index`, `duration`, `success`, `error` |
+| `ReviewCompleted` | Review finishes | `task_id`, `passed`, `confidence` |
+| `CycleCompleted` | Full work cycle ends | `task_id`, `outcome`, `total_duration`, `steps_completed`, `steps_failed` |
+| `Interrupted` | Work interrupted by scheduler | `task_id`, `reason`, `by_system` |
+
+### Work Personality Configuration
+
+Each agent's work behavior is configured via `WorkPersonality` in `aman.yaml`:
+
+```yaml
+work:
+  personality:
+    auto_claim: true
+    capabilities: [code, refactor, fix, review]
+    max_concurrent: 2
+    work_cooldown: 60s
+    claim_retry:
+      base_delay: 30s
+      backoff_multiplier: 2.0
+      max_delay: 300s
+      max_consecutive_failures: 5
+    selection:
+      type: weighted
+      priority_weight: 0.4
+      match_weight: 0.4
+      age_weight: 0.2
+    decomposition:
+      max_step_duration: 120s
+      isolate_llm_calls: true
+      isolate_tool_calls: true
+  board:
+    type: kanban
+    poll_interval: 30s
+    query:
+      stages: [backlog, wip]
+      limit: 20
+  review:
+    auto_verify: true
+    require_human_approval_for:
+      - "git push --force"
+      - "rm -rf"
+      - "DROP TABLE"
+    timeout: 120s
+```
+
+### Implementation Files
+
+| Component | File | Role |
+|-----------|------|------|
+| `WorkState` / `WorkEvent` / `WorkContext` | `crates/work/src/types.rs` | Core type definitions |
+| `WorkPersonality` / `TaskSelectionStrategy` | `crates/work/src/personality.rs` | Agent work behavior config |
+| `WorkConfig` / `BoardConfig` / `ReviewConfig` | `crates/work/src/config.rs` | YAML config + validation |
+| `WorkSystem::handle()` | `crates/work/src/system.rs` | State machine engine |
+| `WorkBoardClient` trait | `crates/work/src/system.rs` | Board abstraction (kanban/team) |
+| `WorkTraceEvent` | `crates/work/src/trace.rs` | Trace store event types |
+
+### Idle System Coordination
+
+The Work System and Idle System coordinate through the Event Bus:
+
+- **Bus non-empty → Idle suppressed**: During task execution, the chain of `ExecuteStep` → `StepComplete` → next `ExecuteStep` keeps the agent's Local Bus non-empty, naturally preventing the Idle System from triggering.
+- **Bus empty → Idle active**: After `WorkCycleDone` and before the next `DelayedWorkTick`, the Bus is empty, allowing Idle System to run (Daze → Boredom → ...).
+- **Feedback loop**: Task outcomes inject `Satisfaction` / `Frustration` / `Disappointment` signals into the Idle System's arousal tracker, affecting future idle behavior.
 
 ---
 

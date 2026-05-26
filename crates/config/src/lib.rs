@@ -5,6 +5,7 @@
 
 
 use idle::IdlePersonality;
+use work::{WorkConfig, WorkPersonality};
 use kernel::event::{Event, EventType};
 use kernel::{AmanResult, Error};
 use serde::{Deserialize, Serialize};
@@ -389,6 +390,8 @@ pub struct AgentConfig {
     pub security: SecurityConfig,
     #[serde(default)]
     pub idle: IdleConfig,
+    #[serde(default)]
+    pub work: WorkConfig,
     #[serde(default)]
     pub compression: CompressionConfig,
 }
@@ -995,6 +998,7 @@ pub struct PartialAgentConfig {
     pub workflow: Option<PartialWorkflowConfig>,
     pub security: Option<PartialSecurityConfig>,
     pub idle: Option<PartialIdleConfig>,
+    pub work: Option<PartialWorkConfig>,
     pub compression: Option<PartialCompressionConfig>,
 }
 
@@ -1054,6 +1058,12 @@ pub struct PartialIdleConfig {
     pub exploration: Option<PartialExplorationConfig>,
     pub incubation: Option<PartialIncubationConfig>,
     pub meditation: Option<PartialMeditationConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartialWorkConfig {
+    pub enabled: Option<bool>,
+    pub personality: Option<WorkPersonality>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -1326,6 +1336,16 @@ impl AgentConfig {
                 if let Some(v) = meditation.min_interval_ticks {
                     self.idle.meditation.min_interval_ticks = v;
                 }
+            }
+        }
+
+        if let Some(work_patch) = patch.work {
+            // enabled=false still sets auto_claim=false (work can be disabled)
+            if let Some(v) = work_patch.enabled {
+                self.work.personality.auto_claim = v;
+            }
+            if let Some(v) = work_patch.personality {
+                self.work.personality = v;
             }
         }
     }

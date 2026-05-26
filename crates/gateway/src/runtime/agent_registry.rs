@@ -4,6 +4,7 @@
 use config::AmanConfig;
 use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 use idle::AgentIdleManager;
+use work::WorkSystem;
 use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus};
 use kernel::event::{Event, EventType};
 use kernel::llm::LlmProvider;
@@ -33,6 +34,7 @@ pub struct AgentRegistry {
     agents: RwLock<HashMap<String, AgentInstance>>,
     local_buses: RwLock<HashMap<String, Arc<dyn EventBus>>>,
     idle_managers: RwLock<HashMap<String, Arc<AgentIdleManager>>>,
+    work_systems: RwLock<HashMap<String, Arc<WorkSystem>>>,
     /// Per-agent session stores (None for disabled agents).
     session_stores: RwLock<HashMap<String, Option<Arc<SessionStore>>>>,
     /// Per-agent memory providers (knowledge graph).
@@ -51,6 +53,7 @@ impl AgentRegistry {
             agents: RwLock::new(HashMap::new()),
             local_buses: RwLock::new(HashMap::new()),
             idle_managers: RwLock::new(HashMap::new()),
+            work_systems: RwLock::new(HashMap::new()),
             session_stores: RwLock::new(HashMap::new()),
             memory_providers: RwLock::new(HashMap::new()),
             llm_providers: RwLock::new(HashMap::new()),
@@ -152,13 +155,24 @@ impl AgentRegistry {
             if idle_enabled && entry.enabled {
                 let idle_manager = Arc::new(AgentIdleManager::new(
                     agent_id.clone(),
-                    local_bus,
+                    Arc::clone(&local_bus) as Arc<dyn EventBus>,
                     Some(Arc::clone(&self.bus) as Arc<dyn EventBus>),
                     idle_personality.clone(),
                     arousal_initial,
                     arousal_half_life,
                 ));
                 self.set_idle_manager(agent_id, idle_manager).await;
+            }
+
+            // Create per-agent work system if the agent is enabled.
+            if entry.enabled {
+                let work_system = Arc::new(WorkSystem::new(
+                    agent_id.clone(),
+                    config.runtime.work.personality.clone(),
+                    local_bus,
+                    None, // board client: wired when kanban/team plugin is loaded
+                ));
+                self.set_work_system(agent_id, work_system).await;
             }
         }
 
@@ -268,6 +282,35 @@ impl AgentRegistry {
             }
             self.remove_idle_manager(agent_id).await;
             tracing::info!(agent = %agent_id, "idle manager shut down after reload");
+        }
+
+        // Create or destroy work system based on enabled state.
+        let work_enabled = entry.enabled;
+        let has_work = {
+            let systems = self.work_systems.read().await;
+            systems.contains_key(agent_id)
+        };
+
+        if work_enabled && !has_work {
+            let local_bus = self
+                .get_local_bus(agent_id)
+                .await
+                .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+            let work_system = Arc::new(WorkSystem::new(
+                agent_id.to_string(),
+                config.runtime.work.personality.clone(),
+                local_bus,
+                None, // board client: wired when kanban/team plugin is loaded
+            ));
+            self.set_work_system(agent_id, work_system).await;
+            tracing::info!(agent = %agent_id, "work system created after reload");
+        } else if !work_enabled && has_work {
+            // Agent was disabled — shut down the work system.
+            if let Some(ws) = self.get_work_system(agent_id).await {
+                ws.shutdown().await;
+            }
+            self.remove_work_system(agent_id).await;
+            tracing::info!(agent = %agent_id, "work system shut down after reload");
         }
 
         let _ = self
@@ -424,12 +467,23 @@ impl AgentRegistry {
             let _ = manager.shutdown().await;
         }
 
+        // Shut down all per-agent work systems
+        let work_systems: Vec<Arc<WorkSystem>> = {
+            let systems = self.work_systems.read().await;
+            systems.values().cloned().collect()
+        };
+        for ws in &work_systems {
+            ws.shutdown().await;
+        }
+
         let mut agents = self.agents.write().await;
         agents.clear();
         let mut buses = self.local_buses.write().await;
         buses.clear();
         let mut managers = self.idle_managers.write().await;
         managers.clear();
+        let mut systems = self.work_systems.write().await;
+        systems.clear();
         let mut stores = self.session_stores.write().await;
         stores.clear();
         let mut memories = self.memory_providers.write().await;
@@ -474,6 +528,24 @@ impl AgentRegistry {
     pub async fn get_idle_coordination(&self, agent_id: &str) -> Option<Arc<idle::IdleCoordination>> {
         let managers = self.idle_managers.read().await;
         managers.get(agent_id).map(|m| Arc::clone(m.coordination()))
+    }
+
+    /// 设置 Agent 的 WorkSystem。
+    pub async fn set_work_system(&self, agent_id: &str, system: Arc<WorkSystem>) {
+        let mut systems = self.work_systems.write().await;
+        systems.insert(agent_id.to_owned(), system);
+    }
+
+    /// 获取 Agent 的 WorkSystem。
+    pub async fn get_work_system(&self, agent_id: &str) -> Option<Arc<WorkSystem>> {
+        let systems = self.work_systems.read().await;
+        systems.get(agent_id).cloned()
+    }
+
+    /// 移除 Agent 的 WorkSystem。
+    pub async fn remove_work_system(&self, agent_id: &str) {
+        let mut systems = self.work_systems.write().await;
+        systems.remove(agent_id);
     }
 
     // ── Per-agent session store ──────────────────────────────────────

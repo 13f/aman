@@ -1091,6 +1091,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "uuid",
+ "work",
 ]
 
 [[package]]
@@ -2449,6 +2450,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "work",
  "workflow",
 ]
 
@@ -9669,6 +9671,21 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.244.0",
+]
+
+[[package]]
+name = "work"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "event-bus",
+ "kernel",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

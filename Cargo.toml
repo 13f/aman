@@ -36,6 +36,7 @@ members = [
   "crates/plugins/info-hub",
   "crates/gateway",
   "crates/idle",
+  "crates/work",
   "crates/memory",
   "crates/notification",
   "crates/skm-core-patched",
@@ -66,6 +67,7 @@ default-members = [
   "crates/plugins/info-hub",
   "crates/gateway",
   "crates/idle",
+  "crates/work",
   "crates/memory",
   "crates/notification",
 ]

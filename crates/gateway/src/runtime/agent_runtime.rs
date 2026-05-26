@@ -2225,10 +2225,9 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
-                // Phase 4.5: per-agent idle systems are shut down in Phase 2
-                // via agent_registry.clear(), which calls shutdown() on each
-                // AgentIdleManager (cancels incubation threads, cancels idle
-                // workflows, stops idle detection loops).
+                // Phase 4.5: per-agent idle and work systems are shut down in
+                // Phase 2 via agent_registry.clear(), which calls shutdown()
+                // on each AgentIdleManager and WorkSystem.
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {

@@ -116,8 +116,11 @@ AgentRuntimeBuilder::build()
 | `agent:reply_stream_start` / `agent:reply_chunk` / `agent:reply_stream_done` | 流式响应 |
 | `tool:dispatched` / `tool:completed` / `tool:failed` | Tool 执行 |
 | `agent:token_used` | Token 使用统计 |
-| `session:started` / `session:closed` | Session 生命周期 |
-| `message:dispatch` / `message:completed` | Skill 分发 |
+| `work.start_check` / `work.claim_task` / `work.claim_response` | Work System — 任务发现与认领 |
+| `work.execute_step` / `work.step_complete` / `work.step_failed` | Work System — 步骤执行 |
+| `work.review_task` / `work.review_complete` / `work.submit_result` | Work System — 复核与提交 |
+| `work.cycle_done` / `work.delayed_work_tick` / `work.interrupt` | Work System — 周期与中断 |
+| `idle.system` | Idle System — 空闲状态事件 |
 
 ---
 
@@ -138,6 +141,9 @@ AgentRuntimeBuilder::build()
 | LLM 调用 (llm:call_started/ended/error) | Local Bus | 仅该 Agent 可见 |
 | Tool 执行 (tool:dispatched/completed/failed) | Local Bus | 仅该 Agent 可见 |
 | Streaming (agent:reply_stream_*) | Local Bus | 仅该 Agent 可见 |
+| Work System 外部 (kanban.task_board_updated, team.work_tick) | Global → Local | kanban/team 插件发布到 Global，经 Dispatcher 注入目标 Agent 的 Local Bus |
+| Work System 内部 (work.start_check, work.execute_step, work.*) | Local Bus | WorkSystem 自身发布到 Agent 的 Local Bus，仅该 Agent 可见 |
+| Idle System (idle.system) | Local Bus | AgentIdleManager 发布到 Agent 的 Local Bus，仅该 Agent 可见 |
 | 跨 Agent 消息 (agent:message) | Global Bus | Dispatcher 按 to_agent 路由到目标 Agent 的 Local Bus |
 | Session (session:started/closed) | Local Bus | 仅该 Agent 可见 |
 | 系统源事件 (FileCreated, CronTick 等) | Global Bus | 全局可见，Dispatcher 按 agent 的 source subscription 分发 |

@@ -23,6 +23,7 @@ config = { path = "../config", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
 hook = { path = "../hook", version = "0.1.0" }
 idle = { path = "../idle", version = "0.1.0" }
+work = { path = "../work", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
 llm-provider-openai = { path = "../plugins/llm-provider-openai", version = "0.1.0" }
 	memory = { path = "../memory", version = "0.1.0" }

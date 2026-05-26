@@ -3,7 +3,8 @@
 > 目标：将每个 idle 子状态从「只有 description 的空壳」落实为「可逐步执行的步骤」。
 > 基准文档：`idle-design.md`，特别是 §14 Idle State Activity Catalog。
 > **架构更新 (2026-05-24)**：idle skill 系统已移除（idle-system plugin + 7 个 YAML skill 文件 + workflow.rs stubs）。真正有执行逻辑的 idle 状态全部使用 **EventHandler** 模式（SleepRunner / ReflectionRunner / ExplorationRunner），通过 OnceLock 注入依赖，直接在 global event bus 上订阅 Idle 事件。不经过 Skill trait 路径，避免 Plugin/Skill trait 的依赖注入改造。
-> **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生；**Sleep 已实现**（SleepRunner EventHandler，phase 2/3/4/6 完整实现，phase 1/5 stub 待 think() 桥接）。
+> **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生；**Sleep 已实现**（SleepRunner EventHandler，phase 2/3/4/6 完整实现，phase 1/5 stub）。
+> **更新 (2026-05-26)**：**Meditation 和 Incubation 已实现。** MeditationRunner (`crates/gateway/src/runtime/meditation.rs`) — EventHandler，7 phases；IncubationRunner (`crates/gateway/src/runtime/incubation_runner.rs`) — EventHandler + 后台线程，5 phases。TraceStore（JsonlTraceStore）和 think() YantrikDB 桥接也已落地。think() 桥接完成后 Sleep phase 5 consolidation 已可获得真实 ThinkResult。
 
 ---
 
@@ -17,8 +18,8 @@
 | 3 | **Sleep** | EventHandler | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | `crates/gateway/src/runtime/sleep.rs` | ✅ 已实现 |
 | 5 | **Exploration** | EventHandler | 外部信息探索：memory gap → info-hub 搜索 → 存储发现 | `crates/gateway/src/runtime/exploration.rs` | ✅ 已实现 |
 | 7 | **Reflection** | EventHandler | 即时复盘：session→YantrikDB 提取 + 过期记忆检查 | `crates/gateway/src/runtime/reflection.rs` | ✅ 已实现 |
-| 8 | **Incubation** | no-op | 创意孵化 / 跨域联想 | 无（待综合记忆等基础设施） | ❌ 未实现 |
-| 10 | **Meditation** | no-op | 深度内省，提炼经验 → 更新启发式 | 无（待 TraceStore） | ❌ 未实现 |
+| 8 | **Incubation** | EventHandler + 后台线程 | 创意孵化 / 跨域联想：跨域采样 → 联想 → 灵感评分 → 种子演进 | `crates/gateway/src/runtime/incubation_runner.rs` + `crates/idle/src/incubation.rs` | ✅ 已实现 |
+| 10 | **Meditation** | EventHandler | 深度内省，提炼经验 → 更新启发式：TraceStore → KG 内省 → 模式提取 → think → 报告 | `crates/gateway/src/runtime/meditation.rs` | ✅ 已实现 |
 
 ### 实现阶段
 
@@ -31,7 +32,7 @@ Phase 1 (已完成) ── 核心基础设施
 
 Phase 2 (已完成) ── Sleep 完善 + Exploration
     Sleep       phase 1: session 回填 (stub)
-                phase 5: think() consolidation (stub，待 YantrikDB 桥接)
+                phase 5: think() consolidation (stub，YantrikDB 桥接已就绪)
     Exploration ✅ ExplorationRunner EventHandler
                 phase 1: memory gap → 查询生成
                 phase 2: info-hub adapters 外部搜索
@@ -41,9 +42,21 @@ Phase 2 (已完成) ── Sleep 完善 + Exploration
 Phase 3 (中期) ── 引入外部组件后
     Boredom     kanban / deferred task queue
 
-Phase 4 (远期) ── 基础设施齐备后
-    Meditation  TraceStore + 模式提取 + 进化机制
-    Incubation  跨域联想引擎
+Phase 4 (已完成) ── 深度认知
+    Meditation  ✅ MeditationRunner EventHandler
+                phase 1: 前置检查 (min_interval_ticks, cooldown)
+                phase 2: TraceStore 加载经验链
+                phase 3: KG 内省 (entity_profile, get_edges, pending_conflicts)
+                phase 4: 模式提取 (surface_procedural, store_procedural)
+                phase 5: 认知循环 (think, consolidation + conflict scan)
+                phase 6: 冥想报告 (atomic write)
+                phase 7: 收尾 (cooldown, depth reset)
+    Incubation  ✅ IncubationRunner EventHandler + IncubationManager 后台线程
+                phase 1: 跨域记忆采样 (4 query perspectives × 25 limit)
+                phase 2: 跨域联想 (entity 共现 + procedural analogies)
+                phase 3: 灵感评分 (novelty × 0.6 + feasibility × 0.4)
+                phase 4: 种子演进 (what-if 变体)
+                phase 5: 认知循环 (light think, no consolidation)
 ```
 
 ### 职责关系
@@ -122,7 +135,7 @@ pub trait MemoryProvider: Send + Sync {
 - **时间衰减** — 内置 half-life 衰减，自动老化记忆（`stale_memories`, `upcoming_memories`）
 - **会话管理** — 按 session 分组记忆（`session_start`, `session_end`, `session_history`）
 - **程序记忆** — 策略/模式存储与召回（`store_procedural`, `surface_procedural`）
-- **认知循环** — 内置 `think()` 机制（trigger 检测、冲突扫描、consolidation、pattern mining）—— **当前 YantrikdbProvider 暂未桥接，`think()` 返回空结果，待后续设计**
+- **认知循环** — 内置 `think()` 机制（trigger 检测、冲突扫描、consolidation、pattern mining）—— **已桥接**，通过 mpsc channel + `spawn_blocking` 调用 yantrikdb `think()`
 - **双模式 Embedding**：`Remote`（云端 API，零本地下载，默认）或 `Download`（`potion-multilingual-128M`，256-dim，101 语言）
 
 **YantrikDB 内置能力 vs Provider 方法对照：**
@@ -144,7 +157,7 @@ pub trait MemoryProvider: Send + Sync {
 | `store_procedural()` | `embed()` + `record_procedural()` | 先 embedding 再存储 |
 | `surface_procedural()` | `embed()` + `surface_procedural()` | embedding 上下文后召回匹配策略 |
 | `stats()` | `stats()` | 活跃记忆数、图谱节点/边数、冲突数 |
-| `think()` | `think()` (yantrikdb) | **暂未桥接** — yantrikdb 内置完整认知循环，Provider 默认返回空 |
+| `think()` | `think()` (yantrikdb) | **已桥接** — mpsc channel + spawn_blocking 透传 ThinkConfig，返回 ThinkResult |
 
 ### 0.3 think() — 认知处理接口
 
@@ -165,7 +178,7 @@ pub struct ThinkResult {
 }
 ```
 
-> **设计注**：YantrikDB 的 `think()` 内部执行：trigger 过期 → decay/consolidation/conflict/temporal-drift/redundancy/relationship-insight/valence-trend/entity-anomaly 八种 trigger 检测 → 冲突扫描 → consolidation（合并相似记忆）→ pattern mining。当前 `YantrikdbProvider::think()` 使用 trait 默认空实现。桥接方案待后续确定——可能直接透传 `ThinkConfig` 参数到 yantrikdb 的 `think(&self, config: &ThinkConfig)`。
+> **设计注**：YantrikDB 的 `think()` 内部执行：trigger 过期 → decay/consolidation/conflict/temporal-drift/redundancy/relationship-insight/valence-trend/entity-anomaly 八种 trigger 检测 → 冲突扫描 → consolidation（合并相似记忆）→ pattern mining。**桥接已实现**：`YantrikdbProvider::think()` 通过 mpsc channel + `spawn_blocking` 调用 yantrikdb 的 `think()`，将 `ThinkConfig` 透传并返回 `ThinkResult`（triggers_fired, consolidation_count, conflicts_found, patterns_new, patterns_updated, duration_ms）。
 
 ### 0.4 各 idle 状态对 MemoryProvider 的依赖矩阵
 
@@ -342,7 +355,7 @@ step 4: 仍未满足 → no-op（下一次 poll 继续检查）
 
 ## 4. Sleep
 
-> **状态：已实现。** `SleepRunner` 实现在 `crates/gateway/src/runtime/sleep.rs`，作为 EventHandler 订阅全局 Idle 事件（kind="sleep"）。采用与 `ReflectionRunner` 相同的 OnceLock 依赖注入模式。Phase 2 (temporal housekeeping)、Phase 3 (缓存清理)、Phase 4 (索引监控)、Phase 6 (健康报告) 完整实现；Phase 1 (session 回填) 和 Phase 5 (think() consolidation) 为 stub，待后续桥接。
+> **状态：已实现。** `SleepRunner` 实现在 `crates/gateway/src/runtime/sleep.rs`，作为 EventHandler 订阅全局 Idle 事件（kind="sleep"）。采用与 `ReflectionRunner` 相同的 OnceLock 依赖注入模式。Phase 2 (temporal housekeeping)、Phase 3 (缓存清理)、Phase 4 (索引监控)、Phase 6 (健康报告) 完整实现；Phase 1 (session 回填) 为 stub，Phase 5 (think() consolidation) 桥接已就绪。
 >
 > **架构选择**：Sleep 不通过 idle-system plugin skill 执行（skill 仅记录日志），而是由独立的 SleepRunner EventHandler 在全局 event bus 上并行处理。这遵循了 ReflectionRunner 的模式——基础设施性质的 background housekeeping 不经过 Skill trait，避免对 Plugin/Skill trait 的依赖注入改造。
 
@@ -420,11 +433,11 @@ phase 5: 认知 consolidation（替代原去重 phase）
             run_conflict_scan: true,   // 检测矛盾记忆
         }
         result = provider.think(agent_id, &config).await
-        // 当前 YantrikdbProvider::think() 返回空 ThinkResult
-        // 待桥接后，result 将包含:
+        // YantrikdbProvider::think() 已桥接，返回真实 ThinkResult:
         //   - consolidation_count: 合并了多少相似记忆
         //   - conflicts_found: 检测到多少矛盾
         //   - triggers_fired: 触发了多少认知 trigger
+        //   - patterns_new / patterns_updated: 模式发现/更新数
     5.2 记录 think 结果:
         log!("Sleep think: consolidated={}, conflicts={}, triggers={}",
              result.consolidation_count, result.conflicts_found, result.triggers_fired)
@@ -470,14 +483,14 @@ phase 6: 健康报告
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `MemoryProvider.think()` 桥接 | **未实现** | YantrikdbProvider 的 `think()` 当前返回空结果。yantrikdb 内部有完整的 `think()` 实现（八种 trigger + consolidation + conflict scan + pattern mining）。需要后续确定桥接方案——直接透传 ThinkConfig 参数，或将 think 作为独立的后台线程运行 |
+| `MemoryProvider.think()` 桥接 | ✅ **已实现** | YantrikdbProvider 的 `think()` 通过 mpsc channel + `spawn_blocking` 调用 yantrikdb 认知引擎（八种 trigger + consolidation + conflict scan + pattern mining） |
 | CPU 时间追踪 | ✅ **已实现** | `CpuTracker` 实现在 `sleep.rs`，track wall-clock time against `max_cpu_seconds` budget。每个 phase 前后调用 `start_phase()` / `end_phase()`，`budget_remaining()` 在 phase 间检查 |
 | CacheStore（文件系统 TTL） | ✅ **已实现** | Phase 3 通过 `std::fs::read_dir` 递归遍历 `~/.aman/agents/{agent_id}/cache/`，按 mtime + `cache_expiry_days` 删除过期文件 |
 | Health snapshot 存储 | ✅ **已实现** | Phase 6 写 JSON 到 `~/.aman/agents/{agent_id}/health/sleep_{timestamp_ms}.json` |
 
 ### 优先级
 
-**Phase 2** — ✅ 已完成。phase 2/3/4/6 完整实现，不依赖 think 桥接。phase 1 (session 回填) 为 stub——Reflection 处理主路径，回填需 `SessionSummary.is_compressed` 字段 + LLM wiring。phase 5 (consolidation) 为 stub——调用 `think()` 但当前返回空结果，待 YantrikDB 桥接后自动生效。
+**Phase 2** — ✅ 已完成。phase 2/3/4/6 完整实现。phase 1 (session 回填) 为 stub——Reflection 处理主路径，回填需 `SessionSummary.is_compressed` 字段 + LLM wiring。phase 5 (consolidation) — think() YantrikDB 桥接已就绪，Sleep phase 5 调用 `provider.think()` 并获取真实 ThinkResult。
 
 ---
 
@@ -603,11 +616,14 @@ exploration_runner.set_exploration_config(exploration_cfg);
 
 ## 6. Meditation
 
-**路由**: `workflow:idle-meditation`
-**类型**: Workflow（异步，附 cancel_token）
-**可打断**: 是（丢弃当前产出，temp+rename 保证上一个完成的报告安全）
+> **状态：已实现。** `MeditationRunner` 实现在 `crates/gateway/src/runtime/meditation.rs`，作为 EventHandler 订阅全局 Idle 事件（kind="meditation"）。采用与 SleepRunner / ReflectionRunner 相同的 OnceLock 依赖注入模式。通过 AgentRegistry 获取 per-agent 的 MemoryProvider 和 TraceStore。支持 cancel_token 中断（深度内省可被真实事件打断），cooldown 机制防止连续触发。
+
+**路由**: `event_handler:IdleEvent{kind="meditation"}`
+**类型**: EventHandler（异步，附 cancel_token，通过 AgentRegistry 获取）
+**可打断**: 是（idle_cancel_token，丢弃当前产出，temp+rename 保证上一个完成的报告安全）
 **Arousal**: Engaged (×0.0)
-**MemoryProvider 依赖**: `entity_profile()` (内省实体)、`get_edges()` (关系分析)、`surface_procedural()` (策略回顾)、`think()` (认知循环)、`stats()` (健康检查)
+**MemoryProvider 依赖**: `entity_profile()` (内省实体)、`get_edges()` (关系分析)、`surface_procedural()` (策略回顾)、`think()` (认知循环)、`stats()` (健康检查)、`store_procedural()` (策略存储)
+**TraceStore 依赖**: `load_recent()` (加载经验链)
 
 ### 执行步骤
 
@@ -686,10 +702,11 @@ phase 5: 认知循环（替代原启发式更新 + KG 修剪）
             run_conflict_scan: true,     // 检测矛盾启发式
         }
         result = provider.think(agent_id, &config).await
-        // 当前返回空结果，桥接后:
+        // think() 已桥接到 YantrikDB，返回:
         //   - triggers_fired: decay/conflict/relationship_insight 等 trigger 数量
         //   - consolidation_count: 合并了多少经验
         //   - conflicts_found: 检测到多少矛盾
+        //   - patterns_new / patterns_updated: 模式发现/更新数
 
     5.2 记录 think 结果用于报告
 
@@ -725,7 +742,7 @@ phase 7: 收尾
 |---|---|---|
 | 知识图谱修剪 | 手动扫描孤立节点 + 90d/180d 规则 | `entity_profile()` + `get_edges()` 查询，yantrikdb 内部管理图谱生命周期 |
 | 启发式更新 | HeuristicStore CRUD + 冲突检测 | `store_procedural()` / `surface_procedural()` + `think()` conflict scan |
-| 模式提取 | 手动统计聚类 | `surface_procedural()` embedding 匹配 + `think()` pattern mining (待桥接) |
+| 模式提取 | 手动统计聚类 | `surface_procedural()` embedding 匹配 + `think()` pattern mining (已桥接) |
 | KG 冲突检测 | 手动矛盾检测 | yantrikdb 内置 claim_conflicts + entity_conflicts (think 触发) |
 | 内省报告 | MeditationReportWriter | 聚合 `stats()` + `entity_profile()` + `think()` 结果 |
 
@@ -733,15 +750,23 @@ phase 7: 收尾
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| **Trace Store** | **不存在** | Meditation 和 Reflection 的核心依赖。需要记录每条 task 的完整执行路径（决策点、工具调用、错误恢复）。建议放在 `crates/persistence/` 中独立实现 |
-| `MemoryProvider.think()` 桥接 | **未实现** | 同 Sleep phase 5。yantrikdb 有完整 `think()`，Provider 层暂未桥接 |
-| `MeditationReportWriter` | **未实现** | Markdown 报告生成 + atomic write。atomic write 逻辑可复用为一个通用工具函数 |
-| Narrative 报告目录 | **未实现** | `~/.aman/narrative/meditation/` 目录创建 + 权限检查 |
-| `meditation.review_depth` 配置 | **未实现** | 需新增到 IdleConfig。默认值建议：20 |
+| `TraceStore` | ✅ **已实现** | `JsonlTraceStore` 实现在 `crates/persistence/src/trace_store.rs`。MeditationRunner 通过 `AgentRegistry::get_trace_store()` 获取 per-agent 实例 |
+| `MemoryProvider.think()` 桥接 | ✅ **已实现** | `YantrikdbProvider::think()` 通过 mpsc channel + `spawn_blocking` 调用 yantrikdb 认知引擎 |
+| `MeditationReportWriter` | ✅ **已实现** | `MeditationRunner::write_meditation_report()` — Markdown 报告 + atomic write (temp → fsync → rename) + stale temp 清理 |
+| Narrative 报告目录 | ✅ **已实现** | `~/.aman/narrative/meditation/{agent_id}/` — `fs::create_dir_all` 自动创建 |
+| `meditation.review_depth` 配置 | ✅ **已实现** | `MeditationConfig::review_depth`，默认 20，serde default |
+
+### 已知局限
+
+| 局限 | 说明 |
+|------|------|
+| Partial/Cancelled trace 跳过 | `TraceOutcome::Partial` 和 cancelled 的 trace 在模式提取中被跳过（代码注 "skip for now"），中断频繁的 agent 可能遗漏模式 |
+| Entity 提取依赖上游 | entity introspection 的质量取决于 trace 记录时 `trace.entities` 的完整性，无 fallback 提取逻辑 |
+| `check_cancel!` 不一致 | Phase 3 entity introspection 直接检查 `cancel_token.is_cancelled()`，未使用 `check_cancel!` 宏 |
 
 ### 优先级
 
-**Phase 4** — 需要 TraceStore（独立基础设施）+ 模式提取引擎 + 进化机制。MemoryProvider 能力已就绪（entity_profile, get_edges, surface_procedural, stats）。`think()` 桥接后将大幅提升价值（冲突检测 + pattern mining）。
+**Phase 4 (已完成)** — ✅ MeditationRunner 已实现：7 phases 完整实现。TraceStore + think() bridge + MeditationConfig 全部落地。
 
 ---
 
@@ -780,7 +805,7 @@ AgentIdleManager 后台循环
 **触发**: `AgentIdleManager` 在 busy→empty 转换时产生 QueueDrained 事件
 **MemoryProvider 依赖**: `store()` (写入提取摘要)、`relate()` (创建实体关联)、`stale_memories()` (找到未处理项)
 
-### 执行步骤（✅ = 已实现，🔧 = stub，⏳ = 待 TraceStore）
+### 执行步骤（✅ = 已实现，🔧 = stub，⏳ = 待 ChainTaskDetector/ErrorClassifier）
 
 ```
 step 0: ✅ circuit breaker
@@ -788,13 +813,13 @@ step 0: ✅ circuit breaker
         if count >= 10: full skip
         (AgentIdleManager 层面: count >= 20 → 不产生 QueueDrained)
 
-step 1: ⏳ chain_tasks (待 TraceStore)
+step 1: ⏳ chain_tasks (TraceStore 已就绪，待 ChainTaskDetector)
         ...
 
-step 2: ⏳ immediate_errors (待 TraceStore)
+step 2: ⏳ immediate_errors (TraceStore 已就绪，待 ErrorClassifier)
         ...
 
-step 3: ⏳ lessons_learned (待 TraceStore)
+step 3: ⏳ lessons_learned (TraceStore 已就绪，待实现)
         ...
 
 step 4: ✅ session_extract ★ (主提取路径)
@@ -827,26 +852,28 @@ step 5: ✅ session_review (count == 0 时)
 | 组件 | 状态 | 说明 |
 |------|------|------|
 | `ReflectionRunner` | ✅ **已实现** | `crates/gateway/src/runtime/reflection.rs` — 订阅 QueueDrained，session_extract + session_review |
-| `TraceStore` | **未实现** | 同 Meditation。Reflection 和 Meditation 共享同一套 trace 存储。chain_tasks / immediate_errors / lessons_learned 依赖此组件 |
+| `TraceStore` | ✅ **已实现** | `JsonlTraceStore` (`crates/persistence/src/trace_store.rs`)。Reflection 和 Meditation 共享同一套 trace 存储。chain_tasks / immediate_errors / lessons_learned 待实现 |
 | `ChainTaskDetector` | **未实现** | 分析 task 完成状态 → 检测连锁任务。需要 task 类型分类器 + 隐式依赖知识库 |
 | `ErrorClassifier` | **未实现** | 错误四分类（Recovered/Unrecovered/Warning/Silent） |
 | `SessionExtractor` (step 4) | ✅ **已实现** | JSONL 加载 + LLM 调用 + structured JSON 解析 + YantrikDB store/relate。每次 QD 处理一个 session |
 
 ### 优先级
 
-**Phase 1** — `session_extract`（step 4）已实现：QueueDrained 触发 → SessionStore 加载 JSONL → LLM 提取 → YantrikDB。`chain_tasks` / `immediate_errors` / `lessons_learned` 待 TraceStore 后实现。
+**Phase 1** — `session_extract`（step 4）已实现：QueueDrained 触发 → SessionStore 加载 JSONL → LLM 提取 → YantrikDB。`chain_tasks` / `immediate_errors` / `lessons_learned` 待 ChainTaskDetector + ErrorClassifier 实现。
 
 ---
 
 ## 8. Incubation
 
-**路由**: `pipeline:idle-incubation` + 独立后台线程
-**类型**: Pipeline 触发 → 启动后台线程 → Pipeline 立即返回
-**可打断**: 否（纯后台，仅 shutdown 时取消）
-**Arousal**: Engaged (×0.1)
-**MemoryProvider 依赖**: `recall()` (随机跨域采样)、`search_entities()` (跨域实体发现)、`relate()` (创建跨域链接)、`surface_procedural()` (策略联想)、`think()` (认知循环)
+> **状态：已实现。** `IncubationRunner` 实现在 `crates/gateway/src/runtime/incubation_runner.rs`，作为 EventHandler 订阅全局 Idle 事件（kind="incubation"）。EventHandler filter 通过后 spawn 后台任务（via `IncubationManager`）并立即返回。`IncubationManager` 实现在 `crates/idle/src/incubation.rs`，强制 max_concurrent=1，auto-clear on completion/panic。后台任务执行 5 个 phase 的跨域创意合成。
+>
+> **架构选择**：IncubationRunner EventHandler 在 filter 通过后 spawn 后台任务并立即返回（<1ms），遵循 idle-patch.md 原设计 "Pipeline 触发 → 启动后台线程 → Pipeline 立即返回"。后台任务不因真实事件中断（纯后台），仅 Agent shutdown 时通过 `IncubationManager::shutdown_all()` 取消。
 
-> **注意**：idle-design.md §13 Open Questions 明确说 Incubation 的灵感机制在 idle-design 的 Phase 1 跳过。本文的 Phase 1 指 Daze/Waiting/Reflection。Incubation 实现排在 Phase 4（远期），以下为完整设计规格供远期参考。
+**路由**: `event_handler:IdleEvent{kind="incubation"}` → spawn 后台任务
+**类型**: EventHandler（filter + spawn，<1ms 返回） + 独立后台线程（via IncubationManager）
+**可打断**: 否（纯后台，仅 shutdown 时取消。chat mode 下跳过）
+**Arousal**: Engaged (×0.1)
+**MemoryProvider 依赖**: `recall()` (随机跨域采样)、`search_entities()` (跨域实体发现)、`relate()` (创建跨域链接)、`surface_procedural()` (策略联想)、`think()` (认知循环)、`store()` (写入灵感)
 
 ### 执行步骤
 
@@ -944,22 +971,33 @@ pipeline 部分 (<1ms):
 | 灵感存储 | InspirationStore | `store()` + `relate()` 创建 KG 跨域边 |
 | 种子演进 | 手动变体生成 | `store()` 追加 seed + parent_seed_id 关联 |
 | 认知循环 | 无 | `think()` trigger detection (relationship_insight, entity_anomaly) |
-| 跨域推论 | manual analogy | yantrikdb 内置 `generate_candidate_inferences()` (待 think 桥接) |
+| 跨域推论 | manual analogy | `surface_procedural()` 类比检索 + `think()` relationship_insight trigger (已桥接) |
 
 ### 缺失组件
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `IncubationManager` | **已设计，未实现** | `crates/idle/src/incubation.rs` 已设计结构体。需要实现 spawn/shutdown 逻辑 |
-| `FeasibilityEstimator` | **未实现** | 假设可行性评估。初期可用简单规则（有已知跨域成功案例 → 高，有已知障碍 → 低） |
-| Cross-domain pair generation | **未实现** | 从 recall 结果中按 domain 字段分组后生成跨域对。MemoryRecord.domain 已提供分组依据 |
-| `MemoryProvider.think()` 桥接 | **未实现** | 同 Sleep/Meditation。Incubation 的 think 用于 relationship_insight trigger |
-| `incubation.incubation_threshold` 配置 | **未实现** | 需新增到 IdleConfig。默认值建议：0.7 |
-| `incubation.high_value_threshold` 配置 | **未实现** | 同上。默认值建议：0.85 |
+| `IncubationManager` | ✅ **已实现** | `crates/idle/src/incubation.rs` — max_concurrent=1，auto-clear on completion/panic，7 个单元测试 |
+| `IncubationRunner` | ✅ **已实现** | `crates/gateway/src/runtime/incubation_runner.rs` — EventHandler + 5 phase 后台任务 |
+| `FeasibilityEstimator` | ✅ **已实现** | `estimate_feasibility()` — 基于 shared_entity_count + analogy_count 的启发式评分 |
+| Cross-domain pair generation | ✅ **已实现** | `by_domain` HashMap 分组 → 跨 domain pair 遍历，4 种 query perspective |
+| `MemoryProvider.think()` 桥接 | ✅ **已实现** | Phase 5 通过 mpsc channel 调用 YantrikDB think()（light pass: no consolidation, no conflict scan） |
+| `incubation.incubation_threshold` 配置 | ✅ **已实现** | `IncubationConfig::incubation_threshold`，默认 0.7 |
+| `incubation.high_value_threshold` 配置 | ✅ **已实现** | `IncubationConfig::high_value_threshold`，默认 0.85 |
+
+### 已知局限
+
+| 局限 | 说明 |
+|------|------|
+| `extract_entities()` 过于简单 | 基于 whitespace split + `search_entities()`，无 NLP/LLM 提取。长于 3 字符的常见词（"this", "that", "with"）也会被查询 |
+| Phase 4 种子演进评分硬编码 | 变体的 novelty/feasibility 固定为 0.8/0.5，不做实际计算 |
+| `Hypothesis.pair_index` 未使用 | `#[allow(dead_code)]` — 字段计算后从未读取 |
+| 单 domain 时静默降级 | `by_domain.len() < 2` 时跳过 Phase 2-4，仅执行 think pass，无 warning 日志 |
+| 无 cancel token | 后台任务一旦 spawn 就运行至完成，不响应真实事件（符合设计意图：纯后台） |
 
 ### 优先级
 
-**Phase 4** — 依赖综合记忆 + kanban + 新闻 + idea + 论文等全部数据源就绪后才能实施。MemoryProvider 能力已就绪（`recall`, `search_entities`, `relate`, `surface_procedural`）。
+**Phase 4 (已完成)** — ✅ IncubationRunner + IncubationManager 已实现：5 phases 完整实现。MemoryProvider 能力全部桥接。
 
 ---
 
@@ -982,7 +1020,7 @@ pipeline 部分 (<1ms):
  6c      ReflectionRunner (session_extract)✅ 已实现              reflection.rs            Reflection
  ── Phase 2 (短期 — 桥接 + Sleep) ──
  7       SessionExtractor (Reflection)    ✅ 已实现               ReflectionRunner         Reflection
- 8       think() 桥接 (yantrikdb→Provider) 未实现                YantrikdbProvider        Sleep, Meditation, Incubation
+ 8       think() 桥接 (yantrikdb→Provider) ✅ 已实现              YantrikdbProvider        Sleep, Meditation, Incubation
  9       CacheStore (文件系统 TTL)         ✅ 已实现              std::fs (sleep.rs)       Sleep (phase 3)
 10       Health snapshot 存储              ✅ 已实现              JSON 文件 (per-agent)     Sleep (phase 6)
 11       CPU time tracker                 ✅ 已实现              CpuTracker (sleep.rs)     Sleep
@@ -997,18 +1035,18 @@ pipeline 部分 (<1ms):
 19       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration (后续)
 20       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration (后续)
 21       SkillAuditReport                 未实现                  文件系统                   Exploration (后续)
- ── Phase 4 (远期 — 深度认知) ──
-22       TraceStore                       未实现                  无 (crates/persistence/) Reflection, Meditation
+ ── Phase 4 (已完成 — 深度认知) ──
+22       TraceStore                       ✅ 已实现               JsonlTraceStore (persistence) Reflection, Meditation
 23       ErrorClassifier                  未实现                  TraceStore               Reflection
 24       ChainTaskDetector                未实现                  TraceStore + 规则表       Reflection
 25       SilentAnomalyDetector            未实现                  TraceStore + tool schema  Reflection
 26       DomainClassifier                 未实现                  关键词规则表               Reflection, Incubation
 27       PendingAsyncCalls 注册表         未实现                  无                       Waiting (完整模式)
 28       HeuristicStore                   部分 (procedural mem)  MemoryProvider            Meditation
-29       MeditationReportWriter           未实现                  TraceStore + atomic write Meditation
-30       Narrative 报告目录               未实现                  文件系统                   Meditation
-31       IncubationManager                已设计，未实现          MemoryProvider + embedding Incubation
-32       FeasibilityEstimator             未实现                  DomainClassifier          Incubation
+29       MeditationReportWriter           ✅ 已实现              MeditationRunner::write_meditation_report() Meditation
+30       Narrative 报告目录               ✅ 已实现              ~/.aman/narrative/meditation/{agent_id}/ Meditation
+31       IncubationManager                ✅ 已实现              idle crate (7 tests)     Incubation
+32       FeasibilityEstimator             ✅ 已实现              estimate_feasibility() (启发式) Incubation
 33       IdleConfig 各子项配置            部分实现                 config crate             Daze, Boredom, Waiting, Sleep, Exploration, Meditation, Incubation
 ```
 
@@ -1019,14 +1057,14 @@ pipeline 部分 (<1ms):
 | ShortTermStore (SQLite 7d TTL) | yantrikdb 内置 half-life 衰减 |
 | LongTermStore (SQLite + embedding) | yantrikdb HNSW 向量索引 |
 | SessionStore + SessionCompressor | `session_start/end` + `session_history` |
-| DedupEngine (cosine similarity) | `think()` consolidation (待桥接) |
+| DedupEngine (cosine similarity) | `think()` consolidation (已桥接) |
 | QualityScorer (五维评分) | 内置 importance/valence/certainty 元数据 |
 | CacheStore (文件系统 TTL) | 仍需要（文件系统操作，非 memory 范畴） |
 | MemoryHealthReporter | `stats()` 方法 |
 | KnowledgeGraph (手动实现) | yantrikdb 内置 knowledge graph |
 | EmbeddingEngine (外部 API) | `RemoteEmbedder` — 云端 embedding API，或 `potion-multilingual-128M` 本地下载 (dim=256, 101 语言) |
-| PatternExtractor (统计聚类) | `think()` pattern mining (待桥接) |
-| Conflict detection (手动) | `think()` conflict scan (待桥接) |
+| PatternExtractor (统计聚类) | `think()` pattern mining (已桥接) |
+| Conflict detection (手动) | `think()` conflict scan (已桥接) |
 
 ---
 
@@ -1051,10 +1089,10 @@ pipeline 部分 (<1ms):
 - [x] QueueDrained 生产：AgentIdleManager busy→empty 转换 + 断路器
 - [x] Reflection step 4 (`session_extract`): JSONL → LLM 提取 → YantrikDB.store() + relate()
 - [x] Reflection step 5 (`session_review`): 过期记忆检查
-- [ ] Reflection step 1-3 (`chain_tasks`/`immediate_errors`/`lessons_learned`): 待 TraceStore
+- [ ] Reflection step 1-3 (`chain_tasks`/`immediate_errors`/`lessons_learned`): TraceStore 已就绪，待实现 ChainTaskDetector + ErrorClassifier
 
 **Milestone 2: Sleep + Exploration**（已完成）
-- [ ] 确定 YantrikdbProvider::think() 桥接方案
+- [x] 确定 YantrikdbProvider::think() 桥接方案 → **已桥接**
 - [x] Sleep phase 1-6 完整实现 (phase 1/5 stub)
 - [x] SleepRunner 架构：EventHandler + OnceLock + CancellationToken + CpuTracker
 - [x] Health snapshot 存储 (phase 6)
@@ -1075,11 +1113,10 @@ pipeline 部分 (<1ms):
 - [ ] Boredom 完整模式
 - [ ] Waiting 条件等待 — 需先确认是否有条件驱动入口的必要；若长期无此类场景，可考虑移除此状态
 
-**Milestone 5: Meditation + Incubation（远期）**
-- [ ] `TraceStore`（`crates/persistence/`）
-- [ ] `ErrorClassifier`, `ChainTaskDetector`
-- [ ] `MeditationReportWriter`
-- [ ] Meditation 全流程（trace 加载 + KG 内省 + 模式提取 + think + 报告）
-- [ ] `IncubationManager` + `FeasibilityEstimator`
-- [ ] Incubation 跨域采样 + 联想 + 灵感生成
-- 时间待定，依赖基础设施齐备
+**Milestone 5: Meditation + Incubation**（✅ 已完成）
+- [x] `TraceStore` — `JsonlTraceStore` (`crates/persistence/src/trace_store.rs`)
+- [ ] `ErrorClassifier`, `ChainTaskDetector` (Reflection step 1-3，待实现)
+- [x] `MeditationReportWriter` — `MeditationRunner::write_meditation_report()` + atomic write
+- [x] Meditation 全流程 — 7 phases: 前置检查 + TraceStore + KG 内省 + 模式提取 + think + 报告 + 收尾
+- [x] `IncubationManager` + `FeasibilityEstimator` — `crates/idle/src/incubation.rs` (7 tests)
+- [x] Incubation 跨域采样 + 联想 + 灵感生成 — 5 phases (via IncubationRunner + 后台任务)

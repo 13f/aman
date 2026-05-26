@@ -668,6 +668,12 @@ impl AgentRegistry {
         ss
     }
 
+    /// Atomically update the system state for an agent.
+    pub async fn set_system_state(&self, agent_id: &str, state: AgentSystemState) {
+        let ss = self.get_or_create_system_state(agent_id).await;
+        *ss.lock().expect("system_state lock") = state;
+    }
+
     // ── Idle loop management ─────────────────────────────────────────
 
     /// 启动所有 Agent 的 idle 后台循环（在 Phase 4 调用）。

@@ -139,14 +139,14 @@
   });
 
   const SS_LABEL: Record<string, string> = {
-    idle: "Idle", working: "Working", studying: "Studying", daily_life: "Daily Life",
+    idle: "Idle", working: "Working", chatting: "Chatting", studying: "Studying", daily_life: "Daily Life",
   };
 
   let label = $derived.by(() => {
     const ss = SS_LABEL[systemState] ?? systemState;
     if (mode === "idle") return ss + (idleSnap ? "/" + idleSnap.kind : "");
     if (mode === "reflection") return ss + "/Reflection";
-    return ss === "Working" ? "Working" : ss + "/Processing";
+    return (ss === "Working" || ss === "Chatting") ? ss : ss + "/Processing";
   });
 
   let info1 = $derived.by(() => {

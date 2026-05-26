@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use kernel::agent::AgentStatus;
+use kernel::agent::AgentSystemState;
 use kernel::context::{BaseContext, ToolContext};
 use kernel::event::{Event, EventType};
 use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
@@ -2530,7 +2531,7 @@ async fn chat_session_create(
     let agent_id = payload
         .get("agent_id")
         .and_then(|v| v.as_str())
-        .unwrap_or("default");
+        .unwrap_or("aman");
 
     match runtime.session_manager().create_session(operator, agent_id, session_type).await {
         Ok(id) => (StatusCode::OK, Json(json!({ "id": id }))).into_response(),
@@ -2902,6 +2903,14 @@ async fn chat_session_send(
         }
         None => (text.clone(), None),
     };
+
+    // Mark agent as actively chatting as soon as user sends a message.
+    let chat_agent_id = instance
+        .data
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("aman");
+    runtime.agent_registry().set_system_state(chat_agent_id, AgentSystemState::Chatting).await;
 
     // Build system prompt: soul identity + skill index.
     // Cached per session via SessionManager so LLM prompt caching stays effective.

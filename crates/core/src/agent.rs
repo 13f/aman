@@ -61,6 +61,8 @@ pub enum AgentSystemState {
     Idle,
     /// work 系统掌控中
     Working,
+    /// chat 对话中
+    Chatting,
     // /// study 系统掌控中
     // Studying,
     // /// daily-life 系统掌控中

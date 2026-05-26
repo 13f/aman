@@ -288,6 +288,7 @@ impl SessionManager {
             .as_millis();
         let data = json!({
             "session_type": session_type,
+            "agent_id": agent_id,
             "version": 0,
             "created_at": now_ms,
             "last_active_at": now_ms,

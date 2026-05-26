@@ -193,6 +193,7 @@
   const SYSTEM_STATE_LABEL: Record<string, string> = {
     idle: "Idle",
     working: "Working",
+    chatting: "Chatting",
     studying: "Studying",
     daily_life: "Daily Life",
   };
@@ -200,6 +201,7 @@
   const SYSTEM_STATE_CLASS: Record<string, string> = {
     idle: "ss-idle",
     working: "ss-working",
+    chatting: "ss-chatting",
     studying: "ss-studying",
     daily_life: "ss-dailylife",
   };
@@ -1033,6 +1035,11 @@
   .ss-dailylife {
     background: rgba(251, 191, 36, 0.15);
     color: #fbbf24;
+  }
+  .ss-chatting {
+    background: rgba(34, 211, 238, 0.15);
+    color: #22d3ee;
+    animation: workingPulse 2s ease-in-out infinite;
   }
 
   @keyframes workingPulse {

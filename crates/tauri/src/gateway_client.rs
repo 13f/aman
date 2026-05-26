@@ -578,7 +578,7 @@ impl GatewayClient {
 
     pub async fn chat_session_create(&self, agent_key: Option<&str>, session_type: Option<&str>) -> Result<String, String> {
         let body = serde_json::json!({
-            "agent_id": agent_key.unwrap_or("default"),
+            "agent_id": agent_key.unwrap_or("aman"),
             "session_type": session_type.unwrap_or("persistent"),
         });
         let resp = self
@@ -604,7 +604,7 @@ impl GatewayClient {
         session_type: Option<&str>,
     ) -> Result<String, String> {
         let body = serde_json::json!({
-            "agent_id": agent_key.unwrap_or("default"),
+            "agent_id": agent_key.unwrap_or("aman"),
             "session_type": session_type.unwrap_or("branch"),
             "parent_session_id": parent_session_id,
             "branch_message_id": branch_message_id,

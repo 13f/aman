@@ -35,6 +35,13 @@
       "command": "kimi",
       "description": "Moonshot AI's Kimi coding agent. Best for Chinese-language coding tasks, bilingual (CN/EN) codebases, and tasks requiring strong Mandarin language understanding alongside code generation.",
       "tool_args": ["{prompt}"]
+    },
+    {
+      "key": "grok",
+      "display_name": "Grok",
+      "command": "grok",
+      "description": "xAI's Grok coding agent. Best for real-time reasoning, X platform integration, and tasks that benefit from Grok's distinct problem-solving approach.",
+      "tool_args": ["{prompt}"]
     }
   ]
 }

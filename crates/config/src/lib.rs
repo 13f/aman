@@ -389,6 +389,68 @@ pub struct AgentConfig {
     pub security: SecurityConfig,
     #[serde(default)]
     pub idle: IdleConfig,
+    #[serde(default)]
+    pub compression: CompressionConfig,
+}
+
+/// Context compression configuration.
+///
+/// Controls how conversation history is compacted when approaching the
+/// model's context window limit. Follows a Hermes-style pipeline:
+/// Stage 1 tool output pruning (zero API cost) → Stage 2 three-segment
+/// HEAD/TAIL/MIDDLE truncation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompressionConfig {
+    /// Trigger threshold (0.0–1.0). Compression fires when prompt tokens
+    /// reach this fraction of the model's context window.
+    /// Default: 0.80 (80%).
+    pub threshold: f64,
+    /// Fraction of threshold tokens reserved for the TAIL segment that
+    /// is always protected from truncation.
+    /// Default: 0.20 (20% of threshold tokens).
+    pub tail_budget_ratio: f64,
+    /// Number of messages at the start of history always protected (HEAD).
+    /// Default: 2.
+    pub protect_head_messages: usize,
+    /// Minimum messages guaranteed in TAIL.
+    /// Default: 3.
+    pub min_tail_messages: usize,
+    /// When true, pauses compression if 2 consecutive runs save < min_savings_pct.
+    /// Default: true.
+    pub anti_thrashing: bool,
+    /// Minimum savings percentage for a compression to count as effective.
+    /// Default: 10.0 (%).
+    pub min_savings_pct: f64,
+    /// Maximum characters for tool_call arguments JSON before truncation.
+    /// Default: 500.
+    pub max_tool_args_chars: usize,
+    /// When true, replace duplicate tool outputs with a placeholder.
+    /// Default: true.
+    pub dedup_tool_outputs: bool,
+    /// When true, replace old tool results (in MIDDLE) with one-line summaries.
+    /// Default: true.
+    pub summarize_tool_results: bool,
+    /// When true, truncate oversized tool_call arguments.
+    /// Default: true.
+    pub truncate_tool_args: bool,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            threshold: 0.80,
+            tail_budget_ratio: 0.20,
+            protect_head_messages: 2,
+            min_tail_messages: 3,
+            anti_thrashing: true,
+            min_savings_pct: 10.0,
+            max_tool_args_chars: 500,
+            dedup_tool_outputs: true,
+            summarize_tool_results: true,
+            truncate_tool_args: true,
+        }
+    }
 }
 
 // ── Multi-Agent config (P1) ──────────────────────────────────────
@@ -933,6 +995,7 @@ pub struct PartialAgentConfig {
     pub workflow: Option<PartialWorkflowConfig>,
     pub security: Option<PartialSecurityConfig>,
     pub idle: Option<PartialIdleConfig>,
+    pub compression: Option<PartialCompressionConfig>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -991,6 +1054,20 @@ pub struct PartialIdleConfig {
     pub exploration: Option<PartialExplorationConfig>,
     pub incubation: Option<PartialIncubationConfig>,
     pub meditation: Option<PartialMeditationConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartialCompressionConfig {
+    pub threshold: Option<f64>,
+    pub tail_budget_ratio: Option<f64>,
+    pub protect_head_messages: Option<usize>,
+    pub min_tail_messages: Option<usize>,
+    pub anti_thrashing: Option<bool>,
+    pub min_savings_pct: Option<f64>,
+    pub max_tool_args_chars: Option<usize>,
+    pub dedup_tool_outputs: Option<bool>,
+    pub summarize_tool_results: Option<bool>,
+    pub truncate_tool_args: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

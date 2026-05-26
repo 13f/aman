@@ -483,6 +483,8 @@ pub struct AgentHarness {
     budget_policy: Box<dyn TokenBudgetPolicy>,
     /// Pluggable agent routing strategy.
     agent_router: Box<dyn AgentRouter>,
+    /// Compression configuration.
+    compression_config: crate::runtime::history_compressor::CompressorConfig,
 }
 
 impl AgentHarness {
@@ -495,6 +497,7 @@ impl AgentHarness {
         session_history: Box<dyn SessionHistoryStore>,
         budget_policy: Box<dyn TokenBudgetPolicy>,
         agent_router: Box<dyn AgentRouter>,
+        compression_config: crate::runtime::history_compressor::CompressorConfig,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
@@ -512,6 +515,7 @@ impl AgentHarness {
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
             budget_policy,
             agent_router,
+            compression_config,
         }
     }
 
@@ -705,6 +709,10 @@ impl AgentHarness {
         history.push(ChatMessage::user(user_text));
 
         // 5. Initialize model-aware token budget (M4)
+        // Estimate history tokens immediately so the budget reflects the full
+        // session history before the first react_loop iteration. Without this,
+        // needs_trim() returns false on the first pass regardless of history
+        // size, and the full context is sent to the LLM unfiltered.
         // Values must come from config, never silently defaulted.
         let mut token_budget = match (instance.descriptor.max_context_tokens, instance.descriptor.max_output_tokens) {
             (Some(ctx), Some(out)) => {
@@ -759,6 +767,13 @@ impl AgentHarness {
             .collect::<Vec<_>>()
             .join("\n");
         token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
+        // Estimate history tokens from loaded session history so the budget
+        // check in react_loop triggers compression before the first LLM call.
+        let initial_history_tokens: usize = history
+            .iter()
+            .map(|m| crate::runtime::token_budget::TokenBudget::estimate_tokens(&m.content))
+            .sum();
+        token_budget.set_history_tokens(initial_history_tokens);
 
         // 6. Retrieve memories relevant to user input (M5 T5.1)
         let memory_results = match self.registry.get_memory_provider(agent_id).await {
@@ -927,10 +942,25 @@ impl AgentHarness {
                     return Ok(ReactOutcome::Interrupted(String::new()));
                 }
 
+            // Estimate history tokens for budget tracking.
+            // Must happen BEFORE the trim check so new tool results from the
+            // previous turn are accounted for.
+            let history_tokens: usize = ctx
+                .history
+                .iter()
+                .map(|m| crate::runtime::token_budget::TokenBudget::estimate_tokens(&m.content))
+                .sum();
+            token_budget.set_history_tokens(history_tokens);
+
             // M4: Check token budget and compress history if needed
             if token_budget.needs_trim() {
-                let result = compressor.compress(&mut ctx.history, token_budget, 3);
-                if result.messages_removed > 0 {
+                let config = self.compression_config.clone();
+                let result = compressor.compress_with_boundaries(
+                    &mut ctx.history,
+                    token_budget,
+                    &config,
+                );
+                if result.messages_removed > 0 || result.tokens_saved > 0 {
                     let _ = self
                         .publish_to_agent_bus(
                             &ctx.agent_id,
@@ -944,6 +974,39 @@ impl AgentHarness {
                                     "messages_removed": result.messages_removed,
                                     "tokens_saved": result.tokens_saved,
                                     "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
+                                    "compression_paused": token_budget.compression_paused,
+                                }),
+                            ),
+                        )
+                        .await;
+                }
+            }
+
+            // Preflight: quick token check before sending to LLM.
+            // Catches any remaining oversized requests before they hit the API.
+            if token_budget.preflight_check(&ctx.history) {
+                let config = self.compression_config.clone();
+                let result = compressor.compress_with_boundaries(
+                    &mut ctx.history,
+                    token_budget,
+                    &config,
+                );
+                if result.messages_removed > 0 || result.tokens_saved > 0 {
+                    let _ = self
+                        .publish_to_agent_bus(
+                            &ctx.agent_id,
+                            Event::new(
+                                "agent:harness",
+                                EventType::Custom("agent:history_compressed".to_owned()),
+                                json!({
+                                    "agent_id": ctx.agent_id,
+                                    "session_id": ctx.session_id,
+                                    "turn": ctx.turn,
+                                    "messages_removed": result.messages_removed,
+                                    "tokens_saved": result.tokens_saved,
+                                    "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
+                                    "preflight": true,
+                                    "compression_paused": token_budget.compression_paused,
                                 }),
                             ),
                         )
@@ -953,14 +1016,6 @@ impl AgentHarness {
 
             let turn_messages = ctx.history.clone();
 
-            // Estimate history tokens for budget tracking
-            let history_tokens: usize = ctx
-                .history
-                .iter()
-                .map(|m| crate::runtime::token_budget::TokenBudget::estimate_tokens(&m.content))
-                .sum();
-            token_budget.set_history_tokens(history_tokens);
-
             // Execute one ReAct turn (T2.4: with streaming support)
             self.spawn_stream_forwarder(ctx);
 
@@ -969,10 +1024,11 @@ impl AgentHarness {
                     // Clear streaming callback so the consumer task drops
                     ctx.stream_cb = None;
                     ctx.history.push(ChatMessage::assistant(content.clone()));
-                    // Record token usage
+                    // Track output tokens only — the next iteration re-estimates
+                    // history from scratch, so we don't double-count prompt tokens.
                     let completion_tokens =
                         crate::runtime::token_budget::TokenBudget::estimate_tokens(content);
-                    token_budget.record_usage(history_tokens, completion_tokens);
+                    token_budget.record_usage(0, completion_tokens);
                     return Ok(ReactOutcome::Finished(content.clone()));
                 }
                 Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {

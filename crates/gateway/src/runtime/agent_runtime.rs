@@ -516,6 +516,15 @@ impl AgentRuntimeBuilder {
         }
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
+        let compressor_config = super::history_compressor::CompressorConfig {
+            tail_budget_ratio: config.compression.tail_budget_ratio,
+            protect_head_messages: config.compression.protect_head_messages,
+            min_tail_messages: config.compression.min_tail_messages,
+            max_tool_args_chars: config.compression.max_tool_args_chars,
+            dedup_tool_outputs: config.compression.dedup_tool_outputs,
+            summarize_tool_results: config.compression.summarize_tool_results,
+            truncate_tool_args: config.compression.truncate_tool_args,
+        };
         let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
@@ -524,6 +533,7 @@ impl AgentRuntimeBuilder {
             Box::new(InMemorySessionHistory::new()),
             Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
+            compressor_config,
         ));
 
         // ── Session manager ──────────────────────────────────────────

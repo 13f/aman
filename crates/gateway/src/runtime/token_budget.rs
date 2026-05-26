@@ -20,7 +20,8 @@ fn known_context_windows() -> HashMap<&'static str, usize> {
     m.insert("claude-sonnet-4-6", 200_000);
     m.insert("claude-haiku-4-5", 200_000);
     m.insert("deepseek-chat", 128_000);
-    m.insert("deepseek-v4", 128_000);
+    m.insert("deepseek-v4", 1_048_576);
+    m.insert("deepseek-v4-pro", 1_048_576);
     m.insert("deepseek-r1", 128_000);
     m.insert("gemini-pro", 32_768);
     m.insert("gemini-ultra", 32_768);
@@ -62,7 +63,9 @@ pub fn context_window_for_model(model: &str) -> usize {
 /// Token budget tracker with model-aware context window management.
 ///
 /// Tracks per-component token usage (system, tool schemas, history, outputs)
-/// and determines when history needs to be compressed.
+/// and determines when history needs to be compressed. Uses a threshold-based
+/// trigger (e.g. 80% of context window) with anti-thrashing to prevent
+/// repeated ineffective compressions.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct TokenBudget {
@@ -81,6 +84,19 @@ pub struct TokenBudget {
     pub current_tool_schema_tokens: usize,
     /// Current token count of system prompt (SOUL).
     pub current_system_tokens: usize,
+
+    // ── Threshold & anti-thrashing ──
+    /// Compression threshold (0.0–1.0). Triggers when prompt tokens reach
+    /// this fraction of the context window. Default: 0.80.
+    pub compression_threshold: f64,
+    /// Number of consecutive ineffective compressions (below min_savings_pct).
+    pub ineffective_compression_count: u8,
+    /// When true, compression is paused due to anti-thrashing.
+    pub compression_paused: bool,
+    /// Tokens saved by the most recent compression run.
+    pub last_compression_savings: usize,
+    /// Total prompt tokens recorded before the current compression started.
+    pub pre_compression_total: usize,
 }
 
 impl TokenBudget {
@@ -99,6 +115,11 @@ impl TokenBudget {
             current_history_tokens: 0,
             current_tool_schema_tokens: 0,
             current_system_tokens: 0,
+            compression_threshold: 0.80,
+            ineffective_compression_count: 0,
+            compression_paused: false,
+            last_compression_savings: 0,
+            pre_compression_total: 0,
         }
     }
 
@@ -114,16 +135,22 @@ impl TokenBudget {
             current_history_tokens: 0,
             current_tool_schema_tokens: 0,
             current_system_tokens: 0,
+            compression_threshold: 0.80,
+            ineffective_compression_count: 0,
+            compression_paused: false,
+            last_compression_savings: 0,
+            pre_compression_total: 0,
         }
     }
 
     /// Estimate the number of tokens in a text string.
-    /// Uses the approximation: text.len() / 4 + 1 (chars -> tokens ratio for English).
+    /// Uses a conservative chars-to-tokens ratio to avoid underestimation
+    /// (code, JSON, and CJK text have higher token density than English prose).
     pub fn estimate_tokens(text: &str) -> usize {
         if text.is_empty() {
             return 0;
         }
-        (text.len() / 4).max(1)
+        (text.len() / 3).max(1)
     }
 
     /// Current total prompt usage (system + tool schemas + history).
@@ -133,24 +160,75 @@ impl TokenBudget {
             + self.current_history_tokens
     }
 
-    /// Check whether history needs trimming.
+    /// Check whether history needs compression.
+    ///
+    /// Returns true when total prompt tokens reach the compression threshold
+    /// (default 80% of context window). When anti-thrashing has paused
+    /// compression, only the hard limit (>95%) will trigger.
     pub fn needs_trim(&self) -> bool {
-        self.total_prompt_tokens() > self.max_prompt_tokens
+        if self.compression_paused {
+            // Safety valve: force compress if above 95% regardless of pause
+            let hard_limit = (self.context_window as f64 * 0.95) as usize;
+            return self.total_prompt_tokens() > hard_limit;
+        }
+        let threshold_tokens = (self.context_window as f64 * self.compression_threshold) as usize;
+        self.total_prompt_tokens() >= threshold_tokens
     }
 
-    /// Number of tokens that need to be trimmed to get below the threshold.
-    /// Uses an 80% target threshold for a safety margin.
+    /// Number of tokens to remove to get below the trigger threshold.
     pub fn trim_amount(&self) -> usize {
-        let target = (self.max_prompt_tokens as f64 * 0.8) as usize;
+        let target = (self.context_window as f64 * self.compression_threshold) as usize;
         self.total_prompt_tokens().saturating_sub(target)
     }
 
-    /// Record token usage from an LLM call.
+    /// Quick estimate whether the given messages would exceed the threshold.
+    /// Call before sending to the LLM API to avoid 400 errors.
+    pub fn preflight_check(&self, messages: &[kernel::react::ChatMessage]) -> bool {
+        let estimated_tokens: usize = messages
+            .iter()
+            .map(|m| Self::estimate_tokens(&m.content))
+            .sum();
+        let extra = self.current_system_tokens + self.current_tool_schema_tokens;
+        let threshold = (self.context_window as f64 * self.compression_threshold) as usize;
+        estimated_tokens.saturating_add(extra) >= threshold
+    }
+
+    /// Record token usage from an LLM call (for tracking, not trim logic).
     pub fn record_usage(&mut self, prompt_tokens: usize, completion_tokens: usize) {
         self.current_history_tokens = self
             .current_history_tokens
             .saturating_add(prompt_tokens)
             .saturating_add(completion_tokens);
+    }
+
+    /// Snapshot current total before a compression run (for savings calc).
+    pub fn start_compression(&mut self) {
+        self.pre_compression_total = self.total_prompt_tokens();
+    }
+
+    /// Record the result of a compression run. Updates anti-thrashing state:
+    /// pauses compression after 2 consecutive ineffective runs.
+    pub fn record_compression(&mut self, tokens_saved: usize) {
+        if self.pre_compression_total > 0 {
+            let savings_pct = (tokens_saved as f64 / self.pre_compression_total as f64) * 100.0;
+            if savings_pct < 10.0 {
+                self.ineffective_compression_count += 1;
+            } else {
+                self.ineffective_compression_count = 0;
+            }
+            if self.ineffective_compression_count >= 2 {
+                self.compression_paused = true;
+            }
+        }
+        self.last_compression_savings = tokens_saved;
+    }
+
+    /// Reset all anti-thrashing state (e.g. on user-initiated /compress).
+    pub fn reset_compression_state(&mut self) {
+        self.ineffective_compression_count = 0;
+        self.compression_paused = false;
+        self.last_compression_savings = 0;
+        self.pre_compression_total = 0;
     }
 
     /// Set the system prompt token count.
@@ -185,21 +263,19 @@ mod tests {
     fn test_known_model_context_window() {
         assert_eq!(context_window_for_model("gpt-4o"), 128_000);
         assert_eq!(context_window_for_model("claude-opus-4-7"), 200_000);
-        assert_eq!(context_window_for_model("deepseek-v4"), 128_000);
+        assert_eq!(context_window_for_model("deepseek-v4"), 1_048_576);
+        assert_eq!(context_window_for_model("deepseek-v4-pro"), 1_048_576);
     }
 
     #[test]
     fn test_fallback_context_window() {
-        // Unknown model gets conservative default
         let w = context_window_for_model("unknown-model-x7");
         assert_eq!(w, 32_768);
     }
 
     #[test]
     fn test_prefix_matching() {
-        // gpt- prefix fallback
         assert_eq!(context_window_for_model("gpt-5"), 8_192);
-        // claude- prefix fallback
         assert_eq!(context_window_for_model("claude-4-sonnet"), 100_000);
     }
 
@@ -210,6 +286,7 @@ mod tests {
         assert_eq!(budget.context_window, 128_000);
         assert_eq!(budget.max_output_tokens, 0);
         assert_eq!(budget.max_prompt_tokens, 128_000);
+        assert_eq!(budget.compression_threshold, 0.80);
     }
 
     #[test]
@@ -217,19 +294,81 @@ mod tests {
         assert_eq!(TokenBudget::estimate_tokens("hello"), 1);
         assert_eq!(TokenBudget::estimate_tokens(""), 0);
         let long = "a".repeat(100);
-        assert_eq!(TokenBudget::estimate_tokens(&long), 25);
+        assert_eq!(TokenBudget::estimate_tokens(&long), 33);
     }
 
     #[test]
-    fn test_needs_trim() {
-        let mut budget = TokenBudget::with_window("test", 1000, 200);
-        budget.current_history_tokens = 700;
-        // 700 < 800 (1000-200) → no trim
+    fn test_needs_trim_threshold() {
+        let mut budget = TokenBudget::with_window("test", 1000, 0);
+        // Threshold = 1000 * 0.80 = 800. At 799, no trim.
+        budget.current_history_tokens = 799;
         assert!(!budget.needs_trim());
-
-        budget.current_history_tokens = 900;
-        // 900 > 800 → needs trim
+        // At 800, trim triggers.
+        budget.current_history_tokens = 800;
         assert!(budget.needs_trim());
+    }
+
+    #[test]
+    fn test_needs_trim_below_threshold() {
+        let budget = TokenBudget::with_window("test", 1000, 0);
+        // No history → far below 80%
+        assert!(!budget.needs_trim());
+    }
+
+    #[test]
+    fn test_hard_limit_bypasses_pause() {
+        let mut budget = TokenBudget::with_window("test", 1000, 0);
+        budget.compression_paused = true;
+        // At 95% + 1 (= 951), hard limit triggers even when paused
+        budget.current_history_tokens = 951;
+        assert!(budget.needs_trim());
+        // Below hard limit, paused stays false
+        budget.current_history_tokens = 940;
+        assert!(!budget.needs_trim());
+    }
+
+    #[test]
+    fn test_preflight_check() {
+        let mut budget = TokenBudget::with_window("test", 1000, 0);
+        budget.set_system_tokens(100);
+        // 100 (system) + estimated tokens from messages
+        let messages = vec![
+            kernel::react::ChatMessage::user("a".repeat(3000)), // ~1000 est tokens
+        ];
+        // 100 system + 1000 history = 1100 >= 800 → true
+        assert!(budget.preflight_check(&messages));
+        let empty: Vec<kernel::react::ChatMessage> = vec![];
+        assert!(!budget.preflight_check(&empty));
+    }
+
+    #[test]
+    fn test_anti_thrashing() {
+        let mut budget = TokenBudget::with_window("test", 1000, 0);
+        budget.current_history_tokens = 1000;
+        budget.start_compression();
+        // Save only 5% → ineffective
+        budget.record_compression(50);
+        assert_eq!(budget.ineffective_compression_count, 1);
+        assert!(!budget.compression_paused);
+
+        budget.start_compression();
+        // Save only 3% again → second ineffective, pause triggers
+        budget.record_compression(30);
+        assert_eq!(budget.ineffective_compression_count, 2);
+        assert!(budget.compression_paused);
+    }
+
+    #[test]
+    fn test_anti_thrashing_reset() {
+        let mut budget = TokenBudget::with_window("test", 1000, 0);
+        budget.current_history_tokens = 1000;
+        budget.start_compression();
+        budget.record_compression(50); // ineffective #1
+        assert_eq!(budget.ineffective_compression_count, 1);
+
+        budget.start_compression();
+        budget.record_compression(200); // good save → resets counter
+        assert_eq!(budget.ineffective_compression_count, 0);
     }
 
     #[test]

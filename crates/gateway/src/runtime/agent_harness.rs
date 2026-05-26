@@ -961,6 +961,8 @@ impl AgentHarness {
                     &config,
                 );
                 if result.messages_removed > 0 || result.tokens_saved > 0 {
+                    let remaining = ctx.history.len();
+                    let usage_pct = token_budget.usage_percent();
                     let _ = self
                         .publish_to_agent_bus(
                             &ctx.agent_id,
@@ -973,6 +975,8 @@ impl AgentHarness {
                                     "turn": ctx.turn,
                                     "messages_removed": result.messages_removed,
                                     "tokens_saved": result.tokens_saved,
+                                    "remaining_messages": remaining,
+                                    "token_usage_pct": usage_pct,
                                     "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
                                     "compression_paused": token_budget.compression_paused,
                                 }),
@@ -992,6 +996,8 @@ impl AgentHarness {
                     &config,
                 );
                 if result.messages_removed > 0 || result.tokens_saved > 0 {
+                    let remaining = ctx.history.len();
+                    let usage_pct = token_budget.usage_percent();
                     let _ = self
                         .publish_to_agent_bus(
                             &ctx.agent_id,
@@ -1004,6 +1010,8 @@ impl AgentHarness {
                                     "turn": ctx.turn,
                                     "messages_removed": result.messages_removed,
                                     "tokens_saved": result.tokens_saved,
+                                    "remaining_messages": remaining,
+                                    "token_usage_pct": usage_pct,
                                     "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
                                     "preflight": true,
                                     "compression_paused": token_budget.compression_paused,

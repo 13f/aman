@@ -778,12 +778,12 @@
   }
 
   function handleAgentHistoryCompressed(data: any) {
-    // Map AgentHarness field names to what handleHistoryTrimmed expects
     handleHistoryTrimmed({
       session_id: data.session_id,
-      trimmed_count: data.messages_removed ?? 0,
-      remaining_count: data.remaining_count ?? "N/A",
-      strategy: data.strategy ?? "unknown",
+      removed: data.messages_removed ?? 0,
+      remaining: data.remaining_messages ?? 0,
+      tokens_saved: data.tokens_saved ?? 0,
+      usage_pct: data.token_usage_pct ?? 0,
     });
   }
 
@@ -930,18 +930,38 @@
     }
   }
 
+  function formatTokens(n: number): string {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(n);
+  }
+
   function handleHistoryTrimmed(data: any) {
-    // data = { session_id, trimmed_count, remaining_count, message_ids_archived?, strategy }
     const sid: string = data.session_id;
     if (sid !== activeSessionId) return;
-    const archived: string[] = data.message_ids_archived ?? [];
-    if (archived.length > 0) {
-      archivedMsgIds = new Set([...archivedMsgIds, ...archived]);
+
+    // Support both new (AgentHarness) and legacy event shapes
+    const removed = data.removed ?? data.trimmed_count ?? 0;
+    const remaining = data.remaining ?? data.remaining_count ?? 0;
+    const savedTokens = data.tokens_saved ?? 0;
+    const usagePct = data.usage_pct ?? data.token_usage_pct ?? 0;
+
+    let content: string;
+    if (removed > 0) {
+      const saved = formatTokens(savedTokens);
+      content = `Compressed history — removed ${removed} messages, saved ~${saved} tokens. ${remaining} messages remaining`;
+      if (usagePct > 0) {
+        content += ` (${usagePct.toFixed(0)}% of context window).`;
+      } else {
+        content += ".";
+      }
+    } else {
+      content = "Compression check passed — context within limits.";
     }
+
     messages = [...messages, {
       id: crypto.randomUUID(),
       type: "system_event" as MessageType,
-      content: `Context trimmed: ${data.trimmed_count} older messages archived (${data.remaining_count} remaining). Strategy: ${data.strategy ?? "token_based"}.`,
+      content,
       timestamp: new Date().toISOString(),
       sessionId: sid,
       status: "completed" as MessageStatus,

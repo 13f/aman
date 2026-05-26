@@ -160,6 +160,14 @@ impl TokenBudget {
             + self.current_history_tokens
     }
 
+    /// Token usage as a percentage of the context window (0–100).
+    pub fn usage_percent(&self) -> f64 {
+        if self.context_window == 0 {
+            return 0.0;
+        }
+        (self.total_prompt_tokens() as f64 / self.context_window as f64) * 100.0
+    }
+
     /// Check whether history needs compression.
     ///
     /// Returns true when total prompt tokens reach the compression threshold

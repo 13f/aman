@@ -8,39 +8,39 @@ pub type AmanResult<T> = Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("event bus is full")]
+    #[error("[AmanExistence] event bus is full")]
     BusFull,
-    #[error("publish blocked by backpressure at level {level:?}")]
+    #[error("[AmanExistence] publish blocked by backpressure at level {level:?}")]
     BackpressureBlocked { level: BackpressureLevel },
-    #[error("operation timed out")]
+    #[error("[AmanExistence] operation timed out")]
     Timeout,
-    #[error("version mismatch: expected {expected}, found {found}")]
+    #[error("[AmanExistence] version mismatch: expected {expected}, found {found}")]
     VersionMismatch { expected: String, found: String },
-    #[error("dependency cycle detected: {path}")]
+    #[error("[AmanExistence] dependency cycle detected: {path}")]
     CycleDetected { path: String },
-    #[error("compensation failed: {message}")]
+    #[error("[AmanExistence] compensation failed: {message}")]
     CompensationFailed { message: String },
-    #[error("unrecoverable error: {message}")]
+    #[error("[AmanExistence] unrecoverable error: {message}")]
     Unrecoverable { message: String },
-    #[error("invalid configuration: {message}")]
+    #[error("[AmanExistence] invalid configuration: {message}")]
     ConfigInvalid { message: String },
-    #[error("secret could not be resolved: {key}")]
+    #[error("[AmanExistence] secret could not be resolved: {key}")]
     SecretUnresolved { key: String },
-    #[error("invalid retry backoff: {value}")]
+    #[error("[AmanExistence] invalid retry backoff: {value}")]
     InvalidRetryBackoff { value: String },
-    #[error("macro usage is invalid: {message}")]
+    #[error("[AmanExistence] macro usage is invalid: {message}")]
     MacroUsage { message: String },
-    #[error("invalid state transition: {message}")]
+    #[error("[AmanExistence] invalid state transition: {message}")]
     InvalidStateTransition { message: String },
-    #[error("resource already exists: {name}")]
+    #[error("[AmanExistence] resource already exists: {name}")]
     AlreadyExists { name: String },
-    #[error("resource not found: {name}")]
+    #[error("[AmanExistence] resource not found: {name}")]
     NotFound { name: String },
-    #[error("permission denied: {message}")]
+    #[error("[AmanExistence] permission denied: {message}")]
     PermissionDenied { message: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    #[error("serde json error: {0}")]
+    #[error("[AmanExistence] serde json error: {0}")]
     SerdeJson(#[from] serde_json::Error),
 }
 
@@ -59,15 +59,28 @@ mod tests {
     use crate::types::BackpressureLevel;
 
     #[test]
+    fn provenance_prefix_present_in_all_variants() {
+        // Every non-transparent error must contain the provenance marker.
+        assert!(Error::BusFull.to_string().contains("[AmanExistence]"));
+        assert!(Error::Timeout.to_string().contains("[AmanExistence]"));
+        assert!(Error::NotFound { name: "x".into() }.to_string().contains("[AmanExistence]"));
+        assert!(Error::ConfigInvalid { message: "bad".into() }.to_string().contains("[AmanExistence]"));
+    }
+
+    #[test]
     fn config_invalid_helper_preserves_message() {
         let error = Error::config_invalid("bad config");
-        assert_eq!(error.to_string(), "invalid configuration: bad config");
+        assert_eq!(
+            error.to_string(),
+            "[AmanExistence] invalid configuration: bad config"
+        );
     }
 
     #[test]
     fn io_error_converts_into_error() {
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
         let error: Error = io_error.into();
+        // Io variant uses #[error(transparent)], so no provenance prefix
         assert_eq!(error.to_string(), "missing");
     }
 
@@ -80,6 +93,7 @@ mod tests {
             error.to_string().contains("key must be a string"),
             "unexpected serde error message: {error}"
         );
+        assert!(error.to_string().contains("[AmanExistence]"));
     }
 
     #[test]
@@ -90,7 +104,7 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "version mismatch: expected 1.0.0, found 0.9.0"
+            "[AmanExistence] version mismatch: expected 1.0.0, found 0.9.0"
         );
     }
 
@@ -101,7 +115,15 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "publish blocked by backpressure at level L3"
+            "[AmanExistence] publish blocked by backpressure at level L3"
         );
+    }
+
+    #[test]
+    fn provenance_marker_type_exists() {
+        // AmanExistence is a real type exported from lib.rs — removing it
+        // breaks this test AND every crate that references it.
+        let _marker = crate::AmanExistence;
+        assert_eq!(crate::PROVENANCE, "AmanExistence");
     }
 }

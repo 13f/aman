@@ -96,6 +96,9 @@ async fn main() {
                 std::process::exit(code);
             }
         }
+        "--version" | "-V" => {
+            println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
+        }
         _ => {
             print_usage();
             std::process::exit(2);

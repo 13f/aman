@@ -7,6 +7,14 @@
 /// Canonical project name used throughout the framework.
 pub const PKG_NAME: &str = "aman";
 
+/// Provenance marker type — referenced across crates to anchor the project
+/// identity in the type system. Removing this type breaks compilation in
+/// every crate that imports it.
+pub struct AmanExistence;
+
+/// Canonical provenance string embedded in error messages and diagnostics.
+pub const PROVENANCE: &str = "AmanExistence";
+
 pub mod agent;
 pub mod budget;
 pub mod context;

@@ -23,9 +23,9 @@ use plugin::PluginManifest;
 use serde::{Deserialize, Serialize};
 use rand::Rng;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -1683,7 +1683,7 @@ async fn metrics(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     let sessions = runtime.workflow_engine().list_instances();
     let active_sessions = sessions
         .iter()
-        .filter(|inst| inst.workflow_name == "chat-session" && inst.current_state != "CLOSED")
+        .filter(|inst| inst.workflow_name == "message-session" && inst.current_state != "CLOSED")
         .count();
     runtime.metrics().update_from(
         bus,
@@ -2135,7 +2135,7 @@ async fn explore_start(
         "last_active_at": now_ms,
     });
 
-    let instance = match runtime.workflow_engine().create_instance("chat-session", data) {
+    let instance = match runtime.workflow_engine().create_instance("message-session", data) {
         Ok(i) => i,
         Err(e) => {
             return (
@@ -2525,72 +2525,10 @@ async fn chat_session_create(
         .get("session_type")
         .and_then(|v| v.as_str())
         .unwrap_or("persistent");
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let data = json!({
-        "session_type": session_type,
-        "version": 0,
-        "created_at": now_ms,
-        "last_active_at": now_ms,
-    });
-    match runtime.workflow_engine().create_instance("chat-session", data) {
-        Ok(instance) => {
-            runtime.audit().record(
-                operator,
-                "chat.session.create",
-                format!("session:{}", instance.id),
-                "ok",
-                "",
-            );
-            let session_started_event = Event::new(
-                "session:control",
-                EventType::Custom("session:started".to_owned()),
-                json!({
-                    "session_id": instance.id,
-                    "session_type": session_type,
-                    "operator": operator,
-                }),
-            );
-            // Publish to global bus so global hooks see it.
-            let _ = runtime.publish_event(session_started_event.clone()).await;
-            // Also publish to each agent's local bus so agent hooks can receive it.
-            for agent in runtime.agent_registry().list().await {
-                let _ = runtime.publish_event_to_agent(
-                    &agent.descriptor.agent_id,
-                    session_started_event.clone(),
-                ).await;
-            }
-            // Persist to local DB immediately so the session appears in
-            // the frontend's session list even after a gateway restart.
-            let created_at = instance.data.get("created_at")
-                .and_then(|v| v.as_i64()).unwrap_or(0);
-            let last_active_at = instance.data.get("last_active_at")
-                .and_then(|v| v.as_i64()).unwrap_or(0);
-            if let Some(store) = runtime.session_store() {
-                let _ = store.upsert(&session_store::SessionRecord {
-                    id: instance.id.clone(),
-                    state: instance.current_state.clone(),
-                    message_count: 0,
-                    created_at,
-                    last_active_at,
-                    session_type: session_type.to_owned(),
-                    reflected_at: None,
-                });
-            }
-            (StatusCode::OK, Json(json!({ "id": instance.id }))).into_response()
-        }
-        Err(error) => {
-            runtime.audit().record(
-                operator,
-                "chat.session.create",
-                "session",
-                "error",
-                error.to_string(),
-            );
-            error_response(error)
-        }
+
+    match runtime.session_manager().create_session(operator, session_type).await {
+        Ok(id) => (StatusCode::OK, Json(json!({ "id": id }))).into_response(),
+        Err(error) => error_response(error),
     }
 }
 
@@ -2609,7 +2547,7 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     let instances = runtime.workflow_engine().list_instances();
     let mut items: Vec<ChatSessionItem> = instances
         .into_iter()
-        .filter(|inst| inst.workflow_name == "chat-session")
+        .filter(|inst| inst.workflow_name == "message-session")
         .map(|inst| {
             let session_type = inst
                 .data
@@ -2934,33 +2872,21 @@ async fn chat_session_send(
     };
 
     // Build system prompt: soul identity + skill index.
-    // Skills listed in the system prompt (name + description only) act as a
-    // lightweight index. The LLM discovers and loads the full skill content
-    // by calling `read_skill` — matching Hermes' progressive-disclosure model.
-    //
-    // Cache per session: same as Hermes' _cached_system_prompt / _restore_or_build_system_prompt.
-    // Built once on the first turn of a session; subsequent turns reuse it verbatim
-    // so prompt caching (Anthropic prefix cache, OpenAI prompt caching) stays effective.
-    static SYSTEM_PROMPT_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
+    // Cached per session via SessionManager so LLM prompt caching stays effective.
     let combined_prompt = {
-        let mut cache = SYSTEM_PROMPT_CACHE.lock().unwrap();
-        if let Some(cached) = cache.get(&id) {
-            cached.clone()
-        } else {
+        let llm_skills = runtime.llm_skills();
+        runtime.session_manager().get_system_prompt(&id, || {
             let soul_prompt = runtime
                 .soul_runtime()
                 .map(|sr| sr.current_soul().to_system_prompt())
                 .unwrap_or_default();
-            let skills_prompt = skill::formatting::build_skills_system_prompt(&runtime.llm_skills());
-            let prompt = if skills_prompt.is_empty() {
+            let skills_prompt = skill::formatting::build_skills_system_prompt(&llm_skills);
+            if skills_prompt.is_empty() {
                 soul_prompt
             } else {
                 format!("{}{}", soul_prompt, skills_prompt)
-            };
-            cache.insert(id.clone(), prompt.clone());
-            prompt
-        }
+            }
+        })
     };
 
     // Build event payload with optional skill context.
@@ -2977,7 +2903,7 @@ async fn chat_session_send(
 
     // Publish the message event.
     let event = Event::new(
-        "chat:platform",
+        "gateway:http",
         EventType::MessageReceived,
         payload,
     );

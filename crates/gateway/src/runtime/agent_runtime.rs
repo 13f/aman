@@ -1,7 +1,6 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-use chat_source::ChatPlatformSource;
 use config::{AgentConfig, BusMode};
 use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
 use kernel::context::ToolContext;
@@ -47,10 +46,7 @@ use super::{AuditLogger, EventStore};
 use super::SoulRuntime;
 use soul::SoulHotReloadManager;
 use tracing::instrument;
-use workflow::{
-    ErrorRecovery, StateDef, StateTimeout, Transition, TransitionFrom, TransitionTo, WorkflowDef,
-    WorkflowEngine,
-};
+use workflow::WorkflowEngine;
 
 // ---------------------------------------------------------------------------
 // Capability registry types
@@ -250,164 +246,8 @@ impl AgentRuntimeBuilder {
         let workflows_dir = self.runtime_dir.join("workflows");
         let _ = std::fs::create_dir_all(&workflows_dir);
         let workflow_engine = Arc::new(WorkflowEngine::new());
-        // --- chat-session workflow definition ---
-        let _ = workflow_engine.register_workflow(WorkflowDef {
-            name: "chat-session".to_owned(),
-            states: vec![
-                StateDef { name: "ACTIVE".to_owned() },
-                StateDef { name: "PROCESSING".to_owned() },
-                StateDef { name: "IDLE".to_owned() },
-                StateDef { name: "ERROR".to_owned() },
-                StateDef { name: "RETRYING".to_owned() },
-                StateDef { name: "TIMEOUT".to_owned() },
-                StateDef { name: "CLOSED".to_owned() },
-            ],
-            initial_state: "ACTIVE".to_owned(),
-            final_states: vec!["CLOSED".to_owned()],
-            error_state: "ERROR".to_owned(),
-            transitions: vec![
-                Transition {
-                    from: TransitionFrom::Specific("ACTIVE".to_owned()),
-                    event: "MESSAGE_RECEIVED".to_owned(),
-                    to: TransitionTo::Specific("PROCESSING".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("ACTIVE".to_owned()),
-                    event: "SESSION_TIMEOUT".to_owned(),
-                    to: TransitionTo::Specific("TIMEOUT".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
-                    event: "LLM_REPLY_READY".to_owned(),
-                    to: TransitionTo::Specific("IDLE".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
-                    event: "LLM_STREAM_DONE".to_owned(),
-                    to: TransitionTo::Specific("IDLE".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
-                    event: "LLM_ERROR".to_owned(),
-                    to: TransitionTo::Specific("ERROR".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
-                    event: "STREAM_TIMEOUT".to_owned(),
-                    to: TransitionTo::Specific("TIMEOUT".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("PROCESSING".to_owned()),
-                    event: "SESSION_CLOSE_CMD".to_owned(),
-                    to: TransitionTo::Specific("CLOSED".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("IDLE".to_owned()),
-                    event: "MESSAGE_RECEIVED".to_owned(),
-                    to: TransitionTo::Specific("PROCESSING".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("IDLE".to_owned()),
-                    event: "SESSION_TIMEOUT".to_owned(),
-                    to: TransitionTo::Specific("TIMEOUT".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("IDLE".to_owned()),
-                    event: "SESSION_END".to_owned(),
-                    to: TransitionTo::Specific("CLOSED".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("ERROR".to_owned()),
-                    event: "RETRY_CMD".to_owned(),
-                    to: TransitionTo::Specific("RETRYING".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("ERROR".to_owned()),
-                    event: "SESSION_END".to_owned(),
-                    to: TransitionTo::Specific("IDLE".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("ERROR".to_owned()),
-                    event: "ABANDON_TIMEOUT".to_owned(),
-                    to: TransitionTo::Specific("CLOSED".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("RETRYING".to_owned()),
-                    event: "RETRY_STARTED".to_owned(),
-                    to: TransitionTo::Specific("PROCESSING".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("RETRYING".to_owned()),
-                    event: "RETRY_FAILED".to_owned(),
-                    to: TransitionTo::Specific("ERROR".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("TIMEOUT".to_owned()),
-                    event: "SESSION_END".to_owned(),
-                    to: TransitionTo::Specific("CLOSED".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-                Transition {
-                    from: TransitionFrom::Specific("TIMEOUT".to_owned()),
-                    event: "MESSAGE_RECEIVED".to_owned(),
-                    to: TransitionTo::Specific("IDLE".to_owned()),
-                    guard: None, on_fail: None, action: None, on_action_failure: None,
-                },
-            ],
-            state_timeouts: vec![
-                StateTimeout {
-                    state: "ACTIVE".to_owned(),
-                    timeout_ms: 300_000,
-                    on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
-                    on_timeout_alert: None,
-                },
-                StateTimeout {
-                    state: "PROCESSING".to_owned(),
-                    timeout_ms: 120_000,
-                    on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
-                    on_timeout_alert: None,
-                },
-                StateTimeout {
-                    state: "IDLE".to_owned(),
-                    timeout_ms: 600_000,
-                    on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
-                    on_timeout_alert: None,
-                },
-                StateTimeout {
-                    state: "ERROR".to_owned(),
-                    timeout_ms: 120_000,
-                    on_timeout: TransitionTo::Specific("CLOSED".to_owned()),
-                    on_timeout_alert: None,
-                },
-                StateTimeout {
-                    state: "TIMEOUT".to_owned(),
-                    timeout_ms: 120_000,
-                    on_timeout: TransitionTo::Specific("CLOSED".to_owned()),
-                    on_timeout_alert: None,
-                },
-            ],
-            error_recovery: ErrorRecovery {
-                auto_retry_count: 0,
-                max_retry_count: 5,
-                on_retry_failure: workflow::RetryFailurePolicy::ManualOnly,
-                retry_backoff: Default::default(),
-            },
-        });
+        super::session::SessionManager::register_workflow(&workflow_engine);
+
         let cron_manager = CronManager::with_runtime_dir(self.runtime_dir.clone());
         let plugin_installer = Arc::new(PluginInstaller::new(self.runtime_dir.join("plugins")));
         let event_store = Arc::new(EventStore::new(2_000, 500));
@@ -574,15 +414,6 @@ impl AgentRuntimeBuilder {
             (None, None)
         };
 
-        // Register the chat-platform source
-        let chat_source = ChatPlatformSource::new_tauri_desktop();
-        let chat_sender = Some(chat_source.sender());
-        let _ = pollster::block_on(sources.register(
-            Box::new(chat_source),
-            source::SourceMode::Push,
-            source::TrustLevel::Untrusted,
-        ));
-
         // ── Notification store ─────────────────────────────────────
         let notifications = Arc::new(notification::NotificationStore::new(500));
 
@@ -694,6 +525,15 @@ impl AgentRuntimeBuilder {
             Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
         ));
+
+        // ── Session manager ──────────────────────────────────────────
+        let session_manager = super::session::SessionManager::new(
+            Arc::clone(&workflow_engine),
+            Arc::clone(&agent_registry),
+            Arc::clone(&agent_harness),
+            Arc::clone(&bus),
+            Arc::clone(&audit),
+        );
 
         // ── Reflection runner (QueueDrained → session_extract) ────────
         let reflection_runner = Arc::new(super::reflection::ReflectionRunner::new());
@@ -1167,13 +1007,13 @@ impl AgentRuntimeBuilder {
             inflight_skills,
             metrics,
             capability_registry: Default::default(),
-            chat_sender,
             llm_skills: StdMutex::new(llm_skills),
             skill_registry,
             cascade_selector,
             notifications,
             agent_registry,
             agent_harness,
+            session_manager,
         }))
     }
 }
@@ -1384,7 +1224,6 @@ pub struct AgentRuntime {
     inflight_skills: Arc<AtomicUsize>,
     metrics: super::metrics::MetricsRegistry,
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
-    chat_sender: Option<tokio::sync::mpsc::UnboundedSender<Event>>,
     /// LLM-instruction skills (SKILL.md frontmatter, Agent Skills standard).
     llm_skills: StdMutex<Vec<skill::SkillInfo>>,
     /// skm-core registry for cascade selection (None if init failed).
@@ -1399,6 +1238,9 @@ pub struct AgentRuntime {
     agent_registry: Arc<super::AgentRegistry>,
     /// Agent harness — orchestrates the ReAct loop for agent message processing.
     agent_harness: Arc<super::agent_harness::AgentHarness>,
+    /// Session manager — orchestrates session lifecycle, OCC, persistence,
+    /// and system prompt caching independently of the chat transport.
+    session_manager: super::session::SessionManager,
 }
 
 impl AgentRuntime {
@@ -1444,54 +1286,15 @@ impl AgentRuntime {
         pollster::block_on(self.agent_registry.first_session_store())
     }
 
-    /// Restore a persisted chat session (searches all per-agent stores).
-    /// Kept backward-compatible for callers without an agent_id.
-    ///
-    /// Returns `None` when the session has no persisted events or no
-    /// session store could find it.
+    /// Restore a persisted session (searches all per-agent stores).
     pub async fn restore_chat_session(&self, session_id: &str) -> Option<()> {
-        // Search all per-agent stores for this session.
-        let store = {
-            let stores = self.agent_registry.all_session_stores().await;
-            let mut found = None;
-            for s in &stores {
-                if s.has_session(session_id) {
-                    found = Some(Arc::clone(s));
-                    break;
-                }
-            }
-            found?
-        };
-        let events = store.load_session_events(session_id);
-        if events.is_empty() {
-            return None;
-        }
+        self.session_manager.restore_session(session_id).await
+    }
 
-        // Rebuild conversation history in the agent harness.
-        self.agent_harness.restore_session_history(session_id, &events);
-
-        // Determine session metadata from the first and last events.
-        let first_ts = events.first().and_then(|e| e["timestamp_ms"].as_i64()).unwrap_or(0);
-        let last_ts = events.last().and_then(|e| e["timestamp_ms"].as_i64()).unwrap_or(0);
-        let msg_count = events.iter().filter(|e| {
-            e["event_type"].as_str().is_some_and(|et| {
-                et == "MessageReceived" || et.contains("reply_ready") || et == "llm_reply_ready"
-            })
-        }).count() as u64;
-
-        let data = serde_json::json!({
-            "session_type": "persistent",
-            "version": events.len() as u64,
-            "message_count": msg_count,
-            "created_at": first_ts,
-            "last_active_at": last_ts,
-        });
-
-        self.workflow_engine
-            .restore_instance(session_id, "chat-session", data)
-            .ok()?;
-
-        Some(())
+    /// Access the session manager.
+    #[must_use]
+    pub fn session_manager(&self) -> &super::session::SessionManager {
+        &self.session_manager
     }
 
     #[must_use]
@@ -1860,12 +1663,6 @@ impl AgentRuntime {
         self.inflight_skills.load(Ordering::Acquire)
     }
 
-    /// Returns a clone of the chat message sender, if available.
-    #[must_use]
-    pub fn chat_sender(&self) -> Option<tokio::sync::mpsc::UnboundedSender<Event>> {
-        self.chat_sender.clone()
-    }
-
     #[must_use]
     pub fn metrics(&self) -> &super::metrics::MetricsRegistry {
         &self.metrics
@@ -1895,12 +1692,6 @@ impl AgentRuntime {
 
     /// Check if a specific capability is available.
     pub async fn has_capability(&self, capability: &str) -> bool {
-        // The chat capability is available whenever a chat-platform source is
-        // configured, even if no plugin explicitly registers it.
-        if capability == "chat"
-            && self.chat_sender.is_some() {
-                return true;
-            }
         self.capability_registry
             .read()
             .await
@@ -1932,18 +1723,15 @@ impl AgentRuntime {
                 .collect();
             new_registry.insert(capability.clone(), entries);
         }
-        // When the chat-platform source is configured, always register the
-        // "chat" capability regardless of plugin declarations.
-        if self.chat_sender.is_some() {
-            new_registry.entry("chat".to_owned()).or_insert_with(|| {
-                vec![CapabilityEntry {
-                    capability: "chat".to_owned(),
-                    plugin: "chat-platform".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    status: CapabilityStatus::Healthy,
-                }]
-            });
-        }
+        // Chat is a built-in capability provided by the gateway.
+        new_registry.entry("chat".to_owned()).or_insert_with(|| {
+            vec![CapabilityEntry {
+                capability: "chat".to_owned(),
+                plugin: "gateway".to_owned(),
+                version: "0.1.0".to_owned(),
+                status: CapabilityStatus::Healthy,
+            }]
+        });
 
         *registry = new_registry;
 

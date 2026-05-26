@@ -911,21 +911,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chat-source"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "kernel",
- "pollster",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2425,7 +2410,6 @@ dependencies = [
  "async-trait",
  "axum",
  "blake3",
- "chat-source",
  "config",
  "event-bus",
  "futures-util",

@@ -784,7 +784,7 @@
 
     // Capability events use different payload structure
     if (eventType === "capability_removed") {
-      // Individual event: { capability: "chat", plugin: "chat-source" }
+      // Individual event: { capability: "chat", plugin: "gateway" }
       const cap: string = data?.capability ?? "";
       if (cap === "chat") {
         chatCapabilityAvailable = false;

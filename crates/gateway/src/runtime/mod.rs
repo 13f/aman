@@ -19,6 +19,7 @@ mod audit;
 mod event_store;
 mod http;
 mod metrics;
+mod session;
 mod session_store;
 mod skill_sync;
 mod plugin_sync;

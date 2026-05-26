@@ -19,7 +19,6 @@ tonic-build = "0.13"
 axum = { version = "0.8.6", features = ["multipart"] }
 async-trait.workspace = true
 blake3.workspace = true
-chat-source = { path = "../plugins/chat-source", version = "0.1.0" }
 config = { path = "../config", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
 hook = { path = "../hook", version = "0.1.0" }

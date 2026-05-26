@@ -12,7 +12,7 @@ use workflow::{
 /// the one registered in `agent_runtime.rs`.
 fn chat_session_workflow() -> WorkflowDef {
     WorkflowDef {
-        name: "chat-session".to_owned(),
+        name: "message-session".to_owned(),
         states: vec![
             StateDef { name: "ACTIVE".to_owned() },
             StateDef { name: "PROCESSING".to_owned() },
@@ -327,7 +327,7 @@ fn closed_rejects_all_events() {
 fn active_to_closed_via_message_and_end() {
     let engine = setup_engine();
     let events_to_test = ["MESSAGE_RECEIVED", "LLM_REPLY_READY", "SESSION_END"];
-    let mut instance = engine.create_instance("chat-session", serde_json::json!({})).unwrap();
+    let mut instance = engine.create_instance("message-session", serde_json::json!({})).unwrap();
     assert_eq!(instance.current_state, "ACTIVE");
 
     for event_name in &events_to_test {
@@ -347,7 +347,7 @@ fn active_to_closed_via_message_and_end() {
 #[test]
 fn illegal_from_active_returns_error() {
     let engine = setup_engine();
-    let instance = engine.create_instance("chat-session", serde_json::json!({})).unwrap();
+    let instance = engine.create_instance("message-session", serde_json::json!({})).unwrap();
     assert_eq!(instance.current_state, "ACTIVE");
 
     // LLM_REPLY_READY is illegal from ACTIVE
@@ -364,7 +364,7 @@ fn illegal_from_active_returns_error() {
 #[test]
 fn retry_exceeds_max_leads_to_closed() {
     let engine = setup_engine();
-    let mut instance = engine.create_instance("chat-session", serde_json::json!({})).unwrap();
+    let mut instance = engine.create_instance("message-session", serde_json::json!({})).unwrap();
 
     // Go ACTIVE → PROCESSING → ERROR
     let step = |id: &str, event: &str| {

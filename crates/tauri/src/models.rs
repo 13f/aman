@@ -159,6 +159,9 @@ pub struct ChatSessionInfo {
     pub branch_message_id: Option<String>,
     /// Optimistic lock version — incremented on each state-changing operation
     pub version: u64,
+    /// Agent that owns this session.
+    #[serde(default)]
+    pub agent_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

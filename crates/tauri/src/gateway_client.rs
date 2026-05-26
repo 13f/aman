@@ -564,10 +564,14 @@ impl GatewayClient {
 
     // ── Chat ────────────────────────────────────────────────────────────
 
-    pub async fn chat_sessions(&self) -> Result<Value, String> {
+    pub async fn chat_sessions(&self, agent_id: Option<&str>) -> Result<Value, String> {
+        let url = match agent_id {
+            Some(aid) => format!("{}?agent_id={aid}", self.url("/chat/sessions")),
+            None => self.url("/chat/sessions"),
+        };
         let resp = self
             .client
-            .get(self.url("/chat/sessions"))
+            .get(&url)
             .send()
             .await
             .map_err(|e| format!("chat_sessions: {e}"))?;

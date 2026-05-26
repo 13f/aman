@@ -425,8 +425,8 @@
         const list = await invoke<Array<{
           id: string; state: string; message_count: number;
           created_at: number; last_active_at: number | null;
-          session_type: string | null; title?: string;
-        }>>("chat_session_list");
+          session_type: string | null; title?: string; agent_id?: string;
+        }>>("chat_session_list", { agentKey: activeAgentKey || null });
         list.sort((a, b) => (b.last_active_at ?? b.created_at) - (a.last_active_at ?? a.created_at));
         const loaded: Session[] = list.map((s, i) => ({
           id: s.id,

@@ -2548,13 +2548,30 @@ struct ChatSessionItem {
     last_active_at: u64,
     version: u64,
     message_count: u64,
+    agent_id: String,
 }
 
-async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+#[derive(Debug, Deserialize)]
+struct ChatSessionsQuery {
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+async fn chat_sessions(
+    State(runtime): State<Arc<AgentRuntime>>,
+    axum::extract::Query(query): axum::extract::Query<ChatSessionsQuery>,
+) -> Response {
     let instances = runtime.workflow_engine().list_instances();
     let mut items: Vec<ChatSessionItem> = instances
         .into_iter()
-        .filter(|inst| inst.workflow_name == "message-session")
+        .filter(|inst| {
+            inst.workflow_name == "message-session"
+                && query.agent_id.as_ref().map_or(true, |aid| {
+                    inst.data.get("agent_id")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|id| id == aid)
+                })
+        })
         .map(|inst| {
             let session_type = inst
                 .data
@@ -2582,6 +2599,12 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
                 .get("message_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let agent_id = inst
+                .data
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("aman")
+                .to_owned();
             ChatSessionItem {
                 id: inst.id,
                 session_type,
@@ -2590,6 +2613,7 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
                 last_active_at,
                 version,
                 message_count,
+                agent_id,
             }
         })
         .collect();
@@ -2600,6 +2624,10 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
         for store in &stores {
             if let Ok(records) = store.list_all() {
                 for rec in records {
+                    // Respect agent_id filter when reading from stores.
+                    if query.agent_id.as_ref().map_or(false, |aid| rec.agent_id != *aid) {
+                        continue;
+                    }
                     items.push(ChatSessionItem {
                         id: rec.id,
                         session_type: rec.session_type,
@@ -2608,6 +2636,7 @@ async fn chat_sessions(State(runtime): State<Arc<AgentRuntime>>) -> Response {
                         last_active_at: rec.last_active_at as u64,
                         version: 0,
                         message_count: rec.message_count as u64,
+                        agent_id: rec.agent_id,
                     });
                 }
             }
@@ -2714,7 +2743,7 @@ async fn chat_session_state(
                 })
                 .collect::<Vec<_>>();
             (instance.current_state, version, messages)
-        } else if let Some(store) = runtime.session_store() {
+        } else if let Some(store) = runtime.find_session_store(&id) {
             // Not in memory — try to restore from persisted JSONL.
             let stored = store.load_session_events(&id);
             let version = stored.len() as u64;
@@ -2766,7 +2795,7 @@ async fn chat_session_history(
 
         if !from_store.is_empty() {
             from_store
-        } else if let Some(store) = runtime.session_store() {
+        } else if let Some(store) = runtime.find_session_store(&id) {
             store.load_session_events(&id)
         } else {
             from_store

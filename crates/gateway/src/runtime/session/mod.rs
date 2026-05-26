@@ -229,21 +229,119 @@ impl SessionManager {
     /// rebuilds conversation history in the agent harness, and re-registers the
     /// workflow instance.
     pub async fn restore_session(&self, session_id: &str) -> Option<()> {
-        let store = {
-            let stores = self.agent_registry.all_session_stores().await;
-            let mut found = None;
-            for s in &stores {
-                if s.has_session(session_id) {
-                    found = Some(Arc::clone(s));
-                    break;
-                }
-            }
-            found?
-        };
-        let events = store.load_session_events(session_id);
-        if events.is_empty() {
-            return None;
+        // Collect every store that knows about this session, along with its
+        // events and indexed agent_id.  After a gateway restart the session
+        // may exist in more than one agent's DB and JSONL directory — we
+        // need to pick the *correct* owner.
+        struct Candidate {
+            events: Vec<serde_json::Value>,
+            db_agent_id: String,
         }
+
+        let stores = self.agent_registry.all_session_stores().await;
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for s in &stores {
+            if !s.has_session(session_id) {
+                continue;
+            }
+            let events = s.load_session_events(session_id);
+            let db_agent_id = s
+                .get(session_id)
+                .ok()
+                .flatten()
+                .map(|rec| rec.agent_id)
+                .unwrap_or_default();
+            candidates.push(Candidate {
+                events,
+                db_agent_id,
+            });
+        }
+
+        // Best candidate: the one whose JSONL actually has events;
+        // among those, prefer the one whose DB agent_id agrees with the
+        // agent_id carried in the event payloads (the ground truth).
+        // Break ties with event count — the store that has more persisted
+        // events is more likely to be the correct owner.
+        let best = candidates
+            .into_iter()
+            .filter(|c| !c.events.is_empty())
+            .max_by(|a, b| {
+                // Find agent_id from events — prefer MessageReceived events
+                // (which carry the original creation agent_id from instance data)
+                // over reply events (which carry the processing agent's id).
+                let event_aid = |c: &Candidate| -> Option<String> {
+                    // First pass: look for agent_id in MessageReceived events
+                    // (these carry the original creation agent_id).
+                    for e in &c.events {
+                        let et = e["event_type"].as_str().unwrap_or("");
+                        if et.contains("MessageReceived") {
+                            if let Some(aid) = e["payload"]["agent_id"].as_str().filter(|id| !id.is_empty()) {
+                                return Some(aid.to_owned());
+                            }
+                        }
+                    }
+                    // Second pass: any event with an agent_id.
+                    for e in &c.events {
+                        if let Some(aid) = e["payload"]["agent_id"].as_str().filter(|id| !id.is_empty()) {
+                            return Some(aid.to_owned());
+                        }
+                    }
+                    None
+                };
+                let has_msg_recv = |c: &Candidate| {
+                    c.events.iter().any(|e| {
+                        e["event_type"].as_str().is_some_and(|et| et.contains("MessageReceived"))
+                    })
+                };
+                let score = |c: &Candidate| -> (u32, u32, usize) {
+                    let ea = event_aid(c);
+                    let s: u32 = match ea {
+                        Some(aid) if aid == c.db_agent_id => 2,
+                        None if !c.db_agent_id.is_empty() => 1,
+                        Some(_) => 1,
+                        _ => 0,
+                    };
+                    // Prefer the candidate that has MessageReceived events
+                    // — they carry the original creation agent_id.
+                    let has_msg: u32 = if has_msg_recv(c) { 1 } else { 0 };
+                    (s, has_msg, c.events.len())
+                };
+                let (a_s, a_m, a_n) = score(a);
+                let (b_s, b_m, b_n) = score(b);
+                a_s.cmp(&b_s).then_with(|| a_m.cmp(&b_m)).then_with(|| a_n.cmp(&b_n))
+            })?;
+
+        let events = best.events;
+
+        // Resolve agent_id: MessageReceived events carry the original
+        // creation agent_id from instance data — that's the ground truth.
+        let agent_id = events
+            .iter()
+            .filter(|e| {
+                e["event_type"].as_str().is_some_and(|et| et.contains("MessageReceived"))
+            })
+            .find_map(|e| {
+                e["payload"]["agent_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(String::from)
+            })
+            .or_else(|| {
+                events.iter().find_map(|e| {
+                    e["payload"]["agent_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .map(String::from)
+                })
+            })
+            .or_else(|| {
+                if best.db_agent_id.is_empty() {
+                    None
+                } else {
+                    Some(best.db_agent_id)
+                }
+            })
+            .unwrap_or_else(|| "aman".to_owned());
 
         self.agent_harness.restore_session_history(session_id, &events);
 
@@ -257,6 +355,7 @@ impl SessionManager {
 
         let data = serde_json::json!({
             "session_type": "persistent",
+            "agent_id": agent_id,
             "version": events.len() as u64,
             "message_count": msg_count,
             "created_at": first_ts,
@@ -270,6 +369,7 @@ impl SessionManager {
         Some(())
     }
 }
+
 
 // ── Session creation ─────────────────────────────────────────────────────────
 

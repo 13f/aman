@@ -51,8 +51,11 @@ impl SessionStore {
     pub fn open(db_path: &Path, sessions_dir: &Path) -> AmanResult<Self> {
         let db = rusqlite::Connection::open(db_path)
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store open: {e}") })?;
+        // Enable WAL mode so concurrent readers (e.g. Tauri frontend) aren't
+        // blocked by gateway writes to the same database.
         db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS sessions (
+            "PRAGMA journal_mode=WAL;
+             CREATE TABLE IF NOT EXISTS sessions (
                 id            TEXT PRIMARY KEY,
                 agent_id      TEXT NOT NULL DEFAULT '',
                 state         TEXT NOT NULL DEFAULT 'active',
@@ -141,6 +144,38 @@ impl SessionStore {
             |_| Ok(()),
         )
         .is_ok()
+    }
+
+    /// Retrieve a single session record by id.
+    pub fn get(&self, id: &str) -> AmanResult<Option<SessionRecord>> {
+        let db = self.db.lock().expect("session store lock");
+        let mut stmt = db
+            .prepare(
+                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, title, reflected_at
+                 FROM sessions WHERE id = ?1",
+            )
+            .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store get: {e}") })?;
+        let mut rows = stmt
+            .query_map(rusqlite::params![id], |row| {
+                Ok(SessionRecord {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    state: row.get(2)?,
+                    message_count: row.get(3)?,
+                    created_at: row.get(4)?,
+                    last_active_at: row.get(5)?,
+                    session_type: row.get(6)?,
+                    title: row.get(7)?,
+                    reflected_at: row.get(8)?,
+                })
+            })
+            .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store get rows: {e}") })?;
+        match rows.next() {
+            Some(row) => Ok(Some(row.map_err(|e| kernel::Error::ConfigInvalid {
+                message: format!("session store get row: {e}"),
+            })?)),
+            None => Ok(None),
+        }
     }
 
     pub fn list_all(&self) -> AmanResult<Vec<SessionRecord>> {

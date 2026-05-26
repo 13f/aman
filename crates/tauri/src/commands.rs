@@ -623,9 +623,10 @@ pub async fn chat_send_message(
 #[tauri::command]
 pub async fn chat_session_list(
     state: State<'_, AppState>,
+    agent_key: Option<String>,
 ) -> Result<Vec<ChatSessionInfo>, String> {
     let client = require_gateway(&state).await?;
-    let v = client.chat_sessions().await?;
+    let v = client.chat_sessions(agent_key.as_deref()).await?;
     let items = v["items"].as_array().map(|arr| {
         arr.iter().map(|item| ChatSessionInfo {
             id: item["id"].as_str().unwrap_or("").to_owned(),
@@ -638,6 +639,7 @@ pub async fn chat_session_list(
             parent_session_id: item["parent_session_id"].as_str().map(String::from),
             branch_message_id: item["branch_message_id"].as_str().map(String::from),
             version: item["version"].as_u64().unwrap_or(0),
+            agent_id: item["agent_id"].as_str().unwrap_or("").to_owned(),
         }).collect::<Vec<_>>()
     }).unwrap_or_default();
     Ok(items)
@@ -725,9 +727,11 @@ pub async fn chat_session_list_db(
 
     let db = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("open sessions.db: {e}"))?;
+    // Enable WAL mode so concurrent reads aren't blocked by gateway writes.
+    let _ = db.execute_batch("PRAGMA journal_mode=WAL;");
 
     let mut stmt = db.prepare(
-        "SELECT id, state, message_count, created_at, last_active_at, session_type, title
+        "SELECT id, state, message_count, created_at, last_active_at, session_type, title, agent_id
          FROM sessions ORDER BY last_active_at DESC",
     )
     .map_err(|e| format!("query sessions.db: {e}"))?;
@@ -739,8 +743,9 @@ pub async fn chat_session_list_db(
             message_count: row.get::<_, i64>(2)? as usize,
             created_at: row.get(3)?,
             last_active_at: Some(row.get(4)?),
-            title: row.get::<_, Option<String>>(6)?,
             session_type: row.get(5)?,
+            title: row.get::<_, Option<String>>(6)?,
+            agent_id: row.get::<_, String>(7).unwrap_or_default(),
             parent_session_id: None,
             branch_message_id: None,
             version: 0,

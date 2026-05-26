@@ -2623,37 +2623,16 @@ async fn chat_session_delete(
     Path(id): Path<String>,
 ) -> Response {
     let operator = operator_from_headers(&headers).unwrap_or("api");
-    // Also remove from the persistent session store (search all agents).
-    if let Some(store) = runtime.find_session_store(&id) {
-        let _ = store.delete(&id);
-    }
-    match runtime.workflow_engine().delete_instance(&id) {
-        Ok(true) => {
-            runtime.audit().record(
-                operator,
-                "chat.session.delete",
-                format!("session:{id}"),
-                "ok",
-                "",
-            );
-            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
-        }
-        Ok(false) => {
-            runtime.audit().record(
-                operator,
-                "chat.session.delete",
-                format!("session:{id}"),
-                "not_found",
-                "",
-            );
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    message: format!("session not found: {id}"),
-                }),
-            )
-                .into_response()
-        }
+    // Delete from persistent store first. Track whether the store
+    // actually found the session — the WorkflowEngine may not know about
+    // it (e.g. after a gateway restart), so the store is authoritative
+    // for determining "not found."
+    let store_deleted = runtime
+        .find_session_store(&id)
+        .map(|store| store.delete(&id).unwrap_or(0) > 0)
+        .unwrap_or(false);
+    let engine_deleted = match runtime.workflow_engine().delete_instance(&id) {
+        Ok(deleted) => deleted,
         Err(error) => {
             runtime.audit().record(
                 operator,
@@ -2662,8 +2641,34 @@ async fn chat_session_delete(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            return error_response(error);
         }
+    };
+
+    if engine_deleted || store_deleted {
+        runtime.audit().record(
+            operator,
+            "chat.session.delete",
+            format!("session:{id}"),
+            "ok",
+            "",
+        );
+        (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+    } else {
+        runtime.audit().record(
+            operator,
+            "chat.session.delete",
+            format!("session:{id}"),
+            "not_found",
+            "",
+        );
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorBody {
+                message: format!("session not found: {id}"),
+            }),
+        )
+            .into_response()
     }
 }
 

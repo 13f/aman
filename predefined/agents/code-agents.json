@@ -31,7 +31,7 @@
     },
     {
       "key": "kimi",
-      "display_name": "Kimi (Code)",
+      "display_name": "Kimi Code",
       "command": "kimi",
       "description": "Moonshot AI's Kimi coding agent. Best for Chinese-language coding tasks, bilingual (CN/EN) codebases, and tasks requiring strong Mandarin language understanding alongside code generation.",
       "tool_args": ["{prompt}"]

@@ -727,7 +727,7 @@ pub async fn chat_session_list_db(
         .map_err(|e| format!("open sessions.db: {e}"))?;
 
     let mut stmt = db.prepare(
-        "SELECT id, state, message_count, created_at, last_active_at, session_type
+        "SELECT id, state, message_count, created_at, last_active_at, session_type, title
          FROM sessions ORDER BY last_active_at DESC",
     )
     .map_err(|e| format!("query sessions.db: {e}"))?;
@@ -739,7 +739,7 @@ pub async fn chat_session_list_db(
             message_count: row.get::<_, i64>(2)? as usize,
             created_at: row.get(3)?,
             last_active_at: Some(row.get(4)?),
-            title: None,
+            title: row.get::<_, Option<String>>(6)?,
             session_type: row.get(5)?,
             parent_session_id: None,
             branch_message_id: None,
@@ -758,8 +758,10 @@ pub async fn chat_session_list_db(
         if jsonl_count > 0 {
             item.message_count = jsonl_count;
         }
-        // Extract a title from the first user message in the JSONL.
-        item.title = jsonl_session_title(&agents_root, &item.id);
+        // Use DB title if set, otherwise derive from first user message in JSONL.
+        if item.title.is_none() {
+            item.title = jsonl_session_title(&agents_root, &item.id);
+        }
         items.push(item);
     }
     Ok(items)
@@ -773,6 +775,39 @@ pub async fn chat_session_create(
 ) -> Result<String, String> {
     let client = require_gateway(&state).await?;
     client.chat_session_create(agent_key.as_deref(), session_type.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn chat_session_rename(
+    agent_key: Option<String>,
+    session_id: String,
+    title: String,
+) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
+    let agent_key = match agent_key {
+        Some(k) => k,
+        None => {
+            let aman_cfg = config::AmanConfig::from_default_path()
+                .map_err(|e| format!("load config: {e}"))?;
+            aman_cfg.agents.keys().next()
+                .ok_or_else(|| "no agents configured".to_owned())?
+                .clone()
+        }
+    };
+    let db_path = std::path::PathBuf::from(&home)
+        .join(".aman")
+        .join("agents")
+        .join(&agent_key)
+        .join("sessions.db");
+    let db = rusqlite::Connection::open(&db_path)
+        .map_err(|e| format!("open sessions.db: {e}"))?;
+    let title_val: Option<&str> = if title.is_empty() { None } else { Some(&title) };
+    db.execute(
+        "UPDATE sessions SET title = ?1 WHERE id = ?2",
+        rusqlite::params![title_val, session_id],
+    )
+    .map_err(|e| format!("update session title: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]

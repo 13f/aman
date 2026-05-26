@@ -833,6 +833,7 @@ impl Aman for AmanServiceImpl {
                 created_at: now,
                 last_active_at: now,
                 session_type: "persistent".into(),
+                title: None,
                 reflected_at: None,
             });
         }
@@ -904,6 +905,7 @@ impl Aman for AmanServiceImpl {
                 created_at: 0,
                 last_active_at: 0,
                 session_type: "persistent".into(),
+                title: None,
                 reflected_at: None,
             });
         }

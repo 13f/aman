@@ -2158,6 +2158,7 @@ async fn explore_start(
             last_active_at: now_ms as i64,
             session_type: "persistent".to_owned(),
             reflected_at: None,
+            title: None,
         });
     }
 
@@ -2977,6 +2978,7 @@ async fn chat_session_send(
                 last_active_at: now_ms as i64,
                 session_type: session_type.to_owned(),
                 reflected_at: None,
+            title: None,
             });
         }
 
@@ -3059,6 +3061,7 @@ async fn chat_session_close(
                         last_active_at,
                         session_type: session_type.to_owned(),
                         reflected_at: None,
+            title: None,
                     });
                 }
 

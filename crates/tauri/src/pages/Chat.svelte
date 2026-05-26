@@ -113,6 +113,8 @@
   // Agent selector state
   let agentList = $state<Array<{ key: string; display_name: string; provider: string }>>([]);
   let activeAgentKey = $state("");
+  let editingTitle = $state(false);
+  let editTitleValue = $state("");
 
   const activeAgentHasProvider = $derived(
     agentList.find(a => a.key === activeAgentKey)?.provider != null &&
@@ -245,6 +247,26 @@
 
   function updateSession(id: string, patch: Partial<Session>) {
     sessions = sessions.map(s => (s.id === id ? { ...s, ...patch } : s));
+  }
+
+  async function saveTitle() {
+    editingTitle = false;
+    const newTitle = editTitleValue.trim();
+    if (!activeSession || !activeSessionId) return;
+
+    // Update local state immediately
+    updateSession(activeSessionId, { title: newTitle || undefined });
+
+    // Persist to backend
+    try {
+      await invoke("chat_session_rename", {
+        agentKey: activeAgentKey || null,
+        sessionId: activeSessionId,
+        title: newTitle,
+      });
+    } catch (e) {
+      console.error("Failed to persist session title:", e);
+    }
   }
 
   function updateSessionStatus(id: string, status: "idle" | "processing") {
@@ -1100,6 +1122,15 @@
       return;
     }
     updateSession(activeSessionId, { title: name });
+    try {
+      await invoke("chat_session_rename", {
+        agentKey: activeAgentKey || null,
+        sessionId: activeSessionId,
+        title: name,
+      });
+    } catch (e) {
+      console.error("Failed to persist session title:", e);
+    }
     messages = [...messages, {
       id: crypto.randomUUID(), type: "system_event",
       content: `Session renamed to "${name}".`,
@@ -1684,7 +1715,32 @@
     <!-- Chat Header -->
     <header class="chat-header">
       <h2>
-        {activeSession?.title ?? "Select a session"}
+        {#if editingTitle && activeSession}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <input
+            class="title-edit-input"
+            type="text"
+            bind:value={editTitleValue}
+            onkeydown={async (e) => {
+              if (e.key === 'Enter') { e.preventDefault(); await saveTitle(); }
+              else if (e.key === 'Escape') { editingTitle = false; }
+            }}
+            onblur={saveTitle}
+            autofocus
+          />
+        {:else}
+          <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+          <span
+            class="title-text"
+            title="Click to rename"
+            onclick={() => { if (activeSession) { editingTitle = true; editTitleValue = activeSession.title ?? ''; } }}
+            onkeydown={(e) => { if (e.key === 'Enter' && activeSession) { editingTitle = true; editTitleValue = activeSession.title ?? ''; } }}
+            role="button"
+            tabindex="0"
+          >
+            {activeSession?.title ?? "Select a session"}
+          </span>
+        {/if}
         {#if currentSoulName}
           <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
           <span class="soul-badge" title="Current SOUL. Click for details." onclick={() => soulDetailExpanded = !soulDetailExpanded} onkeydown={(e) => e.key === 'Enter' && (soulDetailExpanded = !soulDetailExpanded)} role="button" tabindex="0">
@@ -2271,6 +2327,33 @@
     margin: 0;
     font-size: 15px;
     font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .title-text {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 1px 4px;
+    transition: background 0.15s;
+  }
+
+  .title-text:hover {
+    background: var(--bg-hover);
+  }
+
+  .title-edit-input {
+    font-size: 15px;
+    font-weight: 600;
+    font-family: inherit;
+    border: 1px solid var(--accent, #3b82f6);
+    border-radius: 4px;
+    padding: 2px 6px;
+    background: var(--bg);
+    color: var(--fg);
+    outline: none;
+    max-width: 400px;
   }
 
   .soul-badge {

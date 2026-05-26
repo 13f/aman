@@ -326,6 +326,7 @@ impl SessionManager {
                 last_active_at,
                 session_type: session_type.to_owned(),
                 reflected_at: None,
+                title: None,
             });
         }
 
@@ -380,6 +381,7 @@ impl SessionManager {
                     last_active_at: now_ms as i64,
                     session_type: session_type.to_owned(),
                     reflected_at: None,
+                title: None,
                 });
             }
         }

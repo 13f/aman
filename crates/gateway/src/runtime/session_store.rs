@@ -27,6 +27,9 @@ pub struct SessionRecord {
     pub created_at: i64,
     pub last_active_at: i64,
     pub session_type: String,
+    /// User-assigned title override. Falls back to first-user-message derivation when NULL.
+    #[serde(default)]
+    pub title: Option<String>,
     /// When this session was last extracted by Reflection (millis since epoch).
     /// NULL means never reflected.
     #[serde(default)]
@@ -56,10 +59,13 @@ impl SessionStore {
                 message_count INTEGER NOT NULL DEFAULT 0,
                 created_at    INTEGER NOT NULL,
                 last_active_at INTEGER NOT NULL,
-                session_type  TEXT DEFAULT 'persistent'
+                session_type  TEXT DEFAULT 'persistent',
+                title         TEXT
             );",
         )
         .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store schema: {e}") })?;
+        // Migration: add title column (ignore error if already exists)
+        let _ = db.execute("ALTER TABLE sessions ADD COLUMN title TEXT", []);
         // Migration: add reflected_at column (ignore error if already exists)
         let _ = db.execute("ALTER TABLE sessions ADD COLUMN reflected_at INTEGER", []);
         // Migration: add agent_id column (ignore error if already exists)
@@ -71,13 +77,14 @@ impl SessionStore {
     pub fn upsert(&self, rec: &SessionRecord) -> AmanResult<()> {
         let db = self.db.lock().expect("session store lock");
         db.execute(
-            "INSERT INTO sessions (id, agent_id, state, message_count, created_at, last_active_at, session_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO sessions (id, agent_id, state, message_count, created_at, last_active_at, session_type, title)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                 state         = excluded.state,
                 message_count = excluded.message_count,
                 last_active_at = excluded.last_active_at,
                 session_type  = excluded.session_type,
+                title         = excluded.title,
                 reflected_at  = NULL",
             rusqlite::params![
                 rec.id,
@@ -87,9 +94,23 @@ impl SessionStore {
                 rec.created_at,
                 rec.last_active_at,
                 rec.session_type,
+                rec.title,
             ],
         )
         .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store upsert: {e}") })?;
+        Ok(())
+    }
+
+    /// Set or clear a session's custom title.
+    pub fn set_title(&self, id: &str, title: Option<&str>) -> AmanResult<()> {
+        let db = self.db.lock().expect("session store lock");
+        db.execute(
+            "UPDATE sessions SET title = ?1 WHERE id = ?2",
+            rusqlite::params![title, id],
+        )
+        .map_err(|e| kernel::Error::ConfigInvalid {
+            message: format!("session store set_title: {e}"),
+        })?;
         Ok(())
     }
 
@@ -126,7 +147,7 @@ impl SessionStore {
         let db = self.db.lock().expect("session store lock");
         let mut stmt = db
             .prepare(
-                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, reflected_at
+                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, title, reflected_at
                  FROM sessions ORDER BY last_active_at DESC",
             )
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store query: {e}") })?;
@@ -140,7 +161,8 @@ impl SessionStore {
                     created_at: row.get(4)?,
                     last_active_at: row.get(5)?,
                     session_type: row.get(6)?,
-                    reflected_at: row.get(7)?,
+                    title: row.get(7)?,
+                    reflected_at: row.get(8)?,
                 })
             })
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store rows: {e}") })?;
@@ -158,7 +180,7 @@ impl SessionStore {
         let db = self.db.lock().expect("session store lock");
         let mut stmt = db
             .prepare(
-                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, reflected_at
+                "SELECT id, agent_id, state, message_count, created_at, last_active_at, session_type, title, reflected_at
                  FROM sessions
                  WHERE reflected_at IS NULL AND message_count > 0
                  ORDER BY last_active_at ASC
@@ -175,7 +197,8 @@ impl SessionStore {
                     created_at: row.get(4)?,
                     last_active_at: row.get(5)?,
                     session_type: row.get(6)?,
-                    reflected_at: row.get(7)?,
+                    title: row.get(7)?,
+                    reflected_at: row.get(8)?,
                 })
             })
             .map_err(|e| kernel::Error::ConfigInvalid { message: format!("session store unreflected rows: {e}") })?;

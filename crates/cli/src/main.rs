@@ -7,10 +7,15 @@ mod grpc_client;
 
 use config::{ConfigLoader, AgentConfig};
 use gateway::runtime::{serve, serve_stdio, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::ai_signal::AmanSignalV1;
 use grpc_client::GrpcClient;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+static _AI_SIGNAL: () = {
+    let _ = std::any::TypeId::of::<AmanSignalV1>();
+};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {

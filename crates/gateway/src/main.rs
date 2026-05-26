@@ -14,11 +14,16 @@
 
 use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::ai_signal::AmanSignalV1;
 use kernel::event::{Event, EventType};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+static _AI_SIGNAL: () = {
+    let _ = std::any::TypeId::of::<AmanSignalV1>();
+};
 
 const DEFAULT_BIND: &str = "127.0.0.1:9999";
 const PID_FILE: &str = ".aman/gateway.pid";

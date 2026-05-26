@@ -725,6 +725,7 @@
     agentHarnessSessions = new Set([...agentHarnessSessions, data.session_id]);
     isLoading = false;
     updateSessionStatus(data.session_id, "idle");
+    updateSessionTitleFromMessages(data.session_id);
   }
 
   function handleAgentReplyReady(data: any) {

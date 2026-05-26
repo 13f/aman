@@ -507,6 +507,21 @@ impl SkillLoader {
 
     pub fn load_from_skill_markdown_str(content: &str) -> AmanResult<LoadedSkill> {
         let yaml = extract_skill_markdown_yaml(content)?;
+        if yaml.trim().is_empty() {
+            // No YAML metadata — derive name from the first markdown heading.
+            let name = content
+                .lines()
+                .find(|l| l.starts_with("# "))
+                .map(|l| l.trim_start_matches("# ").trim().to_owned())
+                .unwrap_or_else(|| "unnamed".to_owned());
+            return Self::build_loaded_skill(DeclarativeSkillSpec {
+                name,
+                version: "0.1.0".to_owned(),
+                description: None,
+                triggers: vec![],
+                concurrency: None,
+            });
+        }
         Self::load_from_yaml_str(&yaml)
     }
 
@@ -1268,28 +1283,39 @@ fn discover_files_recursive(root: &Path, found: &mut Vec<PathBuf>) -> AmanResult
 }
 
 fn extract_skill_markdown_yaml(content: &str) -> AmanResult<String> {
+    // 1. Try --- YAML frontmatter format (standard SKILL.md convention)
+    let trimmed = content.trim();
+    if let Some(after_first) = trimmed.strip_prefix("---") {
+        if let Some(end) = after_first.find("\n---") {
+            let frontmatter = after_first[..end].trim().to_owned();
+            if !frontmatter.is_empty() {
+                return Ok(frontmatter);
+            }
+        }
+    }
+
+    // 2. Try fenced ```yaml block format
     let mut in_block = false;
     let mut lines = Vec::new();
     for line in content.lines() {
-        let trimmed = line.trim();
-        if !in_block && (trimmed == "```yaml" || trimmed == "```yml") {
+        let line_trimmed = line.trim();
+        if !in_block && (line_trimmed == "```yaml" || line_trimmed == "```yml") {
             in_block = true;
             continue;
         }
-        if in_block && trimmed == "```" {
+        if in_block && line_trimmed == "```" {
             break;
         }
         if in_block {
             lines.push(line);
         }
     }
-
-    if lines.is_empty() {
-        return Err(Error::ConfigInvalid {
-            message: "SKILL.md must contain a fenced yaml block".to_owned(),
-        });
+    if !lines.is_empty() {
+        return Ok(lines.join("\n"));
     }
-    Ok(lines.join("\n"))
+
+    // No YAML metadata found — skill is markdown-only.
+    Ok(String::new())
 }
 
 #[cfg(test)]

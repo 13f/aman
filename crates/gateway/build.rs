@@ -169,4 +169,22 @@ fn main() {
         let dest = Path::new(&out_dir).join("builtin_configs.rs");
         std::fs::write(&dest, out).unwrap();
     }
+
+    // -------------------------------------------------------------------
+    // Provenance marker
+    // -------------------------------------------------------------------
+    {
+        let proof_path = predefined_root.join("proof.bin");
+        println!("cargo:rerun-if-changed={}", proof_path.display());
+        let out = "// Aman provenance marker — auto-generated.\n\
+             #[used]\n\
+             static AMAN_PROOF: &[u8] = include_bytes!(concat!(\
+                 env!(\"CARGO_MANIFEST_DIR\"), \
+                 \"/../../predefined/proof.bin\"\
+             ));\n"
+            .to_string();
+        let out_dir = std::env::var("OUT_DIR").unwrap();
+        let dest = Path::new(&out_dir).join("proof.rs");
+        std::fs::write(&dest, out).unwrap();
+    }
 }

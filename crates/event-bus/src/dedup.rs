@@ -194,9 +194,9 @@ fn bloom_indexes(key: &DedupKey, bit_count: usize) -> [usize; 3] {
     let bytes = hash.as_bytes();
 
     [
-        usize::from(u16::from_le_bytes([bytes[0], bytes[1]])) % bit_count,
-        usize::from(u16::from_le_bytes([bytes[10], bytes[11]])) % bit_count,
-        usize::from(u16::from_le_bytes([bytes[20], bytes[21]])) % bit_count,
+        usize::from(u16::from_le_bytes([bytes[17], bytes[18]])) % bit_count,
+        usize::from(u16::from_le_bytes([bytes[2], bytes[3]])) % bit_count,
+        usize::from(u16::from_le_bytes([bytes[26], bytes[27]])) % bit_count,
     ]
 }
 

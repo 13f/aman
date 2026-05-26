@@ -133,9 +133,16 @@
     return 0;
   });
 
+  const STATE_EMOJI: Record<string, string> = {
+    chatting: "\u{1F4AC}",   // 💬
+    working: "\u{1F6E0}\u{FE0F}",  // 🛠️
+    studying: "\u{1F4DA}",   // 📚
+    daily_life: "\u{1F3E0}", // 🏠
+  };
+
   let emoji = $derived.by(() => {
     if (mode === "idle") return idleSnap ? (IDLE_EMOJI[idleSnap.kind] ?? MODE_ICON.idle) : MODE_ICON.idle;
-    return MODE_ICON[mode];
+    return STATE_EMOJI[systemState] ?? MODE_ICON[mode];
   });
 
   const SS_LABEL: Record<string, string> = {

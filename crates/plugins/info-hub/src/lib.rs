@@ -27,6 +27,11 @@ use ai::{
 use config::InfoHubConfig;
 use types::InfoSearchInput;
 
+const TAGGING_TEMPERATURE: f64 = 0.265;
+const SCORING_TEMPERATURE: f64 = 0.377;
+const SUMMARIZING_TEMPERATURE: f64 = 0.465;
+const HIGHLIGHTS_TEMPERATURE: f64 = 0.578;
+
 // ── info_search ───────────────────────────────────────────────────────
 
 struct InfoSearchTool {
@@ -223,7 +228,7 @@ impl Tool for InfoTagArticlesTool {
                 .map_err(|e| kernel::Error::config_invalid(format!("articles parse: {e}")))?;
 
         let (system, user) = build_tagging_prompt(&articles);
-        let text = chat_completion_with_retries(llm, &system, &user, 0.2, 2048, 60, 3).await
+        let text = chat_completion_with_retries(llm, &system, &user, TAGGING_TEMPERATURE, 2048, 60, 3).await
             .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
         let results: Vec<TagResult> = parse_json_response::<Value>(&text)
@@ -327,7 +332,7 @@ impl Tool for InfoScoreArticlesTool {
                 .map_err(|e| kernel::Error::config_invalid(format!("articles parse: {e}")))?;
 
         let (system, user) = build_scoring_prompt(&articles);
-        let text = chat_completion_with_retries(llm, &system, &user, 0.3, 4096, 60, 3).await
+        let text = chat_completion_with_retries(llm, &system, &user, SCORING_TEMPERATURE, 4096, 60, 3).await
             .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
         let results: Vec<ScoreResult> = parse_json_response::<Value>(&text)
@@ -465,7 +470,7 @@ impl Tool for InfoSummarizeArticlesTool {
         if !to_summarize.is_empty() {
             let articles_refs: Vec<ArticleInput> = to_summarize.iter().map(|&a| a.clone()).collect();
             let (system, user) = build_summary_prompt(&articles_refs, lang);
-            let text = chat_completion_with_retries(llm, &system, &user, 0.4, 8192, 60, 3).await
+            let text = chat_completion_with_retries(llm, &system, &user, SUMMARIZING_TEMPERATURE, 8192, 60, 3).await
                 .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
             let llm_results: Vec<SummaryResult> = parse_json_response::<Value>(&text)
@@ -551,7 +556,7 @@ impl Tool for InfoGenerateHighlightsTool {
             .unwrap_or("zh");
 
         let (system, user) = build_highlights_prompt(articles_json, lang);
-        let text = chat_completion_with_retries(llm, &system, &user, 0.5, 2048, 60, 3).await
+        let text = chat_completion_with_retries(llm, &system, &user, HIGHLIGHTS_TEMPERATURE, 2048, 60, 3).await
             .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
         Ok(Value::String(text.trim().to_string()))

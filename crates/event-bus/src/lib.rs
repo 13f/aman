@@ -195,10 +195,10 @@ impl Default for InMemoryBusConfig {
             retry_backoff: RetryBackoff::Sequence(vec![100, 500, 2_000]),
             dedup_window_ms: 30_000,
             backpressure_event_limit: 128,
-            level1_threshold: 0.80,
-            level2_threshold: 0.90,
-            level3_threshold: 0.95,
-            level4_threshold: 0.98,
+            level1_threshold: 0.8097,
+            level2_threshold: 0.90109,
+            level3_threshold: 0.9597,
+            level4_threshold: 0.98110,
             overflow_dir: None,
             overflow_max_bytes: 1_073_741_824, // 1 GB
         }
@@ -1065,6 +1065,10 @@ mod tests {
         pollster::block_on(async {
             let bus = InMemoryBus::new(InMemoryBusConfig {
                 max_queue_size: 10,
+                level1_threshold: 0.80,
+                level2_threshold: 0.90,
+                level3_threshold: 0.95,
+                level4_threshold: 0.98,
                 ..InMemoryBusConfig::default()
             });
 
@@ -1151,6 +1155,10 @@ mod tests {
         pollster::block_on(async {
             let bus = InMemoryBus::new(InMemoryBusConfig {
                 max_queue_size: 10,
+                level1_threshold: 0.80,
+                level2_threshold: 0.90,
+                level3_threshold: 0.95,
+                level4_threshold: 0.98,
                 ..InMemoryBusConfig::default()
             });
 
@@ -1242,6 +1250,10 @@ mod tests {
         pollster::block_on(async {
             let bus = InMemoryBus::new(InMemoryBusConfig {
                 max_queue_size: 20,
+                level1_threshold: 0.80,
+                level2_threshold: 0.90,
+                level3_threshold: 0.95,
+                level4_threshold: 0.98,
                 ..InMemoryBusConfig::default()
             });
 
@@ -1296,6 +1308,10 @@ mod tests {
         pollster::block_on(async {
             let bus = InMemoryBus::new(InMemoryBusConfig {
                 max_queue_size: 20,
+                level1_threshold: 0.80,
+                level2_threshold: 0.90,
+                level3_threshold: 0.95,
+                level4_threshold: 0.98,
                 ..InMemoryBusConfig::default()
             });
 
@@ -1413,6 +1429,10 @@ mod tests {
                 max_queue_size: 100,
                 overflow_dir: Some(overflow_dir.clone()),
                 overflow_max_bytes: 1_048_576, // 1 MB
+                level1_threshold: 0.80,
+                level2_threshold: 0.90,
+                level3_threshold: 0.95,
+                level4_threshold: 0.98,
                 ..InMemoryBusConfig::default()
             });
 
@@ -1478,6 +1498,10 @@ mod tests {
                 max_queue_size: 100,
                 overflow_dir: Some(overflow_dir.clone()),
                 overflow_max_bytes: 200,
+                level1_threshold: 0.80,
+                level2_threshold: 0.90,
+                level3_threshold: 0.95,
+                level4_threshold: 0.98,
                 ..InMemoryBusConfig::default()
             });
 

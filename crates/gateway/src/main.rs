@@ -16,10 +16,13 @@ use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use gateway::ai_signal::AmanSignalV1;
 use kernel::event::{Event, EventType};
+use std::fs::File;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 static _AI_SIGNAL: () = {
     let _ = std::any::TypeId::of::<AmanSignalV1>();
@@ -30,12 +33,28 @@ const PID_FILE: &str = ".aman/gateway.pid";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
+    // Log to file + stdout. File is truncated on each gateway start so it
+    // corresponds to the current run and always append to it.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let log_dir = PathBuf::from(&home).join(".aman");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_path = log_dir.join("gateway.log");
+    let log_file = File::create(&log_path).expect("failed to create gateway log file");
+
+    // disable ansi color in file
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(Mutex::new(log_file));
+    let stdout_layer = tracing_subscriber::fmt::layer();
+
+    let env_filter = tracing_subscriber::EnvFilter::builder()
+        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+        .from_env_lossy();
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stdout_layer)
+        .with(file_layer)
         .init();
 
     if let Err(code) = run().await {

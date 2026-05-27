@@ -42,7 +42,7 @@
   let gatewayStopping = $state(false);
   let gatewayError = $state("");
   let gatewayPort = $state(9999);
-  let unlisten: (() => void) | null = null;
+  let unlisteners: (() => void)[] = [];
 
   async function refreshStatus() {
     try {
@@ -110,6 +110,12 @@
     }
   });
 
+  interface RuntimeStatusEvent {
+    phase: number;
+    ready: boolean;
+    live: boolean;
+  }
+
   onMount(async () => {
     await refreshStatus();
     try {
@@ -117,11 +123,21 @@
     } catch { /* use default */ }
     listen<MetricsSnapshot>("metrics:updated", (e) => {
       metrics = e.payload;
-    }).then((fn) => { unlisten = fn; });
+    }).then((fn) => { unlisteners.push(fn); });
+    listen<RuntimeStatusEvent>("runtime:updated", (e) => {
+      const p = e.payload;
+      status = {
+        phase: `Phase${p.phase}`,
+        ready: p.ready,
+        live: p.live,
+        running: p.phase > 0,
+      };
+      onstatuschange(status.running);
+    }).then((fn) => { unlisteners.push(fn); });
   });
 
   onDestroy(() => {
-    if (unlisten) unlisten();
+    for (const fn of unlisteners) fn();
   });
 </script>
 

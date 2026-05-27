@@ -35,6 +35,7 @@ pub fn run() {
     let gc_for_events = app_state.gateway_client.clone();
     let gc_for_notifications = app_state.gateway_client.clone();
     let gc_for_agents = app_state.gateway_client.clone();
+    let gc_for_runtime_status = app_state.gateway_client.clone();
     let shutdown_gc = app_state.gateway_client.clone();
     let shutdown_gp = app_state.gateway_process.clone();
 
@@ -259,10 +260,11 @@ pub fn run() {
             let menu = Menu::with_items(handle, &[&file_menu, &edit_menu, &help_menu])?;
             app.set_menu(menu)?;
 
-            let handle1 = app.handle().clone();
-            let handle2 = app.handle().clone();
-            let handle3 = app.handle().clone();
-            let handle4 = app.handle().clone();
+            let handlea1 = app.handle().clone();
+            let handlem2 = app.handle().clone();
+            let handlea3 = app.handle().clone();
+            let handlen4 = app.handle().clone();
+            let handle15 = app.handle().clone();
 
             // Background task: emit `metrics:updated` every 2 s.
             rt.spawn(async move {
@@ -309,7 +311,7 @@ pub fn run() {
                     drop(guard);
                     if let Some(snapshot) = snapshot {
                         let payload = serde_json::to_value(&snapshot).unwrap_or_default();
-                        let _ = handle1.emit("metrics:updated", payload);
+                        let _ = handlea1.emit("metrics:updated", payload);
                     }
                 }
             });
@@ -333,7 +335,7 @@ pub fn run() {
                                     for event_val in events.iter().rev() {
                                         if let Some(id) = event_val["id"].as_str()
                                             && seen.insert(id.to_owned()) {
-                                                let _ = handle2.emit("event:processed", event_val.clone());
+                                                let _ = handlem2.emit("event:processed", event_val.clone());
                                             }
                                     }
                                 }
@@ -359,7 +361,7 @@ pub fn run() {
                                 drop(guard);
                                 if count != previous_count {
                                     previous_count = count;
-                                    let _ = handle3.emit(
+                                    let _ = handlea3.emit(
                                         "notification:updated",
                                         serde_json::json!({ "unread_count": count }),
                                     );
@@ -397,10 +399,33 @@ pub fn run() {
                                             .collect()
                                     })
                                     .unwrap_or_default();
-                                let _ = handle4.emit(
+                                let _ = handlen4.emit(
                                     "agent_states:updated",
                                     serde_json::json!({ "agents": agents }),
                                 );
+                            }
+                            Err(_) => {
+                                drop(guard);
+                            }
+                        }
+                    } else {
+                        drop(guard);
+                    }
+                }
+            });
+
+            // Background task: emit `runtime:updated` every 1 s (faster so
+            // the dashboard reflects startup phase changes in real time).
+            rt.spawn(async move {
+                let mut tick = interval(Duration::from_secs(1));
+                loop {
+                    tick.tick().await;
+                    let guard = gc_for_runtime_status.lock().await;
+                    if let Some(client) = guard.as_ref() {
+                        match client.runtime_status().await {
+                            Ok(v) => {
+                                drop(guard);
+                                let _ = handle15.emit("runtime:updated", v);
                             }
                             Err(_) => {
                                 drop(guard);

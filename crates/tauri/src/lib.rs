@@ -74,11 +74,27 @@ pub fn run() {
                     return;
                 }
 
-                // Always send graceful shutdown via HTTP, even in standalone
-                // mode where we don't own the gateway process.
-                rt.block_on(async {
+                // Check whether we own a child process before spawning the
+                // background task (so we can move the handle in).
+                let owns_gateway = rt.block_on(async {
+                    let guard = shutdown_gp.lock().await;
+                    guard.is_some()
+                });
+
+                // Show the shutdown animation immediately, then perform the
+                // actual shutdown work in the background so the user sees
+                // feedback instead of a frozen / instantly-closing window.
+                SHUTTING_DOWN.store(true, Ordering::SeqCst);
+                api.prevent_close();
+                let _ = window.emit("shutdown:started", ());
+
+                let gc = shutdown_gc.clone();
+                let gp = shutdown_gp.clone();
+                let handle = window.app_handle().clone();
+                rt.spawn(async move {
+                    // 1. Graceful HTTP shutdown (best-effort).
                     let base_url = {
-                        let guard = shutdown_gc.lock().await;
+                        let guard = gc.lock().await;
                         guard.as_ref().map(|c| c.base_url.clone())
                     };
                     if let Some(ref url) = base_url
@@ -92,47 +108,26 @@ pub fn run() {
                             .send()
                             .await;
                     }
-                });
 
-                // If the app does not own the gateway process (standalone mode),
-                // clear the client and return — shutdown was already sent above.
-                let owns_gateway = rt.block_on(async {
-                    let guard = shutdown_gp.lock().await;
-                    guard.is_some()
-                });
-                if !owns_gateway {
-                    rt.block_on(async {
-                        let mut guard = shutdown_gc.lock().await;
-                        *guard = None;
-                    });
-                    return;
-                }
-
-                SHUTTING_DOWN.store(true, Ordering::SeqCst);
-                api.prevent_close();
-                let _ = window.emit("shutdown:started", ());
-
-                let gc = shutdown_gc.clone();
-                let gp = shutdown_gp.clone();
-                let handle = window.app_handle().clone();
-                rt.spawn(async move {
-                    // Clear client
+                    // 2. Clear the client from state.
                     {
                         let mut guard = gc.lock().await;
                         *guard = None;
                     }
-                    // Kill child process
-                    {
+
+                    // 3. Kill the child process if we own it.
+                    if owns_gateway {
                         let mut proc_guard = gp.lock().await;
                         if let Some(mut child) = proc_guard.take() {
                             let _ = child.kill().await;
                             let _ = child.wait().await;
                         }
                     }
-                    // Let the frontend animation breathe before closing
+
+                    // 4. Let the frontend animation breathe before closing.
                     let _ = handle.emit("shutdown:complete", ());
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    // Close window (re-enters CloseRequested, SHUTTING_DOWN lets it through)
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    // Close window (re-enters CloseRequested, SHUTTING_DOWN lets it through).
                     let _ = handle.get_webview_window("main").map(|w| w.close());
                 });
             }

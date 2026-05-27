@@ -282,6 +282,9 @@ impl AgentRuntimeBuilder {
                 wasm_path: None,
                 capabilities: vec![],
                 ui: None,
+                runtime: None,
+                min_version: None,
+                entrypoint: None,
             },
             plugin: Box::new(memory_store_plugin),
             isolation: PluginIsolationMode::InProcess,
@@ -333,26 +336,15 @@ impl AgentRuntimeBuilder {
                 wasm_path: None,
                 capabilities: vec![],
                 ui: None,
+                runtime: None,
+                min_version: None,
+                entrypoint: None,
             },
             plugin: Box::new(info_hub_plugin),
             isolation: PluginIsolationMode::InProcess,
             subprocess: None,
             wasm_module_bytes: None,
         };
-
-        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
-        all_candidates.extend(self.extra_plugins);
-        let hook_registry = Arc::new(hook::HookRegistry::new());
-        let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
-        let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
-            Arc::clone(&skills),
-            Arc::clone(&tools),
-            Arc::clone(&hook_registry),
-            Arc::clone(&memory_provider_registry),
-        )));
-        if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
-            tracing::error!(error = %e, "failed to load built-in plugins");
-        }
 
         // Subscribe a handler that dispatches every event to matching skills.
         use kernel::context::SkillContext;
@@ -433,6 +425,36 @@ impl AgentRuntimeBuilder {
         let agent_registry = Arc::new(super::AgentRegistry::new(Arc::clone(&bus)));
         // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
+
+        // ── Plugin loading ──────────────────────────────────────────
+        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
+        all_candidates.extend(self.extra_plugins);
+
+        // Discover subprocess plugins from ~/.aman/plugins/
+        let home_for_plugins = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| "/tmp".to_owned());
+        let plugins_dir = PathBuf::from(&home_for_plugins).join(".aman").join("plugins");
+        let discovered = plugin::discover_subprocess_plugins(&plugins_dir);
+        if !discovered.is_empty() {
+            tracing::info!(count = discovered.len(), dir = %plugins_dir.display(), "discovered subprocess plugins");
+            all_candidates.extend(discovered);
+        }
+        let hook_registry = Arc::new(hook::HookRegistry::new());
+        let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
+        let rpc_handler = Arc::new(RuntimeJsonRpcHandler::new(
+            Arc::clone(&agent_registry),
+            Arc::clone(&bus),
+        ));
+        let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
+            Arc::clone(&skills),
+            Arc::clone(&tools),
+            Arc::clone(&hook_registry),
+            Arc::clone(&memory_provider_registry),
+        ))).with_method_handler(rpc_handler);
+        if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
+            tracing::error!(error = %e, "failed to load built-in plugins");
+        }
 
         // ── Per-agent resources ─────────────────────────────────────
         // Each agent gets its own SessionStore, YantrikDB, and LlmProvider.
@@ -1243,6 +1265,128 @@ impl Tool for ReadSkillTool {
     }
 }
 
+/// JSON-RPC method handler for subprocess plugins.
+/// Gives plugins access to AgentRegistry and EventBus.
+struct RuntimeJsonRpcHandler {
+    agent_registry: Arc<super::AgentRegistry>,
+    bus: Arc<dyn EventBus>,
+}
+
+impl RuntimeJsonRpcHandler {
+    fn new(agent_registry: Arc<super::AgentRegistry>, bus: Arc<dyn EventBus>) -> Self {
+        Self { agent_registry, bus }
+    }
+}
+
+#[async_trait::async_trait]
+impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
+    async fn handle_method(
+        &self,
+        plugin_name: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> kernel::AmanResult<serde_json::Value> {
+        match method {
+            "aman.get_agents" => {
+                let agents = self.agent_registry.list().await;
+                let result: Vec<serde_json::Value> = agents
+                    .iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "id": a.descriptor.agent_id,
+                            "name": a.descriptor.display_name,
+                            "status": a.status,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({"agents": result}))
+            }
+            "aman.emit_event" => {
+                let event_type = params
+                    .get("event_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let payload = params.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+                let event = kernel::event::Event::new(
+                    format!("plugin:{plugin_name}"),
+                    kernel::event::EventType::Custom(event_type.to_owned()),
+                    payload,
+                );
+                self.bus.publish(event).await?;
+                Ok(serde_json::json!({"ok": true}))
+            }
+            "aman.push_work_item" => {
+                let agent_id = params
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "missing agent_id".to_owned(),
+                    })?;
+                let title = params
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("untitled");
+                let description = params
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let item = work::WorkItem {
+                    id: work::WorkItemId::new(),
+                    title: title.to_owned(),
+                    description: description.to_owned(),
+                    steps: None,
+                    priority: work::Priority::Normal,
+                    timeout: None,
+                    context: std::collections::HashMap::new(),
+                    notify_on_complete: true,
+                    created_at: kernel::types::Timestamp::now(),
+                };
+                let ws = self.agent_registry.get_work_system(agent_id).await.ok_or_else(|| {
+                    kernel::Error::NotFound {
+                        name: format!("agent:{agent_id}"),
+                    }
+                })?;
+                ws.push_work_item(item, work::WorkItemSource::Kanban {
+                    board_id: plugin_name.to_owned(),
+                    scheduler: "subprocess-plugin".to_owned(),
+                }).await.map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!("push_work_item failed: {e:?}"),
+                })?;
+                Ok(serde_json::json!({"ok": true}))
+            }
+            "aman.subscribe_events" => {
+                let events: Vec<String> = params
+                    .get("events")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                tracing::info!(plugin = %plugin_name, count = events.len(), "plugin subscribed to events");
+                // Full event→plugin forwarding requires bridge access.
+                // For now, plugins use aman.handle_route for HTTP-triggered flows
+                // and aman.emit_event for outbound events.
+                Ok(serde_json::json!({"ok": true}))
+            }
+            "aman.register_workflow" => {
+                let name = params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                tracing::info!(plugin = %plugin_name, workflow = %name, "plugin registered workflow");
+                // Workflow registration is handled by the WorkflowEngine.
+                // For now, accept the definition and log it.
+                Ok(serde_json::json!({"ok": true, "workflow": name}))
+            }
+            other => Err(kernel::Error::Unrecoverable {
+                message: format!("unknown rpc method: {other}"),
+            }),
+        }
+    }
+}
+
 pub struct AgentRuntime {
     config: AgentConfig,
     runtime_dir: PathBuf,
@@ -1623,6 +1767,16 @@ impl AgentRuntime {
 
     pub async fn plugin_loader(&self) -> tokio::sync::MutexGuard<'_, PluginLoader> {
         self.plugin_loader.lock().await
+    }
+
+    #[must_use]
+    pub fn plugin_routes(&self) -> Vec<axum::Router<()>> {
+        pollster::block_on(async { self.plugin_loader.lock().await.collect_routes() })
+    }
+
+    #[must_use]
+    pub fn plugin_manifests(&self) -> Vec<PluginManifest> {
+        pollster::block_on(async { self.plugin_loader.lock().await.loaded_manifests().into_iter().cloned().collect() })
     }
 
     #[instrument(skip(self, event), fields(event_id = %event.id, source = %event.source, event_type = ?event.event_type))]

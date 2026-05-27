@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>$project_name — Kanban</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #0b0d13; color: #e0e0e0; min-height: 100vh; }
+  .top-bar { display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+              border-bottom: 1px solid #1e2030; background: #0f1119; }
+  .top-bar a { color: #888; text-decoration: none; font-size: 12px; }
+  .top-bar a:hover { color: #e0e0e0; }
+  .top-bar h1 { font-size: 16px; font-weight: 600; }
+  .board { display: flex; gap: 0; padding: 16px; overflow-x: auto; min-height: calc(100vh - 50px); }
+  .column { flex: 0 0 280px; display: flex; flex-direction: column; background: #0f1119;
+             border: 1px solid #1e2030; border-radius: 8px; margin-right: 12px; }
+  .column-head { display: flex; justify-content: space-between; align-items: center;
+                 padding: 12px 14px; border-bottom: 1px solid #1e2030; }
+  .col-title { font-size: 13px; font-weight: 600; }
+  .col-count { font-size: 11px; color: #666; background: #1a1d2b; padding: 2px 8px;
+               border-radius: 10px; }
+  .card-list { flex: 1; padding: 8px; overflow-y: auto; min-height: 60px; }
+  .card { padding: 10px 12px; margin-bottom: 8px; background: #161822; border: 1px solid #1e2030;
+          border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .card:hover { border-color: #333; }
+  .card-title { font-weight: 500; margin-bottom: 4px; }
+  .card-meta { font-size: 11px; color: #666; }
+  .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
+             color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
+  .add-btn:hover { color: #aaa; border-color: #555; }
+  .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+           z-index: 100; align-items: center; justify-content: center; }
+  .modal.open { display: flex; }
+  .modal-card { background: #13151f; border: 1px solid #1e2030; border-radius: 10px;
+                padding: 24px; width: 400px; max-width: 90vw; }
+  .modal-card h3 { font-size: 15px; margin-bottom: 16px; }
+  .modal-card input, .modal-card textarea { width: 100%; padding: 8px 10px;
+    background: #0b0d13; border: 1px solid #2a2d3a; border-radius: 6px;
+    color: #e0e0e0; font-size: 13px; margin-bottom: 10px; font-family: inherit; }
+  .modal-card textarea { resize: vertical; min-height: 80px; }
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .modal-actions button { padding: 6px 14px; border-radius: 6px; border: 1px solid #2a2d3a;
+    background: #1a1d2b; color: #e0e0e0; cursor: pointer; font-size: 12px; }
+  .modal-actions button.primary { background: #6366f1; border-color: #6366f1; }
+  .empty-state { padding: 24px; text-align: center; color: #555; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <a href="/api/v1/team">&larr; Projects</a>
+  <h1>$project_name</h1>
+</div>
+<div class="board" id="board">$columns_html</div>
+
+<div class="modal" id="createModal">
+  <div class="modal-card">
+    <h3>New Task</h3>
+    <input type="text" id="newTitle" placeholder="Task title">
+    <textarea id="newDesc" placeholder="Description (optional)"></textarea>
+    <input type="hidden" id="newStage">
+    <div class="modal-actions">
+      <button onclick="closeCreate()">Cancel</button>
+      <button class="primary" onclick="createTask()">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PROJECT = "$project_key";
+const BASE = "/api/v1/team/projects/" + PROJECT;
+
+async function load() {
+  try {
+    const r = await fetch(BASE + "/tasks");
+    const data = await r.json();
+    render(data.stages || [], data.tasks || []);
+  } catch(e) { console.error(e); }
+}
+
+function render(stages, tasks) {
+  var byStage = {};
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i];
+    var s = t.current_stage || "";
+    byStage[s] = byStage[s] || [];
+    byStage[s].push(t);
+  }
+  for (var j = 0; j < stages.length; j++) {
+    var s = stages[j];
+    var list = document.getElementById("list-" + s.id);
+    var count = document.getElementById("count-" + s.id);
+    if (!list) continue;
+    var items = byStage[s.id] || [];
+    if (count) count.textContent = items.length;
+    if (items.length === 0) {
+      list.innerHTML = '<div class="empty-state">No tasks</div>';
+    } else {
+      var html = "";
+      for (var k = 0; k < items.length; k++) {
+        var t = items[k];
+        html += '<div class="card" onclick="moveTask(\'' + t.id + '\')">' +
+                '<div class="card-title">' + esc(t.title) + '</div>' +
+                '<div class="card-meta">' + esc(t.priority || 'normal') + (t.assignee ? ' &middot; ' + esc(t.assignee) : '') + '</div>' +
+                '</div>';
+      }
+      list.innerHTML = html;
+    }
+  }
+}
+
+function openCreate(stageId) {
+  document.getElementById("newStage").value = stageId;
+  document.getElementById("newTitle").value = "";
+  document.getElementById("newDesc").value = "";
+  document.getElementById("createModal").classList.add("open");
+}
+
+function closeCreate() {
+  document.getElementById("createModal").classList.remove("open");
+}
+
+async function createTask() {
+  var title = document.getElementById("newTitle").value.trim();
+  if (!title) return;
+  var stageId = document.getElementById("newStage").value;
+  try {
+    await fetch(BASE + "/tasks/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({title: title, description: document.getElementById("newDesc").value})
+    });
+    closeCreate();
+    load();
+  } catch(e) { console.error(e); }
+}
+
+async function moveTask(taskId) {
+  var r = await fetch(BASE + "/tasks");
+  var data = await r.json();
+  var task = (data.tasks || []).find(function(t) { return t.id === taskId; });
+  if (!task) return;
+  var stages = data.stages || [];
+  var idx = stages.findIndex(function(s) { return s.id === task.current_stage; });
+  var nextIds = idx >= 0 ? (stages[idx].allowed_next || []) : [];
+  if (nextIds.length === 0) return;
+  var next = nextIds.length === 1 ? nextIds[0] : prompt("Move to stage: " + nextIds.join(", "));
+  if (!next) return;
+  try {
+    await fetch(BASE + "/tasks/" + taskId + "/complete", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({agent_id: "", confidence: 1.0, action: "move to " + next, next_stage: next})
+    });
+    load();
+  } catch(e) { console.error(e); }
+}
+
+function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

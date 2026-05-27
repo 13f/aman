@@ -154,14 +154,45 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
             require_api_token,
         ));
 
-    Router::new()
+    let mut app = Router::new()
         .route("/health/live", get(health_live))
         .route("/health/ready", get(health_ready))
         .route("/health", get(health_ready))
         .route("/health/llm", get(health_llm))
         .route("/metrics", get(metrics))
-        .merge(control)
-        .with_state(runtime)
+        .route("/ui/pages", get(ui_plugin_pages))
+        .merge(control);
+
+    // Merge plugin-contributed routes under /api/v1
+    for plugin_router in runtime.plugin_routes() {
+        app = app.nest_service("/api/v1", plugin_router);
+    }
+
+    app.with_state(runtime)
+}
+
+#[derive(Serialize)]
+struct UiPageEntry {
+    id: String,
+    label: String,
+}
+
+async fn ui_plugin_pages(State(runtime): State<Arc<AgentRuntime>>) -> Json<Vec<UiPageEntry>> {
+    let pages = runtime
+        .plugin_manifests()
+        .iter()
+        .filter_map(|m| m.ui.as_ref())
+        .flat_map(|ui| {
+            ui.pages.iter().map(|page_id| UiPageEntry {
+                id: page_id.clone(),
+                label: match page_id.as_str() {
+                    "team" => "Team".into(),
+                    other => other.to_string(),
+                },
+            })
+        })
+        .collect();
+    Json(pages)
 }
 
 async fn health_live(State(runtime): State<Arc<AgentRuntime>>) -> impl IntoResponse {

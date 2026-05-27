@@ -433,6 +433,20 @@ impl GatewayClient {
         }
     }
 
+    // ── Plugin UI pages ──────────────────────────────────────────────────
+
+    pub async fn plugin_pages(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/ui/pages"))
+            .send()
+            .await
+            .map_err(|e| format!("plugin_pages: {e}"))?;
+        resp.json::<Value>()
+            .await
+            .map_err(|e| format!("plugin_pages decode: {e}"))
+    }
+
     // ── Capabilities ────────────────────────────────────────────────────
 
     pub async fn capabilities(&self) -> Result<Value, String> {

@@ -212,6 +212,8 @@ pub fn run() {
             commands::list_finance_cards,
             commands::add_finance_card,
             commands::remove_finance_card,
+            // Plugin UI pages
+            commands::get_plugin_pages,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Set the window/dock icon explicitly for dev mode.

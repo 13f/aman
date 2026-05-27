@@ -24,6 +24,8 @@
   let chatPrefill = $state("");
   let chatPrefillSeq = $state(0);
   let sidebarCompact = $state(false);
+  let pluginPages = $state<{ id: string; label: string }[]>([]);
+  let gatewayPort = $state(9999);
 
   type MenuItem = { id: string; label: string; short: string };
   type MenuGroup = { name: string; label: string; items: MenuItem[] };
@@ -63,6 +65,7 @@
     apps: true,
     platform: true,
     management: true,
+    plugins: true,
   });
 
   let initialLoadDone = $state(false);
@@ -71,6 +74,14 @@
 
   function toggleGroup(name: string) {
     expandedGroups[name] = !expandedGroups[name];
+  }
+
+  async function refreshPluginPages() {
+    try {
+      pluginPages = await invoke<{ id: string; label: string }[]>("get_plugin_pages");
+    } catch {
+      pluginPages = [];
+    }
   }
 
   async function checkOnboarding() {
@@ -92,6 +103,11 @@
 
   function onRuntimeStatusChange(running: boolean) {
     runtimeRunning = running;
+    if (running) {
+      refreshPluginPages();
+    } else {
+      pluginPages = [];
+    }
   }
 
   function handlePageVisited(pageId: string) {
@@ -135,12 +151,20 @@
   onMount(async () => {
     await checkOnboarding();
 
+    // Get gateway port for plugin iframe URLs
+    try {
+      gatewayPort = await invoke<number>("get_gateway_port");
+    } catch {
+      // keep default
+    }
+
     // Auto-detect if gateway is already running
     try {
       const status = await invoke<{ running: boolean }>("try_connect_gateway");
       if (status.running) {
         runtimeRunning = true;
         currentPage = "home";
+        await refreshPluginPages();
       }
     } catch {
       // Gateway not running — stay on dashboard
@@ -182,6 +206,16 @@
         {/if}
       {/each}
     {/each}
+    {#each pluginPages as pg}
+      <button
+        class="nav-icon"
+        class:active={currentPage === "plugin:" + pg.id}
+        onclick={() => navigateTo("plugin:" + pg.id)}
+        title={pg.label}
+      >
+        <span class="nav-short">{pg.label.slice(0, 2)}</span>
+      </button>
+    {/each}
   {:else}
     <!-- Expanded mode: grouped with headers -->
     <div class="sidebar-status-bar" class:live={runtimeRunning}>
@@ -214,6 +248,25 @@
         </div>
       {/if}
     {/each}
+    {#if pluginPages.length > 0}
+      <button class="menu-header" onclick={() => toggleGroup("plugins")}>
+        <span class="menu-arrow">{expandedGroups["plugins"] ? "▾" : "▸"}</span>
+        Plugins
+      </button>
+      {#if expandedGroups["plugins"]}
+        <div class="menu-items">
+          {#each pluginPages as pg}
+            <button
+              class="nav-btn"
+              class:active={currentPage === "plugin:" + pg.id}
+              onclick={() => navigateTo("plugin:" + pg.id)}
+            >
+              {pg.label}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    {/if}
   {/if}
 
   <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentName={activeAgentName} compact={sidebarCompact} />
@@ -247,6 +300,14 @@
     <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
   {:else if currentPage === "settings"}
     <Settings />
+  {:else if currentPage.startsWith("plugin:")}
+    {@const pluginId = currentPage.slice("plugin:".length)}
+    <iframe
+      class="plugin-iframe"
+      src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + pluginId}
+      title={"Plugin: " + pluginId}
+      sandbox="allow-scripts allow-same-origin allow-forms"
+    ></iframe>
   {/if}
 </main>
 
@@ -267,6 +328,13 @@
 {/if}
 
 <style>
+  .plugin-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: var(--bg);
+  }
+
   .shutdown-overlay {
     position: fixed;
     inset: 0;

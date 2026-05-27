@@ -3616,6 +3616,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "blake3",
  "pollster",
  "semver",
@@ -5137,6 +5138,7 @@ dependencies = [
  "tar",
  "tokio",
  "tower",
+ "tracing",
  "uuid",
  "wasmtime",
  "wat",

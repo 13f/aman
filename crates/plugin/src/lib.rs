@@ -3,6 +3,7 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+pub mod bridge;
 
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
@@ -60,6 +61,16 @@ pub struct PluginManifest {
     /// Optional UI declaration for pages and events this plugin contributes.
     #[serde(default)]
     pub ui: Option<UiDeclaration>,
+    /// Script runtime for subprocess plugins (e.g. "python3", "node", "bash").
+    /// When set, overrides `subprocess.command` with the runtime value.
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// Minimum runtime version (semver range, e.g. ">=3.11").
+    #[serde(default)]
+    pub min_version: Option<String>,
+    /// Entrypoint script relative to the plugin directory.
+    #[serde(default)]
+    pub entrypoint: Option<PathBuf>,
 }
 
 /// Declares UI pages and events contributed by a plugin.
@@ -89,6 +100,27 @@ pub struct PluginExports {
     pub hooks: Vec<String>,
     #[serde(default)]
     pub memory_providers: Vec<String>,
+}
+
+impl Default for PluginManifest {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            version: Version::new(0, 0, 0),
+            depends_on: Vec::new(),
+            lifecycle: PluginLifecycleConfig::default(),
+            exports: PluginExports::default(),
+            config_schema: None,
+            isolation: None,
+            subprocess: None,
+            wasm_path: None,
+            capabilities: Vec::new(),
+            ui: None,
+            runtime: None,
+            min_version: None,
+            entrypoint: None,
+        }
+    }
 }
 
 impl PluginManifest {
@@ -712,7 +744,7 @@ pub struct RegisteredExports {
 
 enum LoadedPluginRuntime {
     InProcess(Box<dyn Plugin>),
-    Subprocess(SubprocessPluginClient),
+    Subprocess(Arc<bridge::SubprocessPluginBridge>),
     Wasm(WasmPluginRuntime),
 }
 
@@ -864,6 +896,7 @@ pub struct PluginLoader {
     registrar: Arc<dyn PluginExportRegistrar>,
     config: PluginLoaderConfig,
     audit_logger: Arc<dyn PluginAuditLogger>,
+    method_handler: Arc<dyn kernel::plugin::JsonRpcMethodHandler>,
     loaded: HashMap<String, LoadedPlugin>,
     load_order: Vec<String>,
     health: HashMap<String, PluginHealth>,
@@ -881,6 +914,7 @@ impl PluginLoader {
             registrar,
             config,
             audit_logger: Arc::new(NoopPluginAuditLogger),
+            method_handler: Arc::new(kernel::plugin::NoopJsonRpcHandler),
             loaded: HashMap::new(),
             load_order: Vec::new(),
             health: HashMap::new(),
@@ -890,6 +924,12 @@ impl PluginLoader {
     #[must_use]
     pub fn with_audit_logger(mut self, audit_logger: Arc<dyn PluginAuditLogger>) -> Self {
         self.audit_logger = audit_logger;
+        self
+    }
+
+    #[must_use]
+    pub fn with_method_handler(mut self, handler: Arc<dyn kernel::plugin::JsonRpcMethodHandler>) -> Self {
+        self.method_handler = handler;
         self
     }
 
@@ -908,6 +948,25 @@ impl PluginLoader {
     #[must_use]
     pub fn health_of(&self, plugin_name: &str) -> Option<PluginHealth> {
         self.health.get(plugin_name).copied()
+    }
+
+    /// Returns all loaded plugin manifests (for UI page listing, etc.).
+    #[must_use]
+    pub fn loaded_manifests(&self) -> Vec<&PluginManifest> {
+        self.loaded.values().map(|entry| &entry.manifest).collect()
+    }
+
+    /// Collect HTTP routes from all running plugins.
+    #[must_use]
+    pub fn collect_routes(&self) -> Vec<axum::Router<()>> {
+        let mut routers = Vec::new();
+        for loaded in self.loaded.values() {
+            if let LoadedPluginRuntime::Subprocess(bridge) = &loaded.runtime {
+                let router = bridge::build_subprocess_router(Arc::clone(bridge));
+                routers.push(router);
+            }
+        }
+        routers
     }
 
     /// Collect all capabilities declared by running plugins.
@@ -1102,26 +1161,40 @@ impl PluginLoader {
                     (LoadedPluginRuntime::InProcess(candidate.plugin), exports)
                 }
                 PluginIsolationMode::Subprocess => {
-                    if has_manifest_exports(&manifest) {
-                        self.rollback_loaded(&loaded_now).await?;
-                        return Err(Error::ConfigInvalid {
-                            message: "subprocess plugin exports bridging is not implemented yet".to_owned(),
-                        });
-                    }
-                    let config = candidate.subprocess.ok_or_else(|| Error::ConfigInvalid {
+                    let mut config = candidate.subprocess.ok_or_else(|| Error::ConfigInvalid {
                         message: format!("subprocess config is required for plugin `{plugin_name}`"),
                     })?;
-                    let client = SubprocessPluginClient::new(config);
-                    if let Err(error) = client.on_load(plugin_name, &manifest.version) {
+
+                    // Auto-derive subprocess config from manifest runtime/entrypoint if needed
+                    if let Some(runtime) = &manifest.runtime {
+                        if config.command.is_empty() {
+                            config.command = runtime.clone();
+                        }
+                        if config.args.is_empty() {
+                            if let Some(entrypoint) = &manifest.entrypoint {
+                                config.args = vec![entrypoint.to_string_lossy().to_string()];
+                            }
+                        }
+                    }
+
+                    let bridge = bridge::SubprocessPluginBridge::spawn(
+                        plugin_name,
+                        &config,
+                        None, // cwd comes from SubprocessPluginConfig
+                        Arc::clone(&self.method_handler),
+                    )?;
+
+                    if let Err(error) = bridge.on_load(&manifest.version) {
                         self.audit(
                             plugin_name,
                             PluginAuditEventType::OnLoadInterrupted,
                             format!("subprocess on_load failed: {error}"),
                         );
+                        bridge.shutdown();
                         self.rollback_loaded(&loaded_now).await?;
                         return Err(error);
                     }
-                    (LoadedPluginRuntime::Subprocess(client), RegisteredExports::default())
+                    (LoadedPluginRuntime::Subprocess(bridge), RegisteredExports::default())
                 }
                 PluginIsolationMode::Wasm => {
                     if has_manifest_exports(&manifest) {
@@ -1184,8 +1257,8 @@ impl PluginLoader {
                     LoadedPluginRuntime::InProcess(plugin) => {
                         let _ = plugin.on_dependency_unloading(plugin_name).await;
                     }
-                    LoadedPluginRuntime::Subprocess(client) => {
-                        let _ = client.on_dependency_unloading(&dependent_name, plugin_name);
+                    LoadedPluginRuntime::Subprocess(_) => {
+                        // Subprocess bridge doesn't support dependency unloading notifications
                     }
                     LoadedPluginRuntime::Wasm(_) => {}
                 }
@@ -1221,8 +1294,9 @@ impl PluginLoader {
                     return Err(error);
                 }
             }
-            LoadedPluginRuntime::Subprocess(client) => {
-                client.on_unload(plugin_name)?;
+            LoadedPluginRuntime::Subprocess(bridge) => {
+                bridge.on_unload()?;
+                bridge.shutdown();
             }
             LoadedPluginRuntime::Wasm(runtime) => {
                 runtime.on_unload()?;
@@ -1504,6 +1578,115 @@ pub fn validate_manifest_exports(manifest: &PluginManifest) -> bool {
         .iter()
         .all(|name| all.insert(format!("h:{name}")));
     unique_skills && unique_tools && unique_sources && unique_hooks
+}
+
+// ---------------------------------------------------------------------------
+// SubprocessStubPlugin — minimal Plugin impl for subprocess-only plugins
+// ---------------------------------------------------------------------------
+
+/// A stub Plugin implementation for subprocess plugins that have no Rust code.
+/// All logic lives in the subprocess and communicates via the JSON-RPC bridge.
+pub(crate) struct SubprocessStubPlugin {
+    name: String,
+    version: Version,
+}
+
+#[async_trait::async_trait]
+impl Plugin for SubprocessStubPlugin {
+    fn name(&self) -> &str { &self.name }
+    fn version(&self) -> &Version { &self.version }
+    fn dependencies(&self) -> &[PluginDependency] { &[] }
+
+    async fn on_load(&mut self, _ctx: PluginContext) -> AmanResult<()> { Ok(()) }
+    async fn on_unload(&mut self) -> AmanResult<()> { Ok(()) }
+    async fn on_dependency_unloading(&self, _dep_name: &str) -> AmanResult<()> { Ok(()) }
+
+    fn event_sources(&self) -> Vec<Arc<dyn EventSource>> { vec![] }
+    fn skills(&self) -> Vec<Arc<dyn Skill>> { vec![] }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> { vec![] }
+    fn hooks(&self) -> Vec<Arc<dyn Hook>> { vec![] }
+    fn memory_providers(&self) -> Vec<Arc<dyn MemoryProvider>> { vec![] }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin discovery from filesystem
+// ---------------------------------------------------------------------------
+
+/// Scan a directory for plugin subdirectories containing `plugin.yaml` manifests,
+/// and return PluginCandidates for any subprocess plugins found.
+pub fn discover_subprocess_plugins(plugins_dir: &Path) -> Vec<PluginCandidate> {
+    let mut candidates = Vec::new();
+
+    let entries = match fs::read_dir(plugins_dir) {
+        Ok(e) => e,
+        Err(_) => return candidates,
+    };
+
+    for entry in entries.flatten() {
+        let plugin_dir = entry.path();
+        if !plugin_dir.is_dir() {
+            continue;
+        }
+
+        let manifest_path = plugin_dir.join("plugin.yaml");
+        if !manifest_path.is_file() {
+            continue;
+        }
+
+        let manifest = match PluginManifest::from_file(&manifest_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    dir = %plugin_dir.display(),
+                    error = %e,
+                    "failed to parse plugin manifest, skipping"
+                );
+                continue;
+            }
+        };
+
+        // Only discover subprocess plugins from the filesystem
+        let isolation = manifest.isolation.clone().unwrap_or(PluginIsolationMode::InProcess);
+        if isolation != PluginIsolationMode::Subprocess {
+            continue;
+        }
+
+        let subprocess_config = manifest.subprocess.clone().or_else(|| {
+            manifest.runtime.as_ref().map(|runtime: &String| {
+                let args = manifest
+                    .entrypoint
+                    .as_ref()
+                    .map(|ep: &PathBuf| vec![ep.to_string_lossy().to_string()])
+                    .unwrap_or_default();
+                SubprocessPluginConfig {
+                    command: runtime.clone(),
+                    args,
+                    cwd: Some(plugin_dir.clone()),
+                    timeout_ms: 30_000,
+                }
+            })
+        });
+
+        let candidate = PluginCandidate {
+            manifest: manifest.clone(),
+            plugin: Box::new(SubprocessStubPlugin {
+                name: manifest.name.clone(),
+                version: manifest.version.clone(),
+            }),
+            isolation: PluginIsolationMode::Subprocess,
+            subprocess: subprocess_config,
+            wasm_module_bytes: None,
+        };
+
+        tracing::info!(
+            name = %manifest.name,
+            dir = %plugin_dir.display(),
+            "discovered subprocess plugin"
+        );
+        candidates.push(candidate);
+    }
+
+    candidates
 }
 
 #[cfg(test)]
@@ -1830,7 +2013,7 @@ mod tests {
                 subprocess: None,
                 wasm_path: None,
                 capabilities: vec![],
-                ui: None,
+                ui: None, runtime: None, min_version: None, entrypoint: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -1870,7 +2053,7 @@ mod tests {
                 subprocess: None,
                 wasm_path: None,
                 capabilities: vec![],
-                ui: None,
+                ui: None, runtime: None, min_version: None, entrypoint: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -1932,7 +2115,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
                 capabilities: vec![],
-                ui: None,
+                ui: None, runtime: None, min_version: None, entrypoint: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -1948,7 +2131,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
             capabilities: vec![],
-            ui: None,
+            ui: None, runtime: None, min_version: None, entrypoint: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -1964,7 +2147,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
             capabilities: vec![],
-            ui: None,
+            ui: None, runtime: None, min_version: None, entrypoint: None,
             },
         ])
         .expect("graph creates");
@@ -1986,7 +2169,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
             capabilities: vec![],
-            ui: None,
+            ui: None, runtime: None, min_version: None, entrypoint: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -2002,7 +2185,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
             capabilities: vec![],
-            ui: None,
+            ui: None, runtime: None, min_version: None, entrypoint: None,
             },
         ])
         .expect("graph creates");
@@ -2028,7 +2211,7 @@ config_schema:
             subprocess: None,
             wasm_path: None,
             capabilities: vec![],
-            ui: None,
+            ui: None, runtime: None, min_version: None, entrypoint: None,
         }])
         .expect("graph creates");
         let missing_error = missing
@@ -2048,7 +2231,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
                 capabilities: vec![],
-                ui: None,
+                ui: None, runtime: None, min_version: None, entrypoint: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -2064,7 +2247,7 @@ config_schema:
                 subprocess: None,
                 wasm_path: None,
             capabilities: vec![],
-            ui: None,
+            ui: None, runtime: None, min_version: None, entrypoint: None,
             },
         ])
         .expect("graph creates");
@@ -2381,17 +2564,21 @@ config_schema:
     fn subprocess_client_invokes_json_rpc_successfully() {
         let script = r#"
 import json, sys
-line = sys.stdin.readline()
-req = json.loads(line)
-res = {
-  "jsonrpc": "2.0",
-  "id": req.get("id", 1),
-  "result": {
-    "method": req.get("method"),
-    "plugin_name": req.get("params", {}).get("plugin_name")
-  }
-}
-print(json.dumps(res))
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    req = json.loads(line)
+    res = {
+      "jsonrpc": "2.0",
+      "id": req.get("id", 1),
+      "result": {
+        "method": req.get("method"),
+        "plugin_name": req.get("params", {}).get("plugin_name")
+      }
+    }
+    print(json.dumps(res))
+    sys.stdout.flush()
 "#;
         let client = SubprocessPluginClient::new(SubprocessPluginConfig {
             command: "python3".to_owned(),
@@ -2410,17 +2597,21 @@ print(json.dumps(res))
     fn subprocess_client_surfaces_rpc_error() {
         let script = r#"
 import json, sys
-line = sys.stdin.readline()
-req = json.loads(line)
-res = {
-  "jsonrpc": "2.0",
-  "id": req.get("id", 1),
-  "error": {
-    "code": -32000,
-    "message": "boom"
-  }
-}
-print(json.dumps(res))
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    req = json.loads(line)
+    res = {
+      "jsonrpc": "2.0",
+      "id": req.get("id", 1),
+      "error": {
+        "code": -32000,
+        "message": "boom"
+      }
+    }
+    print(json.dumps(res))
+    sys.stdout.flush()
 "#;
         let client = SubprocessPluginClient::new(SubprocessPluginConfig {
             command: "python3".to_owned(),
@@ -2479,10 +2670,14 @@ print(json.dumps(res))
             let mut loader = PluginLoader::new(registrar);
             let script = r#"
 import json, sys
-line = sys.stdin.readline()
-req = json.loads(line)
-res = {"jsonrpc":"2.0","id": req.get("id", 1), "result":{"ok":True}}
-print(json.dumps(res))
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    req = json.loads(line)
+    res = {"jsonrpc":"2.0","id": req.get("id", 1), "result":{"ok":True}}
+    print(json.dumps(res))
+    sys.stdout.flush()
 "#;
             let candidate = isolated_plugin_candidate(
                 "subproc-loader",

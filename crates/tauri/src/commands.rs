@@ -1889,6 +1889,21 @@ pub async fn remove_finance_card(skill_name: String) -> Result<(), String> {
     crate::finance_cards::remove_finance_card(&skill_name)
 }
 
+// ---------------------------------------------------------------------------
+// Plugin UI pages
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn get_plugin_pages(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
+    let client = require_gateway(&state).await?;
+    let resp = client.plugin_pages().await?;
+    let pages = resp
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    Ok(pages)
+}
+
 fn default_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".aman").join("config.yaml")

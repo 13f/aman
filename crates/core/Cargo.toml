@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+axum.workspace = true
 blake3.workspace = true
 semver.workspace = true
 serde.workspace = true

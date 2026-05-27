@@ -11,6 +11,7 @@ use crate::tool::Tool;
 use async_trait::async_trait;
 use semver::Version;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,5 +38,38 @@ pub trait Plugin: Send + Sync {
     }
     fn memory_providers(&self) -> Vec<Arc<dyn MemoryProvider>> {
         vec![]
+    }
+
+    /// Plugin-contributed HTTP routes. Merged under `/api/v1` by AgentRuntime.
+    fn routes(&self) -> Option<axum::Router<()>> {
+        None
+    }
+}
+
+/// Handler for JSON-RPC method calls from subprocess plugins.
+///
+/// Implemented by the host runtime (AgentRuntime) to give subprocess plugins
+/// access to aman services: EventBus, AgentRegistry, WorkflowEngine, etc.
+#[async_trait]
+pub trait JsonRpcMethodHandler: Send + Sync {
+    /// Handle a JSON-RPC method call from a subprocess plugin.
+    /// Returns the JSON result or an error.
+    async fn handle_method(
+        &self,
+        plugin_name: &str,
+        method: &str,
+        params: Value,
+    ) -> AmanResult<Value>;
+}
+
+/// A no-op handler used when no host runtime is available (e.g., tests).
+pub struct NoopJsonRpcHandler;
+
+#[async_trait]
+impl JsonRpcMethodHandler for NoopJsonRpcHandler {
+    async fn handle_method(&self, _plugin_name: &str, method: &str, _params: Value) -> AmanResult<Value> {
+        Err(crate::Error::Unrecoverable {
+            message: format!("no json-rpc handler available for method: {method}"),
+        })
     }
 }

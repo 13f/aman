@@ -1,0 +1,15 @@
+name: "team"
+version: "0.1.0"
+description: "Kanban scheduler plugin — no chat, pure Work system interaction"
+isolation: subprocess
+runtime: python3
+min_version: ">=3.11"
+entrypoint: "main.py"
+lifecycle:
+  auto_start: true
+ui:
+  pages:
+    - "team"
+  events:
+    - "team:work_item.updated"
+    - "team:safety.alert"

@@ -9,6 +9,15 @@
         "info-hub/fusion.py",
         "info-hub/rss.py"
       ]
+    },
+    {
+      "name": "team",
+      "files": [
+        "team/plugin.yaml",
+        "team/main.py",
+        "team/templates/team-index.html",
+        "team/templates/project-kanban.html"
+      ]
     }
   ]
 }

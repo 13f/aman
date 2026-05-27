@@ -85,6 +85,7 @@ unsafe_code = "forbid"
 [workspace.dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 async-trait = "0.1.89"
+axum = { version = "0.8.6", features = ["multipart"] }
 blake3 = "1.8.2"
 pollster = "0.4.0"
 proc-macro2 = "1.0.103"

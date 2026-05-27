@@ -1171,10 +1171,221 @@ def _handle_project_create(body: dict) -> dict:
         _log(f"Workflow registration failed for {project_key}: {e}")
 
     # Register routes for the new project
+    _register_project_routes(project_key)
+
+    _log(f"Project created: {project_key} ({project_name})")
+    return _json_response({"ok": True, "project_key": project_key, "project_name": project_name}, 201)
+
+
+def _handle_get_project_config(project_key: str) -> dict:
+    """Return the full project config as JSON (for import)."""
+    proj = _projects.get(project_key, {}).get("config", {})
+    if not proj:
+        return _json_response({"error": f"project '{project_key}' not found"}, 404)
+    return _json_response(proj)
+
+
+def _handle_team_update(body: dict) -> dict:
+    """Update team name/description in config.yaml."""
+    global _team_config
+    team_name = body.get("team_name", "").strip()
+    if not team_name:
+        return _json_response({"error": "team_name is required"}, 400)
+
+    config = {
+        "team": {
+            "name": team_name,
+            "description": body.get("description", "").strip(),
+            "creator": (_team_config or {}).get("creator", body.get("creator", "").strip()),
+        }
+    }
+
+    import yaml
+    os.makedirs(TEAM_DIR, exist_ok=True)
+    with open(_team_config_path(), "w") as f:
+        yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    _team_config = _validate_team_config(config)
+    _log(f"Team config updated: {team_name}")
+    return _json_response({"ok": True, "team_name": team_name})
+
+
+def _handle_project_update(project_key: str, body: dict) -> dict:
+    """Update project name/description/key. Renames folder if key changes."""
+    proj = _projects.get(project_key)
+    if not proj:
+        return _json_response({"error": f"project '{project_key}' not found"}, 404)
+
+    config = proj.get("config", {})
+    new_key = body.get("project_key", "").strip()
+    project_name = body.get("project_name", "").strip()
+    description = body.get("description", "").strip()
+
+    if not project_name:
+        return _json_response({"error": "project_name is required"}, 400)
+
+    redirect = None
+    actual_key = project_key
+
+    if new_key and new_key != project_key:
+        if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", new_key):
+            return _json_response({"error": "project_key must be lowercase alphanumeric with hyphens"}, 400)
+        if new_key in _projects:
+            return _json_response({"error": f"project '{new_key}' already exists"}, 409)
+
+        # Close DB, rename folder, reload
+        old_db = proj.get("db")
+        if old_db:
+            try:
+                old_db.close()
+            except Exception:
+                pass
+
+        old_dir = _project_dir(project_key)
+        new_dir = _project_dir(new_key)
+        try:
+            os.rename(old_dir, new_dir)
+        except OSError as e:
+            return _json_response({"error": f"Failed to rename project folder: {e}"}, 500)
+
+        # Update config on disk with new key
+        config["project_key"] = new_key
+
+        # Update in-memory
+        del _projects[project_key]
+        _projects[new_key] = {"config": config, "db": None}
+
+        # Re-init DB at new path
+        try:
+            _projects[new_key]["db"] = init_db(new_key)
+        except Exception as e:
+            _log(f"DB re-init failed after rename: {e}")
+
+        # Register routes for new key
+        _register_project_routes(new_key)
+
+        # Recompile workflow
+        try:
+            compile_workflow(new_key)
+        except Exception as e:
+            _log(f"Workflow recompile failed after rename: {e}")
+
+        actual_key = new_key
+        redirect = f"/api/v1/team/projects/{new_key}"
+        _log(f"Project renamed: {project_key} -> {new_key}")
+
+    # Update name/description in config
+    config["project_name"] = project_name
+    config["description"] = description
+
+    import yaml
+    config_path = _project_config_path(actual_key)
+    full = {
+        "project": {"name": project_name, "description": description},
+        "stages": config.get("stages", []),
+        "initial_stage": config.get("initial_stage", ""),
+        "safety_gates": config.get("safety_gates", {}),
+        "context_files": config.get("context_files", []),
+        "work_dir": config.get("work_dir", os.getcwd()),
+    }
+    with open(config_path, "w") as f:
+        yaml.safe_dump(full, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    _projects[actual_key]["config"] = config
+    resp = {"ok": True, "project_key": actual_key, "project_name": project_name}
+    if redirect:
+        resp["redirect"] = redirect
+    return _json_response(resp)
+
+
+def _handle_project_delete(project_key: str) -> dict:
+    """Delete a project: close DB, remove folder, unregister."""
+    proj = _projects.pop(project_key, None)
+    if not proj:
+        return _json_response({"error": f"project '{project_key}' not found"}, 404)
+
+    db = proj.get("db")
+    if db:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    import shutil
+    proj_dir = _project_dir(project_key)
+    try:
+        shutil.rmtree(proj_dir)
+    except OSError as e:
+        _log(f"Failed to remove project dir {proj_dir}: {e}")
+        return _json_response({"error": f"Failed to delete project: {e}"}, 500)
+
+    _log(f"Project deleted: {project_key}")
+    return _json_response({"ok": True})
+
+
+def _handle_stages_update(project_key: str, body: dict) -> dict:
+    """Update kanban stages for a project. Recompiles workflow."""
+    proj = _projects.get(project_key)
+    if not proj:
+        return _json_response({"error": f"project '{project_key}' not found"}, 404)
+
+    stages = body.get("stages", [])
+    initial_stage = body.get("initial_stage", "")
+
+    if not stages:
+        return _json_response({"error": "stages array is required"}, 400)
+
+    stage_ids = {s["id"] for s in stages if isinstance(s, dict) and "id" in s}
+    if initial_stage and initial_stage not in stage_ids:
+        return _json_response({"error": f"initial_stage '{initial_stage}' not in stages"}, 400)
+
+    # Validate allowed_next references
+    for s in stages:
+        for n in s.get("allowed_next", []):
+            if n not in stage_ids:
+                return _json_response({"error": f"stage '{s.get('id', '?')}' references unknown next '{n}'"}, 400)
+
+    config = proj.get("config", {})
+    config["stages"] = stages
+    if initial_stage:
+        config["initial_stage"] = initial_stage
+
+    import yaml
+    config_path = _project_config_path(project_key)
+    full = {
+        "project": {
+            "name": config.get("project_name", project_key),
+            "description": config.get("description", ""),
+        },
+        "stages": stages,
+        "initial_stage": initial_stage or config.get("initial_stage", stages[0]["id"]),
+        "safety_gates": config.get("safety_gates", {}),
+        "context_files": config.get("context_files", []),
+        "work_dir": config.get("work_dir", os.getcwd()),
+    }
+    with open(config_path, "w") as f:
+        yaml.safe_dump(full, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    _projects[project_key]["config"] = config
+
+    try:
+        compile_workflow(project_key)
+    except Exception as e:
+        _log(f"Workflow recompile failed after stages update: {e}")
+
+    _log(f"Stages updated for {project_key}: {len(stages)} stages")
+    return _json_response({"ok": True, "stages": stages})
+
+
+def _register_project_routes(project_key: str) -> None:
+    """Register all routes for a project with the gateway."""
     api_prefix = f"/team/projects/{project_key}"
-    new_routes = [
+    routes = [
         {"method": "GET", "path": api_prefix},
         {"method": "GET", "path": f"{api_prefix}/config"},
+        {"method": "POST", "path": f"{api_prefix}/update"},
+        {"method": "POST", "path": f"{api_prefix}/stages/update"},
+        {"method": "DELETE", "path": api_prefix},
         {"method": "GET", "path": f"{api_prefix}/tasks"},
         {"method": "POST", "path": f"{api_prefix}/tasks/create"},
         {"method": "GET", "path": f"{api_prefix}/tasks/{{task_id}}"},
@@ -1187,21 +1398,9 @@ def _handle_project_create(body: dict) -> dict:
         {"method": "GET", "path": f"{api_prefix}/agents"},
     ]
     try:
-        result = send_request("aman.register_routes", new_routes)
-        _log(f"Registered {len(new_routes)} route(s) for {project_key}")
+        send_request("aman.register_routes", routes)
     except Exception as e:
-        _log(f"Route registration failed: {e}")
-
-    _log(f"Project created: {project_key} ({project_name})")
-    return _json_response({"ok": True, "project_key": project_key, "project_name": project_name}, 201)
-
-
-def _handle_get_project_config(project_key: str) -> dict:
-    """Return the full project config as JSON (for import)."""
-    proj = _projects.get(project_key, {}).get("config", {})
-    if not proj:
-        return _json_response({"error": f"project '{project_key}' not found"}, 404)
-    return _json_response(proj)
+        _log(f"Route registration failed for {project_key}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1220,13 +1419,27 @@ def _esc(s: str) -> str:
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
+def _esc_js(s: str) -> str:
+    """Escape a string for safe inclusion in a JS single-quoted string."""
+    return (s or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
+
+
 def _build_project_card(key: str, proj: dict) -> str:
     config = proj.get("config", {})
     name = _esc(config.get("project_name", key))
     desc = _esc(config.get("description", ""))
-    return (f'<a href="/api/v1/team/projects/{_esc(key)}" class="project-card">'
-            f'<h2>{name}</h2><p>{desc}</p>'
-            f'<span class="project-key">{_esc(key)}</span></a>')
+    name_js = _esc_js(name)
+    desc_js = _esc_js(config.get("description", ""))
+    key_esc = _esc(key)
+    return (
+        f'<div class="project-card" onclick="event.target.closest(\'button\') || (window.location.href=\'/api/v1/team/projects/{key_esc}\')">'
+        f'<div class="card-actions">'
+        f'<button title="Edit" onclick="event.stopPropagation();openEditModal(\'{key_esc}\',\'{name_js}\',\'{desc_js}\')">&#9998;</button>'
+        f'<button class="del" title="Delete" onclick="event.stopPropagation();confirmDelete(\'{key_esc}\',\'{name_js}\')">&times;</button>'
+        f'</div>'
+        f'<h2>{name}</h2><p>{desc}</p>'
+        f'<span class="project-key">{key_esc}</span></div>'
+    )
 
 
 def _build_kanban_columns(proj: dict) -> str:
@@ -1336,6 +1549,7 @@ def handle_on_load(params: Any) -> dict:
     route_specs.append({"method": "GET", "path": "/team/setup"})
     # Setup API routes
     route_specs.append({"method": "POST", "path": "/team/setup"})
+    route_specs.append({"method": "POST", "path": "/team/update"})
     route_specs.append({"method": "POST", "path": "/team/projects/create"})
 
     for project_key, config in discovered.items():
@@ -1361,6 +1575,9 @@ def handle_on_load(params: Any) -> dict:
         route_specs.extend([
             {"method": "GET", "path": api_prefix},
             {"method": "GET", "path": f"{api_prefix}/config"},
+            {"method": "POST", "path": f"{api_prefix}/update"},
+            {"method": "POST", "path": f"{api_prefix}/stages/update"},
+            {"method": "DELETE", "path": api_prefix},
             {"method": "GET", "path": f"{api_prefix}/tasks"},
             {"method": "POST", "path": f"{api_prefix}/tasks/create"},
             {"method": "GET", "path": f"{api_prefix}/tasks/{{task_id}}"},
@@ -1446,12 +1663,48 @@ def handle_route(params: Any) -> dict:
             body_json = {}
         return _handle_team_setup(body_json)
 
+    # ── Team update ─────────────────────────────────────────────────
+    if method == "POST" and clean in ("/team/update", "/team/update/"):
+        try:
+            body_json = json.loads(body) if body else {}
+        except (json.JSONDecodeError, TypeError):
+            body_json = {}
+        return _handle_team_update(body_json)
+
     if method == "POST" and clean in ("/team/projects/create", "/team/projects/create/"):
         try:
             body_json = json.loads(body) if body else {}
         except (json.JSONDecodeError, TypeError):
             body_json = {}
         return _handle_project_create(body_json)
+
+    # ── Project update / delete / stages ─────────────────────────────
+    m_update = re.match(r"/team/projects/([^/]+)/update$", clean)
+    if m_update and method == "POST":
+        try:
+            body_json = json.loads(body) if body else {}
+        except (json.JSONDecodeError, TypeError):
+            body_json = {}
+        project_key = m_update.group(1)
+        if project_key not in _projects:
+            return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}
+        return _handle_project_update(project_key, body_json)
+
+    m_stages = re.match(r"/team/projects/([^/]+)/stages/update$", clean)
+    if m_stages and method == "POST":
+        try:
+            body_json = json.loads(body) if body else {}
+        except (json.JSONDecodeError, TypeError):
+            body_json = {}
+        project_key = m_stages.group(1)
+        if project_key not in _projects:
+            return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}
+        return _handle_stages_update(project_key, body_json)
+
+    m_delete = re.match(r"/team/projects/([^/]+)$", clean)
+    if m_delete and method == "DELETE":
+        project_key = m_delete.group(1)
+        return _handle_project_delete(project_key)
 
     # ── Project config (for import) ──────────────────────────────────
     m_config = re.match(r"/team/projects/([^/]+)/config", clean)

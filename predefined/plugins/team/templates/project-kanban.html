@@ -10,9 +10,14 @@
          background: #0b0d13; color: #e0e0e0; min-height: 100vh; }
   .top-bar { display: flex; align-items: center; gap: 12px; padding: 12px 20px;
               border-bottom: 1px solid #1e2030; background: #0f1119; }
-  .top-bar a { color: #888; text-decoration: none; font-size: 12px; }
+  .top-bar a { color: #888; text-decoration: none; font-size: 12px; flex-shrink: 0; }
   .top-bar a:hover { color: #e0e0e0; }
   .top-bar h1 { font-size: 16px; font-weight: 600; }
+  .top-bar .spacer { flex: 1; }
+  .top-bar .bar-btn { padding: 5px 10px; border-radius: 4px; border: 1px solid #2a2d3a;
+    background: #1a1d2b; color: #aaa; cursor: pointer; font-size: 11px; flex-shrink: 0; }
+  .top-bar .bar-btn:hover { border-color: #555; color: #e0e0e0; }
+
   .board { display: flex; gap: 0; padding: 16px; overflow-x: auto; min-height: calc(100vh - 50px); }
   .column { flex: 0 0 280px; display: flex; flex-direction: column; background: #0f1119;
              border: 1px solid #1e2030; border-radius: 8px; margin-right: 12px; }
@@ -30,35 +35,72 @@
   .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
              color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
   .add-btn:hover { color: #aaa; border-color: #555; }
+
   .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
            z-index: 100; align-items: center; justify-content: center; }
   .modal.open { display: flex; }
   .modal-card { background: #13151f; border: 1px solid #1e2030; border-radius: 10px;
-                padding: 24px; width: 400px; max-width: 90vw; }
+                padding: 24px; width: 440px; max-width: 90vw; max-height: 85vh;
+                overflow-y: auto; }
   .modal-card h3 { font-size: 15px; margin-bottom: 16px; }
-  .modal-card input, .modal-card textarea { width: 100%; padding: 8px 10px;
+  .form-group { margin-bottom: 12px; }
+  .form-group label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
+  .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px 10px;
     background: #0b0d13; border: 1px solid #2a2d3a; border-radius: 6px;
-    color: #e0e0e0; font-size: 13px; margin-bottom: 10px; font-family: inherit; }
-  .modal-card textarea { resize: vertical; min-height: 80px; }
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    color: #e0e0e0; font-size: 13px; font-family: inherit; }
+  .form-group textarea { resize: vertical; min-height: 60px; }
+  .form-group .hint { font-size: 11px; color: #555; margin-top: 4px; }
+
+  .stage-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px;
+                padding: 6px 8px; background: #0f1119; border: 1px solid #1e2030;
+                border-radius: 6px; }
+  .stage-row input { flex: 1; padding: 5px 7px; background: #0b0d13; border: 1px solid #2a2d3a;
+                     border-radius: 4px; color: #e0e0e0; font-size: 12px; min-width: 0; }
+  .stage-row input.stage-id { max-width: 90px; }
+  .stage-row input.stage-name { max-width: 140px; }
+  .stage-row input.allowed-next { max-width: 180px; }
+  .stage-row button { padding: 4px 8px; background: none; border: 1px solid #2a2d3a;
+                      color: #888; border-radius: 4px; cursor: pointer; font-size: 11px; flex-shrink: 0; }
+  .stage-row button:hover { color: #e0e0e0; border-color: #555; }
+  .stage-row button.danger:hover { color: #ef4444; border-color: #ef4444; }
+  .add-stage-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
+                   color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .add-stage-btn:hover { color: #aaa; border-color: #555; }
+  .empty-state { padding: 24px; text-align: center; color: #555; font-size: 12px; }
+
+  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
   .modal-actions button { padding: 6px 14px; border-radius: 6px; border: 1px solid #2a2d3a;
     background: #1a1d2b; color: #e0e0e0; cursor: pointer; font-size: 12px; }
   .modal-actions button.primary { background: #6366f1; border-color: #6366f1; }
-  .empty-state { padding: 24px; text-align: center; color: #555; font-size: 12px; }
+
+  .flash { position: fixed; top: 16px; right: 16px; padding: 10px 16px; border-radius: 6px;
+           font-size: 13px; z-index: 200; max-width: 360px; }
+  .flash.success { background: #064e3b; border: 1px solid #065f46; color: #6ee7b7; }
+  .flash.error { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
 </style>
 </head>
 <body>
 <div class="top-bar">
   <a href="/api/v1/team">&larr; Projects</a>
   <h1>$project_name</h1>
+  <span class="spacer"></span>
+  <button class="bar-btn" onclick="openEditProject()">Edit Project</button>
+  <button class="bar-btn" onclick="openEditBoard()">Edit Board</button>
 </div>
 <div class="board" id="board">$columns_html</div>
 
+<!-- New Task Modal -->
 <div class="modal" id="createModal">
   <div class="modal-card">
     <h3>New Task</h3>
-    <input type="text" id="newTitle" placeholder="Task title">
-    <textarea id="newDesc" placeholder="Description (optional)"></textarea>
+    <div class="form-group">
+      <label>Title</label>
+      <input type="text" id="newTitle" placeholder="Task title">
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <textarea id="newDesc" placeholder="Description (optional)"></textarea>
+    </div>
     <input type="hidden" id="newStage">
     <div class="modal-actions">
       <button onclick="closeCreate()">Cancel</button>
@@ -67,15 +109,66 @@
   </div>
 </div>
 
+<!-- Edit Project Modal -->
+<div class="modal" id="editProjectModal">
+  <div class="modal-card">
+    <h3>Edit Project</h3>
+    <div class="form-group">
+      <label>Project Name</label>
+      <input type="text" id="editProjName">
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <textarea id="editProjDesc" rows="2"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Project Key</label>
+      <input type="text" id="editProjKey" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9-]/g,'')">
+      <div class="hint">Changing the key renames the project folder. You will be redirected to the new URL.</div>
+    </div>
+    <div class="modal-actions">
+      <button onclick="closeEditProject()">Cancel</button>
+      <button class="primary" onclick="saveProject()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Board Modal -->
+<div class="modal" id="editBoardModal">
+  <div class="modal-card">
+    <h3>Edit Board Stages</h3>
+    <div class="form-group">
+      <label>Initial Stage</label>
+      <select id="editInitialStage"></select>
+    </div>
+    <label style="font-size:12px;color:#aaa;margin-bottom:8px;display:block;">Stages</label>
+    <div id="stageList"></div>
+    <button class="add-stage-btn" onclick="addStageRow()">+ Add Stage</button>
+    <div class="modal-actions">
+      <button onclick="closeEditBoard()">Cancel</button>
+      <button class="primary" onclick="saveStages()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div id="flash"></div>
+
 <script>
-const PROJECT = "$project_key";
-const BASE = "/api/v1/team/projects/" + PROJECT;
+var PROJECT = "$project_key";
+var BASE = "/api/v1/team/projects/" + PROJECT;
+
+// ── Data loading ──────────────────────────────────────────────
+
+var _cachedStages = [];
+var _cachedTasks = [];
 
 async function load() {
   try {
-    const r = await fetch(BASE + "/tasks");
-    const data = await r.json();
-    render(data.stages || [], data.tasks || []);
+    var r = await fetch(BASE + "/tasks");
+    var data = await r.json();
+    _cachedStages = data.stages || [];
+    _cachedTasks = data.tasks || [];
+    render(_cachedStages, _cachedTasks);
   } catch(e) { console.error(e); }
 }
 
@@ -100,7 +193,7 @@ function render(stages, tasks) {
       var html = "";
       for (var k = 0; k < items.length; k++) {
         var t = items[k];
-        html += '<div class="card" onclick="moveTask(\'' + t.id + '\')">' +
+        html += '<div class="card" onclick="moveTask(\'' + esc(t.id) + '\')">' +
                 '<div class="card-title">' + esc(t.title) + '</div>' +
                 '<div class="card-meta">' + esc(t.priority || 'normal') + (t.assignee ? ' &middot; ' + esc(t.assignee) : '') + '</div>' +
                 '</div>';
@@ -110,11 +203,14 @@ function render(stages, tasks) {
   }
 }
 
+// ── Tasks ─────────────────────────────────────────────────────
+
 function openCreate(stageId) {
   document.getElementById("newStage").value = stageId;
   document.getElementById("newTitle").value = "";
   document.getElementById("newDesc").value = "";
   document.getElementById("createModal").classList.add("open");
+  setTimeout(function(){ document.getElementById("newTitle").focus(); }, 100);
 }
 
 function closeCreate() {
@@ -137,11 +233,9 @@ async function createTask() {
 }
 
 async function moveTask(taskId) {
-  var r = await fetch(BASE + "/tasks");
-  var data = await r.json();
-  var task = (data.tasks || []).find(function(t) { return t.id === taskId; });
+  var stages = _cachedStages;
+  var task = (_cachedTasks || []).find(function(t) { return t.id === taskId; });
   if (!task) return;
-  var stages = data.stages || [];
   var idx = stages.findIndex(function(s) { return s.id === task.current_stage; });
   var nextIds = idx >= 0 ? (stages[idx].allowed_next || []) : [];
   if (nextIds.length === 0) return;
@@ -157,7 +251,135 @@ async function moveTask(taskId) {
   } catch(e) { console.error(e); }
 }
 
+// ── Edit Project ──────────────────────────────────────────────
+
+var _editStages = [];
+
+function openEditProject() {
+  document.getElementById("editProjName").value = document.querySelector(".top-bar h1").textContent;
+  document.getElementById("editProjDesc").value = "";
+  document.getElementById("editProjKey").value = PROJECT;
+  document.getElementById("editProjectModal").classList.add("open");
+}
+
+function closeEditProject() {
+  document.getElementById("editProjectModal").classList.remove("open");
+}
+
+async function saveProject() {
+  var name = document.getElementById("editProjName").value.trim();
+  var desc = document.getElementById("editProjDesc").value.trim();
+  var newKey = document.getElementById("editProjKey").value.trim();
+  if (!name || !newKey) return;
+
+  try {
+    var r = await fetch(BASE + "/update", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({project_name: name, description: desc, project_key: newKey})
+    });
+    if (!r.ok) { var e = await r.json(); throw new Error(e.error || "Save failed"); }
+    var data = await r.json();
+    closeEditProject();
+    flash("Project updated", "success");
+    if (data.redirect) {
+      setTimeout(function(){ window.location.href = data.redirect; }, 600);
+    } else {
+      setTimeout(function(){ window.location.reload(); }, 600);
+    }
+  } catch(e) { flash(e.message, "error"); }
+}
+
+// ── Edit Board ────────────────────────────────────────────────
+
+function openEditBoard() {
+  _editStages = JSON.parse(JSON.stringify(_cachedStages));
+  renderStageEditor();
+  document.getElementById("editBoardModal").classList.add("open");
+}
+
+function closeEditBoard() {
+  document.getElementById("editBoardModal").classList.remove("open");
+}
+
+function addStageRow() {
+  var id = "stage-" + Date.now();
+  _editStages.push({id: id, name: "", allowed_next: []});
+  renderStageEditor();
+}
+
+function removeStageRow(idx) {
+  _editStages.splice(idx, 1);
+  renderStageEditor();
+}
+
+function renderStageEditor() {
+  var html = "";
+  for (var i = 0; i < _editStages.length; i++) {
+    var s = _editStages[i];
+    html += '<div class="stage-row">' +
+            '<input class="stage-id" value="' + esc(s.id) + '" onchange="_editStages[' + i + '].id=this.value;refreshInitialSelect()" placeholder="id">' +
+            '<input class="stage-name" value="' + esc(s.name) + '" onchange="_editStages[' + i + '].name=this.value" placeholder="Name">' +
+            '<input class="allowed-next" value="' + esc((s.allowed_next||[]).join(", ")) + '" onchange="_editStages[' + i + '].allowed_next=this.value.split(\',\').map(function(x){return x.trim()}).filter(Boolean)" placeholder="Next stages (comma)">' +
+            '<button class="danger" onclick="removeStageRow(' + i + ')">&times;</button>' +
+            '</div>';
+  }
+  if (!html) html = '<div class="empty-state">No stages. Add at least one.</div>';
+  document.getElementById("stageList").innerHTML = html;
+  refreshInitialSelect();
+}
+
+function refreshInitialSelect() {
+  var sel = document.getElementById("editInitialStage");
+  var cur = sel.value;
+  var initial = "";
+  for (var i = 0; i < _cachedStages.length; i++) {
+    if (_cachedStages[i].id === (_cachedStages[0] && _cachedStages[0].id)) {
+      // keep existing initial
+    }
+  }
+  // Find current initial stage from the full config
+  var opts = "";
+  for (var j = 0; j < _editStages.length; j++) {
+    var sid = _editStages[j].id;
+    var selAttr = (j === 0 && !cur) ? " selected" : (sid === cur ? " selected" : "");
+    opts += '<option value="' + esc(sid) + '"' + selAttr + '>' + esc(sid) + '</option>';
+  }
+  sel.innerHTML = opts;
+}
+
+async function saveStages() {
+  if (_editStages.length === 0) {
+    flash("At least one stage is required", "error");
+    return;
+  }
+  var initialStage = document.getElementById("editInitialStage").value || _editStages[0].id;
+
+  try {
+    var r = await fetch(BASE + "/stages/update", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({stages: _editStages, initial_stage: initialStage})
+    });
+    if (!r.ok) { var e = await r.json(); throw new Error(e.error || "Save failed"); }
+    closeEditBoard();
+    flash("Board stages updated", "success");
+    load();
+  } catch(e) { flash(e.message, "error"); }
+}
+
+// ── Helpers ───────────────────────────────────────────────────
+
 function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function flash(msg, type) {
+  var el = document.getElementById("flash");
+  el.className = "flash " + (type || "success");
+  el.textContent = msg;
+  setTimeout(function(){ el.className = ""; el.textContent = ""; }, 3500);
+}
+
+// ── Init ──────────────────────────────────────────────────────
 
 load();
 setInterval(load, 10000);

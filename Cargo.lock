@@ -1982,7 +1982,6 @@ dependencies = [
  "criterion",
  "kernel",
  "pollster",
- "serde",
  "serde_json",
  "tokio",
  "tracing",
@@ -2413,7 +2412,6 @@ dependencies = [
  "blake3",
  "config",
  "event-bus",
- "futures-util",
  "hook",
  "idle",
  "info-hub",
@@ -2446,7 +2444,6 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tool",
- "tower",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -2994,12 +2991,6 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
-
-[[package]]
-name = "humantime"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
 
 [[package]]
 name = "hyper"
@@ -3626,7 +3617,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
- "humantime",
  "pollster",
  "semver",
  "serde",
@@ -3806,11 +3796,9 @@ dependencies = [
  "futures-util",
  "kernel",
  "reqwest 0.12.28",
- "serde",
  "serde_json",
  "test-utils",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3888,7 +3876,6 @@ name = "macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
- "quote",
  "syn 2.0.117",
  "trybuild",
 ]
@@ -4300,7 +4287,6 @@ dependencies = [
  "event-bus",
  "kernel",
  "serde",
- "serde_json",
  "uuid",
 ]
 
@@ -9677,12 +9663,10 @@ dependencies = [
 name = "work"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "event-bus",
  "kernel",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",

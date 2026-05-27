@@ -188,6 +188,7 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
             .map_err(|e| format!("create http client: {e}"))?;
         let _ = http_client
             .post(format!("{url}/agent/shutdown"))
+            .header("x-aman-confirm", "yes")
             .send()
             .await;
     }

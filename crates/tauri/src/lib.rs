@@ -109,6 +109,7 @@ pub fn run() {
                     {
                         let _ = http_client
                             .post(format!("{url}/agent/shutdown"))
+                            .header("x-aman-confirm", "yes")
                             .send()
                             .await;
                     }

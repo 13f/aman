@@ -135,18 +135,70 @@ async fn run() -> Result<(), i32> {
         serde_json::json!({"bind": bind.to_string()}),
     )).await;
 
-    // Start runtime with a timeout so the process doesn't hang forever
-    // if a startup phase gets stuck (e.g. Phase 4 source init).
-    match tokio::time::timeout(Duration::from_secs(30), runtime.start()).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            eprintln!("Runtime start error: {e}");
-            return Err(1);
+    // Register signal handlers before runtime.start() so Ctrl+C can
+    // interrupt a stuck startup (e.g. Phase 4 source init).
+    let shutdown_notify = runtime.shutdown_notify();
+
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|_| 1)?;
+
+    // Race startup against interrupt signals.
+    #[cfg(unix)]
+    {
+        tokio::select! {
+            r = tokio::time::timeout(Duration::from_secs(30), runtime.start()) => {
+                match r {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        eprintln!("Runtime start error: {e}");
+                        return Err(1);
+                    }
+                    Err(_) => {
+                        let phase = runtime.phase();
+                        eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+                        return Err(1);
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT during startup, shutting down");
+                let _ = runtime.shutdown().await;
+                server.shutdown();
+                return Err(1);
+            }
+            _ = sigterm.recv() => {
+                tracing::info!("received SIGTERM during startup, shutting down");
+                let _ = runtime.shutdown().await;
+                server.shutdown();
+                return Err(1);
+            }
         }
-        Err(_) => {
-            let phase = runtime.phase();
-            eprintln!("Runtime start timed out after 30s (phase={phase:?})");
-            return Err(1);
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            r = tokio::time::timeout(Duration::from_secs(30), runtime.start()) => {
+                match r {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        eprintln!("Runtime start error: {e}");
+                        return Err(1);
+                    }
+                    Err(_) => {
+                        let phase = runtime.phase();
+                        eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+                        return Err(1);
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT during startup, shutting down");
+                let _ = runtime.shutdown().await;
+                server.shutdown();
+                return Err(1);
+            }
         }
     }
 
@@ -160,12 +212,8 @@ async fn run() -> Result<(), i32> {
     )).await;
 
     // Wait for shutdown signal or HTTP-initiated shutdown completion.
-    let shutdown_notify = runtime.shutdown_notify();
     #[cfg(unix)]
     {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .map_err(|_| 1)?;
-
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT, shutting down");

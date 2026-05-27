@@ -15,7 +15,7 @@ use crate::personality::{serde_duration_secs, WorkPersonality};
 // ---------------------------------------------------------------------------
 
 /// Top-level work system configuration.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WorkConfig {
     /// Agent work personality.
     #[serde(default)]
@@ -28,16 +28,6 @@ pub struct WorkConfig {
     /// Review settings.
     #[serde(default)]
     pub review: ReviewConfig,
-}
-
-impl Default for WorkConfig {
-    fn default() -> Self {
-        Self {
-            personality: WorkPersonality::default(),
-            board: BoardConfig::default(),
-            review: ReviewConfig::default(),
-        }
-    }
 }
 
 impl WorkConfig {

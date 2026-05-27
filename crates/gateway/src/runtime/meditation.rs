@@ -32,6 +32,12 @@ const DEFAULT_POLL_INTERVAL_SECS: f64 = 5.0;
 /// Max entities to introspect per meditation cycle.
 const MAX_ENTITY_INTROSPECTIONS: usize = 12;
 
+type EntityIntrospection = (
+    String,
+    Option<EntityProfile>,
+    Vec<(String, String, String)>,
+);
+
 pub struct MeditationRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
     meditation_config: OnceLock<MeditationConfig>,
@@ -212,7 +218,7 @@ impl MeditationRunner {
         );
 
         // Per-entity introspections from recent trace entities
-        let mut entity_introspections: Vec<(String, Option<EntityProfile>, Vec<(String, String, String)>)> = Vec::new();
+        let mut entity_introspections: Vec<EntityIntrospection> = Vec::new();
         if !traces.is_empty() {
             let mut seen = HashSet::new();
             for trace in traces.iter().take(review_depth) {
@@ -425,11 +431,10 @@ impl MeditationRunner {
                 );
                 let _ = bus.publish(event).await;
             }
-            if let Some(registry) = self.agent_registry.get() {
-                if let Some(coord) = registry.get_idle_coordination(agent_id).await {
+            if let Some(registry) = self.agent_registry.get()
+                && let Some(coord) = registry.get_idle_coordination(agent_id).await {
                     coord.pending_depth_reset.store(true, Ordering::SeqCst);
                 }
-            }
         }
 
         self.signal_cooldown(agent_id).await;
@@ -437,13 +442,14 @@ impl MeditationRunner {
     }
 
     /// Phase 6: Write meditation report via atomic write.
+    #[allow(clippy::too_many_arguments)]
     fn write_meditation_report(
         &self,
         agent_id: &str,
         stats: &MemoryStats,
         think: &ThinkResult,
         duration_ms: u64,
-        entity_introspections: &[(String, Option<EntityProfile>, Vec<(String, String, String)>)],
+        entity_introspections: &[EntityIntrospection],
         success_patterns: &[String],
         failure_patterns: &[String],
         procedural_updates: u64,
@@ -564,11 +570,10 @@ impl MeditationRunner {
         if let Ok(entries) = fs::read_dir(&report_dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
-                if let Some(s) = name.to_str() {
-                    if s.starts_with(".tmp.") {
+                if let Some(s) = name.to_str()
+                    && s.starts_with(".tmp.") {
                         let _ = fs::remove_file(entry.path());
                     }
-                }
             }
         }
 

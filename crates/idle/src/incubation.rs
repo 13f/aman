@@ -101,11 +101,11 @@ impl IncubationManager {
             let handle = tokio::spawn(future);
             let _ = handle.await;
             let mut guard = active_clone.lock().await;
-            if let Some(ref incumbent) = *guard {
-                if incumbent.id == id {
-                    info!(id, desc = %desc, "Incubation background task completed");
-                    guard.take();
-                }
+            if let Some(ref incumbent) = *guard
+                && incumbent.id == id
+            {
+                info!(id, desc = %desc, "Incubation background task completed");
+                guard.take();
             }
         });
 

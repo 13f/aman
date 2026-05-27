@@ -274,11 +274,10 @@ impl SessionManager {
                     // (these carry the original creation agent_id).
                     for e in &c.events {
                         let et = e["event_type"].as_str().unwrap_or("");
-                        if et.contains("MessageReceived") {
-                            if let Some(aid) = e["payload"]["agent_id"].as_str().filter(|id| !id.is_empty()) {
+                        if et.contains("MessageReceived")
+                            && let Some(aid) = e["payload"]["agent_id"].as_str().filter(|id| !id.is_empty()) {
                                 return Some(aid.to_owned());
                             }
-                        }
                     }
                     // Second pass: any event with an agent_id.
                     for e in &c.events {
@@ -334,7 +333,7 @@ impl SessionManager {
                         .map(String::from)
                 })
             })
-            .or_else(|| {
+            .or({
                 if best.db_agent_id.is_empty() {
                     None
                 } else {
@@ -465,8 +464,8 @@ impl SessionManager {
         });
 
         // Persist updated session record to SQLite
-        if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
-            if let Some(inst) = self.workflow_engine.get_instance(session_id) {
+        if let Some(store) = self.agent_registry.get_session_store(agent_id).await
+            && let Some(inst) = self.workflow_engine.get_instance(session_id) {
                 let session_type = inst.data.get("session_type")
                     .and_then(|v| v.as_str()).unwrap_or("persistent");
                 let created_at = inst.data.get("created_at")
@@ -485,7 +484,6 @@ impl SessionManager {
                 title: None,
                 });
             }
-        }
     }
 }
 

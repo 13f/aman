@@ -77,7 +77,7 @@ edition = "2024"
 license = "AGPL-3.0"
 version = "0.1.0"
 repository = "https://github.com/jerin/aman"
-rust-version = "1.88"
+rust-version = "1.91"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

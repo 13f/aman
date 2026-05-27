@@ -950,7 +950,7 @@ async fn source_pause_resume(
     } else {
         runtime.sources().resume(&id).await?;
     }
-    runtime.audit().record("cli", &format!("source.{action}"), &id, "ok", "");
+    runtime.audit().record("cli", format!("source.{action}"), &id, "ok", "");
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -973,7 +973,7 @@ async fn chat_sessions(runtime: &AgentRuntime, params: Option<&Value>) -> AmanRe
     let sessions: Vec<Value> = list
         .into_iter()
         .filter(|s| {
-            agent_key.as_ref().map_or(true, |ak| {
+            agent_key.as_ref().is_none_or(|ak| {
                 s.session_type.as_str() == ak.as_str() || s.session_type == "persistent"
             })
         })

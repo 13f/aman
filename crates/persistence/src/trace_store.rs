@@ -65,7 +65,7 @@ impl JsonlTraceStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json") {
+            if path.extension().is_some_and(|e| e == "json") {
                 let mtime = entry
                     .metadata()?
                     .modified()?
@@ -190,7 +190,7 @@ impl TraceStore for JsonlTraceStore {
             f.write_all(json.as_bytes())?;
             f.sync_all()?;
         }
-        fs::rename(&tmp, &dir.join(format!("{trace_id}.json")))?;
+        fs::rename(&tmp, dir.join(format!("{trace_id}.json")))?;
 
         tracing::trace!(
             agent_id,
@@ -264,11 +264,11 @@ impl TraceStore for JsonlTraceStore {
             if entry
                 .path()
                 .extension()
-                .map_or(false, |e| e == "json")
+                .is_some_and(|e| e == "json")
                 && !entry
                     .file_name()
                     .to_str()
-                    .map_or(false, |n| n.starts_with(".tmp."))
+                    .is_some_and(|n| n.starts_with(".tmp."))
             {
                 return Ok(false);
             }
@@ -439,22 +439,18 @@ impl TraceStore for JsonlTraceStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "json")
+            if path.extension().is_some_and(|e| e == "json")
                 && !entry
                     .file_name()
                     .to_str()
-                    .map_or(false, |n| n.starts_with(".tmp."))
+                    .is_some_and(|n| n.starts_with(".tmp."))
+                && let Ok(meta) = entry.metadata()
+                && let Ok(mtime) = meta.modified()
+                && let Ok(secs) = mtime.duration_since(UNIX_EPOCH)
+                && secs.as_secs() < cutoff
             {
-                if let Ok(meta) = entry.metadata() {
-                    if let Ok(mtime) = meta.modified() {
-                        if let Ok(secs) = mtime.duration_since(UNIX_EPOCH) {
-                            if secs.as_secs() < cutoff {
-                                let _ = fs::remove_file(&path);
-                                pruned += 1;
-                            }
-                        }
-                    }
-                }
+                let _ = fs::remove_file(&path);
+                pruned += 1;
             }
         }
 

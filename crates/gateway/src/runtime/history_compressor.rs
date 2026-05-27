@@ -167,27 +167,25 @@ impl HistoryCompressor {
 
     /// Replace duplicate tool outputs with a placeholder.
     /// Returns (messages_replaced, tokens_saved).
-    fn dedup_tool_outputs(&self, history: &mut Vec<ChatMessage>) -> (usize, usize) {
+    fn dedup_tool_outputs(&self, history: &mut [ChatMessage]) -> (usize, usize) {
         let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         let mut replaced = 0usize;
         let mut saved = 0usize;
 
-        for i in 0..history.len() {
-            let msg = &history[i];
+        for (i, msg) in history.iter_mut().enumerate() {
             if msg.role == kernel::react::ChatMessageRole::Tool {
                 let tool_name = msg.tool_name.as_deref().unwrap_or("unknown");
-                // Hash key: tool_name + first 200 chars of content (enough to spot duplicates)
                 let key = format!(
                     "{}|{}",
                     tool_name,
                     &msg.content[..msg.content.len().min(200)]
                 );
                 if let Some(&first_idx) = seen.get(&key) {
-                    let original_tokens = TokenBudget::estimate_tokens(&history[i].content);
-                    history[i].content =
+                    let original_tokens = TokenBudget::estimate_tokens(&msg.content);
+                    msg.content =
                         format!("[Duplicate tool output: {tool_name} — same result as earlier call #{first_idx}]");
                     saved += original_tokens.saturating_sub(
-                        TokenBudget::estimate_tokens(&history[i].content),
+                        TokenBudget::estimate_tokens(&msg.content),
                     );
                     replaced += 1;
                 } else {
@@ -202,7 +200,7 @@ impl HistoryCompressor {
     /// Returns (args_truncated, tokens_saved).
     fn truncate_tool_args(
         &self,
-        history: &mut Vec<ChatMessage>,
+        history: &mut [ChatMessage],
         max_chars: usize,
     ) -> (usize, usize) {
         let mut truncated = 0usize;
@@ -247,7 +245,7 @@ impl HistoryCompressor {
     /// Returns (messages_summarized, tokens_saved).
     fn summarize_tool_results(
         &self,
-        history: &mut Vec<ChatMessage>,
+        history: &mut [ChatMessage],
         middle_start: usize,
         tail_start: usize,
     ) -> (usize, usize) {
@@ -255,8 +253,7 @@ impl HistoryCompressor {
         let mut saved = 0usize;
 
         let end = tail_start.min(history.len());
-        for i in middle_start..end {
-            let msg = &history[i];
+        for msg in &mut history[middle_start..end] {
             if msg.role != kernel::react::ChatMessageRole::Tool {
                 continue;
             }
@@ -274,7 +271,7 @@ impl HistoryCompressor {
 
             let original_tokens = TokenBudget::estimate_tokens(&msg.content);
             saved += original_tokens.saturating_sub(TokenBudget::estimate_tokens(&summary));
-            history[i].content = summary;
+            msg.content = summary;
             summarized += 1;
         }
         (summarized, saved)
@@ -303,9 +300,8 @@ impl HistoryCompressor {
         let mut tail_start = history.len();
         let mut tail_tokens = 0usize;
         let mut found_latest_user = false;
-        let mut collected = 0usize;
 
-        for i in (head_len..history.len()).rev() {
+        for (collected, i) in (head_len..history.len()).rev().enumerate() {
             let msg_tokens = TokenBudget::estimate_tokens(&history[i].content);
             let would_exceed = tail_tokens + msg_tokens > max_tail_tokens;
 
@@ -320,7 +316,6 @@ impl HistoryCompressor {
 
             tail_start = i;
             tail_tokens += msg_tokens;
-            collected += 1;
         }
 
         // Ensure latest user message is in tail
@@ -358,12 +353,12 @@ impl HistoryCompressor {
         // pull the tool_call (and its assistant message) into TAIL.
         if segments.tail_start < history.len() {
             let first_tail = &history[segments.tail_start];
-            if first_tail.role == kernel::react::ChatMessageRole::Tool {
-                if let Some(call_id) = &first_tail.tool_call_id {
+            if first_tail.role == kernel::react::ChatMessageRole::Tool
+                && let Some(call_id) = &first_tail.tool_call_id {
                     // Find the assistant message with this tool_call in MIDDLE
                     for i in (segments.head_len..segments.tail_start).rev() {
-                        if history[i].role == kernel::react::ChatMessageRole::Assistant {
-                            if let Some(tcs) = &history[i].tool_calls {
+                        if history[i].role == kernel::react::ChatMessageRole::Assistant
+                            && let Some(tcs) = &history[i].tool_calls {
                                 let has_match = tcs.iter().any(|tc| {
                                     tc.get("id")
                                         .and_then(|v| v.as_str())
@@ -375,10 +370,8 @@ impl HistoryCompressor {
                                     break;
                                 }
                             }
-                        }
                     }
                 }
-            }
         }
     }
 

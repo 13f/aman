@@ -150,11 +150,10 @@ pub fn run() {
             // Set the window/dock icon explicitly for dev mode.
             // The bundle.icon config only applies to production builds.
             let icon_data = include_bytes!("../icons/128x128@2x.png");
-            if let Ok(icon) = tauri::image::Image::from_bytes(icon_data) {
-                if let Some(window) = app.get_webview_window("main") {
+            if let Ok(icon) = tauri::image::Image::from_bytes(icon_data)
+                && let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_icon(icon);
                 }
-            }
 
             // Build menu bar
             let handle = app.handle();

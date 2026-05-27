@@ -1285,12 +1285,12 @@ fn discover_files_recursive(root: &Path, found: &mut Vec<PathBuf>) -> AmanResult
 fn extract_skill_markdown_yaml(content: &str) -> AmanResult<String> {
     // 1. Try --- YAML frontmatter format (standard SKILL.md convention)
     let trimmed = content.trim();
-    if let Some(after_first) = trimmed.strip_prefix("---") {
-        if let Some(end) = after_first.find("\n---") {
-            let frontmatter = after_first[..end].trim().to_owned();
-            if !frontmatter.is_empty() {
-                return Ok(frontmatter);
-            }
+    if let Some(after_first) = trimmed.strip_prefix("---")
+        && let Some(end) = after_first.find("\n---")
+    {
+        let frontmatter = after_first[..end].trim().to_owned();
+        if !frontmatter.is_empty() {
+            return Ok(frontmatter);
         }
     }
 

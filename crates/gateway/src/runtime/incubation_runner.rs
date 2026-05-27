@@ -305,8 +305,8 @@ async fn run_phases(
                 .relate(&hyp.mem_a_rid, &hyp.mem_b_rid, "cross_domain_inspiration")
                 .await;
 
-            if score >= high_value_threshold {
-                if let Some(bus) = global_bus {
+            if score >= high_value_threshold
+                && let Some(bus) = global_bus {
                     let event = Event::new(
                         format!("idle:incubation:{agent_id}:{stored_rid}"),
                         EventType::Custom("idle.inspiration".to_owned()),
@@ -322,7 +322,6 @@ async fn run_phases(
                     );
                     let _ = bus.publish(event).await;
                 }
-            }
 
             stored_count += 1;
         }
@@ -383,11 +382,10 @@ async fn run_phases(
 
     // Signal depth reset if we produced inspirations
     let total_stored = stored_count + evolved_count;
-    if total_stored > 0 {
-        if let Some(coord) = registry.get_idle_coordination(agent_id).await {
+    if total_stored > 0
+        && let Some(coord) = registry.get_idle_coordination(agent_id).await {
             coord.pending_depth_reset.store(true, Ordering::SeqCst);
         }
-    }
 
     signal_cooldown(agent_id, config, registry).await;
     Ok(())
@@ -417,8 +415,8 @@ async fn run_think_and_finish(
         "Incubation: cycle complete",
     );
 
-    if stored > 0 {
-        if let Some(bus) = global_bus {
+    if stored > 0
+        && let Some(bus) = global_bus {
             let event = Event::new(
                 format!("idle:incubation:{agent_id}"),
                 EventType::Custom("idle.cycle_completed".to_owned()),
@@ -431,7 +429,6 @@ async fn run_think_and_finish(
             );
             let _ = bus.publish(event).await;
         }
-    }
 
     Ok(())
 }

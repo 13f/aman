@@ -2566,7 +2566,7 @@ async fn chat_sessions(
         .into_iter()
         .filter(|inst| {
             inst.workflow_name == "message-session"
-                && query.agent_id.as_ref().map_or(true, |aid| {
+                && query.agent_id.as_ref().is_none_or(|aid| {
                     inst.data.get("agent_id")
                         .and_then(|v| v.as_str())
                         .is_some_and(|id| id == aid)
@@ -2625,7 +2625,7 @@ async fn chat_sessions(
             if let Ok(records) = store.list_all() {
                 for rec in records {
                     // Respect agent_id filter when reading from stores.
-                    if query.agent_id.as_ref().map_or(false, |aid| rec.agent_id != *aid) {
+                    if query.agent_id.as_ref().is_some_and(|aid| rec.agent_id != *aid) {
                         continue;
                     }
                     items.push(ChatSessionItem {

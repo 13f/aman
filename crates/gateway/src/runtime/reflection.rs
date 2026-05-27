@@ -535,11 +535,9 @@ fn extract_entities_from_events(events: &[serde_json::Value]) -> Vec<String> {
             .get("payload")
             .and_then(|p| p.get("tool_name"))
             .and_then(|v| v.as_str())
-        {
-            if seen.insert(tool.to_owned()) {
+            && seen.insert(tool.to_owned()) {
                 entities.push(tool.to_owned());
             }
-        }
         // Extract from event_type (e.g., "tool:exec:read_file")
         let event_type = event
             .get("event_type")

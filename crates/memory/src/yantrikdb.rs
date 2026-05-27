@@ -21,6 +21,11 @@ use crate::remote_embedder::RemoteEmbedder;
 // YantrikdbProvider
 // ---------------------------------------------------------------------------
 
+type ThinkChannel = (
+    yantrikdb::ThinkConfig,
+    oneshot::Sender<yantrikdb::ThinkResult>,
+);
+
 enum EmbedKind {
     Remote,
     Ollama,
@@ -48,11 +53,11 @@ pub struct YantrikdbProvider {
     /// Channel for think() — sends (config, reply_tx) to the background
     /// task that calls yantrikdb's synchronous think() via spawn_blocking
     /// and returns the result through the oneshot.
-    think_tx: Option<mpsc::Sender<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>>,
+    think_tx: Option<mpsc::Sender<ThinkChannel>>,
     /// Receiver half of the think channel, stored until the background task
     /// is lazily spawned on the first async think() call (deferred because
     /// open() is synchronous and might not run inside a Tokio runtime).
-    think_rx: Mutex<Option<mpsc::Receiver<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>>>,
+    think_rx: Mutex<Option<mpsc::Receiver<ThinkChannel>>>,
     /// Handle to the background think task, aborted on shutdown/drop.
     think_handle: Mutex<Option<JoinHandle<()>>>,
 }
@@ -141,7 +146,7 @@ impl YantrikdbProvider {
 
         // Create the think channel now (synchronous, no Tokio runtime needed).
         // The background task is spawned lazily on the first async think() call.
-        let (think_tx, think_rx) = mpsc::channel::<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>(1);
+        let (think_tx, think_rx) = mpsc::channel::<ThinkChannel>(1);
 
         Ok(Self {
             db: Some(db_arc),
@@ -467,15 +472,15 @@ impl MemoryProvider for YantrikdbProvider {
         // context so a Tokio runtime is guaranteed to exist).
         {
             let mut handle_guard = self.think_handle.lock().unwrap();
-            if handle_guard.is_none() {
-                if let Some(rx) = self.think_rx.lock().unwrap().take() {
-                    let db_weak = Arc::downgrade(
-                        self.db.as_ref().expect("YantrikdbProvider closed"),
-                    );
-                    *handle_guard = Some(tokio::spawn(async move {
-                        think_background(rx, db_weak).await;
-                    }));
-                }
+            if handle_guard.is_none()
+                && let Some(rx) = self.think_rx.lock().unwrap().take()
+            {
+                let db_weak = Arc::downgrade(
+                    self.db.as_ref().expect("YantrikdbProvider closed"),
+                );
+                *handle_guard = Some(tokio::spawn(async move {
+                    think_background(rx, db_weak).await;
+                }));
             }
         }
 
@@ -541,7 +546,7 @@ impl MemoryProvider for YantrikdbProvider {
 /// synchronous `think()` on a blocking thread, and sends the result back
 /// through the per-request oneshot channel.
 async fn think_background(
-    mut rx: mpsc::Receiver<(yantrikdb::ThinkConfig, oneshot::Sender<yantrikdb::ThinkResult>)>,
+    mut rx: mpsc::Receiver<ThinkChannel>,
     db_weak: std::sync::Weak<yantrikdb::YantrikDB>,
 ) {
     while let Some((config, reply)) = rx.recv().await {
@@ -578,10 +583,9 @@ impl Drop for YantrikdbProvider {
         // a shutdown edge case (the task is already aborted above).
         if let Some(db) = self.db.take()
             && let Ok(db) = Arc::try_unwrap(db)
+            && let Err(e) = db.close()
         {
-            if let Err(e) = db.close() {
-                tracing::error!(error = %e, "Error closing yantrikdb");
-            }
+            tracing::error!(error = %e, "Error closing yantrikdb");
         }
     }
 }

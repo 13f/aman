@@ -119,11 +119,10 @@ impl ExplorationRunner {
         // 1b. Orphan entities in knowledge graph → "what is X"
         if let Ok(entities) = provider.search_entities("*", 10).await {
             for entity in &entities {
-                if let Ok(Some(profile)) = provider.entity_profile(entity).await {
-                    if profile.edge_count == 0 {
+                if let Ok(Some(profile)) = provider.entity_profile(entity).await
+                    && profile.edge_count == 0 {
                         queries.push(format!("what is {entity} and how does it relate to other things?"));
                     }
-                }
             }
         }
 
@@ -176,14 +175,13 @@ impl ExplorationRunner {
                     t.contains("核心兴趣") || t.to_lowercase().contains("primary");
                 continue;
             }
-            if in_primary && t.starts_with("- **") {
-                if let Some(end) = t[4..].find("**") {
+            if in_primary && t.starts_with("- **")
+                && let Some(end) = t[4..].find("**") {
                     let name = t[4..4 + end].trim().to_string();
                     if !name.is_empty() {
                         interests.push(name);
                     }
                 }
-            }
         }
         interests
     }
@@ -477,10 +475,7 @@ fn extract_keywords(query: &str) -> String {
 
     // Remove punctuation and split into tokens.
     let cleaned = query
-        .replace(':', " ")
-        .replace('?', " ")
-        .replace(',', " ")
-        .replace('.', " ");
+        .replace([':', '?', ',', '.'], " ");
     let tokens: Vec<&str> = cleaned
         .split_whitespace()
         .filter(|t| {

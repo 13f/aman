@@ -633,13 +633,11 @@ impl AgentRuntimeBuilder {
         exploration_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
 
         // Pass info-hub config so ExplorationRunner can use its adapters
-        if let Some(ref cfg) = aman_cfg {
-            if let Some(info_hub_value) = &cfg.info_hub {
-                if let Ok(info_cfg) = serde_json::from_value::<info_hub::config::InfoHubConfig>(info_hub_value.clone()) {
+        if let Some(ref cfg) = aman_cfg
+            && let Some(info_hub_value) = &cfg.info_hub
+                && let Ok(info_cfg) = serde_json::from_value::<info_hub::config::InfoHubConfig>(info_hub_value.clone()) {
                     exploration_runner.set_info_hub_config(info_cfg);
                 }
-            }
-        }
 
         // Subscribe to Idle events on the global bus (filtered to kind="exploration" in handle())
         {

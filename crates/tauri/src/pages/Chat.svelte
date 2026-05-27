@@ -152,8 +152,6 @@
       await loadSessions();
       if (sessions.length > 0) {
         selectSession(sessions[0].id);
-      } else {
-        await createSession();
       }
     } catch (e) {
       showToast("error", `Failed to select agent: ${e}`);
@@ -169,11 +167,8 @@
       activeSessionId = "";
       messages = [];
       await loadSessions();
-      // Auto-select most recent session if history exists, otherwise create one
       if (sessions.length > 0) {
         selectSession(sessions[0].id);
-      } else {
-        await createSession();
       }
     } catch (e) {
       showToast("error", `Failed to select agent: ${e}`);
@@ -828,11 +823,11 @@
         // but DON'T clear persistent state (history can be restored later)
         messages = messages.filter(m => m.sessionId !== activeSessionId);
         sessions = sessions.filter(s => s.status === "idle");
-        // Pick the first remaining session, or create a new one
+        // Pick the first remaining session
         if (sessions.length > 0) {
           activeSessionId = sessions[0].id;
         } else {
-          await createSession();
+          activeSessionId = "";
         }
       } else {
         showToast("info", `Capability removed: ${cap}`);
@@ -1581,12 +1576,12 @@
     // Load agents first (sets activeAgentKey, triggers session load for the right agent).
     await loadAgents();
 
-    // Ensure there's at least one session. When arriving with a prefill
-    // (e.g. from a skill card), create a fresh session so the command
-    // doesn't leak into an existing conversation.
-    if (sessions.length === 0 || (prefillInput && prefillInput.length > 0)) {
+    // Only create a fresh session when arriving with a prefill (e.g. from a
+    // skill card), so the command doesn't leak into an existing conversation.
+    // Otherwise open the last session — don't auto-create empty sessions.
+    if (prefillInput && prefillInput.length > 0) {
       await createSession();
-    } else {
+    } else if (sessions.length > 0) {
       selectSession(sessions[0].id);
     }
 

@@ -146,6 +146,54 @@ impl SleepRunner {
         self.agent_registry.get()?.get_memory_provider(agent_id).await
     }
 
+    // -- phase 0: empty session cleanup ------------------------------------
+
+    /// Delete sessions that were created but never used (message_count = 0).
+    /// These accumulate when the frontend auto-creates sessions on every
+    /// chat page visit.  Cleanup is cheap — a single SQL DELETE + JSONL
+    /// file removal — so it runs before the expensive phases.
+    async fn phase_empty_session_cleanup(
+        &self,
+        agent_id: &str,
+        cancel: &tokio_util::sync::CancellationToken,
+        cpu: &mut CpuTracker,
+    ) -> SleepPhaseOutput {
+        cpu.start_phase();
+        let output = SleepPhaseOutput::new("empty_session_cleanup");
+
+        let Some(registry) = self.agent_registry.get() else {
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"status": "skipped", "reason": "no agent registry"}));
+        };
+
+        let Some(store) = registry.get_session_store(agent_id).await else {
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"status": "skipped", "reason": "no session store"}));
+        };
+
+        if cancel.is_cancelled() {
+            cpu.end_phase();
+            return output.with_info(serde_json::json!({"status": "cancelled"}));
+        }
+
+        match store.delete_empty_sessions() {
+            Ok(0) => {
+                cpu.end_phase();
+                output.with_info(serde_json::json!({"deleted": 0}))
+            }
+            Ok(n) => {
+                info!(agent_id, deleted = n, "Sleep: cleaned up empty sessions");
+                cpu.end_phase();
+                output.with_info(serde_json::json!({"deleted": n}))
+            }
+            Err(e) => {
+                warn!(agent_id, error = %e, "Sleep: empty session cleanup failed");
+                cpu.end_phase();
+                output.with_info(serde_json::json!({"error": e.to_string()}))
+            }
+        }
+    }
+
     // -- phase 1: session compression backfill ------------------------------
 
     /// Backfill sessions that Reflection missed (crash / timeout / restart
@@ -767,13 +815,15 @@ impl SleepRunner {
         }
 
         // Phases 1–5: subject to CPU budget (except phase 6 always runs)
+        // Phase 0: empty session cleanup (cheap, runs first)
+        run_phase!(0, phase_empty_session_cleanup);
         run_phase!(1, phase_session_backfill);
         run_phase!(2, phase_temporal_housekeeping, sleep_cfg.short_term_retention_days);
         run_phase!(3, phase_cache_cleanup, sleep_cfg.cache_expiry_days);
         run_phase!(4, phase_index_monitoring);
         run_phase!(5, phase_cognitive_consolidation);
 
-        // Phase 6: health report always runs (cost is negligible, serves as completion signal)
+        // Final phase: health report always runs (cost is negligible, serves as completion signal)
         {
             let output = self
                 .phase_health_report(agent_id, &cancel_token, &mut cpu, &phase_outputs)

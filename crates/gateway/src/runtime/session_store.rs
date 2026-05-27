@@ -134,7 +134,48 @@ impl SessionStore {
         Ok(deleted)
     }
 
-    /// List all sessions ordered by `last_active_at` descending.
+    /// Delete all sessions with zero messages (empty sessions created but
+    /// never used). Returns the count of deleted sessions.
+    pub fn delete_empty_sessions(&self) -> AmanResult<usize> {
+        // Collect empty session ids before deleting so we can also remove
+        // their JSONL files.
+        let ids: Vec<String> = {
+            let db = self.db.lock().expect("session store lock");
+            let mut stmt = db
+                .prepare("SELECT id FROM sessions WHERE message_count = 0")
+                .map_err(|e| kernel::Error::ConfigInvalid {
+                    message: format!("session store list empty: {e}"),
+                })?;
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| kernel::Error::ConfigInvalid {
+                    message: format!("session store list empty rows: {e}"),
+                })?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let db = self.db.lock().expect("session store lock");
+        let deleted = db
+            .execute("DELETE FROM sessions WHERE message_count = 0", [])
+            .map_err(|e| kernel::Error::ConfigInvalid {
+                message: format!("session store delete empty: {e}"),
+            })?;
+        drop(db);
+
+        // Remove JSONL files for empty sessions (they may not exist if no
+        // events were ever written).
+        for id in &ids {
+            let jsonl = self.jsonl_path(id);
+            let _ = std::fs::remove_file(&jsonl);
+        }
+
+        Ok(deleted)
+    }
+
     /// Check whether a session exists in the store.
     pub fn has_session(&self, id: &str) -> bool {
         let db = self.db.lock().expect("session store lock");

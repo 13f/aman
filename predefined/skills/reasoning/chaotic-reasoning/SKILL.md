@@ -7,7 +7,7 @@ license: MIT
 metadata:
   hermes:
     tags: [reasoning, inference, uncertainty, chaos, fuzzy-logic]
-    related_skills: [systematic-debugging, discover-facts]
+    related_skills: [systematic-debugging, discover-facts, plan, writing-plans]
 ---
 
 # 混沌推演 (Chaotic Reasoning)
@@ -267,4 +267,6 @@ C_X = min(C_A, C_B) × 推导强度系数
 
 - **mixture-of-agents**: 复杂推理可调用多个模型协作验证
 - **systematic-debugging**: 当推理出现矛盾时，用调试思维溯源
-- **plan**: 复杂推演任务先制定推理计划
+- **plan**: 复杂推演任务先制定推理计划（行为约束：只读探查 + 写 plan 文件，见 agent/plan）
+- **writing-plans**: plan 文件的质量标准（任务粒度、模板结构、零上下文假设，见 agent/writing-plans）
+- **subagent-driven-development**: 逐 task dispatch subagent + 双 review 执行 plan（见 agent/subagent-driven-development）

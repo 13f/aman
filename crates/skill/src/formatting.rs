@@ -48,18 +48,39 @@ pub fn build_skills_system_prompt(skills: &[SkillInfo]) -> String {
     if skills.is_empty() {
         return String::new();
     }
-    let mut out = String::from("\n\n## Skills (mandatory)\n\n");
+    let mut out = String::from("\n\n## Decision Protocol (mandatory)\n\n");
+
+    // ── PATH A: Skill Match ──────────────────────────────────────────
     out.push_str(
-        "Before replying, scan the skills below. If a skill matches or is even \
-         partially relevant to your task, load it with `read_skill(skill: \"...\")` \
+        "### Step 1: Scan for matching skills\n\n\
+         Scan the skills listed below. If ANY skill matches or is even partially \
+         relevant to the task, you MUST load it with `read_skill(skill: \"...\")` \
          and follow its instructions. Err on the side of loading — it is always \
          better to have context you don't need than to miss critical steps, pitfalls, \
-         or established workflows. Skills contain specialized knowledge, methodologies, \
-         and output templates that your default approach cannot replicate.\n\n\
-         Always start by calling read_skill for the matching skill before doing any \
-         other work — this ensures you have the full methodology and output format \
-         before gathering data or producing results.\n\n",
+         or established workflows.\n\n\
+         **If you found a matching skill → load it and follow it. You are done with \
+         this decision protocol.**\n\n",
     );
+
+    // ── PATH B: No Skill Match → Complexity Assessment ───────────────
+    out.push_str(
+        "### Step 2: No matching skill — assess task complexity\n\n\
+         Only reach this step if you have scanned ALL skills above and genuinely \
+         none are relevant. Now assess the task:\n\n\
+         | Complexity | Signals | Action |\n\
+         |------------|---------|--------|\n\
+         | **Simple** | 1-5 tool calls, clear path, no architecture decisions, user says \"check/search/run/look at\" | Execute directly — do not create a plan or todo |\n\
+         | **Medium** | 3+ distinct steps, 2-5 files, needs progress tracking, user says \"add/fix/update\" | Load `todo` skill — track with task list, adjust as you go |\n\
+         | **Complex** | Multi-stage, architecture trade-offs, spans subsystems, destructive ops, user says \"refactor/migrate/implement\" | Load `plan` skill — explore read-only, write plan, get approval before executing |\n\n\
+         **When unsure between medium and complex, choose complex (plan).** \
+         A 30-second plan costs far less than a wrong implementation.\n\n\
+         Note: `plan`, `todo`, `writing-plans`, and `subagent-driven-development` \
+         are meta-skills for the fallback path — they guide HOW to work, not WHAT \
+         domain knowledge to apply. Only load them when no domain skill matches.\n\n",
+    );
+
+    // ── Skill Index ──────────────────────────────────────────────────
+    out.push_str("---\n\n### Available Skills\n\n");
 
     // Group skills by category
     let mut grouped: std::collections::BTreeMap<&str, Vec<&SkillInfo>> =
@@ -81,10 +102,6 @@ pub fn build_skills_system_prompt(skills: &[SkillInfo]) -> String {
         out.push('\n');
     }
 
-    out.push_str(
-        "Only proceed without loading a skill if you have checked and genuinely \
-         none are relevant to the task.\n",
-    );
     out.push_str(
         "After completing a difficult or iterative task, consider offering to save \
          the approach as a skill for future reuse by asking the user to create a new \

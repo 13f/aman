@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team Setup</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #0b0d13; color: #e0e0e0; min-height: 100vh; }
+  .container { max-width: 640px; margin: 0 auto; padding: 32px 20px; }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 13px; margin-bottom: 28px; }
+
+  .steps { display: flex; gap: 0; margin-bottom: 28px; border-bottom: 1px solid #1e2030; }
+  .step-tab { flex: 1; padding: 10px 0; text-align: center; font-size: 12px; color: #555;
+              cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+  .step-tab.active { color: #6366f1; border-bottom-color: #6366f1; }
+  .step-tab.done { color: #4ade80; }
+
+  .step-panel { display: none; }
+  .step-panel.active { display: block; }
+
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 13px; color: #aaa; margin-bottom: 6px; }
+  .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px 10px;
+    background: #0f1119; border: 1px solid #2a2d3a; border-radius: 6px;
+    color: #e0e0e0; font-size: 13px; font-family: inherit; }
+  .form-group textarea { resize: vertical; min-height: 70px; }
+  .form-group .hint { font-size: 11px; color: #555; margin-top: 4px; }
+
+  .stage-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px;
+                padding: 8px 10px; background: #0f1119; border: 1px solid #1e2030;
+                border-radius: 6px; }
+  .stage-row .drag-handle { color: #444; cursor: grab; font-size: 16px; user-select: none; }
+  .stage-row input { flex: 1; padding: 6px 8px; background: #0b0d13; border: 1px solid #2a2d3a;
+                     border-radius: 4px; color: #e0e0e0; font-size: 12px; }
+  .stage-row input.stage-id { max-width: 100px; }
+  .stage-row input.stage-name { max-width: 160px; }
+  .stage-row .allowed-next { max-width: 200px; }
+  .stage-row button { padding: 4px 8px; background: none; border: 1px solid #2a2d3a;
+                      color: #888; border-radius: 4px; cursor: pointer; font-size: 11px; }
+  .stage-row button:hover { color: #e0e0e0; border-color: #555; }
+  .stage-row button.danger:hover { color: #ef4444; border-color: #ef4444; }
+  .add-stage-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
+                   color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: 8px; }
+  .add-stage-btn:hover { color: #aaa; border-color: #555; }
+
+  .preset-btns { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .preset-btn { padding: 6px 12px; background: #13151f; border: 1px solid #1e2030;
+                border-radius: 6px; color: #aaa; cursor: pointer; font-size: 12px; }
+  .preset-btn:hover { color: #e0e0e0; border-color: #6366f1; }
+
+  .import-card { display: flex; align-items: center; justify-content: space-between;
+                 padding: 12px 14px; background: #13151f; border: 1px solid #1e2030;
+                 border-radius: 6px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s; }
+  .import-card:hover { border-color: #6366f1; }
+  .import-card .proj-info h4 { font-size: 14px; font-weight: 500; margin-bottom: 2px; }
+  .import-card .proj-info span { font-size: 11px; color: #666; }
+  .import-card .arrow { color: #555; font-size: 18px; }
+  .no-imports { padding: 24px; text-align: center; color: #555; font-size: 12px; }
+
+  .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
+  .actions button { padding: 8px 18px; border-radius: 6px; border: 1px solid #2a2d3a;
+    background: #1a1d2b; color: #e0e0e0; cursor: pointer; font-size: 13px; }
+  .actions button.primary { background: #6366f1; border-color: #6366f1; }
+  .actions button:hover { opacity: 0.85; }
+  .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .flash { padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; }
+  .flash.success { background: #064e3b; border: 1px solid #065f46; color: #6ee7b7; }
+  .flash.error { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
+  .flash.info { background: #172554; border: 1px solid #1e3a5f; color: #93c5fd; }
+
+  .empty-state { padding: 48px 20px; text-align: center; }
+  .empty-state h2 { font-size: 16px; margin-bottom: 8px; }
+  .empty-state p { color: #666; font-size: 13px; margin-bottom: 20px; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #aaa; }
+  .checkbox-row input[type="checkbox"] { accent-color: #6366f1; width: auto; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Team Setup</h1>
+  <p class="subtitle">Configure your team and create your first project</p>
+
+  <div class="steps">
+    <div class="step-tab active" data-step="1" onclick="goToStep(1)">1. Team</div>
+    <div class="step-tab" data-step="2" onclick="goToStep(2)">2. Kanban</div>
+    <div class="step-tab" data-step="3" onclick="goToStep(3)">3. Import</div>
+    <div class="step-tab" data-step="4" onclick="goToStep(4)">4. Review</div>
+  </div>
+
+  <div id="flash"></div>
+
+  <!-- Step 1: Team Info -->
+  <div class="step-panel active" data-step="1">
+    <div class="form-group">
+      <label>Team Name</label>
+      <input type="text" id="teamName" placeholder="e.g. Aman Core Team" value="$team_name">
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <textarea id="teamDesc" placeholder="What does this team work on?">$team_description</textarea>
+    </div>
+    <div class="form-group">
+      <label>Creator (your username)</label>
+      <input type="text" id="teamCreator" placeholder="e.g. jerin" value="$team_creator">
+    </div>
+    <div class="actions">
+      <button class="primary" onclick="goToStep(2)">Next &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Kanban Stages -->
+  <div class="step-panel" data-step="2">
+    <div class="form-group">
+      <label>Project Name</label>
+      <input type="text" id="projName" placeholder="e.g. Aman Framework">
+    </div>
+    <div class="form-group">
+      <label>Project Key <span class="hint">(short, lowercase, no spaces — used in URLs)</span></label>
+      <input type="text" id="projKey" placeholder="e.g. aman-core" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9-]/g,'')">
+    </div>
+    <div class="form-group">
+      <label>Initial Stage <span class="hint">(the stage new tasks start in)</span></label>
+      <select id="initialStage"></select>
+    </div>
+
+    <label style="font-size:13px;color:#aaa;margin-bottom:8px;display:block;">
+      Stages
+      <span class="hint" style="display:inline;">— drag to reorder (not yet, use remove + add)</span>
+    </label>
+    <div class="preset-btns">
+      <button class="preset-btn" onclick="loadPreset('simple')">Simple (Todo, Doing, Done)</button>
+      <button class="preset-btn" onclick="loadPreset('standard')">Standard (Backlog, Todo, In Progress, Review, Done)</button>
+      <button class="preset-btn" onclick="loadPreset('dev')">Dev (Backlog, WIP, Review, QA, Done)</button>
+    </div>
+    <div id="stageList"></div>
+    <button class="add-stage-btn" onclick="addStage()">+ Add Stage</button>
+    <div class="actions">
+      <button onclick="goToStep(1)">&larr; Back</button>
+      <button class="primary" onclick="goToStep(3)">Next &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Import from Existing -->
+  <div class="step-panel" data-step="3">
+    <p style="color:#888;font-size:13px;margin-bottom:16px;">
+      Import kanban configuration from an existing project, or skip to use what you configured in Step 2.
+    </p>
+    <div id="importList">
+      <div class="no-imports">No existing projects found to import from</div>
+    </div>
+    <div class="actions">
+      <button onclick="goToStep(2)">&larr; Back</button>
+      <button class="primary" onclick="goToStep(4)">Next &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Step 4: Review & Save -->
+  <div class="step-panel" data-step="4">
+    <h3 style="font-size:15px;margin-bottom:12px;">Review Configuration</h3>
+    <div id="reviewContent" style="font-size:13px;color:#aaa;"></div>
+    <div class="actions">
+      <button onclick="goToStep(3)">&larr; Back</button>
+      <button class="primary" id="saveBtn" onclick="saveAll()">Save &amp; Finish</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var EXISTING = $existing_projects_json;
+var currentStep = 1;
+var stageCounter = 0;
+var stages = [];
+var importedStages = null;
+
+function goToStep(n) {
+  if (!validateStep(currentStep)) return;
+  if (n === 4) refreshReview();
+  currentStep = n;
+  updateUI();
+  if (n === 3) loadImportList();
+}
+
+function validateStep(n) {
+  if (n === 1) {
+    if (!document.getElementById("teamName").value.trim()) {
+      flash("Please enter a team name", "error"); return false;
+    }
+  }
+  if (n === 2) {
+    if (!document.getElementById("projName").value.trim()) {
+      flash("Please enter a project name", "error"); return false;
+    }
+    if (!document.getElementById("projKey").value.trim()) {
+      flash("Please enter a project key", "error"); return false;
+    }
+  }
+  return true;
+}
+
+function updateUI() {
+  var tabs = document.querySelectorAll(".step-tab");
+  for (var i = 0; i < tabs.length; i++) {
+    var s = parseInt(tabs[i].getAttribute("data-step"));
+    tabs[i].classList.remove("active", "done");
+    if (s === currentStep) tabs[i].classList.add("active");
+    else if (s < currentStep) tabs[i].classList.add("done");
+  }
+  var panels = document.querySelectorAll(".step-panel");
+  for (var j = 0; j < panels.length; j++) {
+    var ps = parseInt(panels[j].getAttribute("data-step"));
+    panels[j].classList.toggle("active", ps === currentStep);
+  }
+}
+
+function flash(msg, type) {
+  var el = document.getElementById("flash");
+  el.className = "flash " + (type || "info");
+  el.textContent = msg;
+  setTimeout(function(){ el.textContent = ""; el.className = ""; }, 4000);
+}
+
+// ── Stages ─────────────────────────────────────────────────
+
+function loadPreset(name) {
+  stageCounter = 0;
+  if (name === "simple") {
+    stages = [
+      {id: "todo", name: "Todo", allowed_next: ["doing"]},
+      {id: "doing", name: "Doing", allowed_next: ["done"]},
+      {id: "done", name: "Done", allowed_next: []}
+    ];
+  } else if (name === "standard") {
+    stages = [
+      {id: "backlog", name: "Backlog", allowed_next: ["todo"]},
+      {id: "todo", name: "Todo", allowed_next: ["in_progress"]},
+      {id: "in_progress", name: "In Progress", allowed_next: ["review"]},
+      {id: "review", name: "Review", allowed_next: ["done"]},
+      {id: "done", name: "Done", allowed_next: []}
+    ];
+  } else if (name === "dev") {
+    stages = [
+      {id: "backlog", name: "Backlog", allowed_next: ["wip"]},
+      {id: "wip", name: "WIP", allowed_next: ["review"]},
+      {id: "review", name: "Review", allowed_next: ["qa"]},
+      {id: "qa", name: "QA", allowed_next: ["done"]},
+      {id: "done", name: "Done", allowed_next: []}
+    ];
+  }
+  stageCounter = stages.length;
+  renderStages();
+}
+
+function addStage() {
+  var id = "stage-" + (++stageCounter);
+  stages.push({id: id, name: "", allowed_next: []});
+  renderStages();
+}
+
+function removeStage(idx) {
+  stages.splice(idx, 1);
+  renderStages();
+}
+
+function renderStages() {
+  var html = "";
+  for (var i = 0; i < stages.length; i++) {
+    var s = stages[i];
+    html += '<div class="stage-row">' +
+            '<span class="drag-handle">&#9776;</span>' +
+            '<input class="stage-id" value="' + esc(s.id) + '" onchange="stages[' + i + '].id=this.value;refreshInitialSelect()" placeholder="id">' +
+            '<input class="stage-name" value="' + esc(s.name) + '" onchange="stages[' + i + '].name=this.value" placeholder="Display name">' +
+            '<input class="allowed-next" value="' + esc((s.allowed_next||[]).join(", ")) + '" onchange="stages[' + i + '].allowed_next=this.value.split(\',\').map(function(x){return x.trim()}).filter(Boolean)" placeholder="Allowed next (comma-sep)">' +
+            '<button class="danger" onclick="removeStage(' + i + ')">&times;</button>' +
+            '</div>';
+  }
+  if (!html) html = '<div class="empty-state" style="padding:24px"><p style="color:#555;font-size:12px;">No stages defined. Add one or choose a preset.</p></div>';
+  document.getElementById("stageList").innerHTML = html;
+  refreshInitialSelect();
+}
+
+function refreshInitialSelect() {
+  var sel = document.getElementById("initialStage");
+  var cur = sel.value;
+  var opts = "";
+  for (var i = 0; i < stages.length; i++) {
+    var sid = stages[i].id;
+    opts += '<option value="' + esc(sid) + '"' + (sid === cur ? " selected" : "") + '>' + esc(sid) + '</option>';
+  }
+  sel.innerHTML = opts;
+}
+
+// ── Import ────────────────────────────────────────────────
+
+function loadImportList() {
+  var projects = EXISTING || {};
+  var keys = Object.keys(projects);
+  var html = "";
+  if (keys.length === 0) {
+    html = '<div class="no-imports">No existing projects found to import from</div>';
+  } else {
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var p = projects[k] || {};
+      var pn = p.project_name || k;
+      var pc = (p.stages || []).length + " stages";
+      html += '<div class="import-card" onclick="importFrom(\'' + esc(k) + '\')">' +
+              '<div class="proj-info"><h4>' + esc(pn) + '</h4><span>' + esc(k) + ' &middot; ' + pc + '</span></div>' +
+              '<span class="arrow">&rarr;</span></div>';
+    }
+  }
+  document.getElementById("importList").innerHTML = html;
+}
+
+function importFrom(key) {
+  var projects = EXISTING || {};
+  var p = projects[key];
+  if (!p) return;
+  importedStages = p.stages || [];
+  stages = JSON.parse(JSON.stringify(importedStages));
+  stageCounter = stages.length;
+  renderStages();
+  var projNameEl = document.getElementById("projName");
+  var projKeyEl = document.getElementById("projKey");
+  if (!projNameEl.value.trim()) projNameEl.value = p.project_name || "";
+  if (!projKeyEl.value.trim()) projKeyEl.value = key + "-copy";
+  flash("Imported " + stages.length + " stages from " + key, "success");
+}
+
+// ── Review ────────────────────────────────────────────────
+
+function refreshReview() {
+  var teamName = document.getElementById("teamName").value.trim();
+  var teamDesc = document.getElementById("teamDesc").value.trim();
+  var projName = document.getElementById("projName").value.trim();
+  var projKey = document.getElementById("projKey").value.trim();
+  var html = '<div style="background:#0f1119;border:1px solid #1e2030;border-radius:8px;padding:16px;">';
+  html += '<p style="margin-bottom:8px;"><strong>Team:</strong> ' + esc(teamName || "(none)") + '</p>';
+  html += '<p style="margin-bottom:8px;color:#888;font-size:12px;">' + esc(teamDesc || "") + '</p>';
+  html += '<hr style="border-color:#1e2030;margin:12px 0;">';
+  html += '<p style="margin-bottom:8px;"><strong>Project:</strong> ' + esc(projName || "(none)") + '</p>';
+  html += '<p style="margin-bottom:8px;color:#666;font-size:12px;">Key: ' + esc(projKey || "") + '</p>';
+  html += '<p style="margin-bottom:8px;color:#aaa;font-size:13px;">' + stages.length + ' stage(s): ';
+  var snames = [];
+  for (var i = 0; i < stages.length; i++) snames.push(stages[i].name || stages[i].id);
+  html += esc(snames.join(" → ")) + '</p>';
+  html += '<p style="font-size:11px;color:#555;">Initial: ' + esc(document.getElementById("initialStage").value) + '</p>';
+  html += '</div>';
+  document.getElementById("reviewContent").innerHTML = html;
+}
+
+// ── Save ──────────────────────────────────────────────────
+
+async function saveAll() {
+  var btn = document.getElementById("saveBtn");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+
+  var teamName = document.getElementById("teamName").value.trim();
+  var teamDesc = document.getElementById("teamDesc").value.trim();
+  var teamCreator = document.getElementById("teamCreator").value.trim();
+  var projName = document.getElementById("projName").value.trim();
+  var projKey = document.getElementById("projKey").value.trim();
+
+  if (!teamName || !projName || !projKey) {
+    flash("Please fill in all required fields", "error");
+    btn.disabled = false;
+    btn.textContent = "Save & Finish";
+    return;
+  }
+
+  try {
+    var r1 = await fetch("/api/v1/team/setup", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        team_name: teamName,
+        description: teamDesc,
+        creator: teamCreator
+      })
+    });
+    if (!r1.ok) { var e1=await r1.json(); throw new Error(e1.error||"Team setup failed"); }
+
+    var r2 = await fetch("/api/v1/team/projects/create", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        project_key: projKey,
+        project_name: projName,
+        description: "",
+        stages: stages,
+        initial_stage: document.getElementById("initialStage").value
+      })
+    });
+    if (!r2.ok) { var e2=await r2.json(); throw new Error(e2.error||"Project creation failed"); }
+
+    flash("Configuration saved! Redirecting...", "success");
+    setTimeout(function(){ window.location.href = "/api/v1/team/projects/" + encodeURIComponent(projKey); }, 800);
+  } catch(e) {
+    flash(e.message, "error");
+    btn.disabled = false;
+    btn.textContent = "Save & Finish";
+  }
+}
+
+function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+// Init
+loadPreset("simple");
+updateUI();
+</script>
+</body>
+</html>

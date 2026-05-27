@@ -26,6 +26,8 @@
   let sidebarCompact = $state(false);
   let pluginPages = $state<{ id: string; label: string }[]>([]);
   let gatewayPort = $state(9999);
+  let hasTeamPlugin = $derived(pluginPages.some(p => p.id === "team"));
+  let nonTeamPluginPages = $derived(pluginPages.filter(p => p.id !== "team"));
 
   type MenuItem = { id: string; label: string; short: string };
   type MenuGroup = { name: string; label: string; items: MenuItem[] };
@@ -205,8 +207,18 @@
           </button>
         {/if}
       {/each}
+      {#if group.name === "apps" && hasTeamPlugin}
+        <button
+          class="nav-icon"
+          class:active={currentPage === "team"}
+          onclick={() => navigateTo("team")}
+          title="Team"
+        >
+          <span class="nav-short">Te</span>
+        </button>
+      {/if}
     {/each}
-    {#each pluginPages as pg}
+    {#each nonTeamPluginPages as pg}
       <button
         class="nav-icon"
         class:active={currentPage === "plugin:" + pg.id}
@@ -245,17 +257,26 @@
               </button>
             {/if}
           {/each}
+          {#if group.name === "apps" && hasTeamPlugin}
+            <button
+              class="nav-btn"
+              class:active={currentPage === "team"}
+              onclick={() => navigateTo("team")}
+            >
+              Team
+            </button>
+          {/if}
         </div>
       {/if}
     {/each}
-    {#if pluginPages.length > 0}
+    {#if nonTeamPluginPages.length > 0}
       <button class="menu-header" onclick={() => toggleGroup("plugins")}>
         <span class="menu-arrow">{expandedGroups["plugins"] ? "▾" : "▸"}</span>
         Plugins
       </button>
       {#if expandedGroups["plugins"]}
         <div class="menu-items">
-          {#each pluginPages as pg}
+          {#each nonTeamPluginPages as pg}
             <button
               class="nav-btn"
               class:active={currentPage === "plugin:" + pg.id}
@@ -298,6 +319,13 @@
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}
     <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
+  {:else if currentPage === "team"}
+    <iframe
+      class="plugin-iframe"
+      src={"http://127.0.0.1:" + gatewayPort + "/api/v1/team"}
+      title="Team"
+      sandbox="allow-scripts allow-same-origin allow-forms"
+    ></iframe>
   {:else if currentPage === "settings"}
     <Settings />
   {:else if currentPage.startsWith("plugin:")}

@@ -1083,6 +1083,127 @@ def _handle_list_project_agents(project_key: str) -> dict:
     }
 
 
+# ── Setup / Config API ─────────────────────────────────────────────────
+
+
+def _handle_team_setup(body: dict) -> dict:
+    """Save team config to ~/.aman/team/config.yaml."""
+    global _team_config
+    team_name = body.get("team_name", "").strip()
+    if not team_name:
+        return _json_response({"error": "team_name is required"}, 400)
+
+    config = {
+        "team": {
+            "name": team_name,
+            "description": body.get("description", "").strip(),
+            "creator": body.get("creator", "").strip(),
+        }
+    }
+
+    import yaml
+    os.makedirs(TEAM_DIR, exist_ok=True)
+    with open(_team_config_path(), "w") as f:
+        yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    _team_config = _validate_team_config(config)
+    _log(f"Team config saved: {team_name}")
+    return _json_response({"ok": True, "team_name": team_name})
+
+
+def _handle_project_create(body: dict) -> dict:
+    """Create a new project: write config.yaml, init DB, register routes, compile workflow."""
+    project_key = body.get("project_key", "").strip()
+    project_name = body.get("project_name", "").strip()
+    if not project_key or not project_name:
+        return _json_response({"error": "project_key and project_name are required"}, 400)
+
+    # Validate project key format
+    if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", project_key):
+        return _json_response({"error": "project_key must be lowercase alphanumeric with hyphens"}, 400)
+
+    if project_key in _projects:
+        return _json_response({"error": f"project '{project_key}' already exists"}, 409)
+
+    stages = body.get("stages", [])
+    initial_stage = body.get("initial_stage", stages[0]["id"] if stages else "")
+
+    config = {
+        "project": {
+            "name": project_name,
+            "description": body.get("description", "").strip(),
+        },
+        "stages": stages,
+        "initial_stage": initial_stage,
+        "safety_gates": body.get("safety_gates", {
+            "dangerous_actions": [
+                {"pattern": "rm\\s+-rf", "require_human": True},
+                {"pattern": "DROP\\s+TABLE", "require_human": True},
+                {"pattern": "DELETE\\s+FROM", "require_human": True},
+            ],
+            "min_confidence": 0.7,
+            "max_autonomous_actions_without_human": 20,
+        }),
+        "context_files": body.get("context_files", []),
+        "work_dir": body.get("work_dir", os.getcwd()),
+    }
+
+    import yaml
+    proj_dir = _project_dir(project_key)
+    os.makedirs(proj_dir, exist_ok=True)
+    with open(_project_config_path(project_key), "w") as f:
+        yaml.safe_dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    validated = _validate_project_config(project_key, config)
+    if not validated:
+        return _json_response({"error": "Project config validation failed"}, 400)
+
+    _projects[project_key] = {"config": validated}
+
+    try:
+        init_db(project_key)
+    except Exception as e:
+        _log(f"DB init failed for {project_key}: {e}")
+
+    try:
+        compile_workflow(project_key)
+    except Exception as e:
+        _log(f"Workflow registration failed for {project_key}: {e}")
+
+    # Register routes for the new project
+    api_prefix = f"/team/projects/{project_key}"
+    new_routes = [
+        {"method": "GET", "path": api_prefix},
+        {"method": "GET", "path": f"{api_prefix}/config"},
+        {"method": "GET", "path": f"{api_prefix}/tasks"},
+        {"method": "POST", "path": f"{api_prefix}/tasks/create"},
+        {"method": "GET", "path": f"{api_prefix}/tasks/{{task_id}}"},
+        {"method": "POST", "path": f"{api_prefix}/tasks/{{task_id}}/assign"},
+        {"method": "POST", "path": f"{api_prefix}/tasks/{{task_id}}/complete"},
+        {"method": "GET", "path": f"{api_prefix}/safety/pending"},
+        {"method": "POST", "path": f"{api_prefix}/safety/{{log_id}}/resolve"},
+        {"method": "GET", "path": f"{api_prefix}/context"},
+        {"method": "GET", "path": f"{api_prefix}/context/{{id}}"},
+        {"method": "GET", "path": f"{api_prefix}/agents"},
+    ]
+    try:
+        result = send_request("aman.register_routes", new_routes)
+        _log(f"Registered {len(new_routes)} route(s) for {project_key}")
+    except Exception as e:
+        _log(f"Route registration failed: {e}")
+
+    _log(f"Project created: {project_key} ({project_name})")
+    return _json_response({"ok": True, "project_key": project_key, "project_name": project_name}, 201)
+
+
+def _handle_get_project_config(project_key: str) -> dict:
+    """Return the full project config as JSON (for import)."""
+    proj = _projects.get(project_key, {}).get("config", {})
+    if not proj:
+        return _json_response({"error": f"project '{project_key}' not found"}, 404)
+    return _json_response(proj)
+
+
 # ---------------------------------------------------------------------------
 # HTML Template Helpers
 # ---------------------------------------------------------------------------
@@ -1126,9 +1247,34 @@ def _html_response(html: str) -> dict:
     return {"status": 200, "headers": {"content-type": "text/html; charset=utf-8"}, "body": html}
 
 
+def _json_response(data: Any, status: int = 200) -> dict:
+    return {"status": status, "headers": {"content-type": "application/json"}, "body": json.dumps(data)}
+
+
 # ---------------------------------------------------------------------------
 # HTML Page Renderers
 # ---------------------------------------------------------------------------
+
+
+def _render_team_setup() -> dict:
+    """Render the setup wizard page."""
+    team = _team_config or {}
+    existing = {}
+    for key, proj in _projects.items():
+        config = proj.get("config", {})
+        existing[key] = {
+            "project_name": config.get("project_name", key),
+            "project_key": key,
+            "stages": config.get("stages", []),
+        }
+    tmpl = _load_template("team-setup.html")
+    html = tmpl.substitute(
+        team_name=_esc(team.get("team_name", "")),
+        team_description=_esc(team.get("description", "")),
+        team_creator=_esc(team.get("creator", "")),
+        existing_projects_json=json.dumps(existing).replace("$", "$$"),
+    )
+    return _html_response(html)
 
 
 def _render_team_index() -> dict:
@@ -1136,7 +1282,7 @@ def _render_team_index() -> dict:
     if cards:
         project_items = f'<div class="grid">\n{cards}\n</div>'
     else:
-        project_items = '<div class="empty">No projects found. Create one at ~/.aman/team/projects/{key}/config.yaml</div>'
+        project_items = '<div class="empty">No projects found. <a href="/api/v1/team/setup" style="color:#6366f1;">Run setup wizard</a> to create one.</div>'
 
     team = _team_config or {}
     tmpl = _load_template("team-index.html")
@@ -1185,8 +1331,12 @@ def handle_on_load(params: Any) -> dict:
     _log(f"Discovered {len(discovered)} project(s): {list(discovered.keys())}")
 
     route_specs = []
-    # Team-level page route
+    # Team-level page routes (always available, even unconfigured)
     route_specs.append({"method": "GET", "path": "/team"})
+    route_specs.append({"method": "GET", "path": "/team/setup"})
+    # Setup API routes
+    route_specs.append({"method": "POST", "path": "/team/setup"})
+    route_specs.append({"method": "POST", "path": "/team/projects/create"})
 
     for project_key, config in discovered.items():
         _projects[project_key] = {"config": config}
@@ -1210,6 +1360,7 @@ def handle_on_load(params: Any) -> dict:
         api_prefix = f"/team/projects/{project_key}"
         route_specs.extend([
             {"method": "GET", "path": api_prefix},
+            {"method": "GET", "path": f"{api_prefix}/config"},
             {"method": "GET", "path": f"{api_prefix}/tasks"},
             {"method": "POST", "path": f"{api_prefix}/tasks/create"},
             {"method": "GET", "path": f"{api_prefix}/tasks/{{task_id}}"},
@@ -1277,9 +1428,35 @@ def handle_route(params: Any) -> dict:
     # Normalize path
     clean = path.removeprefix("/api/v1")
 
+    # ── Setup wizard (HTML page) ─────────────────────────────────────
+    if method == "GET" and clean in ("/team/setup", "/team/setup/"):
+        return _render_team_setup()
+
     # ── Team index page (HTML) ───────────────────────────────────────
     if method == "GET" and clean in ("/team", "/team/"):
+        if _team_config is None:
+            return _render_team_setup()
         return _render_team_index()
+
+    # ── Setup API endpoints ──────────────────────────────────────────
+    if method == "POST" and clean in ("/team/setup", "/team/setup/"):
+        try:
+            body_json = json.loads(body) if body else {}
+        except (json.JSONDecodeError, TypeError):
+            body_json = {}
+        return _handle_team_setup(body_json)
+
+    if method == "POST" and clean in ("/team/projects/create", "/team/projects/create/"):
+        try:
+            body_json = json.loads(body) if body else {}
+        except (json.JSONDecodeError, TypeError):
+            body_json = {}
+        return _handle_project_create(body_json)
+
+    # ── Project config (for import) ──────────────────────────────────
+    m_config = re.match(r"/team/projects/([^/]+)/config", clean)
+    if m_config and method == "GET":
+        return _handle_get_project_config(m_config.group(1))
 
     # ── Project routes ───────────────────────────────────────────────
     m = re.match(r"/team/projects/([^/]+)", clean)

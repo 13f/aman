@@ -1170,10 +1170,10 @@ impl PluginLoader {
                         if config.command.is_empty() {
                             config.command = runtime.clone();
                         }
-                        if config.args.is_empty() {
-                            if let Some(entrypoint) = &manifest.entrypoint {
-                                config.args = vec![entrypoint.to_string_lossy().to_string()];
-                            }
+                        if config.args.is_empty()
+                            && let Some(entrypoint) = &manifest.entrypoint
+                        {
+                            config.args = vec![entrypoint.to_string_lossy().to_string()];
                         }
                     }
 
@@ -1646,7 +1646,7 @@ pub fn discover_subprocess_plugins(plugins_dir: &Path) -> Vec<PluginCandidate> {
         };
 
         // Only discover subprocess plugins from the filesystem
-        let isolation = manifest.isolation.clone().unwrap_or(PluginIsolationMode::InProcess);
+        let isolation = manifest.isolation.unwrap_or(PluginIsolationMode::InProcess);
         if isolation != PluginIsolationMode::Subprocess {
             continue;
         }

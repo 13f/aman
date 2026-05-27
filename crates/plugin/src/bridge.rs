@@ -123,7 +123,7 @@ impl SubprocessPluginBridge {
                 match line {
                     Ok(text) if text.trim().is_empty() => continue,
                     Ok(text) => {
-                        let _ = bridge_clone.handle_incoming(text.trim());
+                        bridge_clone.handle_incoming(text.trim());
                     }
                     Err(_) => break, // pipe closed
                 }

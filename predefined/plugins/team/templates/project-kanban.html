@@ -465,10 +465,9 @@ async function executeImport() {
 
     closeImportPanel();
     closeEditBoard();
-    flash("Imported " + data.stages.length + " stage(s) from " + _selectedImportName, "success");
     _selectedImportKey = "";
     _selectedImportName = "";
-    load();
+    window.location.reload();
   } catch(e) { flash(e.message, "error"); }
 }
 

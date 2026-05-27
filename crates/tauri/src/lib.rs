@@ -14,10 +14,15 @@ pub mod rate_limiter;
 pub mod state;
 
 use state::AppState;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tokio::time::{interval, Duration};
+
+/// Guard to prevent re-entrant `CloseRequested` from `window.close()` after
+/// the gateway shutdown sequence has already started.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Build and run the Tauri application.
 ///
@@ -30,6 +35,8 @@ pub fn run() {
     let gc_for_events = app_state.gateway_client.clone();
     let gc_for_notifications = app_state.gateway_client.clone();
     let gc_for_agents = app_state.gateway_client.clone();
+    let shutdown_gc = app_state.gateway_client.clone();
+    let shutdown_gp = app_state.gateway_process.clone();
 
     // Create a Tokio runtime for background tasks. Must be created before
     // Tauri's event loop since `setup()` runs on the main thread which has
@@ -50,6 +57,65 @@ pub fn run() {
                     }
                 }
                 _ => {}
+            }
+        })
+        .on_window_event(move |window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                // Only intercept if gateway is still running
+                let has_gateway = rt.block_on(async {
+                    let guard = shutdown_gc.lock().await;
+                    guard.is_some()
+                });
+                if !has_gateway {
+                    return;
+                }
+
+                SHUTTING_DOWN.store(true, Ordering::SeqCst);
+                api.prevent_close();
+                let _ = window.emit("shutdown:started", ());
+
+                let gc = shutdown_gc.clone();
+                let gp = shutdown_gp.clone();
+                let handle = window.app_handle().clone();
+                rt.spawn(async move {
+                    // Best-effort graceful shutdown via HTTP
+                    let base_url = {
+                        let guard = gc.lock().await;
+                        guard.as_ref().map(|c| c.base_url.clone())
+                    };
+                    if let Some(ref url) = base_url
+                        && let Ok(http_client) = reqwest::Client::builder()
+                            .no_proxy()
+                            .build()
+                    {
+                        let _ = http_client
+                            .post(format!("{url}/agent/shutdown"))
+                            .send()
+                            .await;
+                    }
+                    // Clear client
+                    {
+                        let mut guard = gc.lock().await;
+                        *guard = None;
+                    }
+                    // Kill child process
+                    {
+                        let mut proc_guard = gp.lock().await;
+                        if let Some(mut child) = proc_guard.take() {
+                            let _ = child.kill().await;
+                            let _ = child.wait().await;
+                        }
+                    }
+                    // Let the frontend animation breathe before closing
+                    let _ = handle.emit("shutdown:complete", ());
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    // Close window (re-enters CloseRequested, SHUTTING_DOWN lets it through)
+                    let _ = handle.get_webview_window("main").map(|w| w.close());
+                });
             }
         })
         .manage(app_state)

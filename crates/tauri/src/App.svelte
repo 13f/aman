@@ -2,6 +2,7 @@
   import "./app.css";
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import Home from "./pages/Home.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import Maintenance from "./pages/Maintenance.svelte";
@@ -65,6 +66,8 @@
   });
 
   let initialLoadDone = $state(false);
+  let shuttingDown = $state(false);
+  let shutdownComplete = $state(false);
 
   function toggleGroup(name: string) {
     expandedGroups[name] = !expandedGroups[name];
@@ -144,6 +147,13 @@
     }
 
     initialLoadDone = true;
+
+    listen("shutdown:started", () => {
+      shuttingDown = true;
+    });
+    listen("shutdown:complete", () => {
+      shutdownComplete = true;
+    });
   });
 </script>
 
@@ -239,3 +249,95 @@
     <Settings />
   {/if}
 </main>
+
+{#if shuttingDown}
+  <div class="shutdown-overlay">
+    <div class="shutdown-card">
+      {#if shutdownComplete}
+        <div class="shutdown-check">&#10003;</div>
+        <p class="shutdown-text">Gateway stopped</p>
+        <p class="shutdown-sub">Closing window...</p>
+      {:else}
+        <div class="shutdown-spinner"></div>
+        <p class="shutdown-text">Shutting down gateway...</p>
+        <p class="shutdown-sub">The window will close automatically</p>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+<style>
+  .shutdown-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(11, 13, 19, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    animation: fadeIn 0.2s ease;
+  }
+
+  .shutdown-card {
+    text-align: center;
+    padding: 40px 48px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xl);
+    animation: scaleIn 0.3s ease;
+  }
+
+  .shutdown-spinner {
+    width: 32px;
+    height: 32px;
+    margin: 0 auto 20px;
+    border: 3px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .shutdown-check {
+    width: 32px;
+    height: 32px;
+    margin: 0 auto 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    color: var(--green);
+    border: 2px solid var(--green);
+    border-radius: 50%;
+    animation: scaleIn 0.3s ease;
+  }
+
+  .shutdown-text {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg);
+    margin-bottom: 6px;
+  }
+
+  .shutdown-sub {
+    font-size: 12px;
+    color: var(--fg-dim);
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+</style>

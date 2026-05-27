@@ -384,9 +384,14 @@ async function saveStages() {
 
 // ── Import Board ──────────────────────────────────────────────
 
+var _selectedImportKey = "";
+var _selectedImportName = "";
+
 async function openImportPanel() {
   var panel = document.getElementById("importBoardSection");
   var list = document.getElementById("importProjectList");
+  _selectedImportKey = "";
+  _selectedImportName = "";
   list.innerHTML = '<div style="text-align:center;color:#555;padding:12px;font-size:12px;">Loading projects...</div>';
   panel.style.display = "block";
 
@@ -405,38 +410,64 @@ async function openImportPanel() {
     for (var i = 0; i < projects.length; i++) {
       var p = projects[i];
       var stageNames = (p.stages || []).map(function(s) { return s.name || s.id; }).join(" → ");
-      html += '<div class="import-card" style="padding:10px 12px;margin-bottom:6px;background:#13151f;border:1px solid #1e2030;border-radius:6px;cursor:pointer;" ' +
-              'onmouseover="this.style.borderColor=\'#6366f1\'" onmouseout="this.style.borderColor=\'#1e2030\'" ' +
-              'onclick="importBoardFrom(\'' + esc(p.project_key) + '\',\'' + esc(p.project_name) + '\')">' +
+      html += '<div class="import-select-card" data-key="' + esc(p.project_key) + '" data-name="' + esc(p.project_name) + '" ' +
+              'style="padding:10px 12px;margin-bottom:6px;background:#13151f;border:1px solid #1e2030;border-radius:6px;cursor:pointer;" ' +
+              'onclick="selectImportProject(this,\'' + esc(p.project_key) + '\',\'' + esc(p.project_name) + '\')">' +
               '<div style="font-size:13px;font-weight:500;">' + esc(p.project_name) + '</div>' +
               '<div style="font-size:11px;color:#666;margin-top:2px;">' + esc(p.project_key) + ' &middot; ' + p.stage_count + ' stages &middot; ' + esc(stageNames) + '</div>' +
               '</div>';
     }
+    html += '<div style="margin-top:8px;display:flex;gap:8px;justify-content:flex-end;">' +
+            '<button id="importConfirmBtn" class="bar-btn" style="background:#6366f1;border-color:#6366f1;opacity:0.4;cursor:not-allowed;" disabled onclick="executeImport()">Import Selected</button>' +
+            '</div>';
     list.innerHTML = html;
   } catch(e) {
     list.innerHTML = '<div style="text-align:center;color:#fca5a5;padding:12px;font-size:12px;">Failed to load projects</div>';
   }
 }
 
+function selectImportProject(el, key, name) {
+  _selectedImportKey = key;
+  _selectedImportName = name;
+  var cards = document.querySelectorAll("#importProjectList .import-select-card");
+  for (var i = 0; i < cards.length; i++) {
+    cards[i].style.borderColor = "#1e2030";
+    cards[i].style.background = "#13151f";
+  }
+  el.style.borderColor = "#6366f1";
+  el.style.background = "#1a1d2b";
+  var btn = document.getElementById("importConfirmBtn");
+  if (btn) {
+    btn.disabled = false;
+    btn.style.opacity = "1";
+    btn.style.cursor = "pointer";
+    btn.textContent = "Import \"" + name + "\"";
+  }
+}
+
 function closeImportPanel() {
+  _selectedImportKey = "";
+  _selectedImportName = "";
   document.getElementById("importBoardSection").style.display = "none";
 }
 
-async function importBoardFrom(sourceKey, sourceName) {
-  if (!confirm("Import board from \"" + sourceName + "\"?\\n\\nThis will overwrite all current stages. This cannot be undone.")) return;
+async function executeImport() {
+  if (!_selectedImportKey) return;
 
   try {
     var r = await fetch(BASE + "/boards/import", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({source_project_key: sourceKey})
+      body: JSON.stringify({source_project_key: _selectedImportKey})
     });
     var data = await r.json();
     if (!r.ok) throw new Error(data.error || "Import failed");
 
     closeImportPanel();
     closeEditBoard();
-    flash("Imported " + data.stages.length + " stage(s) from " + sourceName, "success");
+    flash("Imported " + data.stages.length + " stage(s) from " + _selectedImportName, "success");
+    _selectedImportKey = "";
+    _selectedImportName = "";
     load();
   } catch(e) { flash(e.message, "error"); }
 }

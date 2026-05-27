@@ -2361,11 +2361,11 @@
     display: inline-block;
     font-size: 11px;
     font-weight: 500;
-    padding: 1px 8px;
+    padding: 2px 10px;
     margin-left: 8px;
     border-radius: 10px;
-    background: var(--accent-light, #dbeafe);
-    color: var(--accent, #3b82f6);
+    background: var(--accent-muted);
+    color: var(--accent);
     vertical-align: middle;
   }
 
@@ -2443,8 +2443,9 @@
   }
 
   .message.assistant .msg-bubble {
-    background: var(--bubble-assistant, #2a2d3a);
+    background: var(--bg-card);
     color: var(--fg);
+    border: 1px solid var(--border);
     border-bottom-left-radius: 4px;
   }
 
@@ -2495,12 +2496,13 @@
   }
 
   .msg-bubble.status-error {
-    border-color: var(--red, #ef4444);
-    background: rgba(248,113,113,0.15);
+    border-color: var(--red);
+    background: var(--red-muted);
   }
 
   .msg-bubble.streaming {
-    border: 1px solid var(--accent, #3b82f6);
+    border: 1px solid var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-muted);
   }
 
   @keyframes blink {
@@ -2666,10 +2668,10 @@
     z-index: 100;
     width: 300px;
     padding: 12px 16px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    background: var(--bg-card);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
     font-size: 12px;
     line-height: 1.5;
   }
@@ -2709,8 +2711,8 @@
   .channel-tag {
     font-size: 9px;
     padding: 1px 5px;
-    border-radius: 3px;
-    background: var(--surface-secondary, #e8e8e8);
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover);
     color: var(--fg-dim);
     text-transform: uppercase;
     font-weight: 500;
@@ -2719,8 +2721,8 @@
   .archived-label {
     font-size: 9px;
     padding: 1px 5px;
-    border-radius: 3px;
-    background: rgba(250,204,21,0.15);
+    border-radius: var(--radius-sm);
+    background: var(--yellow-muted);
     color: var(--yellow);
     font-weight: 500;
   }
@@ -2728,11 +2730,10 @@
   .trace-tag {
     font-size: 9px;
     padding: 1px 5px;
-    border-radius: 3px;
-    background: var(--surface-secondary, #e8e8e8);
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover);
     color: var(--fg-dim);
     font-family: "SF Mono", "Fira Code", monospace;
-    font-size: 9px;
     cursor: help;
   }
 
@@ -2766,27 +2767,27 @@
   }
 
   .toast-info {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    color: #1e40af;
+    background: rgba(108, 140, 255, 0.12);
+    border: 1px solid rgba(108, 140, 255, 0.25);
+    color: var(--accent);
   }
 
   .toast-success {
-    background: #f0fdf4;
-    border: 1px solid #bbf7d0;
-    color: #166534;
+    background: var(--green-muted);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+    color: var(--green);
   }
 
   .toast-warn {
-    background: #fffbeb;
-    border: 1px solid #fde68a;
-    color: #92400e;
+    background: var(--yellow-muted);
+    border: 1px solid rgba(250, 204, 21, 0.25);
+    color: var(--yellow);
   }
 
   .toast-error {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    color: #991b1b;
+    background: var(--red-muted);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    color: var(--red);
   }
 
   .toast-icon {
@@ -2843,7 +2844,7 @@
     text-align: left;
   }
   :global(.markdown-body th) { background: rgba(128,128,128,0.08); font-weight: 600; }
-  :global(.markdown-body a) { color: #2563eb; text-decoration: none; }
+  :global(.markdown-body a) { color: var(--accent-hover); text-decoration: none; }
   :global(.markdown-body a:hover) { text-decoration: underline; }
   :global(.markdown-body hr) { border: none; border-top: 1px solid rgba(128,128,128,0.2); margin: 0.75em 0; }
   :global(.markdown-body h1),

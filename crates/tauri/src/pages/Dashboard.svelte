@@ -125,35 +125,35 @@
   });
 </script>
 
-<div class="card" style="display:flex; align-items:center; justify-content:space-between;">
-  <div>
+<div class="status-bar">
+  <div class="status-info">
     <h2>Gateway Status</h2>
-    <p style="color:var(--fg-dim);margin-top:4px;">
+    <p class="dim" style="margin-top:4px;">
       Phase: <strong>{status.phase}</strong>
-      &middot; Ready: <strong class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</strong>
-      &middot; Live: <strong class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</strong>
+      <span class="sep"></span>
+      Ready: <span class="badge {status.ready ? 'ok' : 'warn'}">{status.ready ? "YES" : "NO"}</span>
+      <span class="sep"></span>
+      Live: <span class="badge {status.live ? 'ok' : 'error'}">{status.live ? "YES" : "NO"}</span>
     </p>
   </div>
-  <div style="display:flex;align-items:center;gap:12px;">
+  <div class="status-actions">
     <NotificationBell />
     {#if !status.running}
       <button class="start-btn" onclick={startGateway} disabled={gatewayLoading}>
         {gatewayLoading ? "连接中..." : "启动"}
       </button>
     {:else}
-      <div style="display:flex;gap:8px;">
-        <button class="stop-btn" onclick={stopGateway} disabled={gatewayStopping}>
-          {gatewayStopping ? "停止中..." : "停止"}
-        </button>
-        <button class="restart-btn" onclick={restartGateway} disabled={gatewayStopping || gatewayLoading}>
-          重启
-        </button>
-      </div>
+      <button class="stop-btn" onclick={stopGateway} disabled={gatewayStopping}>
+        {gatewayStopping ? "停止中..." : "停止"}
+      </button>
+      <button class="restart-btn" onclick={restartGateway} disabled={gatewayStopping || gatewayLoading}>
+        重启
+      </button>
     {/if}
   </div>
 </div>
 {#if gatewayError}
-  <div class="card" style="border-color:var(--red);">
+  <div class="card error-card">
     <p style="color:var(--red);font-size:13px;">{gatewayError}</p>
   </div>
 {/if}
@@ -164,11 +164,11 @@
     <h2>Runtime Configuration</h2>
     <table>
       <tbody>
-        <tr><td style="color:var(--fg-dim);width:140px;">Runtime Dir</td><td style="font-family:monospace;font-size:12px;">{config.runtime_dir ?? "N/A"}</td></tr>
-        <tr><td style="color:var(--fg-dim);width:140px;">Bind Address</td><td style="font-family:monospace;font-size:12px;">{config.bind_addr ?? "N/A"}</td></tr>
-        <tr><td style="color:var(--fg-dim);width:140px;">Skills Dir</td><td style="font-family:monospace;font-size:12px;">{config.skills_dir ?? "N/A"}</td></tr>
-        <tr><td style="color:var(--fg-dim);width:140px;">API Token</td><td><span class="badge {config.has_api_token ? 'ok' : 'warn'}">{config.has_api_token ? "Configured" : "None"}</span></td></tr>
-        <tr><td style="color:var(--fg-dim);width:140px;">Debug Endpoints</td><td><span class="badge {config.risky_enabled ? 'warn' : 'ok'}">{config.risky_enabled ? "Enabled" : "Disabled"}</span></td></tr>
+        <tr><td class="config-label">Runtime Dir</td><td class="mono">{config.runtime_dir ?? "N/A"}</td></tr>
+        <tr><td class="config-label">Bind Address</td><td class="mono">{config.bind_addr ?? "N/A"}</td></tr>
+        <tr><td class="config-label">Skills Dir</td><td class="mono">{config.skills_dir ?? "N/A"}</td></tr>
+        <tr><td class="config-label">API Token</td><td><span class="badge {config.has_api_token ? 'ok' : 'warn'}">{config.has_api_token ? "Configured" : "None"}</span></td></tr>
+        <tr><td class="config-label">Debug Endpoints</td><td><span class="badge {config.risky_enabled ? 'warn' : 'ok'}">{config.risky_enabled ? "Enabled" : "Disabled"}</span></td></tr>
       </tbody>
     </table>
   </div>
@@ -231,5 +231,45 @@
     {/if}
   </div>
 {:else if status.running}
-  <p style="color:var(--fg-dim);">Waiting for metrics data...</p>
+  <p class="dim" style="padding: 20px 0;">Waiting for metrics data...</p>
 {/if}
+
+<style>
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .status-info h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .status-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .sep {
+    display: inline-block;
+    width: 1px;
+    height: 10px;
+    background: var(--border-strong);
+    margin: 0 6px;
+    vertical-align: middle;
+  }
+  .error-card {
+    border-color: var(--red);
+  }
+  .config-label {
+    color: var(--fg-dim);
+    width: 140px;
+    font-size: 13px;
+  }
+</style>

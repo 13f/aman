@@ -50,8 +50,8 @@
 >
   <svg viewBox="0 0 110 110" class="ring-svg" width={size} height={size}>
     <!-- track rings -->
-    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke="#2a2d3a" stroke-width="5" />
-    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke="#2a2d3a" stroke-width="5" />
+    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke="var(--border)" stroke-width="5" />
+    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke="var(--border)" stroke-width="5" />
 
     <!-- outer ring (progress) -->
     <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke={ringColors.outer} stroke-width="5"

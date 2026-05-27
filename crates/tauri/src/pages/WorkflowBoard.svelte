@@ -113,11 +113,11 @@
 
   function stateColor(state: string, def: WorkflowDefInfo): string {
     const upper = state.toUpperCase();
-    if (upper === def.initial_state.toUpperCase()) return '#f3f4f6';
-    if (upper === def.error_state.toUpperCase()) return '#fee2e2';
-    if (def.final_states.some((fs) => fs.toUpperCase() === upper)) return '#dcfce7';
-    if (def.state_timeouts.some((st) => st.state.toUpperCase() === upper)) return '#fef3c7';
-    return '#dbeafe';
+    if (upper === def.initial_state.toUpperCase()) return 'var(--bg-hover)';
+    if (upper === def.error_state.toUpperCase()) return 'var(--red-muted)';
+    if (def.final_states.some((fs) => fs.toUpperCase() === upper)) return 'var(--green-muted)';
+    if (def.state_timeouts.some((st) => st.state.toUpperCase() === upper)) return 'var(--yellow-muted)';
+    return 'var(--accent-muted)';
   }
 
   function selectInstance(id: string) {
@@ -243,27 +243,27 @@
 
 <style>
   :global(.state-badge.state-initial) {
-    background: #e8e8e8;
-    color: #555;
+    background: var(--bg-hover);
+    color: var(--fg-dim);
   }
   :global(.state-badge.state-active) {
-    background: #dbeafe;
-    color: #1e40af;
+    background: var(--accent-muted);
+    color: var(--accent);
   }
   :global(.state-badge.state-timed) {
-    background: #fef3c7;
-    color: #92400e;
+    background: var(--yellow-muted);
+    color: var(--yellow);
   }
   :global(.state-badge.state-error) {
-    background: #fee2e2;
-    color: #991b1b;
+    background: var(--red-muted);
+    color: var(--red);
   }
   :global(.state-badge.state-final) {
-    background: #dcfce7;
-    color: #166534;
+    background: var(--green-muted);
+    color: var(--green);
   }
   :global(.state-badge.state-default) {
-    background: #f3f4f6;
-    color: #374151;
+    background: var(--bg-hover);
+    color: var(--fg-dim);
   }
 </style>

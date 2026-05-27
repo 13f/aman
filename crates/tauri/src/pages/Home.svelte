@@ -617,13 +617,13 @@
   }
 
   .agent-avatar-card.needs-config {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: pointer;
   }
 
   .agent-avatar-card.needs-config:hover {
-    opacity: 0.7;
-    border-color: var(--warn, #f59e0b);
+    opacity: 0.65;
+    border-color: var(--yellow);
   }
 
   .agent-avatar-name {
@@ -661,7 +661,7 @@
   .finance-card:hover {
     border-color: var(--accent);
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-md);
   }
   .finance-card:active {
     transform: translateY(0);
@@ -674,7 +674,7 @@
     left: 0;
     right: 0;
     height: 3px;
-    background: linear-gradient(90deg, var(--accent, #6c8cff), #a78bfa);
+    background: linear-gradient(90deg, var(--accent), var(--accent-hover));
     border-radius: 14px 14px 0 0;
   }
 
@@ -686,8 +686,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, rgba(108,140,255,0.12), rgba(167,139,250,0.08));
-    border-radius: 14px;
+    background: var(--accent-muted);
+    border-radius: var(--radius-xl);
     margin-top: 2px;
   }
   .finance-card-icon span {
@@ -762,7 +762,7 @@
     max-width: 700px;
     max-height: 80vh;
     overflow-y: auto;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-xl);
   }
   .modal-header {
     display: flex;
@@ -789,10 +789,10 @@
     color: var(--fg);
   }
   .toast-error {
-    background: rgba(248,113,113,0.15);
+    background: var(--red-muted);
     color: var(--red);
     padding: 10px 16px;
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     margin-bottom: 16px;
     font-size: 13px;
   }
@@ -875,10 +875,10 @@
   }
 
   .badge.dim {
-    background: var(--bg-hover, rgba(255,255,255,0.06));
+    background: var(--bg-hover);
     color: var(--fg-dim);
     padding: 2px 8px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-weight: 500;
   }
 
@@ -917,7 +917,8 @@
     border-style: dashed;
   }
   .finance-card-add-icon {
-    background: linear-gradient(135deg, rgba(108,140,255,0.06), rgba(167,139,250,0.04));
+    background: var(--accent-muted);
+    opacity: 0.6;
   }
   .finance-card-add-icon span {
     font-size: 28px;
@@ -1002,11 +1003,11 @@
     align-items: center;
     justify-content: center;
     border-radius: 6px;
-    background: rgba(108,140,255,0.08);
+    background: var(--accent-muted);
     transition: background 0.15s, color 0.15s;
   }
   .add-skill-item:hover .add-skill-item-plus {
-    background: var(--accent, #6c8cff);
+    background: var(--accent);
     color: #fff;
   }
 
@@ -1022,25 +1023,25 @@
     transition: background 0.3s, color 0.3s;
   }
   .ss-idle {
-    background: rgba(108, 140, 255, 0.12);
-    color: #93adff;
+    background: var(--accent-muted);
+    color: var(--accent);
   }
   .ss-working {
-    background: rgba(74, 222, 128, 0.15);
-    color: #4ade80;
+    background: var(--green-muted);
+    color: var(--green);
     animation: workingPulse 2s ease-in-out infinite;
   }
   .ss-studying {
-    background: rgba(167, 139, 250, 0.15);
-    color: #a78bfa;
+    background: rgba(167, 139, 250, 0.12);
+    color: #b39dfc;
   }
   .ss-dailylife {
-    background: rgba(251, 191, 36, 0.15);
-    color: #fbbf24;
+    background: var(--yellow-muted);
+    color: var(--yellow);
   }
   .ss-chatting {
-    background: rgba(34, 211, 238, 0.15);
-    color: #22d3ee;
+    background: rgba(34, 211, 238, 0.12);
+    color: #38dff0;
     animation: workingPulse 2s ease-in-out infinite;
   }
 

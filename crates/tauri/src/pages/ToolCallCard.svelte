@@ -75,9 +75,9 @@
 <style>
   .tool-card {
     margin: 6px 0;
-    border: 1px solid var(--border, #d0d0d0);
-    border-radius: 8px;
-    background: var(--surface-secondary, #f8f8f8);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg);
     overflow: hidden;
     font-size: 13px;
   }

@@ -149,21 +149,24 @@
 
 <nav class="sidebar" class:compact={sidebarCompact}>
   {#if sidebarCompact}
-    <!-- Compact mode: flat list of icon-only items -->
+    <!-- Compact mode: flat icon-only items -->
+    <div class="runtime-dot-row" class:live={runtimeRunning}>
+      <span class="runtime-mini-dot"></span>
+    </div>
     {#each menuGroups as group}
       {#each group.items as page}
-        {#if !runtimeRunning || page.id === "settings"}
-          <span class="nav-icon disabled" title={page.id === "settings" ? "Settings are being reorganised" : page.label + " — Start the runtime first"}>
-            <span class="status-dot stopped"></span>
+        {@const isDisabled = !runtimeRunning || page.id === "settings"}
+        {#if isDisabled}
+          <span class="nav-icon disabled" title={page.id === "settings" ? "Settings are being reorganised" : page.label + " - Start the runtime first"}>
             <span class="nav-short">{page.short}</span>
           </span>
         {:else}
           <button
-            class={["nav-icon", currentPage === page.id ? "active" : ""].join(" ")}
+            class="nav-icon"
+            class:active={currentPage === page.id}
             onclick={() => navigateTo(page.id)}
             title={page.label}
           >
-            <span class="status-dot running"></span>
             <span class="nav-short">{page.short}</span>
           </button>
         {/if}
@@ -171,6 +174,10 @@
     {/each}
   {:else}
     <!-- Expanded mode: grouped with headers -->
+    <div class="sidebar-status-bar" class:live={runtimeRunning}>
+      <span class="runtime-status-dot"></span>
+      <span class="runtime-status-label">{runtimeRunning ? "Runtime Online" : "Runtime Offline"}</span>
+    </div>
     {#each menuGroups as group}
       <button class="menu-header" onclick={() => toggleGroup(group.name)}>
         <span class="menu-arrow">{expandedGroups[group.name] ? "▾" : "▸"}</span>
@@ -179,17 +186,17 @@
       {#if expandedGroups[group.name]}
         <div class="menu-items">
           {#each group.items as page}
-            {#if !runtimeRunning || page.id === "settings"}
-              <span class="sidebar-link disabled" title={page.id === "settings" ? "Settings are being reorganised" : "Start the runtime first"}>
-                <span class="status-dot stopped"></span>
+            {@const isDisabled = !runtimeRunning || page.id === "settings"}
+            {#if isDisabled}
+              <span class="disabled" title={page.id === "settings" ? "Settings are being reorganised" : "Start the runtime first"}>
                 {page.label}
               </span>
             {:else}
               <button
-                class={["nav-btn", currentPage === page.id ? "active" : ""].join(" ")}
+                class="nav-btn"
+                class:active={currentPage === page.id}
                 onclick={() => navigateTo(page.id)}
               >
-                <span class="status-dot running"></span>
                 {page.label}
               </button>
             {/if}

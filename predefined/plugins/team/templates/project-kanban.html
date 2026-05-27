@@ -137,6 +137,17 @@
 <div class="modal" id="editBoardModal">
   <div class="modal-card">
     <h3>Edit Board Stages</h3>
+    <div id="importBoardSection" style="display:none;">
+      <div id="importBoardPanel" style="margin-bottom:16px;padding:12px;background:#0f1119;border:1px solid #1e2030;border-radius:8px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:13px;color:#aaa;">Import board from another project</span>
+          <button style="padding:4px 8px;background:none;border:1px solid #2a2d3a;color:#888;border-radius:4px;cursor:pointer;font-size:11px;" onclick="closeImportPanel()">&times;</button>
+        </div>
+        <div id="importProjectList" style="max-height:180px;overflow-y:auto;"></div>
+        <div class="hint" style="margin-top:6px;">Stages will be overwritten. Only available when the project has no tasks.</div>
+      </div>
+    </div>
+    <button id="importBoardBtn" class="add-stage-btn" style="margin-bottom:12px;display:none;" onclick="openImportPanel()">&#8645; Import from Project</button>
     <div class="form-group">
       <label>Initial Stage</label>
       <select id="editInitialStage"></select>
@@ -295,6 +306,9 @@ async function saveProject() {
 function openEditBoard() {
   _editStages = JSON.parse(JSON.stringify(_cachedStages));
   renderStageEditor();
+  closeImportPanel();
+  var hasTasks = _cachedTasks && _cachedTasks.length > 0;
+  document.getElementById("importBoardBtn").style.display = hasTasks ? "none" : "block";
   document.getElementById("editBoardModal").classList.add("open");
 }
 
@@ -364,6 +378,65 @@ async function saveStages() {
     if (!r.ok) { var e = await r.json(); throw new Error(e.error || "Save failed"); }
     closeEditBoard();
     flash("Board stages updated", "success");
+    load();
+  } catch(e) { flash(e.message, "error"); }
+}
+
+// ── Import Board ──────────────────────────────────────────────
+
+async function openImportPanel() {
+  var panel = document.getElementById("importBoardSection");
+  var list = document.getElementById("importProjectList");
+  list.innerHTML = '<div style="text-align:center;color:#555;padding:12px;font-size:12px;">Loading projects...</div>';
+  panel.style.display = "block";
+
+  try {
+    var r = await fetch("/api/v1/team/projects");
+    if (!r.ok) throw new Error("Failed to fetch projects");
+    var data = await r.json();
+    var projects = (data.projects || []).filter(function(p) { return p.project_key !== PROJECT; });
+
+    if (projects.length === 0) {
+      list.innerHTML = '<div style="text-align:center;color:#555;padding:12px;font-size:12px;">No other projects found</div>';
+      return;
+    }
+
+    var html = "";
+    for (var i = 0; i < projects.length; i++) {
+      var p = projects[i];
+      var stageNames = (p.stages || []).map(function(s) { return s.name || s.id; }).join(" → ");
+      html += '<div class="import-card" style="padding:10px 12px;margin-bottom:6px;background:#13151f;border:1px solid #1e2030;border-radius:6px;cursor:pointer;" ' +
+              'onmouseover="this.style.borderColor=\'#6366f1\'" onmouseout="this.style.borderColor=\'#1e2030\'" ' +
+              'onclick="importBoardFrom(\'' + esc(p.project_key) + '\',\'' + esc(p.project_name) + '\')">' +
+              '<div style="font-size:13px;font-weight:500;">' + esc(p.project_name) + '</div>' +
+              '<div style="font-size:11px;color:#666;margin-top:2px;">' + esc(p.project_key) + ' &middot; ' + p.stage_count + ' stages &middot; ' + esc(stageNames) + '</div>' +
+              '</div>';
+    }
+    list.innerHTML = html;
+  } catch(e) {
+    list.innerHTML = '<div style="text-align:center;color:#fca5a5;padding:12px;font-size:12px;">Failed to load projects</div>';
+  }
+}
+
+function closeImportPanel() {
+  document.getElementById("importBoardSection").style.display = "none";
+}
+
+async function importBoardFrom(sourceKey, sourceName) {
+  if (!confirm("Import board from \"" + sourceName + "\"?\\n\\nThis will overwrite all current stages. This cannot be undone.")) return;
+
+  try {
+    var r = await fetch(BASE + "/boards/import", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({source_project_key: sourceKey})
+    });
+    var data = await r.json();
+    if (!r.ok) throw new Error(data.error || "Import failed");
+
+    closeImportPanel();
+    closeEditBoard();
+    flash("Imported " + data.stages.length + " stage(s) from " + sourceName, "success");
     load();
   } catch(e) { flash(e.message, "error"); }
 }

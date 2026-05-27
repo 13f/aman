@@ -1371,6 +1371,97 @@ def _handle_stages_update(project_key: str, body: dict) -> dict:
     return _json_response({"ok": True, "stages": stages})
 
 
+def _handle_list_all_projects() -> dict:
+    """Return JSON list of all projects with basic info and stage count."""
+    items = []
+    for key, proj in sorted(_projects.items()):
+        config = proj.get("config", {})
+        stages = config.get("stages", [])
+        items.append({
+            "project_key": key,
+            "project_name": config.get("project_name", key),
+            "description": config.get("description", ""),
+            "stage_count": len(stages),
+            "stages": [{"id": s["id"], "name": s.get("name", s["id"])} for s in stages],
+        })
+    return _json_response({"projects": items})
+
+
+def _handle_boards_import(project_key: str, body: dict) -> dict:
+    """Import board stages from a source project, overwriting the current project's stages.
+    Only allowed when the target project has no tasks."""
+    proj = _projects.get(project_key)
+    if not proj:
+        return _json_response({"error": f"project '{project_key}' not found"}, 404)
+
+    source_key = body.get("source_project_key", "").strip()
+    if not source_key:
+        return _json_response({"error": "source_project_key is required"}, 400)
+
+    if source_key == project_key:
+        return _json_response({"error": "cannot import boards from the same project"}, 400)
+
+    source = _projects.get(source_key)
+    if not source:
+        return _json_response({"error": f"source project '{source_key}' not found"}, 404)
+
+    # Check target project has no tasks
+    tasks = list_tasks(project_key)
+    if tasks:
+        return _json_response({
+            "error": f"project '{project_key}' has {len(tasks)} existing task(s). "
+                      "Import is only allowed when the project has no tasks.",
+            "task_count": len(tasks),
+        }, 409)
+
+    source_config = source.get("config", {})
+    source_stages = source_config.get("stages", [])
+    if not source_stages:
+        return _json_response({"error": f"source project '{source_key}' has no stages"}, 400)
+
+    # Deep copy stages from source
+    import copy
+    imported_stages = copy.deepcopy(source_stages)
+    initial_stage = source_config.get("initial_stage", imported_stages[0]["id"] if imported_stages else "")
+
+    # Update in-memory config
+    config = proj.get("config", {})
+    config["stages"] = imported_stages
+    config["initial_stage"] = initial_stage
+
+    # Persist to disk
+    import yaml
+    config_path = _project_config_path(project_key)
+    full = {
+        "project": {
+            "name": config.get("project_name", project_key),
+            "description": config.get("description", ""),
+        },
+        "stages": imported_stages,
+        "initial_stage": initial_stage,
+        "safety_gates": config.get("safety_gates", {}),
+        "context_files": config.get("context_files", []),
+        "work_dir": config.get("work_dir", os.getcwd()),
+    }
+    with open(config_path, "w") as f:
+        yaml.safe_dump(full, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    _projects[project_key]["config"] = config
+
+    try:
+        compile_workflow(project_key)
+    except Exception as e:
+        _log(f"Workflow recompile failed after boards import: {e}")
+
+    _log(f"Boards imported: {project_key} <- {source_key} ({len(imported_stages)} stages)")
+    return _json_response({
+        "ok": True,
+        "source_project_key": source_key,
+        "stages": imported_stages,
+        "initial_stage": initial_stage,
+    })
+
+
 
 # ---------------------------------------------------------------------------
 # HTML Template Helpers
@@ -1519,6 +1610,7 @@ def handle_on_load(params: Any) -> dict:
     # Setup API routes
     route_specs.append({"method": "POST", "path": "/team/setup"})
     route_specs.append({"method": "POST", "path": "/team/update"})
+    route_specs.append({"method": "GET", "path": "/team/projects"})
     route_specs.append({"method": "POST", "path": "/team/projects/create"})
 
     for project_key, config in discovered.items():
@@ -1546,6 +1638,7 @@ def handle_on_load(params: Any) -> dict:
             {"method": "GET", "path": f"{api_prefix}/config"},
             {"method": "POST", "path": f"{api_prefix}/update"},
             {"method": "POST", "path": f"{api_prefix}/stages/update"},
+            {"method": "POST", "path": f"{api_prefix}/boards/import"},
             {"method": "DELETE", "path": api_prefix},
             {"method": "GET", "path": f"{api_prefix}/tasks"},
             {"method": "POST", "path": f"{api_prefix}/tasks/create"},
@@ -1640,6 +1733,9 @@ def handle_route(params: Any) -> dict:
             body_json = {}
         return _handle_team_update(body_json)
 
+    if method == "GET" and clean in ("/team/projects", "/team/projects/"):
+        return _handle_list_all_projects()
+
     if method == "POST" and clean in ("/team/projects/create", "/team/projects/create/"):
         try:
             body_json = json.loads(body) if body else {}
@@ -1647,7 +1743,7 @@ def handle_route(params: Any) -> dict:
             body_json = {}
         return _handle_project_create(body_json)
 
-    # ── Project update / delete / stages ─────────────────────────────
+    # ── Project update / delete / stages / boards import ─────────────
     m_update = re.match(r"/team/projects/([^/]+)/update$", clean)
     if m_update and method == "POST":
         try:
@@ -1669,6 +1765,17 @@ def handle_route(params: Any) -> dict:
         if project_key not in _projects:
             return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}
         return _handle_stages_update(project_key, body_json)
+
+    m_boards_import = re.match(r"/team/projects/([^/]+)/boards/import$", clean)
+    if m_boards_import and method == "POST":
+        try:
+            body_json = json.loads(body) if body else {}
+        except (json.JSONDecodeError, TypeError):
+            body_json = {}
+        project_key = m_boards_import.group(1)
+        if project_key not in _projects:
+            return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}
+        return _handle_boards_import(project_key, body_json)
 
     m_delete = re.match(r"/team/projects/([^/]+)$", clean)
     if m_delete and method == "DELETE":

@@ -483,6 +483,29 @@ impl AgentRegistry {
         }
     }
 
+    /// Stops all agent idle managers and work systems without clearing state.
+    ///
+    /// Called during Phase 4 shutdown to prevent agents from generating new
+    /// events while the event bus is being drained. The full state cleanup
+    /// happens later in Phase 2 via [`clear()`].
+    pub async fn stop_idle_systems(&self) {
+        let idle_managers: Vec<Arc<AgentIdleManager>> = {
+            let managers = self.idle_managers.read().await;
+            managers.values().cloned().collect()
+        };
+        for manager in &idle_managers {
+            let _ = manager.shutdown().await;
+        }
+
+        let work_systems: Vec<Arc<WorkSystem>> = {
+            let systems = self.work_systems.read().await;
+            systems.values().cloned().collect()
+        };
+        for ws in &work_systems {
+            ws.shutdown().await;
+        }
+    }
+
     /// 清空注册表（shutdown 时调用）。
     pub async fn clear(&self) {
         // Shut down all per-agent idle managers first

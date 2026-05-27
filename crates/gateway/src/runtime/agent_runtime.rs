@@ -1094,6 +1094,7 @@ impl AgentRuntimeBuilder {
             agent_registry,
             agent_harness,
             session_manager,
+            shutdown_notify: tokio::sync::Notify::new(),
         }))
     }
 }
@@ -1444,6 +1445,10 @@ pub struct AgentRuntime {
     /// Session manager — orchestrates session lifecycle, OCC, persistence,
     /// and system prompt caching independently of the chat transport.
     session_manager: Arc<super::session::SessionManager>,
+    /// Notified when `shutdown()` completes. Used by `main.rs` to exit the
+    /// process after an HTTP-initiated shutdown (the signal handler path
+    /// would otherwise never be reached).
+    shutdown_notify: tokio::sync::Notify,
 }
 
 impl AgentRuntime {
@@ -1772,6 +1777,16 @@ impl AgentRuntime {
     #[must_use]
     pub fn plugin_routes(&self) -> Vec<axum::Router<()>> {
         pollster::block_on(async { self.plugin_loader.lock().await.collect_routes() })
+    }
+
+    /// Returns a reference to the shutdown notification channel.
+    ///
+    /// The notification is sent when [`shutdown()`] completes, regardless of
+    /// whether shutdown was triggered via HTTP, signal, or any other path.
+    /// Callers can `.await` on `notified()` to wait for shutdown completion.
+    #[must_use]
+    pub fn shutdown_notify(&self) -> &tokio::sync::Notify {
+        &self.shutdown_notify
     }
 
     #[must_use]
@@ -2284,6 +2299,7 @@ impl AgentRuntime {
         self.stop_backpressure_watching().await;
 
         *self.status.write().await = RuntimeStatus::Shutdown;
+        self.shutdown_notify.notify_one();
         Ok(())
     }
 
@@ -2398,9 +2414,10 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
-                // Phase 4.5: per-agent idle and work systems are shut down in
-                // Phase 2 via agent_registry.clear(), which calls shutdown()
-                // on each AgentIdleManager and WorkSystem.
+                // Stop agent idle/work systems before draining the event bus.
+                // Otherwise agents keep generating sleep/think events, which
+                // reset the drain stall detector and prolong shutdown.
+                self.agent_registry.stop_idle_systems().await;
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {

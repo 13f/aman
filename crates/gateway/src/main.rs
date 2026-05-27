@@ -159,7 +159,8 @@ async fn run() -> Result<(), i32> {
         serde_json::json!({"bind": bind.to_string(), "addr": addr.to_string()}),
     )).await;
 
-    // Wait for shutdown signal.
+    // Wait for shutdown signal or HTTP-initiated shutdown completion.
+    let shutdown_notify = runtime.shutdown_notify();
     #[cfg(unix)]
     {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -172,13 +173,22 @@ async fn run() -> Result<(), i32> {
             _ = sigterm.recv() => {
                 tracing::info!("received SIGTERM, shutting down");
             }
+            _ = shutdown_notify.notified() => {
+                tracing::info!("shutdown completed via HTTP, exiting");
+            }
         }
     }
 
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await.map_err(|_| 1)?;
-        tracing::info!("received SIGINT, shutting down");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT, shutting down");
+            }
+            _ = shutdown_notify.notified() => {
+                tracing::info!("shutdown completed via HTTP, exiting");
+            }
+        }
     }
 
     let _ = runtime.publish_event(Event::new(

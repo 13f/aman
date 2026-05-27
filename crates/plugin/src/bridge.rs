@@ -294,21 +294,19 @@ impl SubprocessPluginBridge {
             }
         };
 
-        let has_id = msg.get("id").and_then(|v| v.as_u64());
-
-        if has_id.is_some() {
-            // This is a response to a server→plugin request
-            let id = has_id.unwrap();
+        // JSON-RPC 2.0: requests have "method" (with optional "id"); responses
+        // have "id" but no "method". Check method first so plugin→server
+        // requests with both "id" and "method" are not misclassified.
+        if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
+            let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
+            let req_id = msg.get("id").and_then(|v| v.as_u64());
+            self.handle_plugin_request(method, params, req_id);
+        } else if let Some(id) = msg.get("id").and_then(|v| v.as_u64()) {
             let mut pending = self.pending.lock().unwrap();
             if let Some(tx) = pending.remove(&id) {
                 let result = msg.get("result").cloned().unwrap_or(serde_json::Value::Null);
                 let _ = tx.send(result);
             }
-        } else if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-            // This is an incoming request from the plugin
-            let params = msg.get("params").cloned().unwrap_or(serde_json::Value::Null);
-            let req_id = msg.get("id").and_then(|v| v.as_u64());
-            self.handle_plugin_request(method, params, req_id);
         }
     }
 

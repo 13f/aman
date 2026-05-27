@@ -65,12 +65,27 @@ pub fn run() {
                     return;
                 }
 
-                // Only intercept if gateway is still running
+                // Only intercept if gateway client is still connected.
                 let has_gateway = rt.block_on(async {
                     let guard = shutdown_gc.lock().await;
                     guard.is_some()
                 });
                 if !has_gateway {
+                    return;
+                }
+
+                // If the app does not own the gateway process (standalone mode),
+                // just disconnect without shutting it down. This preserves
+                // plugin state (team kanban, etc.) for subsequent sessions.
+                let owns_gateway = rt.block_on(async {
+                    let guard = shutdown_gp.lock().await;
+                    guard.is_some()
+                });
+                if !owns_gateway {
+                    rt.block_on(async {
+                        let mut guard = shutdown_gc.lock().await;
+                        *guard = None;
+                    });
                     return;
                 }
 

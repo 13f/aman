@@ -10,7 +10,7 @@ use crate::models::{
     RuntimeStatusInfo, SkillEntry, SoulInfo, WorkflowEntry,
 };
 use secret::{KeychainBackend, SecretBackend};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tauri::State;
 
@@ -1343,6 +1343,85 @@ pub async fn has_provider_api_key(key: String) -> Result<bool, String> {
     }
 
     Ok(provider_has_api_key(&key))
+}
+
+/// Retrieve the API key for a provider, checking Keychain first, then env var.
+fn provider_get_api_key(key: &str) -> Option<String> {
+    let backend = KeychainBackend;
+    if let Ok(Some(val)) = backend.get(&format!("aman.providers.{key}.api_key")) {
+        return Some(val);
+    }
+    let env_var = format!("AMAN_PROVIDER_{}_API_KEY", provider_env_key(key));
+    std::env::var(env_var).ok()
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIModelListResponse {
+    data: Vec<OpenAIModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIModelEntry {
+    id: String,
+}
+
+#[tauri::command]
+pub async fn list_provider_models(
+    provider_key: String,
+) -> Result<Vec<crate::models::ModelEntry>, String> {
+    let aman_config = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+
+    let provider = aman_config
+        .providers
+        .get(&provider_key)
+        .ok_or_else(|| format!("Provider '{provider_key}' 不存在"))?;
+
+    // Try fetching from the provider's /v1/models endpoint.
+    if let Some(api_key) = provider_get_api_key(&provider_key) {
+        let url = format!("{}/v1/models", provider.base_url.trim_end_matches('/'));
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+        match client
+            .get(&url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                if let Ok(body) = resp.json::<OpenAIModelListResponse>().await {
+                    if !body.data.is_empty() {
+                        let mut models: Vec<crate::models::ModelEntry> = body
+                            .data
+                            .into_iter()
+                            .map(|m| crate::models::ModelEntry {
+                                id: m.id.clone(),
+                                model_id: m.id,
+                            })
+                            .collect();
+                        models.sort_by(|a, b| a.id.cmp(&b.id));
+                        return Ok(models);
+                    }
+                }
+            }
+            Err(_) => { /* fall through to config fallback */ }
+        }
+    }
+
+    // Fallback: use statically configured models from config.
+    let mut models: Vec<crate::models::ModelEntry> = provider
+        .models
+        .iter()
+        .map(|m| crate::models::ModelEntry {
+            id: m.id.clone(),
+            model_id: m.model_id.clone(),
+        })
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(models)
 }
 
 

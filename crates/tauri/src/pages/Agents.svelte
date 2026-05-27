@@ -22,6 +22,11 @@
     has_api_key: boolean;
   }
 
+  interface ModelEntry {
+    id: string;
+    model_id: string;
+  }
+
   let agents = $state<AgentEntry[]>([]);
   let providers = $state<ProviderEntry[]>([]);
   let loading = $state(true);
@@ -57,6 +62,45 @@ I prefer concise and accurate responses.
 `;
 
   let newSoulContent = $state(defaultSoul);
+
+  let newModelEntries = $state<ModelEntry[]>([]);
+  let showNewModelDropdown = $state(false);
+  let isLoadingNewModels = $state(false);
+  let newModelBlurTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function fetchNewModels() {
+    if (!newProvider) {
+      newModelEntries = [];
+      return;
+    }
+    isLoadingNewModels = true;
+    try {
+      newModelEntries = await invoke<ModelEntry[]>("list_provider_models", {
+        providerKey: newProvider,
+      });
+      showNewModelDropdown = newModelEntries.length > 0;
+    } catch {
+      newModelEntries = [];
+      showNewModelDropdown = false;
+    } finally {
+      isLoadingNewModels = false;
+    }
+  }
+
+  function hideNewModelDropdown() {
+    newModelBlurTimer = setTimeout(() => {
+      showNewModelDropdown = false;
+    }, 150);
+  }
+
+  function selectNewModel(m: ModelEntry) {
+    newModel = m.id;
+    showNewModelDropdown = false;
+    if (newModelBlurTimer) {
+      clearTimeout(newModelBlurTimer);
+      newModelBlurTimer = null;
+    }
+  }
 
   async function loadData() {
     loading = true;
@@ -162,16 +206,41 @@ I prefer concise and accurate responses.
     </div>
     <div class="form-field">
       <label for="agent-provider">Provider</label>
-      <select id="agent-provider" bind:value={newProvider}>
+      <select id="agent-provider" bind:value={newProvider} onchange={() => { newModelEntries = []; showNewModelDropdown = false; }}>
         <option value="">-- 选择 Provider --</option>
         {#each providers as p}
           <option value={p.key}>{p.display_name}</option>
         {/each}
       </select>
     </div>
-    <div class="form-field">
+    <div class="form-field model-field">
       <label for="agent-model">Model</label>
-      <input id="agent-model" type="text" placeholder="例如: gpt-5" bind:value={newModel} />
+      <input
+        id="agent-model"
+        type="text"
+        placeholder="例如: gpt-5"
+        bind:value={newModel}
+        onfocus={fetchNewModels}
+        onblur={hideNewModelDropdown}
+      />
+      {#if isLoadingNewModels}
+        <div class="model-dropdown-loading">加载中...</div>
+      {/if}
+      {#if showNewModelDropdown && newModelEntries.length > 0}
+        <div class="model-dropdown">
+          {#each newModelEntries as m}
+            <button
+              type="button"
+              class="model-entry"
+              onmousedown={(e) => e.preventDefault()}
+              onclick={() => selectNewModel(m)}
+            >
+              <span class="model-name">{m.id}</span>
+              <span class="model-id">{m.model_id}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
     <div class="form-field">
       <label for="agent-soul">SOUL.md 内容</label>
@@ -233,6 +302,58 @@ I prefer concise and accurate responses.
     gap: 8px;
     justify-content: flex-end;
     margin-top: 16px;
+  }
+  .model-field {
+    position: relative;
+  }
+  .model-dropdown-loading {
+    position: absolute;
+    z-index: 10;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--fg-dim);
+    width: 100%;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  }
+  .model-dropdown {
+    position: absolute;
+    z-index: 10;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    width: 100%;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  }
+  .model-entry {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    background: transparent;
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    gap: 2px;
+  }
+  .model-entry:hover {
+    background: var(--accent-light, rgba(108,140,255,0.1));
+  }
+  .model-name {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .model-id {
+    font-size: 11px;
+    color: var(--fg-dim);
   }
   .dim { color: var(--fg-dim); }
   .empty-state { text-align: center; padding: 40px; }

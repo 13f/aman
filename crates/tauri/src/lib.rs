@@ -175,6 +175,7 @@ pub fn run() {
             commands::delete_provider,
             commands::set_provider_api_key,
             commands::has_provider_api_key,
+            commands::list_provider_models,
             // Multi-agent agent commands (P2)
             commands::list_agents,
             commands::create_agent,

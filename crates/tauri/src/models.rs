@@ -223,6 +223,15 @@ pub struct UnreadCount {
     pub count: usize,
 }
 
+/// A model entry returned by list_provider_models.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelEntry {
+    /// Display name / global model ID.
+    pub id: String,
+    /// Provider-specific API model name.
+    pub model_id: String,
+}
+
 /// A single agent entry for IPC responses (filesystem-based).
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentEntry {

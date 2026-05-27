@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+
   interface AgentEntry {
     key: string;
     display_name: string;
@@ -14,6 +16,11 @@
     display_name: string;
     base_url: string;
     has_api_key: boolean;
+  }
+
+  interface ModelEntry {
+    id: string;
+    model_id: string;
   }
 
   let {
@@ -46,6 +53,47 @@
     editModel = agent.model;
     editSoulContent = "";
     showEditForm = agent.key;
+    modelEntries = [];
+    showModelDropdown = false;
+  }
+
+  let modelEntries = $state<ModelEntry[]>([]);
+  let showModelDropdown = $state(false);
+  let isLoadingModels = $state(false);
+  let modelDropdownBlurTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function fetchModels() {
+    if (!editProvider) {
+      modelEntries = [];
+      return;
+    }
+    isLoadingModels = true;
+    try {
+      modelEntries = await invoke<ModelEntry[]>("list_provider_models", {
+        providerKey: editProvider,
+      });
+      showModelDropdown = modelEntries.length > 0;
+    } catch {
+      modelEntries = [];
+      showModelDropdown = false;
+    } finally {
+      isLoadingModels = false;
+    }
+  }
+
+  function hideModelDropdown() {
+    modelDropdownBlurTimer = setTimeout(() => {
+      showModelDropdown = false;
+    }, 150);
+  }
+
+  function selectModel(m: ModelEntry) {
+    editModel = m.id;
+    showModelDropdown = false;
+    if (modelDropdownBlurTimer) {
+      clearTimeout(modelDropdownBlurTimer);
+      modelDropdownBlurTimer = null;
+    }
   }
 </script>
 
@@ -107,15 +155,39 @@
               </div>
               <div class="form-field">
                 <label for="edit-provider-{agent.key}">Provider</label>
-                <select id="edit-provider-{agent.key}" bind:value={editProvider}>
+                <select id="edit-provider-{agent.key}" bind:value={editProvider} onchange={() => { modelEntries = []; showModelDropdown = false; }}>
                   {#each providers as p}
                     <option value={p.key}>{p.display_name}</option>
                   {/each}
                 </select>
               </div>
-              <div class="form-field">
+              <div class="form-field model-field">
                 <label for="edit-model-{agent.key}">Model</label>
-                <input id="edit-model-{agent.key}" type="text" bind:value={editModel} />
+                <input
+                  id="edit-model-{agent.key}"
+                  type="text"
+                  bind:value={editModel}
+                  onfocus={fetchModels}
+                  onblur={hideModelDropdown}
+                />
+                {#if isLoadingModels}
+                  <div class="model-dropdown-loading">加载中...</div>
+                {/if}
+                {#if showModelDropdown && modelEntries.length > 0}
+                  <div class="model-dropdown">
+                    {#each modelEntries as m}
+                      <button
+                        type="button"
+                        class="model-entry"
+                        onmousedown={(e) => e.preventDefault()}
+                        onclick={() => selectModel(m)}
+                      >
+                        <span class="model-name">{m.id}</span>
+                        <span class="model-id">{m.model_id}</span>
+                      </button>
+                    {/each}
+                  </div>
+                {/if}
               </div>
               <div class="form-field">
                 <label for="edit-soul-{agent.key}">SOUL.md (留空不修改)</label>
@@ -263,6 +335,58 @@
     gap: 8px;
     justify-content: flex-end;
     margin-top: 16px;
+  }
+  .model-field {
+    position: relative;
+  }
+  .model-dropdown-loading {
+    position: absolute;
+    z-index: 10;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    color: var(--fg-dim);
+    width: 100%;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  }
+  .model-dropdown {
+    position: absolute;
+    z-index: 10;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    width: 100%;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  }
+  .model-entry {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    padding: 10px 14px;
+    border: none;
+    background: transparent;
+    color: var(--fg);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    text-align: left;
+    gap: 2px;
+  }
+  .model-entry:hover {
+    background: var(--accent-light, rgba(108,140,255,0.1));
+  }
+  .model-name {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .model-id {
+    font-size: 11px;
+    color: var(--fg-dim);
   }
   .dim { color: var(--fg-dim); }
   .empty-state { text-align: center; padding: 40px; }

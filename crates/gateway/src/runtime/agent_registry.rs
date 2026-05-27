@@ -180,9 +180,8 @@ impl AgentRegistry {
             if entry.enabled {
                 let work_system = Arc::new(WorkSystem::new(
                     agent_id.clone(),
-                    config.runtime.work.personality.clone(),
+                    config.runtime.work.clone(),
                     local_bus,
-                    None, // board client: wired when kanban/team plugin is loaded
                     Some(Arc::clone(&system_state)),
                 ));
                 self.set_work_system(agent_id, work_system).await;
@@ -314,9 +313,8 @@ impl AgentRegistry {
             let ss = self.get_or_create_system_state(agent_id).await;
             let work_system = Arc::new(WorkSystem::new(
                 agent_id.to_string(),
-                config.runtime.work.personality.clone(),
+                config.runtime.work.clone(),
                 local_bus,
-                None, // board client: wired when kanban/team plugin is loaded
                 Some(ss),
             ));
             self.set_work_system(agent_id, work_system).await;

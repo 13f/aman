@@ -1,92 +1,159 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-//! Core work system types: WorkState, WorkEvent, WorkContext, and supporting types.
+//! Core work system types: WorkState, WorkEvent, WorkItem, WorkContext.
 //!
-//! Architecture ref: work-design.md §3
+//! Architecture ref: work-design.md v2 §3
 
 use kernel::types::Timestamp;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
-// §3.1 WorkState — 五种工作状态
+// §2.1 WorkState — 两种工作状态
 // ---------------------------------------------------------------------------
 
-/// Work System 的状态枚举。
+/// Work System 的状态枚举（v2 简化：2 状态）。
 ///
-/// **IDLE** 是中断入口——也是唯一不占用 Event Bus 的状态（Bus 为空 → 全局 Idle 可运行）。
-/// 收到 `Interrupt` 事件时，无论当前处于什么状态，都无条件切回 IDLE。
-/// 其他四种状态通过链式投递事件保持 Bus 非空。
+/// **IDLE** 是中断入口——队列为空时 Event Bus 空闲，Idle System 自然运行。
+/// 收到 `Interrupt` 事件时，无论当前处于何种状态，都无条件切回 IDLE。
+/// **BUSY** 期间通过链式投递 StepEvent 保持 Bus 非空。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkState {
-    /// 工作闲置。不占用 Event Bus，允许全局 Idle 运行。
-    /// 也是中断入口——任何活跃状态收到 Interrupt 后回到此处。
+    /// 工作闲置。队列为空，Event Bus 空闲。
     Idle,
-    /// 正在检查任务板（同步操作，极短）。
-    Checking,
-    /// 正在认领任务（等待 Global Bus 的 ClaimResponse）。
-    Claiming,
-    /// 正在执行任务的某个子步骤。
-    Executing,
-    /// 正在复核执行结果。
-    Reviewing,
+    /// 正在执行当前 WorkItem 的某个步骤。
+    Busy,
 }
 
 // ---------------------------------------------------------------------------
-// TaskId & TaskBrief
+// WorkItemId
 // ---------------------------------------------------------------------------
 
-/// Unique identifier for a task on a task board.
+/// Unique identifier for a work item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct TaskId(pub Uuid);
+pub struct WorkItemId(pub Uuid);
 
-impl TaskId {
+impl WorkItemId {
     #[must_use]
     pub fn new() -> Self {
         Self(Uuid::now_v7())
     }
 }
 
-impl Default for TaskId {
+impl Default for WorkItemId {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl std::fmt::Display for TaskId {
+impl std::fmt::Display for WorkItemId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-/// Brief summary of a task used for selection and claiming.
+// ---------------------------------------------------------------------------
+// Priority
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    Low = 1,
+    #[default]
+    Normal = 2,
+    High = 3,
+    Critical = 4,
+}
+
+// ---------------------------------------------------------------------------
+// §3.3 WorkItem
+// ---------------------------------------------------------------------------
+
+/// 推送到 Work 队列的工作单元。
+///
+/// 比 "Task" 更通用：可以是用户指派的任务、看板卡片、API 触发、
+/// 定时提醒、Idle Boredom 找回的活——任何需要 Agent 执行的工作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskBrief {
-    pub id: TaskId,
+pub struct WorkItem {
+    pub id: WorkItemId,
     pub title: String,
     pub description: String,
-    pub priority: Option<String>,
-    pub required_capabilities: Vec<String>,
-    pub stage: String,
+
+    /// 预设的执行步骤（可选）。
+    /// 如果为 None，Work System 调用 LLM 自行分解。
+    pub steps: Option<Vec<Step>>,
+
+    /// 优先级（队列内排序用）。
+    #[serde(default)]
+    pub priority: Priority,
+
+    /// 执行超时。
+    #[serde(default)]
+    pub timeout: Option<Duration>,
+
+    /// 附带的上下文数据。
+    #[serde(default)]
+    pub context: HashMap<String, serde_json::Value>,
+
+    /// 是否需要在完成后通知调用方（通过 Global Bus）。
+    #[serde(default)]
+    pub notify_on_complete: bool,
+
+    /// 创建时间。
+    #[serde(default = "Timestamp::now")]
     pub created_at: Timestamp,
+}
+
+// ---------------------------------------------------------------------------
+// WorkItemSource
+// ---------------------------------------------------------------------------
+
+/// 标识 WorkItem 的来源。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorkItemSource {
+    /// 通过 aman CLI 直接指派。
+    Cli { operator: String },
+    /// 通过 HTTP API 指派。
+    Api { endpoint: String, operator: String },
+    /// 看板插件调度器分配。
+    Kanban { board_id: String, scheduler: String },
+    /// Todo 列表插件分配。
+    Todo { list_id: String },
+    /// Agent 在 Boredom 状态下主动 SeekTask 后，调度器响应。
+    SeekResponse { request_id: String },
+    /// 其他自定义来源。
+    Custom {
+        name: String,
+        #[serde(default)]
+        metadata: HashMap<String, serde_json::Value>,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // Step & StepOutput
 // ---------------------------------------------------------------------------
 
-/// A decomposed sub-step of a task.
+/// A decomposed sub-step of a work item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
     pub index: usize,
     pub description: String,
-    pub requires_llm: bool,
-    pub requires_tool: bool,
-    pub estimated_duration: Duration,
+    /// 指定工具名（可选）。
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// 是否需要 LLM 推理。
+    #[serde(default)]
+    pub expect_llm: bool,
+    /// 最大重试次数。
+    #[serde(default)]
+    pub max_retries: u32,
 }
 
 /// Output from executing a single step.
@@ -94,18 +161,19 @@ pub struct Step {
 pub struct StepOutput {
     pub success: bool,
     pub summary: String,
+    #[serde(default)]
     pub artifacts: Vec<String>,
     pub duration: Duration,
 }
 
 // ---------------------------------------------------------------------------
-// TaskResult
+// WorkItemResult
 // ---------------------------------------------------------------------------
 
-/// Final result submitted back to the task board.
+/// Final result of a completed work item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskResult {
-    pub task_id: TaskId,
+pub struct WorkItemResult {
+    pub item_id: WorkItemId,
     pub outcome: WorkOutcome,
     pub summary: String,
     pub steps_completed: usize,
@@ -114,86 +182,39 @@ pub struct TaskResult {
 }
 
 // ---------------------------------------------------------------------------
-// §3.2 WorkEvent — 工作事件类型
+// §3.1 WorkEvent — 工作事件类型（v2: 3 + Interrupt）
 // ---------------------------------------------------------------------------
 
 /// Work System 的领域事件。
 ///
-/// 分为三类：
-/// - 外部来源：由 Global Event Bus 注入（TaskBoardUpdated）
-/// - 定时触发：由 DelayedWorkTick 延迟事件触发
-/// - 内部流转：Work System 自身产生，用于状态机流转
+/// v2 简化：只有 3 个业务事件 + Interrupt。外部系统通过 WorkItemAssigned
+/// 推送工作项，步骤执行通过内部的 StepEvent 链式流转。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "work_event_type", rename_all = "snake_case")]
 pub enum WorkEvent {
-    // ── 外部来源（通过 Global Bus → Agent Local Bus）──
-    /// kanban/team 插件通知任务板有变动。
-    TaskBoardUpdated {
-        board_id: String,
-        change_type: TaskBoardChangeType,
-    },
-    /// 外部系统（如 cron、webhook）触发的主动巡检。
-    WorkTick {
-        triggered_by: String,
+    /// 外部系统推送工作项到 Agent。
+    WorkItemAssigned {
+        item: WorkItem,
+        source: WorkItemSource,
     },
 
-    // ── 延迟定时事件 ──
-    /// 一段时间后触发 WorkTick，用于冷却期巡检。
-    DelayedWorkTick {
-        fire_at: Timestamp,
-        reason: String,
-    },
-
-    // ── 内部状态机流转 ──
-    /// 开始检查任务板。
-    StartCheck,
-    /// 认领指定任务。
-    ClaimTask(TaskBrief),
-    /// 认领响应。
-    ClaimResponse {
-        task: TaskBrief,
-        success: bool,
-        reason: Option<String>,
-    },
-    /// 执行下一个子步骤。
-    ExecuteStep {
-        task_id: TaskId,
-        step_index: usize,
-    },
-    /// 子步骤完成。
-    StepComplete {
-        task_id: TaskId,
-        step_index: usize,
-        output: StepOutput,
-    },
-    /// 子步骤失败。
-    StepFailed {
-        task_id: TaskId,
-        step_index: usize,
-        error: WorkError,
-    },
-    /// 开始复核。
-    ReviewTask(TaskBrief),
-    /// 复核完成。
-    ReviewComplete {
-        task_id: TaskId,
-        passed: bool,
-        feedback: Option<String>,
-    },
-    /// 提交结果到 kanban/team。
-    SubmitResult {
-        task_id: TaskId,
-        result: TaskResult,
-    },
-    /// 工作周期完成（日志/指标用）。
-    WorkCycleDone {
-        task_id: TaskId,
-        outcome: WorkOutcome,
+    /// 当前工作项执行完成。
+    WorkItemCompleted {
+        item_id: WorkItemId,
+        result: WorkItemResult,
         duration: Duration,
     },
 
-    // ── 系统中断 ──
-    /// 中断当前 Work System，强制切回 IDLE。
+    /// 当前工作项执行失败。
+    WorkItemFailed {
+        item_id: WorkItemId,
+        error: WorkError,
+        /// 是否可重试（true 时 WorkItem 重新入队）。
+        retryable: bool,
+    },
+
+    /// 中断当前执行，强制切回 IDLE。
+    /// 任何状态收到此事件 → 保存 checkpoint → 无条件 IDLE。
     Interrupt {
         reason: String,
         by_system: String,
@@ -201,17 +222,8 @@ pub enum WorkEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Supporting enums
+// WorkOutcome / WorkError
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskBoardChangeType {
-    TaskAdded,
-    TaskRemoved,
-    TaskUpdated,
-    StageBulkMove,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -229,49 +241,41 @@ pub struct WorkError {
 }
 
 // ---------------------------------------------------------------------------
-// Idle signal types (injected into Idle System for feedback loop)
+// IdleSignal — feedback to Idle System
 // ---------------------------------------------------------------------------
 
 /// Signals that the Work System sends to the Idle System via coordination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleSignal {
-    /// Task completed successfully — boosts satisfaction.
+    /// Work item completed successfully — boosts satisfaction.
     Satisfaction {
-        task_id: TaskId,
+        work_item_id: WorkItemId,
     },
-    /// Task failed or couldn't be claimed — adds frustration.
+    /// Work item failed — adds frustration.
     Frustration {
         reason: Option<String>,
-    },
-    /// Review found issues — mild disappointment.
-    Disappointment {
-        task_id: TaskId,
     },
 }
 
 // ---------------------------------------------------------------------------
-// §3.3 WorkContext — 工作上下文
+// §3.4 WorkContext — 工作上下文
 // ---------------------------------------------------------------------------
 
-/// Work System 的共享状态。
-///
-/// 全部字段为 Agent 内部私有，不跨 Agent 共享。
+/// Work System 的共享状态。全部 Agent 内部私有。
 #[derive(Debug, Clone)]
 pub struct WorkContext {
     /// 当前工作状态。
     pub state: WorkState,
-    /// 当前正在处理的任务。
-    pub current_task: Option<TaskBrief>,
-    /// 任务的子步骤列表（由 decompose_task 产生）。
-    pub task_steps: Vec<Step>,
-    /// 当前执行到的步骤索引。
+    /// FIFO 工作队列。
+    pub queue: std::collections::VecDeque<WorkItem>,
+    /// 当前正在执行的工作项。
+    pub current: Option<WorkItem>,
+    /// 当前工作项的步骤列表。
+    pub steps: Vec<Step>,
+    /// 当前步骤索引。
     pub step_index: usize,
-    /// 上一次检查任务板的时间。
-    pub last_check_time: Timestamp,
-    /// 连续认领失败的次数（用于退避策略）。
-    pub consecutive_claim_failures: u32,
-    /// Collected step outputs (for final review/submission).
+    /// Collected step outputs.
     pub step_outputs: Vec<StepOutput>,
 }
 
@@ -280,29 +284,38 @@ impl WorkContext {
     pub fn new() -> Self {
         Self {
             state: WorkState::Idle,
-            current_task: None,
-            task_steps: Vec::new(),
+            queue: std::collections::VecDeque::new(),
+            current: None,
+            steps: Vec::new(),
             step_index: 0,
-            last_check_time: Timestamp::now(),
-            consecutive_claim_failures: 0,
             step_outputs: Vec::new(),
         }
     }
 
-    /// 重置为闲置状态，清空当前任务上下文。
+    /// 推入工作项到队列尾部。
+    pub fn enqueue(&mut self, item: WorkItem) {
+        self.queue.push_back(item);
+    }
+
+    /// 取出下一个待执行工作项。
+    pub fn dequeue(&mut self) -> Option<WorkItem> {
+        self.queue.pop_front()
+    }
+
+    /// 重置为 IDLE，清空当前工作上下文。
     pub fn reset_to_idle(&mut self) {
         self.state = WorkState::Idle;
-        self.current_task = None;
-        self.task_steps.clear();
+        self.current = None;
+        self.steps.clear();
         self.step_index = 0;
         self.step_outputs.clear();
     }
 
-    /// 中断当前任务，保存 checkpoint 后回到 IDLE。
+    /// 中断当前工作项，保存 checkpoint 后回到 IDLE。
     pub fn interrupt(&mut self, reason: &str) -> WorkCheckpoint {
         let checkpoint = WorkCheckpoint {
             state: self.state,
-            task_id: self.current_task.as_ref().map(|t| t.id),
+            item_id: self.current.as_ref().map(|w| w.id),
             step_index: self.step_index,
             timestamp: Timestamp::now(),
             reason: reason.to_string(),
@@ -326,7 +339,7 @@ impl Default for WorkContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkCheckpoint {
     pub state: WorkState,
-    pub task_id: Option<TaskId>,
+    pub item_id: Option<WorkItemId>,
     pub step_index: usize,
     pub timestamp: Timestamp,
     pub reason: String,
@@ -357,83 +370,140 @@ impl WorkEvent {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::TaskBoardUpdated { .. } => "work.task_board_updated",
-            Self::WorkTick { .. } => "work.work_tick",
-            Self::DelayedWorkTick { .. } => "work.delayed_work_tick",
-            Self::StartCheck => "work.start_check",
-            Self::ClaimTask(_) => "work.claim_task",
-            Self::ClaimResponse { .. } => "work.claim_response",
-            Self::ExecuteStep { .. } => "work.execute_step",
-            Self::StepComplete { .. } => "work.step_complete",
-            Self::StepFailed { .. } => "work.step_failed",
-            Self::ReviewTask(_) => "work.review_task",
-            Self::ReviewComplete { .. } => "work.review_complete",
-            Self::SubmitResult { .. } => "work.submit_result",
-            Self::WorkCycleDone { .. } => "work.cycle_done",
+            Self::WorkItemAssigned { .. } => "work.item.assigned",
+            Self::WorkItemCompleted { .. } => "work.item.completed",
+            Self::WorkItemFailed { .. } => "work.item.failed",
             Self::Interrupt { .. } => "work.interrupt",
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Internal StepEvent — 步骤执行链（不暴露为 WorkEvent）
+// ---------------------------------------------------------------------------
+
+/// 内部步骤事件——Work System 内部链式流转，不暴露为 WorkEvent。
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum StepEvent {
+    /// 执行指定索引的步骤。
+    Execute { step_index: usize },
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ── WorkState ────────────────────────────────────────────────
+
     #[test]
     fn work_state_serde_roundtrip() {
-        for state in &[
-            WorkState::Idle,
-            WorkState::Checking,
-            WorkState::Claiming,
-            WorkState::Executing,
-            WorkState::Reviewing,
-        ] {
+        for state in &[WorkState::Idle, WorkState::Busy] {
             let json = serde_json::to_string(state).expect("serialize");
             let deserialized: WorkState = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(*state, deserialized);
         }
     }
 
+    // ── WorkItemId ───────────────────────────────────────────────
+
     #[test]
-    fn task_id_default_is_v7_uuid() {
-        let id = TaskId::default();
+    fn work_item_id_default_is_v7_uuid() {
+        let id = WorkItemId::default();
         assert_eq!(id.0.get_version_num(), 7);
     }
+
+    #[test]
+    fn work_item_id_display() {
+        let id = WorkItemId::new();
+        assert_eq!(format!("{id}"), id.0.to_string());
+    }
+
+    // ── Priority ─────────────────────────────────────────────────
+
+    #[test]
+    fn priority_ordering() {
+        assert!(Priority::Critical > Priority::High);
+        assert!(Priority::High > Priority::Normal);
+        assert!(Priority::Normal > Priority::Low);
+    }
+
+    #[test]
+    fn priority_default_is_normal() {
+        assert_eq!(Priority::default(), Priority::Normal);
+    }
+
+    // ── WorkContext ──────────────────────────────────────────────
 
     #[test]
     fn context_new_is_idle() {
         let ctx = WorkContext::new();
         assert_eq!(ctx.state, WorkState::Idle);
-        assert!(ctx.current_task.is_none());
-        assert!(ctx.task_steps.is_empty());
+        assert!(ctx.current.is_none());
+        assert!(ctx.queue.is_empty());
+        assert!(ctx.steps.is_empty());
         assert_eq!(ctx.step_index, 0);
-        assert_eq!(ctx.consecutive_claim_failures, 0);
-        assert!(ctx.step_outputs.is_empty());
+    }
+
+    #[test]
+    fn context_enqueue_dequeue_fifo() {
+        let mut ctx = WorkContext::new();
+        let item_a = WorkItem {
+            id: WorkItemId::new(),
+            title: "A".into(),
+            description: String::new(),
+            steps: None,
+            priority: Priority::default(),
+            timeout: None,
+            context: HashMap::new(),
+            notify_on_complete: false,
+            created_at: Timestamp::now(),
+        };
+        let item_b = WorkItem {
+            id: WorkItemId::new(),
+            title: "B".into(),
+            ..item_a.clone()
+        };
+
+        ctx.enqueue(item_a.clone());
+        ctx.enqueue(item_b.clone());
+        assert_eq!(ctx.queue.len(), 2);
+
+        let first = ctx.dequeue().unwrap();
+        assert_eq!(first.title, "A");
+        let second = ctx.dequeue().unwrap();
+        assert_eq!(second.title, "B");
+        assert!(ctx.dequeue().is_none());
     }
 
     #[test]
     fn context_reset_to_idle_clears_all() {
         let mut ctx = WorkContext {
-            state: WorkState::Executing,
-            current_task: Some(TaskBrief {
-                id: TaskId::new(),
+            state: WorkState::Busy,
+            current: Some(WorkItem {
+                id: WorkItemId::new(),
                 title: "test".into(),
-                description: "desc".into(),
-                priority: None,
-                required_capabilities: vec![],
-                stage: "backlog".into(),
+                description: String::new(),
+                steps: None,
+                priority: Priority::default(),
+                timeout: None,
+                context: HashMap::new(),
+                notify_on_complete: false,
                 created_at: Timestamp::now(),
             }),
-            task_steps: vec![Step {
+            steps: vec![Step {
                 index: 0,
                 description: "do thing".into(),
-                requires_llm: false,
-                requires_tool: false,
-                estimated_duration: Duration::from_secs(10),
+                tool: None,
+                expect_llm: false,
+                max_retries: 0,
             }],
             step_index: 3,
-            last_check_time: Timestamp::now(),
-            consecutive_claim_failures: 2,
+            queue: std::collections::VecDeque::new(),
             step_outputs: vec![StepOutput {
                 success: true,
                 summary: "done".into(),
@@ -443,8 +513,8 @@ mod tests {
         };
         ctx.reset_to_idle();
         assert_eq!(ctx.state, WorkState::Idle);
-        assert!(ctx.current_task.is_none());
-        assert!(ctx.task_steps.is_empty());
+        assert!(ctx.current.is_none());
+        assert!(ctx.steps.is_empty());
         assert_eq!(ctx.step_index, 0);
         assert!(ctx.step_outputs.is_empty());
     }
@@ -452,78 +522,138 @@ mod tests {
     #[test]
     fn context_interrupt_saves_checkpoint_and_resets() {
         let mut ctx = WorkContext::new();
-        ctx.state = WorkState::Executing;
+        ctx.state = WorkState::Busy;
         ctx.step_index = 5;
-        let task = TaskBrief {
-            id: TaskId::new(),
+        let item = WorkItem {
+            id: WorkItemId::new(),
             title: "task".into(),
-            description: "desc".into(),
-            priority: None,
-            required_capabilities: vec![],
-            stage: "wip".into(),
+            description: String::new(),
+            steps: None,
+            priority: Priority::default(),
+            timeout: None,
+            context: HashMap::new(),
+            notify_on_complete: false,
             created_at: Timestamp::now(),
         };
-        let task_id = task.id;
-        ctx.current_task = Some(task);
+        let item_id = item.id;
+        ctx.current = Some(item);
 
         let checkpoint = ctx.interrupt("user_query");
 
-        assert_eq!(checkpoint.task_id, Some(task_id));
+        assert_eq!(checkpoint.item_id, Some(item_id));
         assert_eq!(checkpoint.step_index, 5);
-        assert_eq!(checkpoint.state, WorkState::Executing);
+        assert_eq!(checkpoint.state, WorkState::Busy);
         assert_eq!(ctx.state, WorkState::Idle);
-        assert!(ctx.current_task.is_none());
+        assert!(ctx.current.is_none());
     }
+
+    // ── WorkEvent ────────────────────────────────────────────────
 
     #[test]
     fn work_event_kind_discriminants() {
         assert_eq!(
-            WorkEvent::StartCheck.kind(),
-            "work.start_check"
-        );
-        assert_eq!(
             WorkEvent::Interrupt {
                 reason: "test".into(),
-                by_system: "core".into()
+                by_system: "core".into(),
             }
             .kind(),
             "work.interrupt"
         );
         assert_eq!(
-            WorkEvent::TaskBoardUpdated {
-                board_id: "b1".into(),
-                change_type: TaskBoardChangeType::TaskAdded,
+            WorkEvent::WorkItemAssigned {
+                item: WorkItem {
+                    id: WorkItemId::new(),
+                    title: "t".into(),
+                    description: String::new(),
+                    steps: None,
+                    priority: Priority::default(),
+                    timeout: None,
+                    context: HashMap::new(),
+                    notify_on_complete: false,
+                    created_at: Timestamp::now(),
+                },
+                source: WorkItemSource::Cli {
+                    operator: "user".into(),
+                },
             }
             .kind(),
-            "work.task_board_updated"
+            "work.item.assigned"
         );
     }
 
     #[test]
     fn work_event_serde_tagged() {
-        let event = WorkEvent::ExecuteStep {
-            task_id: TaskId::new(),
-            step_index: 0,
+        let event = WorkEvent::WorkItemAssigned {
+            item: WorkItem {
+                id: WorkItemId::new(),
+                title: "test".into(),
+                description: "desc".into(),
+                steps: None,
+                priority: Priority::default(),
+                timeout: None,
+                context: HashMap::new(),
+                notify_on_complete: false,
+                created_at: Timestamp::now(),
+            },
+            source: WorkItemSource::Cli {
+                operator: "user".into(),
+            },
         };
         let json = serde_json::to_string(&event).expect("serialize");
-        assert!(json.contains("execute_step"), "expected tagged: {json}");
+        assert!(
+            json.contains("work_item_assigned"),
+            "expected tagged: {json}"
+        );
 
         let deserialized: WorkEvent = serde_json::from_str(&json).expect("deserialize");
         match deserialized {
-            WorkEvent::ExecuteStep { step_index, .. } => assert_eq!(step_index, 0),
+            WorkEvent::WorkItemAssigned { .. } => {}
             other => panic!("unexpected variant: {other:?}"),
         }
     }
 
     #[test]
+    fn work_event_interrupt_serde() {
+        let event = WorkEvent::Interrupt {
+            reason: "shutdown".into(),
+            by_system: "core".into(),
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let deser: WorkEvent = serde_json::from_str(&json).expect("deserialize");
+        match deser {
+            WorkEvent::Interrupt { reason, .. } => assert_eq!(reason, "shutdown"),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // ── IdleSignal ───────────────────────────────────────────────
+
+    #[test]
     fn idle_signal_serde() {
         let sig = IdleSignal::Satisfaction {
-            task_id: TaskId::new(),
+            work_item_id: WorkItemId::new(),
         };
         let json = serde_json::to_string(&sig).expect("serialize");
         let deser: IdleSignal = serde_json::from_str(&json).expect("deserialize");
         match deser {
             IdleSignal::Satisfaction { .. } => {}
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // ── WorkItemSource ───────────────────────────────────────────
+
+    #[test]
+    fn work_item_source_serde_tagged() {
+        let src = WorkItemSource::Kanban {
+            board_id: "kb-1".into(),
+            scheduler: "auto".into(),
+        };
+        let json = serde_json::to_string(&src).expect("serialize");
+        assert!(json.contains("kanban"), "expected tagged: {json}");
+        let deser: WorkItemSource = serde_json::from_str(&json).expect("deserialize");
+        match deser {
+            WorkItemSource::Kanban { board_id, .. } => assert_eq!(board_id, "kb-1"),
             _ => panic!("wrong variant"),
         }
     }

@@ -10,12 +10,10 @@ pub mod trace;
 pub mod types;
 
 pub use config::WorkConfig;
-pub use personality::{
-    DecompositionStrategy, RetryStrategy, TaskSelectionStrategy, WorkPersonality,
-};
+pub use personality::WorkPersonality;
 pub use system::WorkSystem;
 pub use trace::WorkTraceEvent;
 pub use types::{
-    Step, StepOutput, TaskBoardChangeType, TaskBrief, TaskId, TaskResult, WorkCheckpoint,
-    WorkContext, WorkError, WorkEvent, WorkOutcome, WorkResult, WorkState,
+    IdleSignal, Priority, Step, StepOutput, WorkCheckpoint, WorkContext, WorkError, WorkEvent,
+    WorkItem, WorkItemId, WorkItemResult, WorkItemSource, WorkOutcome, WorkResult, WorkState,
 };

@@ -1,41 +1,25 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-//! WorkSystem — 核心状态机引擎。
+//! WorkSystem — passive queue consumer engine.
 //!
-//! Architecture ref: work-design.md §4-5
+//! Architecture ref: work-design.md v2 §4-5
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use event_bus::EventBus;
 use kernel::agent::AgentSystemState;
 use kernel::event::{Event, EventType};
-use kernel::types::Timestamp;
-
-use crate::personality::WorkPersonality;
+use crate::config::WorkConfig;
 use crate::trace::WorkTraceEvent;
 use crate::types::{
-    IdleSignal, Step, StepOutput, TaskBrief, TaskId, TaskResult, WorkContext,
-    WorkEvent, WorkError, WorkOutcome, WorkResult, WorkState, WORK_SOURCE,
+    IdleSignal, StepOutput, WorkContext, WorkEvent, WorkError, WorkItem,
+    WorkItemId, WorkItemResult, WorkItemSource, WorkOutcome, WorkResult, WorkState,
+    WORK_SOURCE,
 };
-
-/// Trait for interacting with a task board (kanban/team).
-///
-/// Architecture ref: work-design.md §8.3
-#[async_trait::async_trait]
-pub trait WorkBoardClient: Send + Sync {
-    /// Get available tasks filtered by agent capabilities.
-    async fn get_available_tasks(&self, capabilities: &[String]) -> WorkResult<Vec<TaskBrief>>;
-
-    /// Send a claim request (optimistic lock).
-    async fn claim_task(&self, task_id: TaskId, agent_id: &str) -> WorkResult<bool>;
-
-    /// Submit task result back to the board.
-    async fn submit_result(&self, task_id: TaskId, result: &TaskResult) -> WorkResult<()>;
-}
 
 // ---------------------------------------------------------------------------
 // WorkSystem
@@ -43,33 +27,28 @@ pub trait WorkBoardClient: Send + Sync {
 
 /// The per-agent Work System engine.
 ///
-/// Each agent instance gets its own WorkSystem. The system is fully event-driven:
-/// all state transitions happen in response to [`WorkEvent`] values dispatched
-/// through [`handle`].
+/// v2: passive queue consumer. External systems push [`WorkEvent::WorkItemAssigned`]
+/// onto the event bus; the Work System consumes them via [`handle`]. No polling,
+/// no claim competition, no board client — a pure FIFO consumer.
 pub struct WorkSystem {
     /// This agent's identifier.
     agent_id: String,
 
-    /// Work personality configuration.
-    personality: WorkPersonality,
+    /// Work configuration.
+    #[allow(dead_code)]
+    config: WorkConfig,
 
-    /// Shared work context (state, current task, steps, etc.).
+    /// Shared work context (state, queue, current item, steps).
     ctx: Mutex<WorkContext>,
 
     /// Agent's local event bus.
     local_bus: Arc<dyn EventBus>,
 
-    /// Task board client (kanban/team plugin).
-    board: Option<Arc<dyn WorkBoardClient>>,
+    /// Idle coordination: inject satisfaction/frustration signals.
+    idle_signal_tx: Mutex<Option<tokio::sync::mpsc::UnboundedSender<IdleSignal>>>,
 
-    /// Idle coordination: inject satisfaction/frustration.
-    idle_signal_tx: Option<tokio::sync::mpsc::UnboundedSender<IdleSignal>>,
-
-    /// Shared system state for UI visibility — set to Working/Idle on transitions.
+    /// Shared system state for UI visibility.
     system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
-
-    /// Pending delayed-work-tick handles so we can cancel on interrupt.
-    delayed_tick_handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl WorkSystem {
@@ -77,26 +56,23 @@ impl WorkSystem {
     #[must_use]
     pub fn new(
         agent_id: impl Into<String>,
-        personality: WorkPersonality,
+        config: WorkConfig,
         local_bus: Arc<dyn EventBus>,
-        board: Option<Arc<dyn WorkBoardClient>>,
         system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
     ) -> Self {
         Self {
             agent_id: agent_id.into(),
-            personality,
+            config,
             ctx: Mutex::new(WorkContext::new()),
             local_bus,
-            board,
-            idle_signal_tx: None,
+            idle_signal_tx: Mutex::new(None),
             system_state,
-            delayed_tick_handles: Mutex::new(Vec::new()),
         }
     }
 
     /// Set the idle signal channel for feedback injection.
-    pub fn set_idle_signal_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<IdleSignal>) {
-        self.idle_signal_tx = Some(tx);
+    pub async fn set_idle_signal_tx(&self, tx: tokio::sync::mpsc::UnboundedSender<IdleSignal>) {
+        *self.idle_signal_tx.lock().await = Some(tx);
     }
 
     /// Returns the agent id.
@@ -116,90 +92,33 @@ impl WorkSystem {
     }
 
     // ------------------------------------------------------------------
-    // §5.2 — Main event handler
+    // Main event handler
     // ------------------------------------------------------------------
 
-    /// Handle a work event. This is the main state machine entry point.
+    /// Handle a work event. This is the main entry point.
     ///
-    /// The caller (typically the agent's event loop) deserializes incoming
-    /// event payloads into [`WorkEvent`] and dispatches them here.
+    /// The caller (agent event loop) deserializes incoming event payloads
+    /// into [`WorkEvent`] and dispatches them here.
     pub async fn handle(&self, event: WorkEvent) -> WorkResult<()> {
-        let state = self.ctx.lock().await.state;
         debug!(
             agent_id = %self.agent_id,
-            state = ?state,
             event_kind = %event.kind(),
             "WorkSystem::handle"
         );
 
-        match (state, event.clone()) {
-            // ── Interrupt (最高优先级，任何状态) ──────────────────
-            (_, WorkEvent::Interrupt { reason, by_system }) => {
+        match event {
+            WorkEvent::Interrupt { reason, by_system } => {
                 self.handle_interrupt(&reason, &by_system).await;
                 Ok(())
             }
-
-            // ── IDLE ────────────────────────────────────────────
-            (WorkState::Idle, _e @ WorkEvent::TaskBoardUpdated { .. }) => {
-                self.transition_to(WorkState::Checking).await;
-                self.publish_work_event(WorkEvent::StartCheck).await?;
-                Ok(())
+            WorkEvent::WorkItemAssigned { item, source } => {
+                self.handle_work_item_assigned(item, source).await
             }
-            (WorkState::Idle, _e @ WorkEvent::WorkTick { .. })
-            | (WorkState::Idle, _e @ WorkEvent::DelayedWorkTick { .. }) => {
-                let (cooldown, last_check) = {
-                    let ctx = self.ctx.lock().await;
-                    (self.personality.work_cooldown, ctx.last_check_time)
-                };
-                let now = Timestamp::now();
-                let elapsed_ms = (now.as_millis() - last_check.as_millis()).max(0) as u64;
-                if Duration::from_millis(elapsed_ms) >= cooldown {
-                    self.transition_to(WorkState::Checking).await;
-                    self.publish_work_event(WorkEvent::StartCheck).await?;
-                }
-                Ok(())
+            WorkEvent::WorkItemCompleted { item_id, result, duration } => {
+                self.handle_work_item_completed(item_id, result, duration).await
             }
-            (WorkState::Idle, _) => Ok(()),
-
-            // ── CHECKING ─────────────────────────────────────────
-            (WorkState::Checking, WorkEvent::StartCheck) => {
-                self.handle_start_check().await
-            }
-
-            // ── CLAIMING ─────────────────────────────────────────
-            (WorkState::Claiming, WorkEvent::ClaimTask(task)) => {
-                self.handle_claim_task(task).await
-            }
-            (WorkState::Claiming, WorkEvent::ClaimResponse {
-                task,
-                success,
-                reason,
-            }) => {
-                self.handle_claim_response(task, success, reason).await
-            }
-
-            // ── EXECUTING ────────────────────────────────────────
-            (WorkState::Executing, WorkEvent::ExecuteStep {
-                task_id,
-                step_index,
-            }) => {
-                self.handle_execute_step(task_id, step_index).await
-            }
-
-            // ── REVIEWING ────────────────────────────────────────
-            (WorkState::Reviewing, WorkEvent::ReviewTask(task)) => {
-                self.handle_review_task(task).await
-            }
-
-            // ── Invalid transition ───────────────────────────────
-            _ => {
-                warn!(
-                    agent_id = %self.agent_id,
-                    "WorkSystem: invalid transition {:?} + {:?}",
-                    state,
-                    event.kind(),
-                );
-                Ok(())
+            WorkEvent::WorkItemFailed { item_id, error, retryable } => {
+                self.handle_work_item_failed(item_id, error, retryable).await
             }
         }
     }
@@ -209,14 +128,11 @@ impl WorkSystem {
     // ------------------------------------------------------------------
 
     async fn handle_interrupt(&self, reason: &str, by_system: &str) {
-        // Cancel all pending delayed ticks
-        self.cancel_delayed_ticks().await;
-
-        let task_id;
+        let item_id;
         {
             let mut ctx = self.ctx.lock().await;
             let checkpoint = ctx.interrupt(reason);
-            task_id = checkpoint.task_id;
+            item_id = checkpoint.item_id;
             info!(
                 agent_id = %self.agent_id,
                 ?checkpoint,
@@ -224,436 +140,380 @@ impl WorkSystem {
             );
         }
 
-        // Record in trace
+        self.transition_to(WorkState::Idle).await;
+
         self.record_trace(WorkTraceEvent::Interrupted {
-            task_id,
+            item_id,
             reason: reason.to_string(),
             by_system: by_system.to_string(),
         })
         .await;
     }
 
-    async fn handle_start_check(&self) -> WorkResult<()> {
-        {
-            let mut ctx = self.ctx.lock().await;
-            ctx.last_check_time = Timestamp::now();
-        }
+    async fn handle_work_item_assigned(
+        &self,
+        item: WorkItem,
+        source: WorkItemSource,
+    ) -> WorkResult<()> {
+        let item_id = item.id;
+        let source_str = source_name(&source);
 
-        let board = match &self.board {
-            Some(b) => b.clone(),
-            None => {
-                debug!(agent_id = %self.agent_id, "No board configured, returning to IDLE");
-                self.schedule_next_check().await;
-                self.transition_to(WorkState::Idle).await;
-                return Ok(());
-            }
-        };
+        info!(
+            agent_id = %self.agent_id,
+            %item_id,
+            title = %item.title,
+            source = %source_str,
+            "WorkItemAssigned — enqueuing"
+        );
 
-        let tasks = board
-            .get_available_tasks(&self.personality.capabilities)
-            .await
-            .unwrap_or_default();
-
-        self.record_trace(WorkTraceEvent::CheckStarted {
-            candidates_count: tasks.len(),
+        self.record_trace(WorkTraceEvent::ItemReceived {
+            item_id,
+            source: source_str,
         })
         .await;
 
-        if tasks.is_empty() {
-            debug!(agent_id = %self.agent_id, "No available tasks, returning to IDLE");
-            self.schedule_next_check().await;
-            self.transition_to(WorkState::Idle).await;
-            return Ok(());
+        let should_start;
+        {
+            let mut ctx = self.ctx.lock().await;
+            ctx.enqueue(item);
+            should_start = ctx.state == WorkState::Idle && ctx.current.is_none();
         }
 
-        let best = self
-            .personality
-            .selection
-            .select(&tasks, &self.personality.capabilities);
-
-        match best {
-            Some(task) => {
-                let task_id = task.id;
-                debug!(agent_id = %self.agent_id, %task_id, title = %task.title, "Selected task");
-                {
-                    let mut ctx = self.ctx.lock().await;
-                    ctx.state = WorkState::Claiming;
-                }
-                self.publish_work_event(WorkEvent::ClaimTask(task)).await?;
-                Ok(())
-            }
-            None => {
-                self.schedule_next_check().await;
-                self.transition_to(WorkState::Idle).await;
-                Ok(())
-            }
-        }
-    }
-
-    async fn handle_claim_task(&self, task: TaskBrief) -> WorkResult<()> {
-        let task_id = task.id;
-        let board = match &self.board {
-            Some(b) => b.clone(),
-            None => {
-                warn!(agent_id = %self.agent_id, "No board configured for claim");
-                self.fail_claim(task_id, Some("no board configured".into()))
-                    .await;
-                return Ok(());
-            }
-        };
-
-        match board.claim_task(task_id, &self.agent_id).await {
-            Ok(true) => {
-                // Success — publish ClaimResponse back to self
-                self.publish_work_event(WorkEvent::ClaimResponse {
-                    task: task.clone(),
-                    success: true,
-                    reason: None,
-                })
-                .await?;
-            }
-            Ok(false) => {
-                self.publish_work_event(WorkEvent::ClaimResponse {
-                    task: task.clone(),
-                    success: false,
-                    reason: Some("task_taken_by_other".into()),
-                })
-                .await?;
-            }
-            Err(e) => {
-                self.publish_work_event(WorkEvent::ClaimResponse {
-                    task,
-                    success: false,
-                    reason: Some(e.message),
-                })
-                .await?;
-            }
+        if should_start {
+            self.start_item().await?;
         }
 
         Ok(())
     }
 
-    async fn handle_claim_response(
+    async fn handle_work_item_completed(
         &self,
-        task: TaskBrief,
-        success: bool,
-        reason: Option<String>,
+        item_id: WorkItemId,
+        result: WorkItemResult,
+        duration: std::time::Duration,
     ) -> WorkResult<()> {
-        if success {
-            let steps = self.decompose_task(&task);
-            {
-                let mut ctx = self.ctx.lock().await;
-                ctx.current_task = Some(task.clone());
-                ctx.task_steps = steps;
-                ctx.step_index = 0;
-                ctx.consecutive_claim_failures = 0;
-                ctx.state = WorkState::Executing;
-            }
-            self.record_trace(WorkTraceEvent::ClaimAttempted {
-                task_id: task.id,
-                outcome: crate::trace::ClaimOutcome::Success,
-            })
-            .await;
-            self.publish_work_event(WorkEvent::ExecuteStep {
-                task_id: task.id,
-                step_index: 0,
-            })
-            .await?;
-        } else {
-            {
-                let mut ctx = self.ctx.lock().await;
-                ctx.consecutive_claim_failures += 1;
-            }
-            self.record_trace(WorkTraceEvent::ClaimAttempted {
-                task_id: task.id,
-                outcome: crate::trace::ClaimOutcome::TaskTakenByOther,
-            })
-            .await;
-            self.send_idle_signal(IdleSignal::Frustration { reason });
-            self.fail_claim(task.id, None).await;
-        }
-        Ok(())
+        info!(
+            agent_id = %self.agent_id,
+            %item_id,
+            steps_completed = %result.steps_completed,
+            steps_failed = %result.steps_failed,
+            "WorkItemCompleted"
+        );
+
+        self.record_trace(WorkTraceEvent::ItemCompleted {
+            item_id,
+            duration,
+            steps_completed: result.steps_completed,
+            steps_failed: result.steps_failed,
+        })
+        .await;
+
+        self.send_idle_signal(IdleSignal::Satisfaction {
+            work_item_id: item_id,
+        })
+        .await;
+
+        self.process_next().await
     }
 
-    async fn handle_execute_step(&self, task_id: TaskId, step_index: usize) -> WorkResult<()> {
-        let step = {
-            let ctx = self.ctx.lock().await;
-            ctx.task_steps.get(step_index).cloned()
+    async fn handle_work_item_failed(
+        &self,
+        item_id: WorkItemId,
+        error: WorkError,
+        retryable: bool,
+    ) -> WorkResult<()> {
+        warn!(
+            agent_id = %self.agent_id,
+            %item_id,
+            %retryable,
+            "WorkItemFailed: {}",
+            error.message,
+        );
+
+        self.record_trace(WorkTraceEvent::ItemFailed {
+            item_id,
+            error: error.message.clone(),
+            retryable,
+        })
+        .await;
+
+        if retryable {
+            // Re-enqueue the current item for retry.
+            if let Some(current) = {
+                let mut ctx = self.ctx.lock().await;
+                ctx.current.take()
+            } {
+                let mut ctx = self.ctx.lock().await;
+                ctx.enqueue(current);
+            }
+        }
+
+        self.send_idle_signal(IdleSignal::Frustration {
+            reason: Some(error.message),
+        })
+        .await;
+
+        self.process_next().await
+    }
+
+    // ------------------------------------------------------------------
+    // Item execution
+    // ------------------------------------------------------------------
+
+    /// Start executing the next item from the queue.
+    async fn start_item(&self) -> WorkResult<()> {
+        let item = {
+            let mut ctx = self.ctx.lock().await;
+            ctx.dequeue()
         };
 
-        let step = match step {
-            Some(s) => s,
+        let item = match item {
+            Some(i) => i,
             None => {
-                warn!(agent_id = %self.agent_id, %task_id, step_index, "Step out of range");
-                // All steps done — move to review
-                self.transition_to(WorkState::Reviewing).await;
-                let task = {
-                    let ctx = self.ctx.lock().await;
-                    ctx.current_task.clone()
-                };
-                if let Some(t) = task {
-                    self.publish_work_event(WorkEvent::ReviewTask(t)).await?;
-                }
+                // Queue is empty — go IDLE.
+                self.transition_to(WorkState::Idle).await;
                 return Ok(());
             }
         };
 
-        // Execute the step
-        let start = std::time::Instant::now();
-        let result = self.execute_step(&step, task_id).await;
-        let duration = start.elapsed();
+        let item_id = item.id;
+        let steps = self.decompose_item(&item);
 
-        match result {
-            Ok(output) => {
+        {
+            let mut ctx = self.ctx.lock().await;
+            ctx.current = Some(item);
+            ctx.steps = steps;
+            ctx.step_index = 0;
+            ctx.step_outputs.clear();
+        }
+
+        self.transition_to(WorkState::Busy).await;
+
+        // Execute all steps sequentially.
+        let start = Instant::now();
+        let total_steps;
+        let mut steps_completed: usize = 0;
+        let mut steps_failed: usize = 0;
+        let mut failed = false;
+
+        {
+            let ctx = self.ctx.lock().await;
+            total_steps = ctx.steps.len();
+        }
+
+        for i in 0..total_steps {
+            let step = {
+                let ctx = self.ctx.lock().await;
+                ctx.steps.get(i).cloned()
+            };
+
+            if let Some(step) = step {
                 {
                     let mut ctx = self.ctx.lock().await;
-                    ctx.step_outputs.push(output.clone());
+                    ctx.step_index = i;
                 }
-                self.record_trace(WorkTraceEvent::StepExecuted {
-                    task_id,
-                    step_index,
-                    duration,
-                    success: true,
-                    error: None,
-                })
-                .await;
 
-                let total_steps = {
-                    let ctx = self.ctx.lock().await;
-                    ctx.task_steps.len()
-                };
+                let step_start = Instant::now();
+                match self.execute_step(&step, item_id).await {
+                    Ok(output) => {
+                        let step_duration = step_start.elapsed();
+                        if output.success {
+                            steps_completed += 1;
+                        } else {
+                            steps_failed += 1;
+                        }
+                        self.record_trace(WorkTraceEvent::StepExecuted {
+                            item_id,
+                            step_index: i,
+                            duration: step_duration,
+                            success: output.success,
+                            error: None,
+                        })
+                        .await;
+                        {
+                            let mut ctx = self.ctx.lock().await;
+                            ctx.step_outputs.push(output);
+                        }
+                    }
+                    Err(error) => {
+                        steps_failed += 1;
+                        let step_duration = step_start.elapsed();
+                        self.record_trace(WorkTraceEvent::StepExecuted {
+                            item_id,
+                            step_index: i,
+                            duration: step_duration,
+                            success: false,
+                            error: Some(error.message.clone()),
+                        })
+                        .await;
 
-                if step_index + 1 < total_steps {
-                    // Chain to next step — keeps bus non-empty
-                    self.publish_work_event(WorkEvent::ExecuteStep {
-                        task_id,
-                        step_index: step_index + 1,
-                    })
-                    .await?;
-                } else {
-                    // All steps complete — move to review
-                    self.transition_to(WorkState::Reviewing).await;
-                    let task = {
-                        let ctx = self.ctx.lock().await;
-                        ctx.current_task.clone()
-                    };
-                    if let Some(t) = task {
-                        self.publish_work_event(WorkEvent::ReviewTask(t)).await?;
+                        if error.retryable && step.max_retries > 0 {
+                            warn!(
+                                agent_id = %self.agent_id,
+                                %item_id,
+                                step_index = i,
+                                "Step failed (retryable): {}",
+                                error.message,
+                            );
+                            // For now, treat retryable step failures as non-fatal
+                            // and continue. Full retry logic is a future enhancement.
+                        } else {
+                            failed = true;
+                            break;
+                        }
                     }
                 }
             }
-            Err(error) => {
-                self.record_trace(WorkTraceEvent::StepExecuted {
-                    task_id,
-                    step_index,
-                    duration,
-                    success: false,
-                    error: Some(error.message.clone()),
-                })
-                .await;
-
-                if error.retryable && self.should_retry_step(step_index) {
-                    warn!(agent_id = %self.agent_id, %task_id, step_index, "Retrying step: {}", error.message);
-                    self.publish_work_event(WorkEvent::ExecuteStep {
-                        task_id,
-                        step_index,
-                    })
-                    .await?;
-                } else {
-                    // Unrecoverable — abandon and go to IDLE
-                    let total_steps = {
-                        let ctx = self.ctx.lock().await;
-                        ctx.task_steps.len()
-                    };
-                    self.send_idle_signal(IdleSignal::Disappointment { task_id });
-                    self.transition_to(WorkState::Idle).await;
-                    self.schedule_next_check().await;
-                    self.record_trace(WorkTraceEvent::CycleCompleted {
-                        task_id,
-                        outcome: WorkOutcome::Failed { retryable: false },
-                        total_duration: Duration::ZERO,
-                        steps_completed: step_index,
-                        steps_failed: total_steps.saturating_sub(step_index),
-                    })
-                    .await;
-                }
-            }
         }
-        Ok(())
-    }
 
-    async fn handle_review_task(&self, task: TaskBrief) -> WorkResult<()> {
-        let task_id = task.id;
-        let passed = self.verify_result(&task).await;
+        let total_duration = start.elapsed();
 
-        self.record_trace(WorkTraceEvent::ReviewCompleted {
-            task_id,
-            passed,
-            confidence: if passed { 0.9 } else { 0.3 },
-        })
-        .await;
-
-        let steps_completed = {
-            let ctx = self.ctx.lock().await;
-            ctx.step_outputs
-                .iter()
-                .filter(|o| o.success)
-                .count()
-        };
-        let steps_failed = {
-            let ctx = self.ctx.lock().await;
-            ctx.step_outputs.iter().filter(|o| !o.success).count()
-        };
-
-        let outcome = if passed {
-            WorkOutcome::Completed
+        if failed {
+            let error = WorkError {
+                code: "step_execution_failed".into(),
+                message: format!(
+                    "{steps_failed}/{} step(s) failed",
+                    total_steps
+                ),
+                retryable: true,
+            };
+            self.publish_work_event(WorkEvent::WorkItemFailed {
+                item_id,
+                error,
+                retryable: true,
+            })
+            .await?;
         } else {
-            WorkOutcome::Failed { retryable: true }
-        };
-
-        // Submit result to board
-        if let Some(board) = &self.board {
-            let result = TaskResult {
-                task_id,
-                outcome: outcome.clone(),
-                summary: if passed {
-                    "review passed".into()
-                } else {
-                    "review failed".into()
-                },
+            let result = WorkItemResult {
+                item_id,
+                outcome: WorkOutcome::Completed,
+                summary: format!(
+                    "Completed {} steps ({steps_completed} ok, {steps_failed} failed)",
+                    total_steps
+                ),
                 steps_completed,
                 steps_failed,
-                total_duration: Duration::ZERO,
+                total_duration,
             };
-            let _ = board.submit_result(task_id, &result).await;
+            self.publish_work_event(WorkEvent::WorkItemCompleted {
+                item_id,
+                result,
+                duration: total_duration,
+            })
+            .await?;
         }
 
-        // Inject feedback into idle system
-        if passed {
-            self.send_idle_signal(IdleSignal::Satisfaction { task_id });
-        } else {
-            self.send_idle_signal(IdleSignal::Disappointment { task_id });
-        }
-
-        self.record_trace(WorkTraceEvent::CycleCompleted {
-            task_id,
-            outcome,
-            total_duration: Duration::ZERO,
-            steps_completed,
-            steps_failed,
-        })
-        .await;
-
-        {
-            let mut ctx = self.ctx.lock().await;
-            ctx.reset_to_idle();
-        }
-        self.schedule_next_check().await;
         Ok(())
     }
 
-    // ------------------------------------------------------------------
-    // §5.2 helpers — claim failure & retry backoff
-    // ------------------------------------------------------------------
+    /// Process the next item in the queue, or go IDLE.
+    async fn process_next(&self) -> WorkResult<()> {
+        {
+            let mut ctx = self.ctx.lock().await;
+            ctx.current = None;
+            ctx.steps.clear();
+            ctx.step_index = 0;
+            ctx.step_outputs.clear();
+        }
 
-    async fn fail_claim(&self, _task_id: TaskId, reason: Option<String>) {
-        let consecutive;
+        let has_next;
         {
             let ctx = self.ctx.lock().await;
-            consecutive = ctx.consecutive_claim_failures;
+            has_next = !ctx.queue.is_empty();
         }
 
-        self.send_idle_signal(IdleSignal::Frustration { reason });
-        self.transition_to(WorkState::Idle).await;
-
-        if self.personality.claim_retry.is_exhausted(consecutive) {
-            info!(
-                agent_id = %self.agent_id,
-                "Claim retries exhausted ({consecutive}), abandoning work cycle"
-            );
-            return;
+        if has_next {
+            self.start_item().await?;
+        } else {
+            self.transition_to(WorkState::Idle).await;
         }
 
-        let delay = self.personality.claim_retry.backoff_delay(consecutive);
-        self.schedule_delayed_tick(delay, format!("claim retry #{consecutive}")).await;
+        Ok(())
     }
 
     // ------------------------------------------------------------------
     // Decomposition
     // ------------------------------------------------------------------
 
-    fn decompose_task(&self, task: &TaskBrief) -> Vec<Step> {
-        // Simple decomposition: produce a sequence of steps based on the
-        // task description and personality's decomposition strategy.
+    /// Decompose a work item into execution steps.
+    fn decompose_item(&self, item: &WorkItem) -> Vec<crate::types::Step> {
+        // If the item already has predefined steps, use them.
+        if let Some(ref steps) = item.steps
+            && !steps.is_empty()
+        {
+            return steps.clone();
+        }
+
+        // Otherwise produce a simple default plan.
         let mut steps = Vec::new();
 
-        // Step 0: understand the task
-        steps.push(Step {
+        steps.push(crate::types::Step {
             index: 0,
-            description: format!("Analyze task: {}", task.title),
-            requires_llm: true,
-            requires_tool: false,
-            estimated_duration: Duration::from_secs(15),
+            description: format!("Analyze: {}", item.title),
+            tool: None,
+            expect_llm: true,
+            max_retries: 1,
         });
 
-        // Step 1-N: execute based on task description
-        let desc_lower = task.description.to_lowercase();
-        if desc_lower.contains("code") || desc_lower.contains("fix") || desc_lower.contains("refactor") {
-            steps.push(Step {
+        let desc_lower = item.description.to_lowercase();
+        if desc_lower.contains("code")
+            || desc_lower.contains("fix")
+            || desc_lower.contains("refactor")
+            || desc_lower.contains("implement")
+        {
+            steps.push(crate::types::Step {
                 index: steps.len(),
-                description: format!("Implement changes for: {}", task.title),
-                requires_llm: self.personality.decomposition.isolate_llm_calls,
-                requires_tool: self.personality.decomposition.isolate_tool_calls,
-                estimated_duration: self.personality.decomposition.max_step_duration,
+                description: format!("Implement: {}", item.title),
+                tool: Some("file".into()),
+                expect_llm: true,
+                max_retries: 2,
             });
         }
-        if desc_lower.contains("test") || desc_lower.contains("review") {
-            steps.push(Step {
+        if desc_lower.contains("test") || desc_lower.contains("review") || desc_lower.contains("verify")
+        {
+            steps.push(crate::types::Step {
                 index: steps.len(),
-                description: format!("Run tests/validation for: {}", task.title),
-                requires_llm: false,
-                requires_tool: true,
-                estimated_duration: Duration::from_secs(60),
+                description: format!("Verify: {}", item.title),
+                tool: Some("exec".into()),
+                expect_llm: false,
+                max_retries: 1,
             });
         }
 
-        // Final step: collect outputs and prepare for review
-        steps.push(Step {
+        steps.push(crate::types::Step {
             index: steps.len(),
-            description: format!("Prepare review summary for: {}", task.title),
-            requires_llm: true,
-            requires_tool: false,
-            estimated_duration: Duration::from_secs(10),
+            description: format!("Finalize: {}", item.title),
+            tool: None,
+            expect_llm: true,
+            max_retries: 1,
         });
 
         steps
     }
 
     /// Execute a single step. Override this for actual LLM/tool integration.
-    async fn execute_step(&self, step: &Step, _task_id: TaskId) -> WorkResult<StepOutput> {
-        debug!(agent_id = %self.agent_id, step_index = step.index, desc = %step.description, "Executing step");
-        // Placeholder: real integration would call LLM / run tools here.
+    async fn execute_step(
+        &self,
+        step: &crate::types::Step,
+        _item_id: WorkItemId,
+    ) -> WorkResult<StepOutput> {
+        debug!(
+            agent_id = %self.agent_id,
+            step_index = step.index,
+            desc = %step.description,
+            "Executing step"
+        );
+        // Placeholder: real integration calls LLM / runs tools here.
         Ok(StepOutput {
             success: true,
             summary: format!("Completed: {}", step.description),
             artifacts: Vec::new(),
-            duration: Duration::from_millis(50),
+            duration: std::time::Duration::from_millis(50),
         })
     }
 
-    /// Verify/validate the result of a completed task.
-    async fn verify_result(&self, _task: &TaskBrief) -> bool {
-        // Placeholder: real integration would run automated checks here.
-        true
-    }
-
-    fn should_retry_step(&self, _step_index: usize) -> bool {
-        // Simple heuristic: retry once per step by default.
-        true
-    }
-
     // ------------------------------------------------------------------
-    // Event publishing helpers
+    // Event publishing
     // ------------------------------------------------------------------
 
     async fn publish_work_event(&self, event: WorkEvent) -> WorkResult<()> {
@@ -672,46 +532,9 @@ impl WorkSystem {
         Ok(())
     }
 
-    async fn schedule_delayed_tick(&self, delay: Duration, reason: String) {
-        let bus = self.local_bus.clone();
-        let now = Timestamp::now();
-        let fire_at = Timestamp::from_millis(now.as_millis() + delay.as_millis() as i64);
-        let agent_id = self.agent_id.clone();
-
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            let event = WorkEvent::DelayedWorkTick {
-                fire_at,
-                reason,
-            };
-            let payload = serde_json::to_value(&event).unwrap_or_default();
-            let ev = Event::new(WORK_SOURCE, EventType::Custom(event.kind().to_string()), payload);
-            let _ = bus.publish(ev).await;
-            debug!(agent_id = %agent_id, "DelayedWorkTick fired");
-        });
-
-        self.delayed_tick_handles.lock().await.push(handle);
-    }
-
-    async fn cancel_delayed_ticks(&self) {
-        let handles: Vec<_> = {
-            let mut guard = self.delayed_tick_handles.lock().await;
-            std::mem::take(&mut *guard)
-        };
-        for h in handles {
-            h.abort();
-        }
-    }
-
-    async fn schedule_next_check(&self) {
-        if self.personality.auto_claim {
-            self.schedule_delayed_tick(
-                self.personality.work_cooldown,
-                "scheduled next check".into(),
-            )
-            .await;
-        }
-    }
+    // ------------------------------------------------------------------
+    // State transitions
+    // ------------------------------------------------------------------
 
     async fn transition_to(&self, new_state: WorkState) {
         let mut ctx = self.ctx.lock().await;
@@ -722,11 +545,13 @@ impl WorkSystem {
             "WorkSystem state transition",
         );
         ctx.state = new_state;
-        // Update shared system state for UI visibility
+        drop(ctx);
+
+        // Update shared system state for UI visibility.
         if let Some(ref ss) = self.system_state {
             let val = match new_state {
                 WorkState::Idle => AgentSystemState::Idle,
-                _ => AgentSystemState::Working,
+                WorkState::Busy => AgentSystemState::Working,
             };
             *ss.lock().expect("system_state lock") = val;
         }
@@ -736,8 +561,9 @@ impl WorkSystem {
     // Idle signal injection
     // ------------------------------------------------------------------
 
-    fn send_idle_signal(&self, signal: IdleSignal) {
-        if let Some(tx) = &self.idle_signal_tx {
+    async fn send_idle_signal(&self, signal: IdleSignal) {
+        let tx = self.idle_signal_tx.lock().await;
+        if let Some(ref tx) = *tx {
             let _ = tx.send(signal);
         }
     }
@@ -746,69 +572,103 @@ impl WorkSystem {
     // Trace recording
     // ------------------------------------------------------------------
 
-    async fn record_trace(&self, _event: WorkTraceEvent) {
-        // Placeholder: record to trace store.
-        // Real implementation would call trace_store methods.
-        debug!(agent_id = %self.agent_id, trace = ?_event, "WorkTraceEvent");
+    async fn record_trace(&self, event: WorkTraceEvent) {
+        debug!(agent_id = %self.agent_id, trace = ?event, "WorkTraceEvent");
+    }
+
+    // ------------------------------------------------------------------
+    // Convenience: push work item from external source
+    // ------------------------------------------------------------------
+
+    /// Push a work item onto this agent's queue by publishing a
+    /// [`WorkEvent::WorkItemAssigned`] on the local bus.
+    ///
+    /// External systems (CLI, API, kanban scheduler) call this to assign
+    /// work without needing knowledge of the agent's internal queue.
+    pub async fn push_work_item(
+        &self,
+        item: WorkItem,
+        source: WorkItemSource,
+    ) -> WorkResult<()> {
+        self.publish_work_event(WorkEvent::WorkItemAssigned { item, source })
+            .await
     }
 
     // ------------------------------------------------------------------
     // Shutdown
     // ------------------------------------------------------------------
 
-    /// Gracefully shut down the work system: cancel pending ticks,
-    /// flush any in-progress state.
+    /// Gracefully shut down the work system: interrupt any in-progress
+    /// work and clear pending state.
     pub async fn shutdown(&self) {
         info!(agent_id = %self.agent_id, "WorkSystem shutting down");
-        self.cancel_delayed_ticks().await;
-        // Interrupt any in-progress work
         self.handle_interrupt("shutdown", "core").await;
     }
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn source_name(source: &WorkItemSource) -> String {
+    match source {
+        WorkItemSource::Cli { .. } => "cli".into(),
+        WorkItemSource::Api { .. } => "api".into(),
+        WorkItemSource::Kanban { .. } => "kanban".into(),
+        WorkItemSource::Todo { .. } => "todo".into(),
+        WorkItemSource::SeekResponse { .. } => "seek_response".into(),
+        WorkItemSource::Custom { name, .. } => name.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::personality::RetryStrategy;
-    use crate::personality::TaskSelectionStrategy;
-use crate::types::TaskBoardChangeType;
-use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
-    use std::sync::Arc;
+    use crate::config::WorkConfig;
+    use crate::types::{Priority, Step, WorkItemId};
+    use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
+    use kernel::types::Timestamp;
+    use std::collections::HashMap;
 
     fn make_bus() -> Arc<dyn EventBus> {
         Arc::new(InMemoryBus::new(InMemoryBusConfig::default()))
     }
 
-    fn make_personality() -> WorkPersonality {
-        WorkPersonality {
-            auto_claim: true,
-            capabilities: vec!["code".into()],
-            max_concurrent: 1,
-            work_cooldown: Duration::from_secs(60),
-            claim_retry: RetryStrategy {
-                base_delay: Duration::from_secs(1),
-                backoff_multiplier: 2.0,
-                max_delay: Duration::from_secs(60),
-                max_consecutive_failures: 3,
-            },
-            selection: TaskSelectionStrategy::EarliestFirst,
-            decomposition: Default::default(),
+    fn make_config() -> WorkConfig {
+        WorkConfig::default()
+    }
+
+    fn make_item(title: &str) -> WorkItem {
+        WorkItem {
+            id: WorkItemId::new(),
+            title: title.into(),
+            description: String::new(),
+            steps: None,
+            priority: Priority::default(),
+            timeout: None,
+            context: HashMap::new(),
+            notify_on_complete: false,
+            created_at: Timestamp::now(),
         }
     }
 
     #[tokio::test]
     async fn system_starts_at_idle() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
         assert_eq!(sys.current_state().await, WorkState::Idle);
     }
 
     #[tokio::test]
     async fn interrupt_from_any_state_goes_to_idle() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
-        // Manually set to executing
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
+        // Manually set to Busy
         {
             let mut ctx = sys.ctx.lock().await;
-            ctx.state = WorkState::Executing;
+            ctx.state = WorkState::Busy;
         }
         sys.handle(WorkEvent::Interrupt {
             reason: "test".into(),
@@ -820,53 +680,152 @@ use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
     }
 
     #[tokio::test]
-    async fn idle_ignores_unrelated_events() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
-        let result = sys
-            .handle(WorkEvent::ExecuteStep {
-                task_id: TaskId::new(),
-                step_index: 0,
-            })
-            .await;
-        assert!(result.is_ok());
-        assert_eq!(sys.current_state().await, WorkState::Idle);
-    }
+    async fn work_item_assigned_enqueues_and_starts() {
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
+        let item = make_item("test-task");
 
-    #[tokio::test]
-    async fn task_board_updated_triggers_start_check() {
-        let bus = make_bus();
-        let sys = WorkSystem::new("agent-1", make_personality(), bus.clone(), None, None);
-        sys.handle(WorkEvent::TaskBoardUpdated {
-            board_id: "kb-1".into(),
-            change_type: TaskBoardChangeType::TaskAdded,
+        // Assign a work item with predefined steps so it completes instantly.
+        let item_with_steps = WorkItem {
+            steps: Some(vec![Step {
+                index: 0,
+                description: "do it".into(),
+                tool: None,
+                expect_llm: false,
+                max_retries: 0,
+            }]),
+            ..item
+        };
+
+        // This will enqueue, start, execute steps, and publish WorkItemCompleted.
+        // The published event goes to the in-memory bus but nobody dispatches
+        // it back — so state after this is BUSY (last transition before publishing).
+        sys.handle(WorkEvent::WorkItemAssigned {
+            item: item_with_steps,
+            source: WorkItemSource::Cli {
+                operator: "user".into(),
+            },
         })
         .await
         .expect("handle should succeed");
-        assert_eq!(sys.current_state().await, WorkState::Checking);
+
+        // Queue should be empty (item was dequeued and started).
+        let snap = sys.snapshot().await;
+        assert!(snap.queue.is_empty());
     }
 
     #[tokio::test]
-    async fn work_tick_during_cooldown_is_ignored() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
-        // Set last_check_time to now, so cooldown hasn't elapsed
+    async fn work_item_assigned_when_busy_just_enqueues() {
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
+        // Set to BUSY with a current item
         {
             let mut ctx = sys.ctx.lock().await;
-            ctx.last_check_time = Timestamp::now();
+            ctx.state = WorkState::Busy;
+            ctx.current = Some(make_item("running"));
         }
-        sys.handle(WorkEvent::WorkTick {
-            triggered_by: "test".into(),
+
+        let item = make_item("queued");
+        sys.handle(WorkEvent::WorkItemAssigned {
+            item,
+            source: WorkItemSource::Api {
+                endpoint: "/test".into(),
+                operator: "test".into(),
+            },
         })
         .await
-        .expect("should be ok");
-        // Should stay idle because cooldown hasn't passed
+        .expect("handle should succeed");
+
+        let snap = sys.snapshot().await;
+        assert_eq!(snap.queue.len(), 1);
+        assert_eq!(snap.state, WorkState::Busy);
+    }
+
+    #[tokio::test]
+    async fn completed_item_with_empty_queue_goes_idle() {
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
+        let item_id = WorkItemId::new();
+
+        sys.handle(WorkEvent::WorkItemCompleted {
+            item_id,
+            result: crate::types::WorkItemResult {
+                item_id,
+                outcome: WorkOutcome::Completed,
+                summary: "done".into(),
+                steps_completed: 3,
+                steps_failed: 0,
+                total_duration: std::time::Duration::from_secs(5),
+            },
+            duration: std::time::Duration::from_secs(5),
+        })
+        .await
+        .expect("handle should succeed");
+
         assert_eq!(sys.current_state().await, WorkState::Idle);
     }
 
     #[tokio::test]
     async fn context_snapshot_reflects_current_state() {
-        let sys = WorkSystem::new("agent-1", make_personality(), make_bus(), None, None);
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
         let snap = sys.snapshot().await;
         assert_eq!(snap.state, WorkState::Idle);
-        assert_eq!(snap.consecutive_claim_failures, 0);
+        assert!(snap.queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_work_item_publishes_assigned_event() {
+        let bus = make_bus();
+        let sys = WorkSystem::new("agent-1", make_config(), bus, None);
+        let item = make_item("push-test");
+
+        let result = sys
+            .push_work_item(
+                item,
+                WorkItemSource::Kanban {
+                    board_id: "kb-1".into(),
+                    scheduler: "auto".into(),
+                },
+            )
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn failed_retryable_re_enqueues() {
+        let sys = WorkSystem::new("agent-1", make_config(), make_bus(), None);
+        let item_id = WorkItemId::new();
+
+        // Put a current item so it gets re-enqueued on retryable failure,
+        // but with predefined steps so it completes immediately.
+        {
+            let mut ctx = sys.ctx.lock().await;
+            ctx.current = Some(WorkItem {
+                steps: Some(vec![Step {
+                    index: 0,
+                    description: "retry-step".into(),
+                    tool: None,
+                    expect_llm: false,
+                    max_retries: 0,
+                }]),
+                ..make_item("retry-me")
+            });
+        }
+
+        sys.handle(WorkEvent::WorkItemFailed {
+            item_id,
+            error: WorkError {
+                code: "E_TEST".into(),
+                message: "transient".into(),
+                retryable: true,
+            },
+            retryable: true,
+        })
+        .await
+        .expect("handle should succeed");
+
+        let snap = sys.snapshot().await;
+        // The item was re-enqueued, then immediately dequeued by process_next
+        // and started, so queue is empty but state is BUSY.
+        assert_eq!(snap.queue.len(), 0);
+        assert!(snap.current.is_some());
+        assert_eq!(snap.state, WorkState::Busy);
     }
 }

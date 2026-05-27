@@ -28,11 +28,12 @@ async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, S
 
 /// Parse runtime status JSON into RuntimeStatusInfo.
 fn parse_runtime_status(v: &serde_json::Value) -> RuntimeStatusInfo {
+    let phase_num = v["phase"].as_u64().unwrap_or(0);
     RuntimeStatusInfo {
-        phase: v["phase"].as_str().map(|s| format!("Phase{s}")).unwrap_or_else(|| "stopped".to_owned()),
+        phase: format!("Phase{phase_num}"),
         ready: v["ready"].as_bool().unwrap_or(false),
         live: v["live"].as_bool().unwrap_or(false),
-        running: v["phase"].as_u64().map(|p| p > 0).unwrap_or(false),
+        running: phase_num > 0,
     }
 }
 

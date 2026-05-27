@@ -1170,9 +1170,6 @@ def _handle_project_create(body: dict) -> dict:
     except Exception as e:
         _log(f"Workflow registration failed for {project_key}: {e}")
 
-    # Register routes for the new project
-    _register_project_routes(project_key)
-
     _log(f"Project created: {project_key} ({project_name})")
     return _json_response({"ok": True, "project_key": project_key, "project_name": project_name}, 201)
 
@@ -1260,9 +1257,6 @@ def _handle_project_update(project_key: str, body: dict) -> dict:
             _projects[new_key]["db"] = init_db(new_key)
         except Exception as e:
             _log(f"DB re-init failed after rename: {e}")
-
-        # Register routes for new key
-        _register_project_routes(new_key)
 
         # Recompile workflow
         try:
@@ -1376,31 +1370,6 @@ def _handle_stages_update(project_key: str, body: dict) -> dict:
     _log(f"Stages updated for {project_key}: {len(stages)} stages")
     return _json_response({"ok": True, "stages": stages})
 
-
-def _register_project_routes(project_key: str) -> None:
-    """Register all routes for a project with the gateway."""
-    api_prefix = f"/team/projects/{project_key}"
-    routes = [
-        {"method": "GET", "path": api_prefix},
-        {"method": "GET", "path": f"{api_prefix}/config"},
-        {"method": "POST", "path": f"{api_prefix}/update"},
-        {"method": "POST", "path": f"{api_prefix}/stages/update"},
-        {"method": "DELETE", "path": api_prefix},
-        {"method": "GET", "path": f"{api_prefix}/tasks"},
-        {"method": "POST", "path": f"{api_prefix}/tasks/create"},
-        {"method": "GET", "path": f"{api_prefix}/tasks/{{task_id}}"},
-        {"method": "POST", "path": f"{api_prefix}/tasks/{{task_id}}/assign"},
-        {"method": "POST", "path": f"{api_prefix}/tasks/{{task_id}}/complete"},
-        {"method": "GET", "path": f"{api_prefix}/safety/pending"},
-        {"method": "POST", "path": f"{api_prefix}/safety/{{log_id}}/resolve"},
-        {"method": "GET", "path": f"{api_prefix}/context"},
-        {"method": "GET", "path": f"{api_prefix}/context/{{id}}"},
-        {"method": "GET", "path": f"{api_prefix}/agents"},
-    ]
-    try:
-        send_request("aman.register_routes", routes)
-    except Exception as e:
-        _log(f"Route registration failed for {project_key}: {e}")
 
 
 # ---------------------------------------------------------------------------

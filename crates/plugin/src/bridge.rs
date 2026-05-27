@@ -322,7 +322,13 @@ impl SubprocessPluginBridge {
                 };
                 {
                     let mut guard = self.registered_routes.write().unwrap();
-                    *guard = routes;
+                    // Merge new routes into existing set, deduplicating by (method, path).
+                    for route in routes {
+                        let key = (route.method.clone(), route.path.clone());
+                        if !guard.iter().any(|r| r.method == key.0 && r.path == key.1) {
+                            guard.push(route);
+                        }
+                    }
                 }
                 tracing::info!(
                     plugin = %self.plugin_name,
@@ -407,6 +413,10 @@ impl<'de> serde::Deserialize<'de> for RouteSpec {
 
 /// Build an axum Router<()> from the routes registered by a subprocess plugin.
 /// Each route forwards HTTP requests to the plugin via JSON-RPC `handle_route`.
+///
+/// Additionally, a catch-all route is added for each unique top-level path prefix
+/// (e.g. `/team`) so that dynamically registered routes (e.g. new projects) are
+/// forwarded to the plugin without requiring an axum Router rebuild.
 pub fn build_subprocess_router(bridge: Arc<SubprocessPluginBridge>) -> axum::Router<()> {
     let routes = bridge.registered_routes();
     let mut router = axum::Router::new();
@@ -451,6 +461,47 @@ pub fn build_subprocess_router(bridge: Arc<SubprocessPluginBridge>) -> axum::Rou
                 router
             }
         };
+    }
+
+    // Add catch-all routes for each unique top-level path prefix.
+    // This ensures dynamically registered routes (e.g. project pages created
+    // after plugin init) are forwarded to the plugin's handle_route handler.
+    {
+        let mut prefixes: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for spec in &routes {
+            // Extract "/first-segment" from paths like "/team/setup" or "/team/projects/foo"
+            if let Some(rest) = spec.path.strip_prefix('/')
+                && let Some(first) = rest.split('/').next()
+                && !first.is_empty()
+                && !first.starts_with('{')
+            {
+                prefixes.insert(format!("/{first}"));
+            }
+        }
+
+        for prefix in prefixes {
+            let bridge = Arc::clone(&bridge);
+            let catch_all_path = format!("{prefix}/{{*rest}}");
+            let handler = move |req: axum::http::Request<axum::body::Body>| {
+                let bridge = Arc::clone(&bridge);
+                async move {
+                    let method = req.method().to_string();
+                    let path = req.uri().path().to_string();
+                    tokio::task::spawn_blocking(move || {
+                        forward_to_plugin_sync(&bridge, &method, &path, req)
+                    })
+                    .await
+                    .unwrap_or_else(|_| {
+                        let mut resp = axum::response::Response::new(
+                            axum::body::Body::from("plugin handler panicked"),
+                        );
+                        *resp.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+                        resp
+                    })
+                }
+            };
+            router = router.route(&catch_all_path, axum::routing::any(handler));
+        }
     }
 
     router

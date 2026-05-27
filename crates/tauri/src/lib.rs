@@ -74,9 +74,28 @@ pub fn run() {
                     return;
                 }
 
+                // Always send graceful shutdown via HTTP, even in standalone
+                // mode where we don't own the gateway process.
+                rt.block_on(async {
+                    let base_url = {
+                        let guard = shutdown_gc.lock().await;
+                        guard.as_ref().map(|c| c.base_url.clone())
+                    };
+                    if let Some(ref url) = base_url
+                        && let Ok(http_client) = reqwest::Client::builder()
+                            .no_proxy()
+                            .build()
+                    {
+                        let _ = http_client
+                            .post(format!("{url}/agent/shutdown"))
+                            .header("x-aman-confirm", "yes")
+                            .send()
+                            .await;
+                    }
+                });
+
                 // If the app does not own the gateway process (standalone mode),
-                // just disconnect without shutting it down. This preserves
-                // plugin state (team kanban, etc.) for subsequent sessions.
+                // clear the client and return — shutdown was already sent above.
                 let owns_gateway = rt.block_on(async {
                     let guard = shutdown_gp.lock().await;
                     guard.is_some()
@@ -97,22 +116,6 @@ pub fn run() {
                 let gp = shutdown_gp.clone();
                 let handle = window.app_handle().clone();
                 rt.spawn(async move {
-                    // Best-effort graceful shutdown via HTTP
-                    let base_url = {
-                        let guard = gc.lock().await;
-                        guard.as_ref().map(|c| c.base_url.clone())
-                    };
-                    if let Some(ref url) = base_url
-                        && let Ok(http_client) = reqwest::Client::builder()
-                            .no_proxy()
-                            .build()
-                    {
-                        let _ = http_client
-                            .post(format!("{url}/agent/shutdown"))
-                            .header("x-aman-confirm", "yes")
-                            .send()
-                            .await;
-                    }
                     // Clear client
                     {
                         let mut guard = gc.lock().await;

@@ -244,7 +244,42 @@ async fn run() -> Result<(), i32> {
         EventType::Custom("gateway:stopping".to_owned()),
         serde_json::json!({}),
     )).await;
-    let _ = runtime.shutdown().await;
+
+    // Run shutdown with a force-quit escape hatch: a second SIGINT or a
+    // 10 s timeout will abort graceful shutdown and exit immediately.
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let (force_quit_tx, mut force_quit_rx) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                let _ = force_quit_tx.send(());
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "failed to register second SIGINT handler");
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = &mut force_quit_rx => {
+            tracing::error!("second SIGINT received, force quitting");
+            std::process::exit(1);
+        }
+        _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
+            tracing::error!(
+                "shutdown timed out after {}s, force exiting",
+                SHUTDOWN_TIMEOUT.as_secs()
+            );
+            std::process::exit(1);
+        }
+        result = runtime.shutdown() => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "shutdown completed with errors");
+            }
+        }
+    }
+
     server.shutdown();
 
     // Clean up PID file.

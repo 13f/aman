@@ -2405,6 +2405,7 @@ impl AgentRuntime {
     }
 
     async fn bump_shutdown_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
+        tracing::info!(?phase, "bump_shutdown_phase enter");
         if !self.startup_pause.is_zero() {
             tokio::time::sleep(self.startup_pause).await;
         }
@@ -2466,6 +2467,7 @@ impl AgentRuntime {
                     }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
+                tracing::info!("Phase4: event bus drain complete");
                 self.phase.store(RuntimePhase::Phase3 as u8, Ordering::Release);
             }
             RuntimePhase::Phase3 => {
@@ -2486,7 +2488,7 @@ impl AgentRuntime {
                 }
                 // Clear agent registry during shutdown
                 self.agent_registry.clear().await;
-                tracing::info!("Phase2 shutdown: agent registry cleared");
+                tracing::info!("Phase2: plugin unload and agent registry clear complete");
                 self.phase.store(RuntimePhase::Phase1 as u8, Ordering::Release);
             }
             RuntimePhase::Phase1 => {
@@ -2515,6 +2517,7 @@ impl AgentRuntime {
                         }
                     }
                 }
+                tracing::info!("Phase1: WAL checkpoint complete");
                 self.phase.store(RuntimePhase::Phase05 as u8, Ordering::Release);
             }
             RuntimePhase::Phase05 => {

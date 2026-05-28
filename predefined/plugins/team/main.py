@@ -184,7 +184,7 @@ def on(method: str):
 #     projects/
 #       {project_key}/
 #         config.yaml                  — kanban stages, safety gates, context, …
-#         data.db                      — SQLite: tasks, safety_log, context cache
+#         data.db                      — SQLite: works, safety_log, context cache
 
 import re
 import sqlite3
@@ -200,7 +200,7 @@ from context import (
     context_len,
     context_path,
     delete_context,
-    list_works,
+    list_context_files,
     make_event,
     read_context,
     read_context_raw,
@@ -385,7 +385,7 @@ def init_db(project_key: str) -> sqlite3.Connection:
     )
 
     db.execute(
-        """CREATE TABLE IF NOT EXISTS tasks (
+        """CREATE TABLE IF NOT EXISTS works (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL DEFAULT '',
             description TEXT NOT NULL DEFAULT '',
@@ -403,13 +403,13 @@ def init_db(project_key: str) -> sqlite3.Connection:
     db.execute(
         """CREATE TABLE IF NOT EXISTS stage_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
+            work_id TEXT NOT NULL,
             stage TEXT NOT NULL,
             entered_at TEXT NOT NULL DEFAULT (datetime('now')),
             assignee TEXT NOT NULL DEFAULT '',
             completed_at TEXT,
             confidence REAL,
-            FOREIGN KEY (task_id) REFERENCES tasks(id)
+            FOREIGN KEY (work_id) REFERENCES works(id)
         )"""
     )
 
@@ -459,42 +459,42 @@ def resolve_safety_log(project_key: str, log_id: int, decision: str, decided_by:
     return True
 
 
-# ── Tasks ───────────────────────────────────────────────────────────────
+# ── Works ───────────────────────────────────────────────────────────────
 
-def insert_task(project_key: str, task: dict) -> dict:
+def insert_work(project_key: str, work: dict) -> dict:
     db = get_db(project_key)
     db.execute(
-        """INSERT OR REPLACE INTO tasks (id, title, description, source_type, source_ref,
+        """INSERT OR REPLACE INTO works (id, title, description, source_type, source_ref,
            creator, current_stage, priority, tags, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-        (task["id"], task["title"], task.get("description", ""),
-         task.get("source_type", "manual"), task.get("source_ref", ""),
-         task.get("creator", ""), task.get("current_stage", ""),
-         task.get("priority", "normal"), task.get("tags", "[]")),
+        (work["id"], work["title"], work.get("description", ""),
+         work.get("source_type", "manual"), work.get("source_ref", ""),
+         work.get("creator", ""), work.get("current_stage", ""),
+         work.get("priority", "normal"), work.get("tags", "[]")),
     )
     # Record initial stage
     db.execute(
-        "INSERT INTO stage_history (task_id, stage) VALUES (?, ?)",
-        (task["id"], task.get("current_stage", "")),
+        "INSERT INTO stage_history (work_id, stage) VALUES (?, ?)",
+        (work["id"], work.get("current_stage", "")),
     )
     db.commit()
-    row = db.execute("SELECT * FROM tasks WHERE id=?", (task["id"],)).fetchone()
-    return dict(row) if row else task
+    row = db.execute("SELECT * FROM works WHERE id=?", (work["id"],)).fetchone()
+    return dict(row) if row else work
 
 
-def get_task(project_key: str, task_id: str) -> Optional[dict]:
+def get_work(project_key: str, work_id: str) -> Optional[dict]:
     db = get_db(project_key)
-    row = db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    row = db.execute("SELECT * FROM works WHERE id=?", (work_id,)).fetchone()
     return dict(row) if row else None
 
 
-def list_tasks(project_key: str, stage: Optional[str] = None) -> list:
+def list_works(project_key: str, stage: Optional[str] = None) -> list:
     db = get_db(project_key)
     query = """SELECT t.*, COALESCE(
                    (SELECT sh.assignee FROM stage_history sh
-                    WHERE sh.task_id = t.id AND sh.completed_at IS NULL
+                    WHERE sh.work_id = t.id AND sh.completed_at IS NULL
                     ORDER BY sh.id DESC LIMIT 1), '') as assignee
-               FROM tasks t"""
+               FROM works t"""
     if stage:
         rows = db.execute(
             query + " WHERE t.current_stage=? ORDER BY t.created_at DESC", (stage,)
@@ -504,26 +504,26 @@ def list_tasks(project_key: str, stage: Optional[str] = None) -> list:
     return [dict(r) for r in rows]
 
 
-def update_task_stage(project_key: str, task_id: str, stage: str, assignee: str = "") -> None:
+def update_work_stage(project_key: str, work_id: str, stage: str, assignee: str = "") -> None:
     db = get_db(project_key)
     db.execute(
-        "UPDATE tasks SET current_stage=?, updated_at=datetime('now') WHERE id=?",
-        (stage, task_id),
+        "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
+        (stage, work_id),
     )
     db.execute(
-        "INSERT INTO stage_history (task_id, stage, assignee) VALUES (?, ?, ?)",
-        (task_id, stage, assignee),
+        "INSERT INTO stage_history (work_id, stage, assignee) VALUES (?, ?, ?)",
+        (work_id, stage, assignee),
     )
     db.commit()
 
 
-def complete_task_stage(project_key: str, task_id: str, confidence: float) -> None:
+def complete_work_stage(project_key: str, work_id: str, confidence: float) -> None:
     db = get_db(project_key)
     db.execute(
         """UPDATE stage_history SET completed_at=datetime('now'), confidence=?
-            WHERE task_id=? AND completed_at IS NULL
+            WHERE work_id=? AND completed_at IS NULL
             ORDER BY id DESC LIMIT 1""",
-        (confidence, task_id),
+        (confidence, work_id),
     )
     db.commit()
 
@@ -674,7 +674,7 @@ def _agent_caps(agent: dict) -> list:
     return agent.get("capabilities", [])
 
 
-def dispatch(project_key: str, task: dict, stage_id: str) -> Optional[Dict[str, Any]]:
+def dispatch(project_key: str, work: dict, stage_id: str) -> Optional[Dict[str, Any]]:
     """Find the best agent from the registry and push the work item."""
     proj = _projects.get(project_key, {}).get("config", {})
     stages = {s["id"]: s for s in proj.get("stages", [])}
@@ -734,28 +734,28 @@ def dispatch(project_key: str, task: dict, stage_id: str) -> Optional[Dict[str, 
     target_id = _agent_id(target["agent"])
 
     # Build enriched agent context: include work item JSONL history
-    task_id = task.get("id", "")
-    agent_context = task.get("context", {})
-    if task_id:
-        work_ctx = build_work_context_for_agent(project_key, task_id)
+    work_id = work.get("id", "")
+    agent_context = work.get("context", {})
+    if work_id:
+        work_ctx = build_work_context_for_agent(project_key, work_id)
         if work_ctx:
             agent_context["work_history"] = work_ctx
         # Also pass the context file path so the agent harness can write to it
-        agent_context["work_context_path"] = context_path(project_key, task_id)
+        agent_context["work_context_path"] = context_path(project_key, work_id)
 
     push_result = send_request("aman.push_work_item", {
         "agent_id": target_id,
-        "title": task.get("title", ""),
-        "description": task.get("description", ""),
-        "priority": task.get("priority", "normal"),
+        "title": work.get("title", ""),
+        "description": work.get("description", ""),
+        "priority": work.get("priority", "normal"),
         "context": agent_context,
     })
 
     if _unwrap_result(push_result):
-        update_task_stage(project_key, task["id"], stage_id, target_id)
+        update_work_stage(project_key, work["id"], stage_id, target_id)
 
         # Record context event
-        append_event(project_key, task["id"], make_event(
+        append_event(project_key, work["id"], make_event(
             "assigned",
             agent_id=target_id,
             stage=stage_id,
@@ -766,7 +766,7 @@ def dispatch(project_key: str, task: dict, stage_id: str) -> Optional[Dict[str, 
             "event_type": "team:work_item.assigned",
             "payload": {
                 "project_key": project_key,
-                "work_item_id": task.get("id", ""),
+                "work_item_id": work.get("id", ""),
                 "stage_id": stage_id,
                 "agent_id": target_id,
             },
@@ -869,26 +869,26 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
     except (json.JSONDecodeError, TypeError):
         body_json = {}
 
-    # ── Tasks ──────────────────────────────────────────────────────
-    if method == "GET" and rel_path == "tasks":
-        return _handle_list_tasks(project_key, query)
+    # ── Works ──────────────────────────────────────────────────────
+    if method == "GET" and rel_path == "works":
+        return _handle_list_works(project_key, query)
 
-    if method == "POST" and rel_path == "tasks/create":
-        return _handle_create_task(project_key, body_json)
+    if method == "POST" and rel_path == "works/create":
+        return _handle_create_work(project_key, body_json)
 
-    if method == "GET" and rel_path.startswith("tasks/") and len(rel_path.split("/")) == 2:
-        task_id = rel_path.split("/")[1]
-        return _handle_get_task(project_key, task_id)
+    if method == "GET" and rel_path.startswith("works/") and len(rel_path.split("/")) == 2:
+        work_id = rel_path.split("/")[1]
+        return _handle_get_work(project_key, work_id)
 
     if method == "POST" and rel_path.endswith("/assign"):
         parts = rel_path.split("/")
-        if len(parts) == 3 and parts[0] == "tasks":
-            return _handle_assign_task(project_key, parts[1], body_json)
+        if len(parts) == 3 and parts[0] == "works":
+            return _handle_assign_work(project_key, parts[1], body_json)
 
     if method == "POST" and rel_path.endswith("/complete"):
         parts = rel_path.split("/")
-        if len(parts) == 3 and parts[0] == "tasks":
-            return _handle_complete_task(project_key, parts[1], body_json)
+        if len(parts) == 3 and parts[0] == "works":
+            return _handle_complete_work(project_key, parts[1], body_json)
 
     # ── Safety ─────────────────────────────────────────────────────
     if method == "GET" and rel_path == "safety/pending":
@@ -912,7 +912,7 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
         return {
             "status": 200,
             "headers": {"content-type": "application/json"},
-            "body": json.dumps({"works": list_works(project_key)}),
+            "body": json.dumps({"works": list_context_files(project_key)}),
         }
 
     m_work_ctx = re.match(r"works/([^/]+)/context$", rel_path)
@@ -978,9 +978,9 @@ def _handle_get_project(project_key: str) -> dict:
     }
 
 
-def _handle_list_tasks(project_key: str, query: Optional[str]) -> dict:
+def _handle_list_works(project_key: str, query: Optional[str]) -> dict:
     proj = _projects.get(project_key, {}).get("config", {})
-    tasks = list_tasks(project_key)
+    works = list_works(project_key)
     return {
         "status": 200,
         "headers": {"content-type": "application/json"},
@@ -988,12 +988,12 @@ def _handle_list_tasks(project_key: str, query: Optional[str]) -> dict:
             "project_key": project_key,
             "project_name": proj.get("project_name", project_key),
             "stages": proj.get("stages", []),
-            "tasks": tasks,
+            "works": works,
         }),
     }
 
 
-def _handle_create_task(project_key: str, body: dict) -> dict:
+def _handle_create_work(project_key: str, body: dict) -> dict:
     title = body.get("title", "")
     description = body.get("description", "")
     priority = body.get("priority", "normal")
@@ -1001,8 +1001,8 @@ def _handle_create_task(project_key: str, body: dict) -> dict:
     proj = _projects.get(project_key, {}).get("config", {})
     initial_stage = proj.get("initial_stage", "")
 
-    task = {
-        "id": f"task-{int(time.time() * 1000)}",
+    work = {
+        "id": f"work-{int(time.time() * 1000)}",
         "title": title,
         "description": description,
         "priority": priority,
@@ -1013,16 +1013,16 @@ def _handle_create_task(project_key: str, body: dict) -> dict:
 
     # Persist to the project database
     try:
-        insert_task(project_key, task)
+        insert_work(project_key, work)
     except Exception as e:
-        _log(f"Failed to insert task: {e}")
+        _log(f"Failed to insert work: {e}")
 
     # Record work item context (JSONL)
-    append_event(project_key, task["id"], make_event(
+    append_event(project_key, work["id"], make_event(
         "created",
         title=title,
         description=description,
-        creator=task.get("creator", ""),
+        creator=work.get("creator", ""),
         stage=initial_stage,
         priority=priority,
     ))
@@ -1031,7 +1031,7 @@ def _handle_create_task(project_key: str, body: dict) -> dict:
         "event_type": "team:work_item.created",
         "payload": {
             "project_key": project_key,
-            "work_item_id": task["id"],
+            "work_item_id": work["id"],
             "title": title,
             "description": description,
             "priority": priority,
@@ -1043,38 +1043,38 @@ def _handle_create_task(project_key: str, body: dict) -> dict:
     stages = {s["id"]: s for s in proj.get("stages", [])}
     stage = stages.get(initial_stage, {})
     if stage.get("assignment_policy", {}).get("auto_assign"):
-        dispatch(project_key, task, initial_stage)
+        dispatch(project_key, work, initial_stage)
 
     return {
         "status": 201,
         "headers": {"content-type": "application/json"},
-        "body": json.dumps(task),
+        "body": json.dumps(work),
     }
 
 
-def _handle_get_task(project_key: str, task_id: str) -> dict:
-    task = get_task(project_key, task_id)
-    if task:
+def _handle_get_work(project_key: str, work_id: str) -> dict:
+    work = get_work(project_key, work_id)
+    if work:
         return {
             "status": 200,
             "headers": {"content-type": "application/json"},
-            "body": json.dumps(task),
+            "body": json.dumps(work),
         }
-    return {"status": 404, "body": json.dumps({"error": "task not found"})}
+    return {"status": 404, "body": json.dumps({"error": "work not found"})}
 
 
-def _handle_assign_task(project_key: str, task_id: str, body: dict) -> dict:
+def _handle_assign_work(project_key: str, work_id: str, body: dict) -> dict:
     agent_id = body.get("agent_id", "")
     stage_id = body.get("stage_id", "")
 
     result = send_request("aman.push_work_item", {
         "agent_id": agent_id,
-        "title": f"Manual assign: {task_id}",
+        "title": f"Manual assign: {work_id}",
         "description": body.get("reason", "Manual assignment"),
     })
 
     if _unwrap_result(result):
-        update_task_stage(project_key, task_id, stage_id, agent_id)
+        update_work_stage(project_key, work_id, stage_id, agent_id)
 
     return {
         "status": 200,
@@ -1083,12 +1083,12 @@ def _handle_assign_task(project_key: str, task_id: str, body: dict) -> dict:
     }
 
 
-def _handle_complete_task(project_key: str, task_id: str, body: dict) -> dict:
+def _handle_complete_work(project_key: str, work_id: str, body: dict) -> dict:
     agent_id = body.get("agent_id", "")
     confidence = float(body.get("confidence", 1.0))
     action = body.get("action", "")
 
-    safety = run_safety_checks(project_key, action, agent_id, task_id, confidence)
+    safety = run_safety_checks(project_key, action, agent_id, work_id, confidence)
     if not safety.get("allowed"):
         return {
             "status": 403,
@@ -1098,23 +1098,23 @@ def _handle_complete_task(project_key: str, task_id: str, body: dict) -> dict:
 
     next_stage = body.get("next_stage", "")
     current_stage = ""
-    task = get_task(project_key, task_id)
-    if task:
-        current_stage = task.get("current_stage", "")
+    work = get_work(project_key, work_id)
+    if work:
+        current_stage = work.get("current_stage", "")
 
-    complete_task_stage(project_key, task_id, confidence)
+    complete_work_stage(project_key, work_id, confidence)
 
     # Move to next stage if specified
     if next_stage:
-        update_task_stage(project_key, task_id, next_stage, agent_id)
+        update_work_stage(project_key, work_id, next_stage, agent_id)
 
     # Record context events
     if current_stage and next_stage and current_stage != next_stage:
-        append_event(project_key, task_id, make_event(
+        append_event(project_key, work_id, make_event(
             "stage_changed",
             **{"from": current_stage, "to": next_stage, "reason": "stage_completed"},
         ))
-    append_event(project_key, task_id, make_event(
+    append_event(project_key, work_id, make_event(
         "completed",
         agent_id=agent_id,
         confidence=confidence,
@@ -1126,7 +1126,7 @@ def _handle_complete_task(project_key: str, task_id: str, body: dict) -> dict:
         "event_type": "team:work_item.completed",
         "payload": {
             "project_key": project_key,
-            "work_item_id": task_id,
+            "work_item_id": work_id,
             "agent_id": agent_id,
             "confidence": confidence,
             "next_stage": next_stage,
@@ -1136,7 +1136,7 @@ def _handle_complete_task(project_key: str, task_id: str, body: dict) -> dict:
     return {
         "status": 200,
         "headers": {"content-type": "application/json"},
-        "body": json.dumps({"ok": True, "task_id": task_id}),
+        "body": json.dumps({"ok": True, "work_id": work_id}),
     }
 
 
@@ -1508,7 +1508,7 @@ def _handle_list_all_projects() -> dict:
 
 def _handle_boards_import(project_key: str, body: dict) -> dict:
     """Import board stages from a source project, overwriting the current project's stages.
-    Only allowed when the target project has no tasks."""
+    Only allowed when the target project has no works."""
     proj = _projects.get(project_key)
     if not proj:
         return _json_response({"error": f"project '{project_key}' not found"}, 404)
@@ -1524,13 +1524,13 @@ def _handle_boards_import(project_key: str, body: dict) -> dict:
     if not source:
         return _json_response({"error": f"source project '{source_key}' not found"}, 404)
 
-    # Check target project has no tasks
-    tasks = list_tasks(project_key)
-    if tasks:
+    # Check target project has no works
+    works = list_works(project_key)
+    if works:
         return _json_response({
-            "error": f"project '{project_key}' has {len(tasks)} existing task(s). "
-                      "Import is only allowed when the project has no tasks.",
-            "task_count": len(tasks),
+            "error": f"project '{project_key}' has {len(works)} existing work item(s). "
+                      "Import is only allowed when the project has no works.",
+            "work_count": len(works),
         }, 409)
 
     source_config = source.get("config", {})
@@ -1759,11 +1759,11 @@ def handle_on_load(params: Any) -> dict:
             {"method": "POST", "path": f"{api_prefix}/stages/update"},
             {"method": "POST", "path": f"{api_prefix}/boards/import"},
             {"method": "DELETE", "path": api_prefix},
-            {"method": "GET", "path": f"{api_prefix}/tasks"},
-            {"method": "POST", "path": f"{api_prefix}/tasks/create"},
-            {"method": "GET", "path": f"{api_prefix}/tasks/{{task_id}}"},
-            {"method": "POST", "path": f"{api_prefix}/tasks/{{task_id}}/assign"},
-            {"method": "POST", "path": f"{api_prefix}/tasks/{{task_id}}/complete"},
+            {"method": "GET", "path": f"{api_prefix}/works"},
+            {"method": "POST", "path": f"{api_prefix}/works/create"},
+            {"method": "GET", "path": f"{api_prefix}/works/{{work_id}}"},
+            {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/assign"},
+            {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/complete"},
             {"method": "GET", "path": f"{api_prefix}/safety/pending"},
             {"method": "POST", "path": f"{api_prefix}/safety/{{log_id}}/resolve"},
             {"method": "GET", "path": f"{api_prefix}/context"},
@@ -1967,13 +1967,13 @@ def handle_on_event(params: Any) -> None:
             stage_id = payload.get("stage_id", proj.get("initial_stage", ""))
             stage = stages.get(stage_id, {})
             if stage.get("assignment_policy", {}).get("auto_assign"):
-                task = {
+                work = {
                     "id": payload.get("work_item_id", ""),
                     "title": payload.get("title", ""),
                     "description": payload.get("description", ""),
                     "priority": payload.get("priority", "normal"),
                 }
-                dispatch(project_key, task, stage_id)
+                dispatch(project_key, work, stage_id)
 
     elif event_type == "team:work_item.completed":
         _log(f"Event: work_item.completed for {project_key}")

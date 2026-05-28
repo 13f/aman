@@ -16,6 +16,7 @@
     { "name": "writing-plans",         "files": ["agent/writing-plans/SKILL.md"] },
     { "name": "subagent-driven-development", "files": ["agent/subagent-driven-development/SKILL.md"] },
     { "name": "todo",                  "files": ["agent/todo/SKILL.md"] },
+    { "name": "team",                  "files": ["agent/team/SKILL.md"] },
     { "name": "discover-facts",        "files": ["research/discover-facts/SKILL.md"] },
     { "name": "claude-code",           "files": ["code/claude-code/SKILL.md"] },
     { "name": "codex-cli",             "files": ["code/codex-cli/SKILL.md"] },

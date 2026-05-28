@@ -144,7 +144,7 @@ def context_path(project_key: str, work_id: str) -> str:
     return _context_path(project_key, work_id)
 
 
-def list_works(project_key: str) -> List[str]:
+def list_context_files(project_key: str) -> List[str]:
     """List all work item IDs that have context files."""
     d = _works_dir(project_key)
     if not os.path.isdir(d):
@@ -265,7 +265,7 @@ if __name__ == "__main__":
     PROJECTS_DIR = os.path.join(TEAM_DIR, "projects")
 
     proj = "test-proj"
-    wid = "task-001"
+    wid = "work-001"
 
     # --- append + read ---
     append_event(proj, wid, make_event("created", title="Fix bug", description="OOM fix",
@@ -297,11 +297,11 @@ if __name__ == "__main__":
     assert "0.92" in ctx or "92%" in ctx
 
     # --- list + delete ---
-    assert wid in list_works(proj)
+    assert wid in list_context_files(proj)
     assert context_exists(proj, wid)
     delete_context(proj, wid)
     assert not context_exists(proj, wid)
-    assert list_works(proj) == []
+    assert list_context_files(proj) == []
 
     # cleanup
     import shutil

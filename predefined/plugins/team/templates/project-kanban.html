@@ -89,13 +89,13 @@
 </div>
 <div class="board" id="board">$columns_html</div>
 
-<!-- New Task Modal -->
+<!-- New Work Item Modal -->
 <div class="modal" id="createModal">
   <div class="modal-card">
-    <h3>New Task</h3>
+    <h3>New Work Item</h3>
     <div class="form-group">
       <label>Title</label>
-      <input type="text" id="newTitle" placeholder="Task title">
+      <input type="text" id="newTitle" placeholder="Title">
     </div>
     <div class="form-group">
       <label>Description</label>
@@ -104,7 +104,7 @@
     <input type="hidden" id="newStage">
     <div class="modal-actions">
       <button onclick="closeCreate()">Cancel</button>
-      <button class="primary" onclick="createTask()">Create</button>
+      <button class="primary" onclick="createWork()">Create</button>
     </div>
   </div>
 </div>
@@ -144,7 +144,7 @@
           <button style="padding:4px 8px;background:none;border:1px solid #2a2d3a;color:#888;border-radius:4px;cursor:pointer;font-size:11px;" onclick="closeImportPanel()">&times;</button>
         </div>
         <div id="importProjectList" style="max-height:180px;overflow-y:auto;"></div>
-        <div class="hint" style="margin-top:6px;">Stages will be overwritten. Only available when the project has no tasks.</div>
+        <div class="hint" style="margin-top:6px;">Stages will be overwritten. Only available when the project has no work items.</div>
       </div>
     </div>
     <button id="importBoardBtn" class="add-stage-btn" style="margin-bottom:12px;display:none;" onclick="openImportPanel()">&#8645; Import from Project</button>
@@ -171,25 +171,25 @@ var BASE = "/api/v1/team/projects/" + PROJECT;
 // ── Data loading ──────────────────────────────────────────────
 
 var _cachedStages = [];
-var _cachedTasks = [];
+var _cachedWorks = [];
 
 async function load() {
   try {
-    var r = await fetch(BASE + "/tasks");
+    var r = await fetch(BASE + "/works");
     var data = await r.json();
     _cachedStages = data.stages || [];
-    _cachedTasks = data.tasks || [];
-    render(_cachedStages, _cachedTasks);
+    _cachedWorks = data.works || [];
+    render(_cachedStages, _cachedWorks);
   } catch(e) { console.error(e); }
 }
 
-function render(stages, tasks) {
+function render(stages, works) {
   var byStage = {};
-  for (var i = 0; i < tasks.length; i++) {
-    var t = tasks[i];
-    var s = t.current_stage || "";
+  for (var i = 0; i < works.length; i++) {
+    var w = works[i];
+    var s = w.current_stage || "";
     byStage[s] = byStage[s] || [];
-    byStage[s].push(t);
+    byStage[s].push(w);
   }
   for (var j = 0; j < stages.length; j++) {
     var s = stages[j];
@@ -199,14 +199,14 @@ function render(stages, tasks) {
     var items = byStage[s.id] || [];
     if (count) count.textContent = items.length;
     if (items.length === 0) {
-      list.innerHTML = '<div class="empty-state">No tasks</div>';
+      list.innerHTML = '<div class="empty-state">No work items</div>';
     } else {
       var html = "";
       for (var k = 0; k < items.length; k++) {
-        var t = items[k];
-        html += '<div class="card" onclick="moveTask(\'' + esc(t.id) + '\')">' +
-                '<div class="card-title">' + esc(t.title) + '</div>' +
-                '<div class="card-meta">' + esc(t.priority || 'normal') + (t.assignee ? ' &middot; ' + esc(t.assignee) : '') + '</div>' +
+        var w = items[k];
+        html += '<div class="card" onclick="moveWork(\'' + esc(w.id) + '\')">' +
+                '<div class="card-title">' + esc(w.title) + '</div>' +
+                '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
                 '</div>';
       }
       list.innerHTML = html;
@@ -214,7 +214,7 @@ function render(stages, tasks) {
   }
 }
 
-// ── Tasks ─────────────────────────────────────────────────────
+// ── Works ─────────────────────────────────────────────────────
 
 function openCreate(stageId) {
   document.getElementById("newStage").value = stageId;
@@ -228,12 +228,12 @@ function closeCreate() {
   document.getElementById("createModal").classList.remove("open");
 }
 
-async function createTask() {
+async function createWork() {
   var title = document.getElementById("newTitle").value.trim();
   if (!title) return;
   var stageId = document.getElementById("newStage").value;
   try {
-    await fetch(BASE + "/tasks/create", {
+    await fetch(BASE + "/works/create", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({title: title, description: document.getElementById("newDesc").value})
@@ -243,17 +243,17 @@ async function createTask() {
   } catch(e) { console.error(e); }
 }
 
-async function moveTask(taskId) {
+async function moveWork(workId) {
   var stages = _cachedStages;
-  var task = (_cachedTasks || []).find(function(t) { return t.id === taskId; });
-  if (!task) return;
-  var idx = stages.findIndex(function(s) { return s.id === task.current_stage; });
+  var work = (_cachedWorks || []).find(function(w) { return w.id === workId; });
+  if (!work) return;
+  var idx = stages.findIndex(function(s) { return s.id === work.current_stage; });
   var nextIds = idx >= 0 ? (stages[idx].allowed_next || []) : [];
   if (nextIds.length === 0) return;
   var next = nextIds.length === 1 ? nextIds[0] : prompt("Move to stage: " + nextIds.join(", "));
   if (!next) return;
   try {
-    await fetch(BASE + "/tasks/" + taskId + "/complete", {
+    await fetch(BASE + "/works/" + workId + "/complete", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({agent_id: "", confidence: 1.0, action: "move to " + next, next_stage: next})
@@ -307,8 +307,8 @@ function openEditBoard() {
   _editStages = JSON.parse(JSON.stringify(_cachedStages));
   renderStageEditor();
   closeImportPanel();
-  var hasTasks = _cachedTasks && _cachedTasks.length > 0;
-  document.getElementById("importBoardBtn").style.display = hasTasks ? "none" : "block";
+  var hasWorks = _cachedWorks && _cachedWorks.length > 0;
+  document.getElementById("importBoardBtn").style.display = hasWorks ? "none" : "block";
   document.getElementById("editBoardModal").classList.add("open");
 }
 
@@ -346,13 +346,6 @@ function renderStageEditor() {
 function refreshInitialSelect() {
   var sel = document.getElementById("editInitialStage");
   var cur = sel.value;
-  var initial = "";
-  for (var i = 0; i < _cachedStages.length; i++) {
-    if (_cachedStages[i].id === (_cachedStages[0] && _cachedStages[0].id)) {
-      // keep existing initial
-    }
-  }
-  // Find current initial stage from the full config
   var opts = "";
   for (var j = 0; j < _editStages.length; j++) {
     var sid = _editStages[j].id;

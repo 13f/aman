@@ -193,6 +193,19 @@ from pathlib import Path
 from string import Template
 from collections import defaultdict
 
+from context import (
+    append_event,
+    build_work_context_for_agent,
+    context_exists,
+    context_len,
+    context_path,
+    delete_context,
+    list_works,
+    make_event,
+    read_context,
+    read_context_raw,
+)
+
 TEAM_DIR = os.path.expanduser("~/.aman/team")
 PROJECTS_DIR = os.path.join(TEAM_DIR, "projects")
 
@@ -599,6 +612,12 @@ def run_safety_checks(project_key: str, action: str, agent_id: str,
     danger = _check_dangerous_action(project_config, action)
     if danger:
         insert_safety_log(project_key, work_item_id, agent_id, action, danger["reason"])
+        append_event(project_key, work_item_id, make_event(
+            "safety_triggered",
+            reason=danger["reason"],
+            action=action,
+            agent_id=agent_id,
+        ))
         send_notification("aman.emit_event", {
             "event_type": "team:safety.gate_triggered",
             "payload": {
@@ -615,6 +634,12 @@ def run_safety_checks(project_key: str, action: str, agent_id: str,
     conf_check = _check_confidence(project_config, confidence)
     if conf_check:
         insert_safety_log(project_key, work_item_id, agent_id, action, conf_check["reason"])
+        append_event(project_key, work_item_id, make_event(
+            "safety_triggered",
+            reason=conf_check["reason"],
+            action=action,
+            agent_id=agent_id,
+        ))
         return {"allowed": False, "blocked": True, "requires_human": True,
                 "reason": f"Low confidence: {confidence} < {conf_check['min_required']}"}
 
@@ -708,16 +733,35 @@ def dispatch(project_key: str, task: dict, stage_id: str) -> Optional[Dict[str, 
 
     target_id = _agent_id(target["agent"])
 
+    # Build enriched agent context: include work item JSONL history
+    task_id = task.get("id", "")
+    agent_context = task.get("context", {})
+    if task_id:
+        work_ctx = build_work_context_for_agent(project_key, task_id)
+        if work_ctx:
+            agent_context["work_history"] = work_ctx
+        # Also pass the context file path so the agent harness can write to it
+        agent_context["work_context_path"] = context_path(project_key, task_id)
+
     push_result = send_request("aman.push_work_item", {
         "agent_id": target_id,
         "title": task.get("title", ""),
         "description": task.get("description", ""),
         "priority": task.get("priority", "normal"),
-        "context": task.get("context", {}),
+        "context": agent_context,
     })
 
     if _unwrap_result(push_result):
         update_task_stage(project_key, task["id"], stage_id, target_id)
+
+        # Record context event
+        append_event(project_key, task["id"], make_event(
+            "assigned",
+            agent_id=target_id,
+            stage=stage_id,
+            strategy=dispatch_strategy,
+        ))
+
         send_notification("aman.emit_event", {
             "event_type": "team:work_item.assigned",
             "payload": {
@@ -855,13 +899,59 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
         if len(parts) == 3:
             return _handle_resolve_safety(project_key, int(parts[1]), body_json)
 
-    # ── Context ────────────────────────────────────────────────────
+    # ── Context (shared documents) ───────────────────────────────────
     if method == "GET" and rel_path == "context":
         return _handle_list_context(project_key)
 
     if method == "GET" and rel_path.startswith("context/") and len(rel_path.split("/")) == 2:
         ctx_id = int(rel_path.split("/")[1])
         return _handle_get_context(project_key, ctx_id)
+
+    # ── Work item context (JSONL) ────────────────────────────────────
+    if method == "GET" and rel_path == "works":
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"works": list_works(project_key)}),
+        }
+
+    m_work_ctx = re.match(r"works/([^/]+)/context$", rel_path)
+    if m_work_ctx and method == "GET":
+        work_id = m_work_ctx.group(1)
+        raw = query and "raw=1" in query or "raw=true" in query
+        max_lines = 500
+        if query and "max_lines=" in query:
+            try:
+                max_lines = int(query.split("max_lines=")[1].split("&")[0])
+            except (ValueError, IndexError):
+                pass
+        if raw:
+            text = read_context_raw(project_key, work_id, max_lines)
+            return {
+                "status": 200,
+                "headers": {"content-type": "text/plain; charset=utf-8"},
+                "body": text,
+            }
+        else:
+            events = read_context(project_key, work_id, max_lines)
+            return {
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({
+                    "work_id": work_id,
+                    "event_count": context_len(project_key, work_id),
+                    "events": events,
+                }),
+            }
+
+    if method == "DELETE" and m_work_ctx:
+        work_id = m_work_ctx.group(1)
+        delete_context(project_key, work_id)
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"ok": True, "deleted": work_id}),
+        }
 
     # ── Agents ─────────────────────────────────────────────────────
     if method == "GET" and rel_path == "agents":
@@ -926,6 +1016,16 @@ def _handle_create_task(project_key: str, body: dict) -> dict:
         insert_task(project_key, task)
     except Exception as e:
         _log(f"Failed to insert task: {e}")
+
+    # Record work item context (JSONL)
+    append_event(project_key, task["id"], make_event(
+        "created",
+        title=title,
+        description=description,
+        creator=task.get("creator", ""),
+        stage=initial_stage,
+        priority=priority,
+    ))
 
     send_notification("aman.emit_event", {
         "event_type": "team:work_item.created",
@@ -997,11 +1097,30 @@ def _handle_complete_task(project_key: str, task_id: str, body: dict) -> dict:
         }
 
     next_stage = body.get("next_stage", "")
+    current_stage = ""
+    task = get_task(project_key, task_id)
+    if task:
+        current_stage = task.get("current_stage", "")
+
     complete_task_stage(project_key, task_id, confidence)
 
     # Move to next stage if specified
     if next_stage:
         update_task_stage(project_key, task_id, next_stage, agent_id)
+
+    # Record context events
+    if current_stage and next_stage and current_stage != next_stage:
+        append_event(project_key, task_id, make_event(
+            "stage_changed",
+            **{"from": current_stage, "to": next_stage, "reason": "stage_completed"},
+        ))
+    append_event(project_key, task_id, make_event(
+        "completed",
+        agent_id=agent_id,
+        confidence=confidence,
+        summary=body.get("summary", ""),
+        next_stage=next_stage or None,
+    ))
 
     send_notification("aman.emit_event", {
         "event_type": "team:work_item.completed",
@@ -1650,6 +1769,10 @@ def handle_on_load(params: Any) -> dict:
             {"method": "GET", "path": f"{api_prefix}/context"},
             {"method": "GET", "path": f"{api_prefix}/context/{{id}}"},
             {"method": "GET", "path": f"{api_prefix}/agents"},
+            # Work item JSONL context
+            {"method": "GET", "path": f"{api_prefix}/works"},
+            {"method": "GET", "path": f"{api_prefix}/works/{{work_id}}/context"},
+            {"method": "DELETE", "path": f"{api_prefix}/works/{{work_id}}/context"},
         ])
 
     # Register all routes with the server
@@ -1804,6 +1927,27 @@ def handle_route(params: Any) -> dict:
     return handle_api(project_key, method, clean, query, headers, body)
 
 
+@on("team.append_context_event")
+def handle_append_context_event(params: Any) -> dict:
+    """Allow agents to record events (thoughts, tool calls, etc.) to a work item's JSONL context.
+
+    Called by the agent harness during execution. The agent receives
+    `work_context_path` in its context dict when dispatched.
+    """
+    if not isinstance(params, dict):
+        return {"ok": False, "error": "invalid params"}
+    project_key = params.get("project_key", "")
+    work_id = params.get("work_id", "")
+    event = params.get("event", {})
+    if not project_key or not work_id or not event:
+        return {"ok": False, "error": "project_key, work_id, and event are required"}
+    try:
+        append_event(project_key, work_id, event)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @on("aman.on_event")
 def handle_on_event(params: Any) -> None:
     """Handle an event notification from the server."""
@@ -1841,6 +1985,24 @@ def handle_on_event(params: Any) -> None:
 
     elif event_type == "team:safety.gate_resolved":
         _log(f"Event: safety.gate_resolved for {project_key}")
+        # Record safety resolution in context
+        work_item_id = payload.get("work_item_id", "") if isinstance(payload, dict) else ""
+        if work_item_id:
+            append_event(project_key, work_item_id, make_event(
+                "safety_resolved",
+                decision=payload.get("decision", "unknown"),
+                decided_by=payload.get("decided_by", "human"),
+            ))
+
+    elif event_type == "team:work_item.failed":
+        _log(f"Event: work_item.failed for {project_key}")
+        work_item_id = payload.get("work_item_id", "") if isinstance(payload, dict) else ""
+        if work_item_id:
+            append_event(project_key, work_item_id, make_event(
+                "failed",
+                error=payload.get("error", "unknown error") if isinstance(payload, dict) else "unknown error",
+                retryable=payload.get("retryable", False) if isinstance(payload, dict) else False,
+            ))
 
 
 # ---------------------------------------------------------------------------

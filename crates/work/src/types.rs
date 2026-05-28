@@ -353,11 +353,36 @@ pub struct WorkCheckpoint {
 pub type WorkResult<T> = Result<T, WorkError>;
 
 // ---------------------------------------------------------------------------
+// Global bus notification events (posted outside the Work System)
+// ---------------------------------------------------------------------------
+
+/// Posted to the global bus when a work item completes and
+/// `notify_on_complete` is true. External systems (kanban, todo, CLI)
+/// subscribe to this to learn about completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkItemResultEvent {
+    pub item_id: WorkItemId,
+    pub result: WorkItemResult,
+    pub agent_id: String,
+}
+
+/// Posted to the global bus when a work item fails and is not retryable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkItemFailedEvent {
+    pub item_id: WorkItemId,
+    pub error: String,
+    pub agent_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // Event source constants for routing
 // ---------------------------------------------------------------------------
 
 /// Event source prefix for work events published to the EventBus.
 pub const WORK_SOURCE: &str = "work.system";
+
+/// Event kind for internal step execution events.
+pub const WORK_STEP_KIND: &str = "work.step.execute";
 
 impl WorkEvent {
     /// Returns the event source string for routing purposes.
@@ -382,12 +407,11 @@ impl WorkEvent {
 // Internal StepEvent — 步骤执行链（不暴露为 WorkEvent）
 // ---------------------------------------------------------------------------
 
-/// 内部步骤事件——Work System 内部链式流转，不暴露为 WorkEvent。
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub(crate) enum StepEvent {
-    /// 执行指定索引的步骤。
-    Execute { step_index: usize },
+/// 内部步骤事件——Work System 内部链式流转。
+/// Published to the local bus to keep it non-empty during execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StepEvent {
+    pub step_index: usize,
 }
 
 // ---------------------------------------------------------------------------

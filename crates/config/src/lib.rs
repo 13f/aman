@@ -5,7 +5,7 @@
 
 
 use idle::IdlePersonality;
-use work::{WorkConfig, WorkPersonality};
+use work::WorkConfig;
 use kernel::event::{Event, EventType};
 use kernel::{AmanResult, Error};
 use serde::{Deserialize, Serialize};
@@ -1062,8 +1062,8 @@ pub struct PartialIdleConfig {
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartialWorkConfig {
-    pub enabled: Option<bool>,
-    pub personality: Option<WorkPersonality>,
+    /// Override the entire work configuration (v2).
+    pub config: Option<WorkConfig>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -1340,12 +1340,8 @@ impl AgentConfig {
         }
 
         if let Some(work_patch) = patch.work {
-            // enabled=false still sets auto_claim=false (work can be disabled)
-            if let Some(v) = work_patch.enabled {
-                self.work.personality.auto_claim = v;
-            }
-            if let Some(v) = work_patch.personality {
-                self.work.personality = v;
+            if let Some(v) = work_patch.config {
+                self.work = v;
             }
         }
     }

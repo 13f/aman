@@ -182,6 +182,7 @@ impl AgentRegistry {
                     agent_id.clone(),
                     config.runtime.work.clone(),
                     local_bus,
+                    Arc::clone(&self.bus) as Arc<dyn EventBus>,
                     Some(Arc::clone(&system_state)),
                 ));
                 self.set_work_system(agent_id, work_system).await;
@@ -315,6 +316,7 @@ impl AgentRegistry {
                 agent_id.to_string(),
                 config.runtime.work.clone(),
                 local_bus,
+                Arc::clone(&self.bus) as Arc<dyn EventBus>,
                 Some(ss),
             ));
             self.set_work_system(agent_id, work_system).await;

@@ -521,8 +521,11 @@ def complete_work_stage(project_key: str, work_id: str, confidence: float) -> No
     db = get_db(project_key)
     db.execute(
         """UPDATE stage_history SET completed_at=datetime('now'), confidence=?
-            WHERE work_id=? AND completed_at IS NULL
-            ORDER BY id DESC LIMIT 1""",
+            WHERE id = (
+                SELECT id FROM stage_history
+                WHERE work_id=? AND completed_at IS NULL
+                ORDER BY id DESC LIMIT 1
+            )""",
         (confidence, work_id),
     )
     db.commit()
@@ -918,7 +921,7 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
     m_work_ctx = re.match(r"works/([^/]+)/context$", rel_path)
     if m_work_ctx and method == "GET":
         work_id = m_work_ctx.group(1)
-        raw = query and "raw=1" in query or "raw=true" in query
+        raw = bool(query) and ("raw=1" in query or "raw=true" in query)
         max_lines = 500
         if query and "max_lines=" in query:
             try:
@@ -952,6 +955,11 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
             "headers": {"content-type": "application/json"},
             "body": json.dumps({"ok": True, "deleted": work_id}),
         }
+
+    # ── Work item comment ──────────────────────────────────────────
+    m_work_comment = re.match(r"works/([^/]+)/comment$", rel_path)
+    if m_work_comment and method == "POST":
+        return _handle_add_comment(project_key, m_work_comment.group(1), body_json)
 
     # ── Agents ─────────────────────────────────────────────────────
     if method == "GET" and rel_path == "agents":
@@ -1144,6 +1152,34 @@ def _handle_complete_work(project_key: str, work_id: str, body: dict) -> dict:
         "status": 200,
         "headers": {"content-type": "application/json"},
         "body": json.dumps({"ok": True, "work_id": work_id}),
+    }
+
+
+def _handle_add_comment(project_key: str, work_id: str, body: dict) -> dict:
+    content = body.get("content", "").strip()
+    author = body.get("author", "").strip() or "User"
+    if not content:
+        return {
+            "status": 400,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"error": "content is required"}),
+        }
+    if not any(w["id"] == work_id for w in list_works(project_key)):
+        if not context_exists(project_key, work_id):
+            return {
+                "status": 404,
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({"error": "work not found"}),
+            }
+    append_event(project_key, work_id, make_event(
+        "comment",
+        content=content,
+        author=author,
+    ))
+    return {
+        "status": 200,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps({"ok": True}),
     }
 
 
@@ -1771,6 +1807,7 @@ def handle_on_load(params: Any) -> dict:
             {"method": "GET", "path": f"{api_prefix}/works/{{work_id}}"},
             {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/assign"},
             {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/complete"},
+            {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/comment"},
             {"method": "GET", "path": f"{api_prefix}/safety/pending"},
             {"method": "POST", "path": f"{api_prefix}/safety/{{log_id}}/resolve"},
             {"method": "GET", "path": f"{api_prefix}/context"},

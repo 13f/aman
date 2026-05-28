@@ -77,6 +77,237 @@
            font-size: 13px; z-index: 200; max-width: 360px; }
   .flash.success { background: #064e3b; border: 1px solid #065f46; color: #6ee7b7; }
   .flash.error { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
+
+  /* ── Work Detail Modal ──────────────────────────────── */
+  .work-detail-modal .modal-card {
+    width: 680px;
+    max-width: 94vw;
+    max-height: 90vh;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .work-detail-card {
+    height: 80vh;
+  }
+
+  .wd-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 20px;
+    border-bottom: 1px solid #1e2030;
+    flex-shrink: 0;
+  }
+
+  .wd-header-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .wd-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    word-break: break-word;
+  }
+
+  .wd-stage-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #1e2030;
+    color: #888;
+    margin-right: 8px;
+  }
+
+  .wd-meta {
+    font-size: 11px;
+    color: #555;
+  }
+
+  .wd-close {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 22px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .wd-close:hover {
+    color: #e0e0e0;
+  }
+
+  .wd-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .wd-empty {
+    text-align: center;
+    color: #555;
+    font-size: 12px;
+    padding: 32px;
+  }
+
+  .wd-msg-system {
+    text-align: center;
+    font-size: 11px;
+    color: #555;
+    padding: 4px 0;
+  }
+
+  .wd-msg-system .wd-msg-label {
+    display: none;
+  }
+
+  .wd-msg-system .wd-msg-ts {
+    display: block;
+    font-size: 10px;
+    color: #444;
+    margin-top: 2px;
+  }
+
+  .wd-msg-agent {
+    align-self: flex-start;
+    max-width: 75%;
+    background: #1a1d2b;
+    border: 1px solid #2a2d3a;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .wd-msg-agent .wd-msg-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    color: #6366f1;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+
+  .wd-msg-agent .wd-msg-ts {
+    display: block;
+    font-size: 10px;
+    color: #444;
+    margin-top: 6px;
+    text-align: right;
+  }
+
+  .wd-msg-human {
+    align-self: flex-end;
+    max-width: 75%;
+    background: #1e1b4b;
+    border: 1px solid #312e81;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .wd-msg-human .wd-msg-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 600;
+    color: #818cf8;
+    margin-bottom: 4px;
+  }
+
+  .wd-msg-human .wd-msg-ts {
+    display: block;
+    font-size: 10px;
+    color: #555;
+    margin-top: 6px;
+    text-align: right;
+  }
+
+  .wd-input-area {
+    display: flex;
+    gap: 8px;
+    padding: 12px 20px;
+    border-top: 1px solid #1e2030;
+    background: #0f1119;
+    flex-shrink: 0;
+  }
+
+  .wd-input-area textarea {
+    flex: 1;
+    padding: 8px 12px;
+    background: #0b0d13;
+    border: 1px solid #2a2d3a;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-family: inherit;
+    resize: none;
+    min-height: 36px;
+    max-height: 100px;
+    line-height: 1.4;
+  }
+
+  .wd-input-area textarea:focus {
+    outline: none;
+    border-color: #6366f1;
+  }
+
+  .wd-input-actions {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+  }
+
+  .wd-move-btn {
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid #2a2d3a;
+    background: #1a1d2b;
+    color: #aaa;
+  }
+
+  .wd-move-btn:hover {
+    border-color: #555;
+    color: #e0e0e0;
+  }
+
+  .wd-comment-btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    background: #6366f1;
+    border: 1px solid #6366f1;
+    color: #fff;
+  }
+
+  .wd-comment-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .wd-comment-btn:hover:not(:disabled) {
+    background: #4f46e5;
+    border-color: #4f46e5;
+  }
 </style>
 </head>
 <body>
@@ -162,6 +393,33 @@
   </div>
 </div>
 
+<!-- Work Detail Modal -->
+<div class="modal work-detail-modal" id="workDetailModal">
+  <div class="modal-card work-detail-card">
+    <div class="wd-header">
+      <div class="wd-header-info">
+        <h3 class="wd-title" id="wdTitle"></h3>
+        <span class="wd-stage-badge" id="wdStageBadge"></span>
+        <span class="wd-meta" id="wdMeta"></span>
+      </div>
+      <button class="wd-close" onclick="closeWorkDetail()">&times;</button>
+    </div>
+    <div class="wd-messages" id="wdMessages">
+      <div class="wd-empty">Loading work context...</div>
+    </div>
+    <div class="wd-input-area">
+      <textarea id="wdCommentInput" placeholder="Add a comment... (Enter to send)" rows="1"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addWorkComment();}"
+        oninput="document.getElementById('wdCommentBtn').disabled=!this.value.trim()"
+      ></textarea>
+      <div class="wd-input-actions">
+        <button class="wd-move-btn" onclick="moveWorkFromDetail()">Move Stage</button>
+        <button class="wd-comment-btn" id="wdCommentBtn" onclick="addWorkComment()" disabled>Comment</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="flash"></div>
 
 <script>
@@ -204,7 +462,7 @@ function render(stages, works) {
       var html = "";
       for (var k = 0; k < items.length; k++) {
         var w = items[k];
-        html += '<div class="card" onclick="moveWork(\'' + esc(w.id) + '\')">' +
+        html += '<div class="card" onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
                 '<div class="card-title">' + esc(w.title) + '</div>' +
                 '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
                 '</div>';
@@ -246,20 +504,180 @@ async function createWork() {
 async function moveWork(workId) {
   var stages = _cachedStages;
   var work = (_cachedWorks || []).find(function(w) { return w.id === workId; });
-  if (!work) return;
+  if (!work) { flash("Work item not found: " + workId, "error"); return; }
   var idx = stages.findIndex(function(s) { return s.id === work.current_stage; });
+  console.log("moveWork", {workId: workId, currentStage: work.current_stage, stageIdx: idx, stages: stages});
   var nextIds = idx >= 0 ? (stages[idx].allowed_next || []) : [];
-  if (nextIds.length === 0) return;
+  if (nextIds.length === 0) { flash("No next stage available from \"" + (stages[idx] ? stages[idx].name : work.current_stage) + "\"", "error"); return; }
   var next = nextIds.length === 1 ? nextIds[0] : prompt("Move to stage: " + nextIds.join(", "));
   if (!next) return;
   try {
-    await fetch(BASE + "/works/" + workId + "/complete", {
+    var r = await fetch(BASE + "/works/" + workId + "/complete", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({agent_id: "", confidence: 1.0, action: "move to " + next, next_stage: next})
     });
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Move failed: " + (e.error || r.statusText), "error"); return; }
     load();
-  } catch(e) { console.error(e); }
+  } catch(e) { flash("Network error: " + e.message, "error"); console.error(e); }
+}
+
+// ── Work Detail Modal ─────────────────────────────────────────
+
+var _detailWorkId = "";
+var _detailWork = null;
+
+function openWorkDetail(workId) {
+  _detailWorkId = workId;
+  _detailWork = (_cachedWorks || []).find(function(w) { return w.id === workId; });
+  if (!_detailWork) return;
+
+  var stage = (_cachedStages || []).find(function(s) { return s.id === _detailWork.current_stage; });
+  document.getElementById("wdTitle").textContent = _detailWork.title;
+  document.getElementById("wdStageBadge").textContent = stage ? stage.name : _detailWork.current_stage;
+  document.getElementById("wdMeta").textContent = (_detailWork.priority || "normal") +
+    (_detailWork.assignee ? " · " + _detailWork.assignee : "") +
+    " · created " + (_detailWork.created_at || "").slice(0, 10);
+  document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">Loading work context...</div>';
+  document.getElementById("wdCommentInput").value = "";
+  document.getElementById("wdCommentBtn").disabled = true;
+  document.getElementById("workDetailModal").classList.add("open");
+  loadWorkContext(workId);
+  setTimeout(function(){ document.getElementById("wdCommentInput").focus(); }, 150);
+}
+
+function closeWorkDetail() {
+  document.getElementById("workDetailModal").classList.remove("open");
+  _detailWorkId = "";
+  _detailWork = null;
+}
+
+async function loadWorkContext(workId) {
+  try {
+    var r = await fetch(BASE + "/works/" + workId + "/context");
+    if (!r.ok) {
+      document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">Failed to load context</div>';
+      return;
+    }
+    var data = await r.json();
+    if (!data.events || data.events.length === 0) {
+      document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">No context history yet</div>';
+    } else {
+      renderWorkContext(data.events);
+    }
+  } catch(e) {
+    document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">Failed to load context</div>';
+    console.error(e);
+  }
+}
+
+function renderWorkContext(events) {
+  var html = "";
+  for (var i = 0; i < events.length; i++) {
+    var ev = events[i];
+    var t = ev.type || "unknown";
+    var ts = (ev.ts || "").replace("T", " ").slice(0, 19);
+    var cls = "";
+    var label = "";
+    var body = "";
+
+    if (t === "created") {
+      cls = "wd-msg-system";
+      body = "Created &ldquo;" + esc(ev.title || "") + "&rdquo; in <b>" + esc(ev.stage || "") + "</b>" +
+             (ev.creator ? " by " + esc(ev.creator) : "");
+    } else if (t === "assigned") {
+      cls = "wd-msg-system";
+      body = "Assigned to <b>" + esc(ev.agent_id || "") + "</b>" +
+             (ev.strategy ? " (strategy: " + esc(ev.strategy) + ")" : "");
+    } else if (t === "stage_changed") {
+      cls = "wd-msg-system";
+      body = "Moved from <b>" + esc(ev["from"] || "") + "</b> &rarr; <b>" + esc(ev.to || "") + "</b>" +
+             (ev.reason ? " (" + esc(ev.reason) + ")" : "");
+    } else if (t === "completed") {
+      cls = "wd-msg-system";
+      var pct = ev.confidence != null ? (ev.confidence * 100).toFixed(0) + "%" : "";
+      body = "Stage completed" + (pct ? " (confidence: " + pct + ")" : "") +
+             (ev.next_stage ? " &rarr; " + esc(ev.next_stage) : "");
+    } else if (t === "failed") {
+      cls = "wd-msg-system";
+      body = "Failed: " + esc(ev.error || "unknown error") +
+             (ev.retryable ? " (retryable)" : "");
+    } else if (t === "safety_triggered") {
+      cls = "wd-msg-system";
+      body = "Safety gate triggered: " + esc(ev.reason || ev.action || "");
+    } else if (t === "safety_resolved") {
+      cls = "wd-msg-system";
+      body = "Safety resolved: " + esc(ev.decision || "") + " by " + esc(ev.decided_by || "");
+    } else if (t === "context_update") {
+      cls = "wd-msg-system";
+      body = esc(ev.key || "") + " = " + esc((ev.value || "").toString());
+    } else if (t === "step_complete") {
+      cls = "wd-msg-system";
+      var icon = ev.success ? "✓" : "✗";
+      body = icon + " Step " + ((ev.step_index || 0) + 1) + "/" + (ev.total_steps || 0) +
+             ": " + esc(ev.summary || "");
+    } else if (t === "thought") {
+      cls = "wd-msg-agent";
+      label = "thought";
+      body = esc(ev.content || "");
+    } else if (t === "tool_call") {
+      cls = "wd-msg-agent";
+      label = "tool: " + esc(ev.tool || "unknown");
+      body = esc(typeof ev.input === "string" ? ev.input : JSON.stringify(ev.input || {}));
+    } else if (t === "response") {
+      cls = "wd-msg-agent";
+      label = "response";
+      body = esc(ev.content || "");
+    } else if (t === "human_direction") {
+      cls = "wd-msg-human";
+      label = esc(ev.human_id || "human");
+      body = esc(ev.content || "");
+    } else if (t === "comment") {
+      cls = "wd-msg-human";
+      label = esc(ev.author || "User");
+      body = esc(ev.content || "");
+    } else {
+      cls = "wd-msg-system";
+      body = "[" + esc(t) + "] " + esc(JSON.stringify(ev).substring(0, 200));
+    }
+
+    html += '<div class="' + cls + '">';
+    if (label) html += '<span class="wd-msg-label">' + label + '</span>';
+    html += body;
+    html += '<span class="wd-msg-ts">' + esc(ts) + '</span>';
+    html += '</div>';
+  }
+  document.getElementById("wdMessages").innerHTML = html;
+  var el = document.getElementById("wdMessages");
+  el.scrollTop = el.scrollHeight;
+}
+
+async function addWorkComment() {
+  var input = document.getElementById("wdCommentInput");
+  var content = input.value.trim();
+  if (!content || !_detailWorkId) return;
+  var btn = document.getElementById("wdCommentBtn");
+  btn.disabled = true;
+  btn.textContent = "...";
+  try {
+    var r = await fetch(BASE + "/works/" + _detailWorkId + "/comment", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({content: content, author: "User"})
+    });
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Comment failed: " + (e.error || r.statusText), "error"); btn.disabled = false; btn.textContent = "Comment"; return; }
+    input.value = "";
+    loadWorkContext(_detailWorkId);
+  } catch(e) { flash("Network error: " + e.message, "error"); }
+  btn.disabled = false;
+  btn.textContent = "Comment";
+}
+
+function moveWorkFromDetail() {
+  if (_detailWorkId) {
+    closeWorkDetail();
+    moveWork(_detailWorkId);
+  }
 }
 
 // ── Edit Project ──────────────────────────────────────────────
@@ -476,6 +894,15 @@ function flash(msg, type) {
 }
 
 // ── Init ──────────────────────────────────────────────────────
+
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape") {
+    var modal = document.getElementById("workDetailModal");
+    if (modal && modal.classList.contains("open")) {
+      closeWorkDetail();
+    }
+  }
+});
 
 load();
 setInterval(load, 10000);

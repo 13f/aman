@@ -132,6 +132,85 @@
     color: #555;
   }
 
+  .wd-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .wd-assign-btn {
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid #6366f1;
+    background: transparent;
+    color: #6366f1;
+  }
+
+  .wd-assign-btn:hover {
+    background: rgba(99, 102, 241, 0.15);
+  }
+
+  .wd-assign-panel {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .wd-assign-select {
+    padding: 4px 8px;
+    background: #0b0d13;
+    border: 1px solid #2a2d3a;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-size: 11px;
+    max-width: 160px;
+  }
+
+  .wd-assign-confirm {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid #6366f1;
+    background: #6366f1;
+    color: #fff;
+  }
+
+  .wd-assign-confirm:hover {
+    background: #4f46e5;
+  }
+
+  .wd-assign-cancel {
+    background: none;
+    border: none;
+    color: #666;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+  }
+
+  .wd-assign-cancel:hover {
+    color: #e0e0e0;
+  }
+
+  .wd-assignee {
+    font-size: 11px;
+    color: #555;
+    margin-left: 8px;
+  }
+
+  .wd-assignee.assigned {
+    color: #818cf8;
+  }
+
   .wd-close {
     background: none;
     border: none;
@@ -418,8 +497,17 @@
         <h3 class="wd-title" id="wdTitle"></h3>
         <span class="wd-stage-badge" id="wdStageBadge"></span>
         <span class="wd-meta" id="wdMeta"></span>
+        <span class="wd-assignee" id="wdAssignee"></span>
       </div>
-      <button class="wd-close" onclick="closeWorkDetail()">&times;</button>
+      <div class="wd-header-actions">
+        <div class="wd-assign-panel" id="wdAssignPanel" style="display:none;">
+          <select class="wd-assign-select" id="wdAssignSelect"></select>
+          <button class="wd-assign-confirm" onclick="confirmAssign()">Assign</button>
+          <button class="wd-assign-cancel" onclick="cancelAssign()">&times;</button>
+        </div>
+        <button class="wd-assign-btn" id="wdAssignBtn" onclick="openAssign()">Assign</button>
+        <button class="wd-close" onclick="closeWorkDetail()">&times;</button>
+      </div>
     </div>
     <div class="wd-messages" id="wdMessages">
       <div class="wd-empty">Loading work context...</div>
@@ -557,8 +645,16 @@ function openWorkDetail(workId) {
   document.getElementById("wdTitle").textContent = _detailWork.title;
   document.getElementById("wdStageBadge").textContent = stage ? stage.name : _detailWork.current_stage;
   document.getElementById("wdMeta").textContent = (_detailWork.priority || "normal") +
-    (_detailWork.assignee ? " · " + _detailWork.assignee : "") +
     " · created " + (_detailWork.created_at || "").slice(0, 10);
+  var ae = document.getElementById("wdAssignee");
+  if (_detailWork.assignee) {
+    ae.textContent = "Assigned to " + _detailWork.assignee;
+    ae.className = "wd-assignee assigned";
+  } else {
+    ae.textContent = "";
+    ae.className = "wd-assignee";
+  }
+  cancelAssign();
   document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">Loading work context...</div>';
   // Populate stage dropdown
   var sel = document.getElementById("wdStageSelect");
@@ -717,6 +813,54 @@ function moveWorkFromDetail() {
     closeWorkDetail();
     moveWorkToStage(wid, document.getElementById("wdStageSelect").value);
   }
+}
+
+async function openAssign() {
+  document.getElementById("wdAssignPanel").style.display = "flex";
+  document.getElementById("wdAssignBtn").style.display = "none";
+  var sel = document.getElementById("wdAssignSelect");
+  sel.innerHTML = '<option value="">Loading agents...</option>';
+  try {
+    var r = await fetch(BASE + "/agents");
+    var agents = await r.json();
+    if (!Array.isArray(agents) || agents.length === 0) {
+      sel.innerHTML = '<option value="">No agents available</option>';
+      return;
+    }
+    var opts = '<option value="">Select agent...</option>';
+    for (var i = 0; i < agents.length; i++) {
+      var a = agents[i];
+      var name = a.name || a.id || a.agent_id || ("Agent " + i);
+      var id = a.id || a.agent_id || name;
+      opts += '<option value="' + esc(id) + '">' + esc(name) + '</option>';
+    }
+    sel.innerHTML = opts;
+  } catch(e) {
+    sel.innerHTML = '<option value="">Failed to load agents</option>';
+    console.error(e);
+  }
+}
+
+function cancelAssign() {
+  document.getElementById("wdAssignPanel").style.display = "none";
+  document.getElementById("wdAssignBtn").style.display = "";
+}
+
+async function confirmAssign() {
+  var agentId = document.getElementById("wdAssignSelect").value;
+  if (!agentId || !_detailWorkId) return;
+  try {
+    var r = await fetch(BASE + "/works/" + _detailWorkId + "/assign", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({agent_id: agentId, stage_id: _detailWork ? _detailWork.current_stage : "", reason: "Manual assignment from kanban"})
+    });
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Assign failed: " + (e.error || r.statusText), "error"); return; }
+    flash("Assigned to " + agentId, "success");
+    cancelAssign();
+    load(); // Refresh board and close modal
+    closeWorkDetail();
+  } catch(e) { flash("Network error: " + e.message, "error"); }
 }
 
 async function moveWorkToStage(workId, targetStage) {

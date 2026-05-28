@@ -1127,7 +1127,6 @@ impl AgentRuntimeBuilder {
             self_bridge,
             sse_broadcast: sse_state,
         });
-        super::sse::start_sse_tasks(&runtime);
         Ok(runtime)
     }
 }

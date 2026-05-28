@@ -75,15 +75,35 @@ pub(crate) fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
         }
     });
 
-    // Task B — periodic snapshots
-    let snapshot_tx = tx;
+    // Task B — periodic snapshots (metrics, agent states, notifications every 2s).
+    let snapshot_tx = tx.clone();
     let snapshot_runtime = Arc::clone(runtime);
     tokio::spawn(async move {
+        // Emit first snapshot immediately so the UI sees state on connect.
+        emit_snapshots(&snapshot_runtime, &snapshot_tx).await;
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             emit_snapshots(&snapshot_runtime, &snapshot_tx).await;
+        }
+    });
+
+    // Task C — runtime:updated at 1s (faster, per previous polling behaviour).
+    let runtime_tx = tx;
+    let runtime_clone = Arc::clone(runtime);
+    tokio::spawn(async move {
+        loop {
+            let rt = serde_json::json!({
+                "phase": runtime_clone.phase() as u8,
+                "ready": runtime_clone.is_ready(),
+                "live": runtime_clone.is_live(),
+            });
+            let _ = runtime_tx.send(SseMessage {
+                event_type: "runtime:updated".into(),
+                payload: rt,
+            });
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
 }
@@ -110,17 +130,6 @@ impl event_bus::EventHandler for SseBusHandler {
 // ── Snapshot emitters ─────────────────────────────────────────────────────
 
 async fn emit_snapshots(runtime: &AgentRuntime, tx: &broadcast::Sender<SseMessage>) {
-    // runtime:updated
-    let rt = serde_json::json!({
-        "phase": runtime.phase() as u8,
-        "ready": runtime.is_ready(),
-        "live": runtime.is_live(),
-    });
-    let _ = tx.send(SseMessage {
-        event_type: "runtime:updated".into(),
-        payload: rt,
-    });
-
     // metrics:updated
     let metrics = metrics_snapshot(runtime).await;
     let _ = tx.send(SseMessage {

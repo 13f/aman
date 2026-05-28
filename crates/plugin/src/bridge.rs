@@ -579,8 +579,8 @@ mod tests {
     #[test]
     fn route_spec_deserialization() {
         let json = serde_json::json!([
-            {"method": "get", "path": "/team/{team_id}/tasks"},
-            {"method": "POST", "path": "/team/{team_id}/tasks/create"},
+            {"method": "get", "path": "/team/{team_id}/works"},
+            {"method": "POST", "path": "/team/{team_id}/works/create"},
         ]);
         let routes: Vec<RouteSpec> = serde_json::from_value(json).unwrap();
         assert_eq!(routes.len(), 2);

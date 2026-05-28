@@ -1001,6 +1001,12 @@ def _handle_create_work(project_key: str, body: dict) -> dict:
     proj = _projects.get(project_key, {}).get("config", {})
     initial_stage = proj.get("initial_stage", "")
 
+    tags = body.get("tags", [])
+    if isinstance(tags, list):
+        tags = json.dumps(tags, ensure_ascii=False)
+    else:
+        tags = "[]"
+
     work = {
         "id": f"work-{int(time.time() * 1000)}",
         "title": title,
@@ -1009,6 +1015,7 @@ def _handle_create_work(project_key: str, body: dict) -> dict:
         "current_stage": initial_stage,
         "source_type": "manual",
         "creator": body.get("creator", ""),
+        "tags": tags,
     }
 
     # Persist to the project database

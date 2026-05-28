@@ -15,6 +15,7 @@
       "files": [
         "team/plugin.yaml",
         "team/main.py",
+        "team/context.py",
         "team/templates/team-index.html",
         "team/templates/project-kanban.html",
         "team/templates/team-setup.html"

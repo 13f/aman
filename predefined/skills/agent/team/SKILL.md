@@ -15,6 +15,13 @@ triggers:
   - "create a ticket"
   - "file this as a task"
   - "记得把这个记下来"
+  - "增加任务"
+  - "创建任务"
+  - "添加任务"
+  - "新建任务"
+  - "加一个任务"
+  - "记录任务"
+  - "登记任务"
 metadata:
   triggers: "create work item, submit task, track this, add to kanban, create a ticket, file this as a task"
 ---
@@ -82,6 +89,7 @@ Content-Type: application/json
   "title": "Fix event-bus backpressure OOM risk",
   "description": "The backpressure thresholds in src/event-bus/backpressure.rs are too high...",
   "priority": "normal",
+  "tags": ["bug", "performance"],
   "creator": "agent-id-here"
 }
 ```
@@ -91,6 +99,7 @@ Content-Type: application/json
 | `title` | string | **yes** | One-line summary |
 | `description` | string | no | Full context, reproduction steps, constraints |
 | `priority` | string | no | `low` / `normal` / `high` / `critical` (default: `normal`) |
+| `tags` | string[] | no | Labels for categorization (e.g., `["bug", "performance"]`). |
 | `creator` | string | no | Your agent ID. If omitted, the work has no creator. |
 
 Response (201):
@@ -101,6 +110,7 @@ Response (201):
   "description": "...",
   "current_stage": "backlog",
   "priority": "normal",
+  "tags": ["bug", "performance"],
   "source_type": "manual",
   "creator": "agent-id-here"
 }
@@ -243,7 +253,7 @@ re-reading the entire conversation. Structure:
 3. **Vague titles.** "Improve the thing" is useless an hour later. A different
    agent reading the board should understand the scope from the title alone.
 
-4. **Forgetting to set `creator`. Without it, the work has no creator and** Without it, the work has no creator and
+4. **Forgetting to set `creator`.** Without it, the work has no creator and
    loses the connection to the conversation that spawned it.
 
 5. **Including the solution in the title.** "Replace HashMap with BTreeMap

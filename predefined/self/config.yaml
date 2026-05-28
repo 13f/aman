@@ -1,0 +1,42 @@
+name: "self"
+version: "0.1.0"
+description: "Agent self-iteration modules — prompt builders, decision logic, memory extraction, and evolution infrastructure"
+isolation: subprocess
+runtime: python3
+min_version: ">=3.11"
+entrypoint: null
+lifecycle:
+  auto_start: false
+
+modules:
+  prompts:
+    description: "Prompt template builders (soul, skills, tools, reflection)"
+    replaces:
+      - crates/soul/src/lib.rs          # Soul::to_system_prompt()
+      - crates/skill/src/formatting.rs  # build_skills_system_prompt()
+      - crates/core/src/prompt.rs       # DefaultPromptPipeline
+      - crates/gateway/src/runtime/reflection.rs  # extraction_prompt()
+    files:
+      - prompts/soul_builder.py
+      - prompts/skills_builder.py
+      - prompts/tools_builder.py
+      - prompts/reflection.py
+
+  decisions:
+    description: "Skill routing and complexity assessment"
+    replaces:
+      - crates/skill/src/execution.rs   # parse_skill_command(), match_skill_prefix()
+    files:
+      - decisions/router.py
+      - decisions/complexity.py
+
+  memory:
+    description: "Memory extraction strategies and organization"
+    files:
+      - memory/extraction.py
+
+  evolution:
+    description: "Self-improvement infrastructure (new capability, no Rust equivalent)"
+    files:
+      - evolution/mutator.py
+      - evolution/auditor.py

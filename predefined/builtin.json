@@ -5,5 +5,59 @@
   "configs": [
     "cards.json",
     "agents/code-agents.json"
-  ]
+  ],
+  "self": {
+    "version": 1,
+    "enabled": false,
+    "modules": {
+      "prompts": {
+        "description": "Prompt template builders",
+        "replaces": [
+          "crates/soul/src/lib.rs::Soul::to_system_prompt",
+          "crates/skill/src/formatting.rs::build_skills_system_prompt",
+          "crates/core/src/prompt.rs::DefaultPromptPipeline",
+          "crates/gateway/src/runtime/reflection.rs::extraction_prompt"
+        ],
+        "files": [
+          "self/prompts/__init__.py",
+          "self/prompts/soul_builder.py",
+          "self/prompts/skills_builder.py",
+          "self/prompts/tools_builder.py",
+          "self/prompts/reflection.py"
+        ]
+      },
+      "decisions": {
+        "description": "Skill routing and complexity assessment",
+        "replaces": [
+          "crates/skill/src/execution.rs::parse_skill_command",
+          "crates/skill/src/execution.rs::match_skill_prefix",
+          "SOUL.md Decision Protocol Step 2 (complexity table)"
+        ],
+        "files": [
+          "self/decisions/__init__.py",
+          "self/decisions/router.py",
+          "self/decisions/complexity.py"
+        ]
+      },
+      "memory": {
+        "description": "Memory extraction strategies",
+        "files": [
+          "self/memory/__init__.py",
+          "self/memory/extraction.py"
+        ]
+      },
+      "evolution": {
+        "description": "Self-improvement infrastructure (new capability)",
+        "files": [
+          "self/evolution/__init__.py",
+          "self/evolution/mutator.py",
+          "self/evolution/auditor.py"
+        ]
+      }
+    },
+    "files": [
+      "self/__init__.py",
+      "self/config.yaml"
+    ]
+  }
 }

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>$project_name — Kanban</title>
+<script src="/api/v1/team/static/chat-input.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -285,37 +286,26 @@
 
   .wd-input-area {
     display: flex;
+    flex-direction: column;
     gap: 8px;
     padding: 12px 20px;
     border-top: 1px solid #1e2030;
     background: #0f1119;
     flex-shrink: 0;
-  }
-
-  .wd-input-area textarea {
-    flex: 1;
-    padding: 8px 12px;
-    background: #0b0d13;
-    border: 1px solid #2a2d3a;
-    border-radius: 6px;
-    color: #e0e0e0;
-    font-size: 13px;
-    font-family: inherit;
-    resize: none;
-    min-height: 36px;
-    max-height: 100px;
-    line-height: 1.4;
-  }
-
-  .wd-input-area textarea:focus {
-    outline: none;
-    border-color: #6366f1;
+    --chat-input-bg: #0b0d13;
+    --chat-input-fg: #e0e0e0;
+    --chat-input-border: #2a2d3a;
+    --chat-input-accent: #6366f1;
+    --chat-input-accent-hover: #4f46e5;
+    --chat-input-red: #ef4444;
+    --chat-input-yellow: #eab308;
+    --chat-input-disabled-bg: #1a1d2b;
   }
 
   .wd-input-actions {
     display: flex;
     gap: 6px;
-    align-items: flex-end;
+    align-items: center;
   }
 
   .wd-stage-select {
@@ -350,27 +340,6 @@
     color: #e0e0e0;
   }
 
-  .wd-comment-btn {
-    padding: 8px 16px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    white-space: nowrap;
-    background: #6366f1;
-    border: 1px solid #6366f1;
-    color: #fff;
-  }
-
-  .wd-comment-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .wd-comment-btn:hover:not(:disabled) {
-    background: #4f46e5;
-    border-color: #4f46e5;
-  }
 </style>
 </head>
 <body>
@@ -478,13 +447,9 @@
       <div class="wd-empty">Loading work context...</div>
     </div>
     <div class="wd-input-area">
-      <textarea id="wdCommentInput" placeholder="Add a comment... (Enter to send)" rows="1"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();addWorkComment();}"
-        oninput="document.getElementById('wdCommentBtn').disabled=!this.value.trim()"
-      ></textarea>
+      <chat-input id="wdCommentInput" placeholder="Add a comment... (Ctrl+Enter to send)" rows="1" buttontext="Comment"></chat-input>
       <div class="wd-input-actions">
         <select class="wd-stage-select" id="wdStageSelect" onchange="stageSelectChanged()"></select>
-        <button class="wd-comment-btn" id="wdCommentBtn" onclick="addWorkComment()" disabled>Comment</button>
       </div>
     </div>
   </div>
@@ -630,11 +595,11 @@ function openWorkDetail(workId) {
   sel.innerHTML = opts;
   sel.disabled = false;
 
-  document.getElementById("wdCommentInput").value = "";
-  document.getElementById("wdCommentBtn").disabled = true;
+  var ci = document.getElementById("wdCommentInput");
+  ci.value = "";
   document.getElementById("workDetailModal").classList.add("open");
   loadWorkContext(workId);
-  setTimeout(function(){ document.getElementById("wdCommentInput").focus(); }, 150);
+  setTimeout(function(){ ci.focus(); }, 150);
 }
 
 function closeWorkDetail() {
@@ -747,21 +712,16 @@ async function addWorkComment() {
   var input = document.getElementById("wdCommentInput");
   var content = input.value.trim();
   if (!content || !_detailWorkId) return;
-  var btn = document.getElementById("wdCommentBtn");
-  btn.disabled = true;
-  btn.textContent = "...";
   try {
     var r = await fetch(BASE + "/works/" + _detailWorkId + "/comment", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({content: content, author: "User"})
     });
-    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Comment failed: " + (e.error || r.statusText), "error"); btn.disabled = false; btn.textContent = "Comment"; return; }
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Comment failed: " + (e.error || r.statusText), "error"); return; }
     input.value = "";
     loadWorkContext(_detailWorkId);
   } catch(e) { flash("Network error: " + e.message, "error"); }
-  btn.disabled = false;
-  btn.textContent = "Comment";
 }
 
 function stageSelectChanged() {
@@ -1078,6 +1038,12 @@ document.addEventListener("keydown", function(e) {
     }
   }
 });
+
+// Wire chat-input send event to comment function
+(function() {
+  var ci = document.getElementById("wdCommentInput");
+  if (ci) ci.addEventListener("send", function() { addWorkComment(); });
+})();
 
 load();
 setInterval(load, 10000);

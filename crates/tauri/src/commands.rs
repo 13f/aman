@@ -1916,3 +1916,11 @@ fn default_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".aman").join("config.yaml")
 }
+
+/// Returns the chat-input web component JS source (embedded at compile time
+/// from predefined/plugins/team/static/chat-input.js).
+#[tauri::command]
+pub fn get_chat_input_js() -> Result<String, String> {
+    const JS: &str = include_str!("../../../predefined/plugins/team/static/chat-input.js");
+    Ok(JS.to_string())
+}

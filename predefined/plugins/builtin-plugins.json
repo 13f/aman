@@ -18,7 +18,8 @@
         "team/context.py",
         "team/templates/team-index.html",
         "team/templates/project-kanban.html",
-        "team/templates/team-setup.html"
+        "team/templates/team-setup.html",
+        "team/static/chat-input.js"
       ]
     }
   ]

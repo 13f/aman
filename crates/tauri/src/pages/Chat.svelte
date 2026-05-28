@@ -4,7 +4,6 @@
   import { onMount, onDestroy } from "svelte";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
-  import SendButton from "../components/SendButton.svelte";
   import { marked } from "marked";
 
   marked.setOptions({ gfm: true, breaks: true });
@@ -77,6 +76,7 @@
   let rateLimitCountdown = $state(0);
   let unlisteners: (() => void)[] = [];
   let messageAreaEl: HTMLDivElement | undefined = $state();
+  let chatInputRef: HTMLElement | null = $state(null);
   let autoScroll = $state(true);
   let chatCapabilityAvailable = $state(true);
   let soulDescription = $state("");
@@ -1446,8 +1446,8 @@
     inputText = "";
   }
 
-  async function sendMessage() {
-    const text = inputText.trim();
+  async function sendMessage(text?: string) {
+    text = (text ?? inputText).trim();
     if (!text) return;
 
     if (text === "/stop") {
@@ -1457,6 +1457,7 @@
 
     closeSkillPicker();
     inputText = "";
+    if (chatInputRef) chatInputRef.value = "";
     const tempId = crypto.randomUUID();
 
     const userMsg: Message = {
@@ -1494,53 +1495,78 @@
     }
   }
 
-  function handleKeydown(e: KeyboardEvent) {
-    // Skill picker keyboard navigation
-    if (showSkillPicker) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        skillPickerIndex = Math.min(skillPickerIndex + 1, skillPickerResults.length - 1);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        skillPickerIndex = Math.max(skillPickerIndex - 1, 0);
-        return;
-      }
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        if (skillPickerResults[skillPickerIndex]) {
-          applySkillPickerSelection(skillPickerResults[skillPickerIndex].name);
-        }
-        return;
-      }
-      if (e.key === "Tab") {
-        e.preventDefault();
-        if (skillPickerResults[skillPickerIndex]) {
-          applySkillPickerSelection(skillPickerResults[skillPickerIndex].name);
-        }
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeSkillPicker();
-        return;
-      }
-    }
-
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+  function handleChatInputKeydown(e: KeyboardEvent) {
+    // Skill picker keyboard navigation (keydown on <chat-input>)
+    if (!showSkillPicker) return;
+    if (e.key === "ArrowDown") {
       e.preventDefault();
-      sendMessage();
+      skillPickerIndex = Math.min(skillPickerIndex + 1, skillPickerResults.length - 1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      skillPickerIndex = Math.max(skillPickerIndex - 1, 0);
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (skillPickerResults[skillPickerIndex]) {
+        applySkillPickerSelection(skillPickerResults[skillPickerIndex].name);
+      }
+      return;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (skillPickerResults[skillPickerIndex]) {
+        applySkillPickerSelection(skillPickerResults[skillPickerIndex].name);
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeSkillPicker();
+      return;
     }
   }
 
   function handleGlobalKeydown(e: KeyboardEvent) {
-    // Ctrl+Enter or Meta+Enter: send message
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !e.isComposing) {
+    // Ctrl+Enter or Meta+Enter: send message (if not already handled by <chat-input>)
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !e.isComposing && !e.defaultPrevented) {
       e.preventDefault();
       sendMessage();
     }
   }
+
+  // Wire <chat-input> web component events
+  $effect(() => {
+    const el = chatInputRef;
+    if (!el) return;
+
+    function onSend(e: Event) {
+      const text = (e as CustomEvent).detail?.text || "";
+      sendMessage(text);
+    }
+    function onStop() {
+      stopGeneration();
+    }
+    function onInput(e: Event) {
+      const text = (e as CustomEvent).detail?.text || "";
+      inputText = text;
+      updateSkillPicker();
+    }
+
+    el.addEventListener("send", onSend);
+    el.addEventListener("stop", onStop);
+    el.addEventListener("input", onInput);
+    el.addEventListener("keydown", handleChatInputKeydown);
+
+    return () => {
+      el.removeEventListener("send", onSend);
+      el.removeEventListener("stop", onStop);
+      el.removeEventListener("input", onInput);
+      el.removeEventListener("keydown", handleChatInputKeydown);
+    };
+  });
 
   // Apply prefill text from external navigation (e.g., Finance skill card).
   // Uses a sequence counter so we can detect a fresh prefill even after
@@ -1551,14 +1577,10 @@
     if (prefillInput && prefillSeq !== lastPrefillSeq && activeSessionId) {
       inputText = prefillInput;
       lastPrefillSeq = prefillSeq;
-      // Focus the textarea and place cursor at end of prefill text
-      requestAnimationFrame(() => {
-        const ta = document.querySelector(".input-area textarea") as HTMLTextAreaElement;
-        if (ta) {
-          ta.focus();
-          ta.setSelectionRange(ta.value.length, ta.value.length);
-        }
-      });
+      if (chatInputRef) {
+        chatInputRef.value = prefillInput;
+        chatInputRef.focus();
+      }
     }
   });
 
@@ -1834,20 +1856,22 @@
 
     <!-- Input Area -->
     <div class="input-area">
-      <textarea
-        bind:value={inputText}
-        onkeydown={handleKeydown}
-        oninput={updateSkillPicker}
+      <chat-input
+        bind:this={chatInputRef}
         placeholder={!chatCapabilityAvailable
           ? "Chat capability unavailable..."
           : !activeAgentHasProvider
             ? "Configure a provider for this agent first..."
             : rateLimitCountdown > 0
               ? `Rate limited — wait ${rateLimitCountdown}s...`
-              : "Type a message... (Enter to send, Shift+Enter for newline)"}
+              : "Type a message... (Ctrl+Enter to send)"}
         rows="1"
+        buttontext="Send"
+        stoptext="Stop"
         disabled={isProcessing || rateLimitCountdown > 0 || !chatCapabilityAvailable || !activeAgentHasProvider}
-      ></textarea>
+        processing={isProcessing ? "" : undefined}
+        ratelimit={rateLimitCountdown > 0 ? rateLimitCountdown : undefined}
+      ></chat-input>
       {#if showSkillPicker}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="skill-picker" onkeydown={(e: KeyboardEvent) => e.stopPropagation()}>
@@ -1868,14 +1892,6 @@
           {/if}
         </div>
       {/if}
-      <SendButton
-        buttonText="Send"
-        isProcessing={isProcessing}
-        rateLimitCountdown={rateLimitCountdown}
-        disabled={!inputText.trim()}
-        onsend={sendMessage}
-        onstop={stopGeneration}
-      />
     </div>
   </div>
 

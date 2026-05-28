@@ -1715,6 +1715,15 @@ def _handle_boards_import(project_key: str, body: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+_MIME = {
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".woff2": "font/woff2",
+}
 
 
 def _load_template(name: str) -> Template:
@@ -1952,6 +1961,25 @@ def handle_route(params: Any) -> dict:
 
     # Normalize path
     clean = path.removeprefix("/api/v1")
+
+    # ── Static files ──────────────────────────────────────────────
+    m_static = re.match(r"/team/static/(.+)", clean)
+    if m_static and method == "GET":
+        filename = m_static.group(1)
+        # Prevent directory traversal
+        if ".." in filename or "/" in filename or "\\" in filename:
+            return {"status": 400, "body": "bad filename"}
+        filepath = os.path.join(_STATIC_DIR, filename)
+        if not os.path.isfile(filepath):
+            return {"status": 404, "body": "not found"}
+        ext = os.path.splitext(filename)[1].lower()
+        mime = _MIME.get(ext, "application/octet-stream")
+        try:
+            with open(filepath, "r") as f:
+                content = f.read()
+            return {"status": 200, "headers": {"content-type": mime}, "body": content}
+        except Exception:
+            return {"status": 500, "body": "failed to read file"}
 
     # ── Setup wizard (HTML page) ─────────────────────────────────────
     if method == "GET" and clean in ("/team/setup", "/team/setup/"):

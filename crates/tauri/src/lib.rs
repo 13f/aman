@@ -225,6 +225,8 @@ pub fn run() {
             commands::remove_finance_card,
             // Plugin UI pages
             commands::get_plugin_pages,
+            // Embedded web components
+            commands::get_chat_input_js,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Set the window/dock icon explicitly for dev mode.

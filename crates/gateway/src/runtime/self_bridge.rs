@@ -8,6 +8,8 @@
 //! Python-first with transparent Rust fallback.
 
 use config::SelfConfig;
+use kernel::prompt::PromptPipeline;
+use kernel::react::{SoulSnapshot, ToolDescriptor};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, warn};
@@ -113,6 +115,14 @@ impl SelfBridge {
 
     // ── Internal ─────────────────────────────────────────────────────
 
+    /// Build a `PromptPipeline` implementation backed by this bridge.
+    #[must_use]
+    pub fn prompt_pipeline(&self) -> SelfBridgePromptPipeline {
+        SelfBridgePromptPipeline { bridge: self.clone() }
+    }
+
+    // ── Internal ─────────────────────────────────────────────────────
+
     fn call(&self, method: &str, args: &serde_json::Value) -> Option<String> {
         if !self.enabled {
             return None;
@@ -159,5 +169,75 @@ impl SelfBridge {
                 None
             }
         }
+    }
+}
+
+/// [`PromptPipeline`] backed by the Python self-module bridge.
+///
+/// Replaces [`kernel::prompt::DefaultPromptPipeline`]. On bridge failure,
+/// falls back to a minimal inline assembly (soul + date + tools list).
+pub struct SelfBridgePromptPipeline {
+    bridge: SelfBridge,
+}
+
+#[async_trait::async_trait]
+impl PromptPipeline for SelfBridgePromptPipeline {
+    async fn build_system_prompt(
+        &self,
+        soul: &SoulSnapshot,
+        tools: &[ToolDescriptor],
+        memory: Option<&str>,
+    ) -> String {
+        let tools_json = serde_json::to_value(tools).unwrap_or_default();
+        if let Some(prompt) = self.bridge.build_full_prompt(
+            &soul.system_prompt,
+            &tools_json,
+            memory,
+        ) {
+            return prompt;
+        }
+        // Minimal inline fallback when the Python bridge is unavailable.
+        // Does NOT call any replaced Rust module (soul, formatting, etc.).
+        let mut parts: Vec<String> = Vec::new();
+        parts.push(soul.system_prompt.clone());
+        parts.push(format!("Current date: {}", kernel::prompt::current_date_string()));
+        if !tools.is_empty() {
+            let tool_list: Vec<String> = tools
+                .iter()
+                .map(|t| format!("- {}: {} (parameters: {})", t.name, t.description, t.parameters))
+                .collect();
+            parts.push(format!(
+                "\n## Available Tools\nYou can use these tools when responding:\n{}",
+                tool_list.join("\n")
+            ));
+            parts.push(
+                "\n## File Operations (safe, no shell)\n\
+                 - read(path): read file contents\n\
+                 - write(path, content): write file (auto-creates parent dirs)\n\
+                 - edit(file_path, old_string, new_string): replace exact matching text in file\n\
+                 - list(path): list directory entries\n\
+                 - find(pattern, base): search files by name (recursive, case-insensitive)\n\
+                 - grep(pattern, path, glob?): search file contents via ripgrep (multi-threaded)"
+                    .to_owned(),
+            );
+            parts.push(
+                "\nWhen you need to use a tool, respond with a JSON tool call in the format:\
+                 \n```tool_call\n{\"name\": \"tool_name\", \"arguments\": {...}}\n```"
+                    .to_owned(),
+            );
+            parts.push(
+                "\nImportant: If the user asks about current events, recent data, prices, dates, \
+                 or any time-sensitive information, use the web_search tool first rather than \
+                 relying on your training data. For example, search for \"recent\" or \"today\" \
+                 queries instead of answering from memory."
+                    .to_owned(),
+            );
+        }
+        if let Some(mem) = memory
+            && !mem.is_empty()
+        {
+            parts.push(format!("\n## Retrieved Memories\n{mem}"));
+        }
+        parts.join("\n\n")
     }
 }

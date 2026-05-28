@@ -2944,7 +2944,9 @@ async fn chat_session_send(
     // When a skill is invoked directly by the user, load the full SKILL.md body and
     // inject it into the message so the LLM can follow the methodology immediately
     // without a separate read_skill tool call.
-    let maybe_skill = skill::execution::parse_skill_command(&text);
+    // Phase 3: Python self-module bridge for command parsing.
+    let self_bridge = runtime.self_bridge().clone();
+    let maybe_skill = self_bridge.parse_skill_command(&text);
     let (effective_text, skill_context) = match maybe_skill {
         Some((skill_name, user_input)) => {
             match skill::execution::prepare_skill_execution(
@@ -2966,7 +2968,7 @@ async fn chat_session_send(
         None => (text.clone(), None),
     };
 
-    // Mark agent as actively chatting as soon as user sends a message.
+    // Mark agent as actively chatting — will be reset by idle system when bus empties.
     let chat_agent_id = instance
         .data
         .get("agent_id")
@@ -2976,24 +2978,21 @@ async fn chat_session_send(
 
     // Build system prompt: soul identity + skill index.
     // Cached per session via SessionManager so LLM prompt caching stays effective.
-    // Phase 2: Python self-module bridge with Rust fallback.
+    // Phase 3: Python self-module bridge only (no Rust fallback).
     let combined_prompt = {
         let llm_skills = runtime.llm_skills();
         let self_bridge = runtime.self_bridge().clone();
         runtime.session_manager().get_system_prompt(&id, || {
-            // Try Python bridge first (Phase 2).
             if let Some(soul_runtime) = runtime.soul_runtime() {
                 let soul = soul_runtime.current_soul();
-                // Build soul prompt via Python, or fall back to Rust.
                 let soul_prompt = self_bridge
                     .build_soul_prompt(&soul.raw)
-                    .unwrap_or_else(|| soul.to_system_prompt());
+                    .unwrap_or_else(|| soul.raw.clone());
 
-                // Build skills prompt via Python, or fall back to Rust.
                 let skills_json = serde_json::to_value(&*llm_skills).unwrap_or_default();
                 let skills_prompt = self_bridge
                     .build_skills_prompt(&skills_json)
-                    .unwrap_or_else(|| skill::formatting::build_skills_system_prompt(&llm_skills));
+                    .unwrap_or_default();
 
                 if skills_prompt.is_empty() {
                     soul_prompt
@@ -3001,12 +3000,7 @@ async fn chat_session_send(
                     format!("{}{}", soul_prompt, skills_prompt)
                 }
             } else {
-                let skills_prompt = skill::formatting::build_skills_system_prompt(&llm_skills);
-                if skills_prompt.is_empty() {
-                    String::new()
-                } else {
-                    skills_prompt
-                }
+                String::new()
             }
         })
     };
@@ -3407,7 +3401,10 @@ async fn soul_system_prompt(State(runtime): State<Arc<AgentRuntime>>) -> Respons
         )
             .into_response();
     };
-    let prompt = soul.current_soul().to_system_prompt();
+    let soul = soul.current_soul();
+    let prompt = runtime.self_bridge()
+        .build_soul_prompt(&soul.raw)
+        .unwrap_or_else(|| soul.raw.clone());
     (StatusCode::OK, Json(json!({ "system_prompt": prompt }))).into_response()
 }
 

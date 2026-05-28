@@ -10,7 +10,6 @@ use kernel::llm::LlmProvider;
 use memory::{MemoryConfig, YantrikdbProvider};
 use memory_store::MemoryStorePlugin;
 use info_hub::InfoHubPlugin;
-use kernel::prompt::DefaultPromptPipeline;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
 use kernel::skill::Skill;
@@ -584,7 +583,7 @@ impl AgentRuntimeBuilder {
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
             Arc::clone(&bus),
-            Box::new(DefaultPromptPipeline),
+            Box::new(self_bridge.prompt_pipeline()),
             Box::new(InMemorySessionHistory::new()),
             Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
@@ -809,6 +808,7 @@ impl AgentRuntimeBuilder {
         struct MessageReceivedHandler {
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
+            self_bridge: super::self_bridge::SelfBridge,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for MessageReceivedHandler {
@@ -864,7 +864,10 @@ impl AgentRuntimeBuilder {
                         self.soul_runtime.as_ref()
                             .map(|sr| {
                                 let soul = sr.current_soul();
-                                kernel::react::SoulSnapshot::new(soul.name.clone(), soul.to_system_prompt())
+                                let prompt = self.self_bridge
+                                    .build_soul_prompt(&soul.raw)
+                                    .unwrap_or_else(|| soul.raw.clone());
+                                kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
                             })
                             .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""))
                     });
@@ -887,6 +890,7 @@ impl AgentRuntimeBuilder {
             Box::new(MessageReceivedHandler {
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
+                self_bridge: self_bridge.clone(),
             }),
         ));
 
@@ -929,6 +933,7 @@ impl AgentRuntimeBuilder {
         struct AgentMessageHandler {
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
+            self_bridge: super::self_bridge::SelfBridge,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for AgentMessageHandler {
@@ -950,11 +955,14 @@ impl AgentRuntimeBuilder {
                 };
                 let model = agent.descriptor.model.clone();
 
-                // Build SoulSnapshot from current soul.
+                // Build SoulSnapshot from current soul (via Python self bridge).
                 let soul_snapshot = self.soul_runtime.as_ref()
                     .map(|sr| {
                         let soul = sr.current_soul();
-                        kernel::react::SoulSnapshot::new(soul.name.clone(), soul.to_system_prompt())
+                        let prompt = self.self_bridge
+                            .build_soul_prompt(&soul.raw)
+                            .unwrap_or_else(|| soul.raw.clone());
+                        kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
                     })
                     .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""));
 
@@ -986,6 +994,7 @@ impl AgentRuntimeBuilder {
             Box::new(AgentMessageHandler {
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
+                self_bridge: self_bridge.clone(),
             }),
         ));
 

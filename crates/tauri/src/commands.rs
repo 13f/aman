@@ -12,7 +12,7 @@ use crate::models::{
 use secret::{KeychainBackend, SecretBackend};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use tauri::State;
+use tauri::{Emitter, State};
 
 /// Helper to get the gateway client from state, failing with a clear message if disconnected.
 async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, String> {
@@ -1675,6 +1675,7 @@ pub async fn get_agent_soul(key: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn select_agent(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     key: String,
 ) -> Result<String, String> {
@@ -1695,6 +1696,11 @@ pub async fn select_agent(
 
     let mut active = state.active_agent_key.lock().await;
     *active = Some(key.clone());
+    drop(active);
+
+    // Notify the UI so sidebar widgets can refresh.
+    let _ = app.emit("agent:selected", serde_json::json!({ "key": key }));
+
     Ok(format!("Agent '{key}' 已激活"))
 }
 

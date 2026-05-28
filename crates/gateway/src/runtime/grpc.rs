@@ -988,7 +988,12 @@ impl Aman for AmanServiceImpl {
         let prompt = self
             .runtime
             .soul_runtime()
-            .map(|sr| sr.current_soul().to_system_prompt())
+            .map(|sr| {
+                let soul = sr.current_soul();
+                self.runtime.self_bridge()
+                    .build_soul_prompt(&soul.raw)
+                    .unwrap_or_else(|| soul.raw.clone())
+            })
             .unwrap_or_default();
         Ok(Response::new(SoulSystemPromptResponse {
             data: json_bytes(&serde_json::json!({ "system_prompt": prompt })),

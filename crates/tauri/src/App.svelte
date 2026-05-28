@@ -180,6 +180,9 @@
     listen("shutdown:complete", () => {
       shutdownComplete = true;
     });
+    listen("agent:selected", () => {
+      refreshActiveAgent();
+    });
   });
 </script>
 

@@ -113,9 +113,9 @@ impl WorkSystem {
     /// agent event loop when a routed work event arrives on the local bus.
     pub async fn handle(&self, event: WorkEvent) -> WorkResult<()> {
         debug!(
-            agent_id = %self.agent_id,
-            event_kind = %event.kind(),
-            "WorkSystem::handle"
+            "WorkSystem::handle agent_id={} event_kind={}",
+            self.agent_id,
+            event.kind(),
         );
 
         match event {
@@ -128,9 +128,8 @@ impl WorkSystem {
                     let checkpoint = ctx.interrupt(&reason);
                     item_id = checkpoint.item_id;
                     info!(
-                        agent_id = %self.agent_id,
-                        ?checkpoint,
-                        "WorkSystem interrupted by {by_system}: {reason}",
+                        "WorkSystem interrupted by {by_system}: {reason} agent_id={} checkpoint={checkpoint:?}",
+                        self.agent_id,
                     );
                 }
                 self.transition_to(WorkState::Idle).await;
@@ -150,11 +149,8 @@ impl WorkSystem {
                 let source_str = source_name(&source);
 
                 info!(
-                    agent_id = %self.agent_id,
-                    %item_id,
-                    title = %item.title,
-                    source = %source_str,
-                    "WorkItemAssigned — enqueuing"
+                    "WorkItemAssigned — enqueuing agent_id={} item_id={} title={} source={}",
+                    self.agent_id, item_id, item.title, source_str,
                 );
 
                 self.record_trace(WorkTraceEvent::ItemReceived {
@@ -347,7 +343,7 @@ impl WorkSystem {
 
     /// Gracefully shut down: interrupt any in-progress work, clear state.
     pub async fn shutdown(&self) {
-        info!(agent_id = %self.agent_id, "WorkSystem shutting down");
+        info!("WorkSystem shutting down agent_id={}", self.agent_id);
         let event = WorkEvent::Interrupt {
             reason: "shutdown".into(),
             by_system: "core".into(),
@@ -406,11 +402,10 @@ impl WorkSystem {
             ctx.step_outputs.clear();
         }
 
+        let total_steps = self.ctx.lock().await.steps.len();
         info!(
-            agent_id = %self.agent_id,
-            %item_id,
-            total_steps = self.ctx.lock().await.steps.len(),
-            "WorkSystem starting item"
+            "WorkSystem starting item agent_id={} item_id={item_id} total_steps={total_steps}",
+            self.agent_id,
         );
 
         // Post first step event → bus becomes non-empty, Idle suppressed.

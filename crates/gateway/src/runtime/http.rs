@@ -2974,18 +2974,37 @@ async fn chat_session_send(
 
     // Build system prompt: soul identity + skill index.
     // Cached per session via SessionManager so LLM prompt caching stays effective.
+    // Phase 2: Python self-module bridge with Rust fallback.
     let combined_prompt = {
         let llm_skills = runtime.llm_skills();
+        let self_bridge = runtime.self_bridge().clone();
         runtime.session_manager().get_system_prompt(&id, || {
-            let soul_prompt = runtime
-                .soul_runtime()
-                .map(|sr| sr.current_soul().to_system_prompt())
-                .unwrap_or_default();
-            let skills_prompt = skill::formatting::build_skills_system_prompt(&llm_skills);
-            if skills_prompt.is_empty() {
-                soul_prompt
+            // Try Python bridge first (Phase 2).
+            if let Some(soul_runtime) = runtime.soul_runtime() {
+                let soul = soul_runtime.current_soul();
+                // Build soul prompt via Python, or fall back to Rust.
+                let soul_prompt = self_bridge
+                    .build_soul_prompt(&soul.raw)
+                    .unwrap_or_else(|| soul.to_system_prompt());
+
+                // Build skills prompt via Python, or fall back to Rust.
+                let skills_json = serde_json::to_value(&*llm_skills).unwrap_or_default();
+                let skills_prompt = self_bridge
+                    .build_skills_prompt(&skills_json)
+                    .unwrap_or_else(|| skill::formatting::build_skills_system_prompt(&llm_skills));
+
+                if skills_prompt.is_empty() {
+                    soul_prompt
+                } else {
+                    format!("{}{}", soul_prompt, skills_prompt)
+                }
             } else {
-                format!("{}{}", soul_prompt, skills_prompt)
+                let skills_prompt = skill::formatting::build_skills_system_prompt(&llm_skills);
+                if skills_prompt.is_empty() {
+                    String::new()
+                } else {
+                    skills_prompt
+                }
             }
         })
     };

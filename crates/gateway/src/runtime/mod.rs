@@ -25,6 +25,7 @@ mod skill_sync;
 mod plugin_sync;
 mod config_sync;
 mod agent_seed;
+mod self_bridge;
 mod soul_runtime;
 mod tracing_setup;
 mod stdio;

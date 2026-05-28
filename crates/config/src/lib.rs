@@ -394,6 +394,9 @@ pub struct AgentConfig {
     pub work: WorkConfig,
     #[serde(default)]
     pub compression: CompressionConfig,
+    /// Self-module configuration — Python prompt builders for agent self-evolution.
+    #[serde(default)]
+    pub self_module: SelfConfig,
 }
 
 /// Context compression configuration.
@@ -452,6 +455,38 @@ impl Default for CompressionConfig {
             dedup_tool_outputs: true,
             summarize_tool_results: true,
             truncate_tool_args: true,
+        }
+    }
+}
+
+/// Self-module configuration — controls the Python prompt-building bridge
+/// that replaces Rust prompt templates with agent-modifiable Python code.
+///
+/// ```yaml
+/// self_module:
+///   enabled: true
+///   python: python3
+///   bridge_script: predefined/self/bridge.py
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SelfConfig {
+    /// Enable the Python self-module bridge. When false, Rust prompt
+    /// builders are used exclusively. Default: true (Phase 2+).
+    pub enabled: bool,
+    /// Python interpreter to use. Default: "python3".
+    pub python: String,
+    /// Path to bridge.py relative to the predefined directory.
+    /// Default: "self/bridge.py"
+    pub bridge_script: String,
+}
+
+impl Default for SelfConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            python: "python3".to_owned(),
+            bridge_script: "self/bridge.py".to_owned(),
         }
     }
 }

@@ -8,7 +8,7 @@
   ],
   "self": {
     "version": 1,
-    "enabled": false,
+    "enabled": true,
     "modules": {
       "prompts": {
         "description": "Prompt template builders",

@@ -422,8 +422,25 @@ pub async fn session_extract_and_store(
     events: &[serde_json::Value],
     max_chars: usize,
 ) -> AmanResult<()> {
+    session_extract_and_store_with_prompt(
+        memory_llm, llm, memory, agent_id, session_id, events, max_chars, None,
+    )
+    .await
+}
+
+/// Run LLM extraction with an optional prompt override from the Python self-module bridge.
+pub async fn session_extract_and_store_with_prompt(
+    memory_llm: Option<&MemoryLlmConfig>,
+    llm: &Arc<dyn LlmProvider>,
+    memory: &Arc<dyn MemoryProvider>,
+    agent_id: &str,
+    session_id: &str,
+    events: &[serde_json::Value],
+    max_chars: usize,
+    extraction_prompt_override: Option<String>,
+) -> AmanResult<()> {
     let conversation = format_conversation(events, max_chars);
-    let system_prompt = extraction_prompt();
+    let system_prompt = extraction_prompt(extraction_prompt_override);
 
     let model = memory_llm
         .map(|c| c.model.as_str())
@@ -508,7 +525,13 @@ pub fn format_conversation(events: &[serde_json::Value], max_chars: usize) -> St
 }
 
 /// System prompt for session extraction.
-pub fn extraction_prompt() -> String {
+///
+/// When `override_prompt` is `Some`, uses the Python self-module bridge
+/// output (Phase 2+). Otherwise uses the hardcoded Rust default.
+pub fn extraction_prompt(override_prompt: Option<String>) -> String {
+    if let Some(prompt) = override_prompt.filter(|p| !p.is_empty()) {
+        return prompt;
+    }
     r#"You are a memory extraction assistant. Given a conversation log between a user and an AI agent, extract a structured JSON summary with these fields:
 
 - "intent": the user's primary goal in one sentence
@@ -521,6 +544,7 @@ pub fn extraction_prompt() -> String {
 Respond with ONLY valid JSON, no markdown or explanation."#
         .to_owned()
 }
+
 
 /// Scan event payloads for entity names suitable for trace records.
 ///

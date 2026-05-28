@@ -113,6 +113,7 @@ pub struct AgentRuntimeBuilder {
     startup_pause: Duration,
     soul_file: Option<PathBuf>,
     extra_plugins: Vec<plugin::PluginCandidate>,
+    predefined_dir: PathBuf,
 }
 
 impl AgentRuntimeBuilder {
@@ -126,6 +127,7 @@ impl AgentRuntimeBuilder {
             startup_pause: Duration::from_millis(0),
             soul_file: None,
             extra_plugins: vec![],
+            predefined_dir: PathBuf::from("predefined"),
         }
     }
 
@@ -159,6 +161,12 @@ impl AgentRuntimeBuilder {
         self
     }
 
+    #[must_use]
+    pub fn with_predefined_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.predefined_dir = dir.into();
+        self
+    }
+
     /// Add an extra plugin candidate to load alongside the built-in LLM plugin.
     /// Primarily used in tests to verify plugin lifecycle behavior.
     #[must_use]
@@ -180,6 +188,10 @@ impl AgentRuntimeBuilder {
         let audit = Arc::new(AuditLogger::new(2_000));
 
         let config = resolve_secrets_in_config(self.config, &self.runtime_dir, &audit)?;
+
+        // Extract self-module config before self.config is consumed.
+        let self_module_config = config.self_module.clone();
+        let predefined_dir = self.predefined_dir.clone();
 
         let inflight_pipelines = Arc::new(AtomicUsize::new(0));
         let inflight_skills = Arc::new(AtomicUsize::new(0));
@@ -263,6 +275,22 @@ impl AgentRuntimeBuilder {
         let aman_cfg = config::AmanConfig::from_default_path()
             .map_err(|e| tracing::warn!(error = %e, "failed to load config, using defaults"))
             .ok();
+
+        // ── Self-module bridge (Python prompt builders) ────────────
+        let self_bridge = if self_module_config.enabled {
+            let bridge = super::self_bridge::SelfBridge::new(
+                &self_module_config,
+                &predefined_dir,
+            );
+            tracing::info!(
+                python = %self_module_config.python,
+                script = %predefined_dir.join(&self_module_config.bridge_script).display(),
+                "SelfBridge: Python prompt builders enabled"
+            );
+            bridge
+        } else {
+            super::self_bridge::SelfBridge::disabled()
+        };
 
         // Load the built-in memory-store plugin (in-memory keyword-based provider).
         let memory_store_plugin = MemoryStorePlugin::new();
@@ -1095,6 +1123,7 @@ impl AgentRuntimeBuilder {
             agent_harness,
             session_manager,
             shutdown_notify: tokio::sync::Notify::new(),
+            self_bridge,
         }))
     }
 }
@@ -1449,6 +1478,8 @@ pub struct AgentRuntime {
     /// process after an HTTP-initiated shutdown (the signal handler path
     /// would otherwise never be reached).
     shutdown_notify: tokio::sync::Notify,
+    /// Python self-module bridge for prompt building (Phase 2+).
+    self_bridge: super::self_bridge::SelfBridge,
 }
 
 impl AgentRuntime {
@@ -1518,6 +1549,11 @@ impl AgentRuntime {
     #[must_use]
     pub fn session_manager(&self) -> &super::session::SessionManager {
         &self.session_manager
+    }
+
+    #[must_use]
+    pub fn self_bridge(&self) -> &super::self_bridge::SelfBridge {
+        &self.self_bridge
     }
 
     #[must_use]

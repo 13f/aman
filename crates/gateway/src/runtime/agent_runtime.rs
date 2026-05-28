@@ -1074,7 +1074,8 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
-        Ok(Arc::new(AgentRuntime {
+        let sse_state = super::sse::new_sse_state();
+        let runtime = Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,
             bind_addr: self.bind_addr,
@@ -1124,7 +1125,10 @@ impl AgentRuntimeBuilder {
             session_manager,
             shutdown_notify: tokio::sync::Notify::new(),
             self_bridge,
-        }))
+            sse_broadcast: sse_state,
+        });
+        super::sse::start_sse_tasks(&runtime);
+        Ok(runtime)
     }
 }
 
@@ -1480,6 +1484,8 @@ pub struct AgentRuntime {
     shutdown_notify: tokio::sync::Notify,
     /// Python self-module bridge for prompt building (Phase 2+).
     self_bridge: super::self_bridge::SelfBridge,
+    /// SSE broadcast state — fans out events and snapshots to connected clients.
+    sse_broadcast: Arc<super::sse::SseBroadcastState>,
 }
 
 impl AgentRuntime {
@@ -1923,6 +1929,18 @@ impl AgentRuntime {
     #[instrument(skip(self))]
     pub fn bus_metrics(&self) -> event_bus::BusMetrics {
         self.bus.metrics()
+    }
+
+    /// Clone the global event bus (used by SSE broadcaster for subscription).
+    #[must_use]
+    pub fn bus_cloned(&self) -> Arc<dyn EventBus> {
+        Arc::clone(&self.bus)
+    }
+
+    /// SSE broadcast state for streaming events to connected clients.
+    #[must_use]
+    pub(crate) fn sse_broadcast(&self) -> Arc<super::sse::SseBroadcastState> {
+        Arc::clone(&self.sse_broadcast)
     }
 
     /// Log a config change audit record with the details of what changed.

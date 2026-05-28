@@ -16,7 +16,9 @@ serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }
 config = { path = "../config", version = "0.1.0" }
 secret = { path = "../secret", version = "0.1.0" }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+futures = "0.3"
+tracing.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [[bin]]

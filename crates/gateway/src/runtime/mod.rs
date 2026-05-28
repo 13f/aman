@@ -30,6 +30,7 @@ mod soul_runtime;
 mod tracing_setup;
 mod stdio;
 mod grpc;
+mod sse;
 
 pub use agent_registry::AgentRegistry;
 pub use date_util::current_date_string;

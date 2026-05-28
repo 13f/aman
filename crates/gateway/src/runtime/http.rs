@@ -161,6 +161,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/health/llm", get(health_llm))
         .route("/metrics", get(metrics))
         .route("/ui/pages", get(ui_plugin_pages))
+        .route("/events/stream", get(super::sse::sse_stream_handler))
         .merge(control);
 
     // Merge plugin-contributed routes under /api/v1

@@ -30,10 +30,8 @@
   .card { padding: 10px 12px; margin-bottom: 8px; background: #161822; border: 1px solid #1e2030;
           border-radius: 6px; cursor: pointer; font-size: 13px; transition: opacity 0.15s; }
   .card:hover { border-color: #333; }
-  .card.dragging { opacity: 0.4; }
   .card-title { font-weight: 500; margin-bottom: 4px; }
   .card-meta { font-size: 11px; color: #666; }
-  .column.drag-over { border-color: #6366f1; background: rgba(99, 102, 241, 0.06); }
   .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
              color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
   .add-btn:hover { color: #aaa; border-color: #555; }
@@ -155,50 +153,19 @@
     background: rgba(99, 102, 241, 0.15);
   }
 
-  .wd-assign-panel {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-  }
-
   .wd-assign-select {
     padding: 4px 8px;
     background: #0b0d13;
-    border: 1px solid #2a2d3a;
+    border: 1px solid #6366f1;
     border-radius: 4px;
     color: #e0e0e0;
     font-size: 11px;
     max-width: 160px;
-  }
-
-  .wd-assign-confirm {
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 11px;
-    font-weight: 500;
     cursor: pointer;
-    white-space: nowrap;
-    border: 1px solid #6366f1;
-    background: #6366f1;
-    color: #fff;
   }
 
-  .wd-assign-confirm:hover {
-    background: #4f46e5;
-  }
-
-  .wd-assign-cancel {
-    background: none;
-    border: none;
-    color: #666;
-    font-size: 16px;
-    cursor: pointer;
-    padding: 0 2px;
-    line-height: 1;
-  }
-
-  .wd-assign-cancel:hover {
-    color: #e0e0e0;
+  .wd-assign-select:hover {
+    border-color: #818cf8;
   }
 
   .wd-assignee {
@@ -500,11 +467,9 @@
         <span class="wd-assignee" id="wdAssignee"></span>
       </div>
       <div class="wd-header-actions">
-        <div class="wd-assign-panel" id="wdAssignPanel" style="display:none;">
-          <select class="wd-assign-select" id="wdAssignSelect"></select>
-          <button class="wd-assign-confirm" onclick="confirmAssign()">Assign</button>
-          <button class="wd-assign-cancel" onclick="cancelAssign()">&times;</button>
-        </div>
+        <select class="wd-assign-select" id="wdAssignSelect" onchange="onAssignSelect(this.value)" style="display:none;">
+          <option value="">Assign...</option>
+        </select>
         <button class="wd-assign-btn" id="wdAssignBtn" onclick="openAssign()">Assign</button>
         <button class="wd-close" onclick="closeWorkDetail()">&times;</button>
       </div>
@@ -518,8 +483,7 @@
         oninput="document.getElementById('wdCommentBtn').disabled=!this.value.trim()"
       ></textarea>
       <div class="wd-input-actions">
-        <select class="wd-stage-select" id="wdStageSelect"></select>
-        <button class="wd-move-btn" onclick="moveWorkFromDetail()">Move</button>
+        <select class="wd-stage-select" id="wdStageSelect" onchange="stageSelectChanged()"></select>
         <button class="wd-comment-btn" id="wdCommentBtn" onclick="addWorkComment()" disabled>Comment</button>
       </div>
     </div>
@@ -568,9 +532,7 @@ function render(stages, works) {
       var html = "";
       for (var k = 0; k < items.length; k++) {
         var w = items[k];
-        html += '<div class="card" draggable="true" ' +
-                'ondragstart="ondragstartCard(event,\'' + esc(w.id) + '\')" ' +
-                'ondragend="ondragendCard(event)" ' +
+        html += '<div class="card" ' +
                 'onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
                 '<div class="card-title">' + esc(w.title) + '</div>' +
                 '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
@@ -654,24 +616,19 @@ function openWorkDetail(workId) {
     ae.textContent = "";
     ae.className = "wd-assignee";
   }
-  cancelAssign();
+  resetAssign();
   document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">Loading work context...</div>';
-  // Populate stage dropdown
+  // Populate stage dropdown with all stages
   var sel = document.getElementById("wdStageSelect");
-  var nextIds = stage && stage.allowed_next ? stage.allowed_next : [];
-  if (nextIds.length > 0) {
-    var opts = "";
-    for (var i = 0; i < nextIds.length; i++) {
-      var nid = nextIds[i];
-      var ns = (_cachedStages || []).find(function(s) { return s.id === nid; });
-      opts += '<option value="' + esc(nid) + '">' + esc(ns ? ns.name : nid) + '</option>';
-    }
-    sel.innerHTML = opts;
-    sel.disabled = false;
-  } else {
-    sel.innerHTML = '<option value="">Terminal</option>';
-    sel.disabled = true;
+  var currentStageId = _detailWork.current_stage || "";
+  var opts = "";
+  for (var i = 0; i < _cachedStages.length; i++) {
+    var s = _cachedStages[i];
+    var selected = s.id === currentStageId ? " selected" : "";
+    opts += '<option value="' + esc(s.id) + '"' + selected + '>' + esc(s.name || s.id) + '</option>';
   }
+  sel.innerHTML = opts;
+  sel.disabled = false;
 
   document.getElementById("wdCommentInput").value = "";
   document.getElementById("wdCommentBtn").disabled = true;
@@ -807,19 +764,26 @@ async function addWorkComment() {
   btn.textContent = "Comment";
 }
 
-function moveWorkFromDetail() {
+function stageSelectChanged() {
   var wid = _detailWorkId;
-  if (wid) {
-    closeWorkDetail();
-    moveWorkToStage(wid, document.getElementById("wdStageSelect").value);
+  var newStage = document.getElementById("wdStageSelect").value;
+  if (wid && newStage && _detailWork && newStage !== _detailWork.current_stage) {
+    moveWorkToStage(wid, newStage);
+    // Update the modal's stage badge instantly
+    var ns = (_cachedStages || []).find(function(s) { return s.id === newStage; });
+    document.getElementById("wdStageBadge").textContent = ns ? ns.name : newStage;
+    _detailWork.current_stage = newStage;
   }
 }
 
 async function openAssign() {
-  document.getElementById("wdAssignPanel").style.display = "flex";
-  document.getElementById("wdAssignBtn").style.display = "none";
+  var btn = document.getElementById("wdAssignBtn");
   var sel = document.getElementById("wdAssignSelect");
-  sel.innerHTML = '<option value="">Loading agents...</option>';
+  var currentAssignee = (_detailWork && _detailWork.assignee) ? _detailWork.assignee : "";
+  btn.style.display = "none";
+  sel.style.display = "";
+  sel.innerHTML = '<option value="">Loading...</option>';
+  sel.focus();
   try {
     var r = await fetch(BASE + "/agents");
     var agents = await r.json();
@@ -827,12 +791,19 @@ async function openAssign() {
       sel.innerHTML = '<option value="">No agents available</option>';
       return;
     }
-    var opts = '<option value="">Select agent...</option>';
+    var opts = '<option value="">Assign...</option>';
+    var found = false;
     for (var i = 0; i < agents.length; i++) {
       var a = agents[i];
       var name = a.name || a.id || a.agent_id || ("Agent " + i);
       var id = a.id || a.agent_id || name;
-      opts += '<option value="' + esc(id) + '">' + esc(name) + '</option>';
+      var selAttr = (id === currentAssignee) ? " selected" : "";
+      if (id === currentAssignee) found = true;
+      opts += '<option value="' + esc(id) + '"' + selAttr + '>' + esc(name) + '</option>';
+    }
+    // If current assignee is not in the agent list, add them
+    if (currentAssignee && !found) {
+      opts += '<option value="' + esc(currentAssignee) + '" selected>' + esc(currentAssignee) + '</option>';
     }
     sel.innerHTML = opts;
   } catch(e) {
@@ -841,26 +812,25 @@ async function openAssign() {
   }
 }
 
-function cancelAssign() {
-  document.getElementById("wdAssignPanel").style.display = "none";
+function resetAssign() {
+  document.getElementById("wdAssignSelect").style.display = "none";
   document.getElementById("wdAssignBtn").style.display = "";
 }
 
-async function confirmAssign() {
-  var agentId = document.getElementById("wdAssignSelect").value;
-  if (!agentId || !_detailWorkId) return;
+async function onAssignSelect(agentId) {
+  if (!agentId || !_detailWorkId) { resetAssign(); return; }
   try {
     var r = await fetch(BASE + "/works/" + _detailWorkId + "/assign", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({agent_id: agentId, stage_id: _detailWork ? _detailWork.current_stage : "", reason: "Manual assignment from kanban"})
     });
-    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Assign failed: " + (e.error || r.statusText), "error"); return; }
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Assign failed: " + (e.error || r.statusText), "error"); resetAssign(); return; }
     flash("Assigned to " + agentId, "success");
-    cancelAssign();
-    load(); // Refresh board and close modal
+    resetAssign();
+    load();
     closeWorkDetail();
-  } catch(e) { flash("Network error: " + e.message, "error"); }
+  } catch(e) { flash("Network error: " + e.message, "error"); resetAssign(); }
 }
 
 async function moveWorkToStage(workId, targetStage) {
@@ -874,44 +844,10 @@ async function moveWorkToStage(workId, targetStage) {
       body: JSON.stringify({agent_id: "", confidence: 1.0, action: "move to " + targetStage, next_stage: targetStage})
     });
     if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Move failed: " + (e.error || r.statusText), "error"); return; }
-    flash("Moved to " + (stageNames[targetStage] || targetStage), "success");
+    var data = await r.json();
+    flash("Moved to " + (stageNames[targetStage] || targetStage) + " (stage=" + (data.new_stage || targetStage) + ")", "success");
     load();
   } catch(e) { flash("Network error: " + e.message, "error"); console.error(e); }
-}
-
-// ── Drag-and-drop handlers ────────────────────────────────────
-
-var _dragWorkId = "";
-
-function ondragstartCard(e, workId) {
-  _dragWorkId = workId;
-  e.dataTransfer.effectAllowed = "move";
-  e.dataTransfer.setData("text/plain", workId);
-  e.currentTarget.classList.add("dragging");
-}
-
-function ondragendCard(e) {
-  e.currentTarget.classList.remove("dragging");
-  _dragWorkId = "";
-}
-
-function ondragoverColumn(e) {
-  e.preventDefault();
-  e.dataTransfer.dropEffect = "move";
-  e.currentTarget.classList.add("drag-over");
-}
-
-function ondragleaveColumn(e) {
-  e.currentTarget.classList.remove("drag-over");
-}
-
-function ondropColumn(e, stageId) {
-  e.preventDefault();
-  e.currentTarget.classList.remove("drag-over");
-  if (_dragWorkId) {
-    moveWorkToStage(_dragWorkId, stageId);
-    _dragWorkId = "";
-  }
 }
 
 // ── Edit Project ──────────────────────────────────────────────
@@ -1131,6 +1067,11 @@ function flash(msg, type) {
 
 document.addEventListener("keydown", function(e) {
   if (e.key === "Escape") {
+    var sel = document.getElementById("wdAssignSelect");
+    if (sel && sel.style.display !== "none") {
+      resetAssign();
+      return;
+    }
     var modal = document.getElementById("workDetailModal");
     if (modal && modal.classList.contains("open")) {
       closeWorkDetail();

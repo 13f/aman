@@ -506,6 +506,13 @@ def list_works(project_key: str, stage: Optional[str] = None) -> list:
 
 def update_work_stage(project_key: str, work_id: str, stage: str, assignee: str = "") -> None:
     db = get_db(project_key)
+    cur = db.execute("SELECT id FROM works WHERE id=?", (work_id,))
+    if cur.fetchone() is None:
+        # Diagnostic: log all work IDs in the DB so we can see what's happening
+        all_ids = [r[0] for r in db.execute("SELECT id FROM works").fetchall()]
+        _log(f"Work '{work_id}' NOT FOUND in works table (db={_project_db_path(project_key)}, "
+             f"project={project_key}, existing_ids={all_ids})")
+        return
     db.execute(
         "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
         (stage, work_id),
@@ -861,16 +868,27 @@ def load_context_files(project_key: str) -> list:
 # ---------------------------------------------------------------------------
 
 
+def _parse_body(body: Any) -> dict:
+    """Parse an HTTP request body, handling both raw strings and pre-parsed dicts."""
+    if body is None:
+        return {}
+    if isinstance(body, dict):
+        return body
+    if isinstance(body, str):
+        try:
+            return json.loads(body)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 def handle_api(project_key: str, method: str, path: str, query: Optional[str],
                headers: dict, body: Optional[str]) -> dict:
     """Route HTTP requests to the appropriate project API handler."""
     prefix = f"/team/projects/{project_key}/"
     rel_path = path[len(prefix):] if path.startswith(prefix) else path
 
-    try:
-        body_json = json.loads(body) if body else {}
-    except (json.JSONDecodeError, TypeError):
-        body_json = {}
+    body_json = _parse_body(body)
 
     # ── Works ──────────────────────────────────────────────────────
     if method == "GET" and rel_path == "works":
@@ -1082,6 +1100,21 @@ def _handle_assign_work(project_key: str, work_id: str, body: dict) -> dict:
     agent_id = body.get("agent_id", "")
     stage_id = body.get("stage_id", "")
 
+    _log(f"ASSIGN: project={project_key} work={work_id} agent={agent_id} stage={stage_id} "
+         f"body={json.dumps(body)}")
+
+    db = get_db(project_key)
+    work = db.execute("SELECT id, title, current_stage FROM works WHERE id=?", (work_id,)).fetchone()
+    if work is None:
+        all_ids = [r[0] for r in db.execute("SELECT id FROM works").fetchall()]
+        _log(f"ASSIGN FAIL: work '{work_id}' not found in {_project_db_path(project_key)}, "
+             f"existing={all_ids}")
+        return {
+            "status": 404,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"error": f"work '{work_id}' not found"}),
+        }
+
     result = send_request("aman.push_work_item", {
         "agent_id": agent_id,
         "title": f"Manual assign: {work_id}",
@@ -1089,7 +1122,16 @@ def _handle_assign_work(project_key: str, work_id: str, body: dict) -> dict:
     })
 
     if _unwrap_result(result):
-        update_work_stage(project_key, work_id, stage_id, agent_id)
+        db.execute(
+            "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
+            (stage_id, work_id),
+        )
+        db.execute(
+            "INSERT INTO stage_history (work_id, stage, assignee) VALUES (?, ?, ?)",
+            (work_id, stage_id, agent_id),
+        )
+        db.commit()
+        _log(f"ASSIGN OK: {work_id} assigned to {agent_id} stage={stage_id}")
 
     return {
         "status": 200,
@@ -1102,26 +1144,68 @@ def _handle_complete_work(project_key: str, work_id: str, body: dict) -> dict:
     agent_id = body.get("agent_id", "")
     confidence = float(body.get("confidence", 1.0))
     action = body.get("action", "")
+    next_stage = body.get("next_stage", "")
+
+    _log(f"COMPLETE: project={project_key} work={work_id} next_stage={next_stage} "
+         f"action={action} body={json.dumps(body)}")
 
     safety = run_safety_checks(project_key, action, agent_id, work_id, confidence)
     if not safety.get("allowed"):
+        _log(f"COMPLETE BLOCKED by safety: {safety}")
         return {
             "status": 403,
             "headers": {"content-type": "application/json"},
             "body": json.dumps(safety),
         }
 
-    next_stage = body.get("next_stage", "")
-    current_stage = ""
-    work = get_work(project_key, work_id)
-    if work:
-        current_stage = work.get("current_stage", "")
+    db = get_db(project_key)
+    db_path = _project_db_path(project_key)
+    work_row = db.execute("SELECT id, title, current_stage FROM works WHERE id=?", (work_id,)).fetchone()
+    if work_row is None:
+        all_ids = [r[0] for r in db.execute("SELECT id FROM works").fetchall()]
+        _log(f"COMPLETE FAIL: work '{work_id}' not found in {db_path}, existing={all_ids}")
+        return {
+            "status": 404,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"error": f"work '{work_id}' not found in {db_path}"}),
+        }
 
-    complete_work_stage(project_key, work_id, confidence)
+    current_stage = work_row["current_stage"] or ""
+    _log(f"COMPLETE: found work '{work_id}' title='{work_row['title']}' current_stage={current_stage}")
+
+    # Complete current stage history entry and capture its assignee
+    db.execute(
+        """UPDATE stage_history SET completed_at=datetime('now'), confidence=?
+            WHERE id = (
+                SELECT id FROM stage_history
+                WHERE work_id=? AND completed_at IS NULL
+                ORDER BY id DESC LIMIT 1
+            )""",
+        (confidence, work_id),
+    )
+    # Carry over the previous assignee if the caller didn't specify one
+    prev_assignee = ""
+    if not agent_id:
+        row = db.execute(
+            "SELECT assignee FROM stage_history WHERE work_id=? ORDER BY id DESC LIMIT 1",
+            (work_id,),
+        ).fetchone()
+        if row:
+            prev_assignee = row["assignee"] or ""
 
     # Move to next stage if specified
     if next_stage:
-        update_work_stage(project_key, work_id, next_stage, agent_id)
+        db.execute(
+            "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
+            (next_stage, work_id),
+        )
+        db.execute(
+            "INSERT INTO stage_history (work_id, stage, assignee) VALUES (?, ?, ?)",
+            (work_id, next_stage, agent_id or prev_assignee),
+        )
+        _log(f"COMPLETE: moved '{work_id}' from {current_stage} to {next_stage}")
+
+    db.commit()
 
     # Record context events
     if current_stage and next_stage and current_stage != next_stage:
@@ -1151,7 +1235,7 @@ def _handle_complete_work(project_key: str, work_id: str, body: dict) -> dict:
     return {
         "status": 200,
         "headers": {"content-type": "application/json"},
-        "body": json.dumps({"ok": True, "work_id": work_id}),
+        "body": json.dumps({"ok": True, "work_id": work_id, "new_stage": next_stage}),
     }
 
 
@@ -1236,12 +1320,13 @@ def _handle_get_context(project_key: str, ctx_id: int) -> dict:
 
 def _handle_list_project_agents(project_key: str) -> dict:
     result = send_request("aman.get_agents", {})
-    all_agents = _unwrap_result(result) or []
+    raw = _unwrap_result(result) or {}
+    agent_list = raw.get("agents", []) if isinstance(raw, dict) else []
 
     return {
         "status": 200,
         "headers": {"content-type": "application/json"},
-        "body": json.dumps(all_agents),
+        "body": json.dumps(agent_list),
     }
 
 
@@ -1669,7 +1754,7 @@ def _build_kanban_columns(proj: dict) -> str:
     for stage in proj.get("stages", []):
         sid = _esc(stage["id"])
         sname = _esc(stage.get("name", sid))
-        parts.append(f'<div class="column" data-stage="{sid}" ondragover="ondragoverColumn(event)" ondragleave="ondragleaveColumn(event)" ondrop="ondropColumn(event,\'{sid}\')">'
+        parts.append(f'<div class="column" data-stage="{sid}">'
                      f'<div class="column-head"><span class="col-title">{sname}</span>'
                      f'<span class="col-count" id="count-{sid}">0</span></div>'
                      f'<div class="card-list" id="list-{sid}"></div>'
@@ -1779,7 +1864,7 @@ def handle_on_load(params: Any) -> dict:
         _projects[project_key] = {"config": config}
 
         try:
-            init_db(project_key)
+            _projects[project_key]["db"] = init_db(project_key)
         except Exception as e:
             _log(f"DB init failed for {project_key}: {e}")
 
@@ -1793,7 +1878,11 @@ def handle_on_load(params: Any) -> dict:
         except Exception as e:
             _log(f"Workflow registration failed for {project_key}: {e}")
 
-        # Register routes for this project
+        # Register routes for this project.
+        # NOTE: Do NOT use {param} syntax in paths — axum's matchit router interprets
+        # {param} as a path parameter and passes the registered PATTERN (not the
+        # actual URL) to the plugin. Instead, let the catch-all route /team/{*rest}
+        # forward the actual URL; handle_api does its own path parsing.
         api_prefix = f"/team/projects/{project_key}"
         route_specs.extend([
             {"method": "GET", "path": api_prefix},
@@ -1804,19 +1893,9 @@ def handle_on_load(params: Any) -> dict:
             {"method": "DELETE", "path": api_prefix},
             {"method": "GET", "path": f"{api_prefix}/works"},
             {"method": "POST", "path": f"{api_prefix}/works/create"},
-            {"method": "GET", "path": f"{api_prefix}/works/{{work_id}}"},
-            {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/assign"},
-            {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/complete"},
-            {"method": "POST", "path": f"{api_prefix}/works/{{work_id}}/comment"},
             {"method": "GET", "path": f"{api_prefix}/safety/pending"},
-            {"method": "POST", "path": f"{api_prefix}/safety/{{log_id}}/resolve"},
             {"method": "GET", "path": f"{api_prefix}/context"},
-            {"method": "GET", "path": f"{api_prefix}/context/{{id}}"},
             {"method": "GET", "path": f"{api_prefix}/agents"},
-            # Work item JSONL context
-            {"method": "GET", "path": f"{api_prefix}/works"},
-            {"method": "GET", "path": f"{api_prefix}/works/{{work_id}}/context"},
-            {"method": "DELETE", "path": f"{api_prefix}/works/{{work_id}}/context"},
         ])
 
     # Register all routes with the server
@@ -1886,37 +1965,25 @@ def handle_route(params: Any) -> dict:
 
     # ── Setup API endpoints ──────────────────────────────────────────
     if method == "POST" and clean in ("/team/setup", "/team/setup/"):
-        try:
-            body_json = json.loads(body) if body else {}
-        except (json.JSONDecodeError, TypeError):
-            body_json = {}
+        body_json = _parse_body(body)
         return _handle_team_setup(body_json)
 
     # ── Team update ─────────────────────────────────────────────────
     if method == "POST" and clean in ("/team/update", "/team/update/"):
-        try:
-            body_json = json.loads(body) if body else {}
-        except (json.JSONDecodeError, TypeError):
-            body_json = {}
+        body_json = _parse_body(body)
         return _handle_team_update(body_json)
 
     if method == "GET" and clean in ("/team/projects", "/team/projects/"):
         return _handle_list_all_projects()
 
     if method == "POST" and clean in ("/team/projects/create", "/team/projects/create/"):
-        try:
-            body_json = json.loads(body) if body else {}
-        except (json.JSONDecodeError, TypeError):
-            body_json = {}
+        body_json = _parse_body(body)
         return _handle_project_create(body_json)
 
     # ── Project update / delete / stages / boards import ─────────────
     m_update = re.match(r"/team/projects/([^/]+)/update$", clean)
     if m_update and method == "POST":
-        try:
-            body_json = json.loads(body) if body else {}
-        except (json.JSONDecodeError, TypeError):
-            body_json = {}
+        body_json = _parse_body(body)
         project_key = m_update.group(1)
         if project_key not in _projects:
             return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}
@@ -1924,10 +1991,7 @@ def handle_route(params: Any) -> dict:
 
     m_stages = re.match(r"/team/projects/([^/]+)/stages/update$", clean)
     if m_stages and method == "POST":
-        try:
-            body_json = json.loads(body) if body else {}
-        except (json.JSONDecodeError, TypeError):
-            body_json = {}
+        body_json = _parse_body(body)
         project_key = m_stages.group(1)
         if project_key not in _projects:
             return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}
@@ -1935,10 +1999,7 @@ def handle_route(params: Any) -> dict:
 
     m_boards_import = re.match(r"/team/projects/([^/]+)/boards/import$", clean)
     if m_boards_import and method == "POST":
-        try:
-            body_json = json.loads(body) if body else {}
-        except (json.JSONDecodeError, TypeError):
-            body_json = {}
+        body_json = _parse_body(body)
         project_key = m_boards_import.group(1)
         if project_key not in _projects:
             return {"status": 404, "body": json.dumps({"error": f"project '{project_key}' not found"})}

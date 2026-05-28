@@ -28,10 +28,12 @@
                border-radius: 10px; }
   .card-list { flex: 1; padding: 8px; overflow-y: auto; min-height: 60px; }
   .card { padding: 10px 12px; margin-bottom: 8px; background: #161822; border: 1px solid #1e2030;
-          border-radius: 6px; cursor: pointer; font-size: 13px; }
+          border-radius: 6px; cursor: pointer; font-size: 13px; transition: opacity 0.15s; }
   .card:hover { border-color: #333; }
+  .card.dragging { opacity: 0.4; }
   .card-title { font-weight: 500; margin-bottom: 4px; }
   .card-meta { font-size: 11px; color: #666; }
+  .column.drag-over { border-color: #6366f1; background: rgba(99, 102, 241, 0.06); }
   .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
              color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
   .add-btn:hover { color: #aaa; border-color: #555; }
@@ -270,6 +272,21 @@
     align-items: flex-end;
   }
 
+  .wd-stage-select {
+    padding: 6px 10px;
+    background: #0b0d13;
+    border: 1px solid #2a2d3a;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 12px;
+    max-width: 160px;
+  }
+
+  .wd-stage-select:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
   .wd-move-btn {
     padding: 8px 14px;
     border-radius: 6px;
@@ -413,7 +430,8 @@
         oninput="document.getElementById('wdCommentBtn').disabled=!this.value.trim()"
       ></textarea>
       <div class="wd-input-actions">
-        <button class="wd-move-btn" onclick="moveWorkFromDetail()">Move Stage</button>
+        <select class="wd-stage-select" id="wdStageSelect"></select>
+        <button class="wd-move-btn" onclick="moveWorkFromDetail()">Move</button>
         <button class="wd-comment-btn" id="wdCommentBtn" onclick="addWorkComment()" disabled>Comment</button>
       </div>
     </div>
@@ -462,7 +480,10 @@ function render(stages, works) {
       var html = "";
       for (var k = 0; k < items.length; k++) {
         var w = items[k];
-        html += '<div class="card" onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
+        html += '<div class="card" draggable="true" ' +
+                'ondragstart="ondragstartCard(event,\'' + esc(w.id) + '\')" ' +
+                'ondragend="ondragendCard(event)" ' +
+                'onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
                 '<div class="card-title">' + esc(w.title) + '</div>' +
                 '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
                 '</div>';
@@ -539,6 +560,23 @@ function openWorkDetail(workId) {
     (_detailWork.assignee ? " · " + _detailWork.assignee : "") +
     " · created " + (_detailWork.created_at || "").slice(0, 10);
   document.getElementById("wdMessages").innerHTML = '<div class="wd-empty">Loading work context...</div>';
+  // Populate stage dropdown
+  var sel = document.getElementById("wdStageSelect");
+  var nextIds = stage && stage.allowed_next ? stage.allowed_next : [];
+  if (nextIds.length > 0) {
+    var opts = "";
+    for (var i = 0; i < nextIds.length; i++) {
+      var nid = nextIds[i];
+      var ns = (_cachedStages || []).find(function(s) { return s.id === nid; });
+      opts += '<option value="' + esc(nid) + '">' + esc(ns ? ns.name : nid) + '</option>';
+    }
+    sel.innerHTML = opts;
+    sel.disabled = false;
+  } else {
+    sel.innerHTML = '<option value="">Terminal</option>';
+    sel.disabled = true;
+  }
+
   document.getElementById("wdCommentInput").value = "";
   document.getElementById("wdCommentBtn").disabled = true;
   document.getElementById("workDetailModal").classList.add("open");
@@ -674,9 +712,61 @@ async function addWorkComment() {
 }
 
 function moveWorkFromDetail() {
-  if (_detailWorkId) {
+  var wid = _detailWorkId;
+  if (wid) {
     closeWorkDetail();
-    moveWork(_detailWorkId);
+    moveWorkToStage(wid, document.getElementById("wdStageSelect").value);
+  }
+}
+
+async function moveWorkToStage(workId, targetStage) {
+  if (!workId || !targetStage) return;
+  var stageNames = {};
+  (_cachedStages || []).forEach(function(s) { stageNames[s.id] = s.name || s.id; });
+  try {
+    var r = await fetch(BASE + "/works/" + workId + "/complete", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({agent_id: "", confidence: 1.0, action: "move to " + targetStage, next_stage: targetStage})
+    });
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Move failed: " + (e.error || r.statusText), "error"); return; }
+    flash("Moved to " + (stageNames[targetStage] || targetStage), "success");
+    load();
+  } catch(e) { flash("Network error: " + e.message, "error"); console.error(e); }
+}
+
+// ── Drag-and-drop handlers ────────────────────────────────────
+
+var _dragWorkId = "";
+
+function ondragstartCard(e, workId) {
+  _dragWorkId = workId;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", workId);
+  e.currentTarget.classList.add("dragging");
+}
+
+function ondragendCard(e) {
+  e.currentTarget.classList.remove("dragging");
+  _dragWorkId = "";
+}
+
+function ondragoverColumn(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  e.currentTarget.classList.add("drag-over");
+}
+
+function ondragleaveColumn(e) {
+  e.currentTarget.classList.remove("drag-over");
+}
+
+function ondropColumn(e, stageId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove("drag-over");
+  if (_dragWorkId) {
+    moveWorkToStage(_dragWorkId, stageId);
+    _dragWorkId = "";
   }
 }
 

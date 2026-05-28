@@ -1669,7 +1669,7 @@ def _build_kanban_columns(proj: dict) -> str:
     for stage in proj.get("stages", []):
         sid = _esc(stage["id"])
         sname = _esc(stage.get("name", sid))
-        parts.append(f'<div class="column" data-stage="{sid}">'
+        parts.append(f'<div class="column" data-stage="{sid}" ondragover="ondragoverColumn(event)" ondragleave="ondragleaveColumn(event)" ondrop="ondropColumn(event,\'{sid}\')">'
                      f'<div class="column-head"><span class="col-title">{sname}</span>'
                      f'<span class="col-count" id="count-{sid}">0</span></div>'
                      f'<div class="card-list" id="list-{sid}"></div>'

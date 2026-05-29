@@ -8,8 +8,71 @@
 //! via `include_str!()` with pre-computed blake3 hashes.
 
 use std::path::Path;
+use std::process::Command;
+
+/// Pre-build steps that must run before the gateway compiles.
+/// Each entry is a (command, args, working_dir) tuple.
+/// The working_dir is relative to the workspace root.
+const PRE_BUILD_STEPS: &[(&str, &[&str], &str)] = &[
+    (
+        "npm",
+        &["run", "build"],
+        "shared/frontend/chat-input",
+    ),
+    // Add more pre-build steps here as needed, e.g.:
+    // ("npm", &["run", "build"], "shared/frontend/other-component"),
+];
+
+fn run_pre_build_steps(workspace_root: &Path) {
+    if PRE_BUILD_STEPS.is_empty() {
+        return;
+    }
+    println!("cargo:warning=Running {} pre-build step(s)...", PRE_BUILD_STEPS.len());
+    for (i, (cmd, args, work_dir)) in PRE_BUILD_STEPS.iter().enumerate() {
+        let dir = workspace_root.join(work_dir);
+        // Re-run build.rs when sources in this component change
+        println!("cargo:rerun-if-changed={}", dir.display());
+        println!(
+            "cargo:warning=[{}/{}] {} {} (in {})",
+            i + 1,
+            PRE_BUILD_STEPS.len(),
+            cmd,
+            args.join(" "),
+            dir.display(),
+        );
+        let status = Command::new(cmd)
+            .args(*args)
+            .current_dir(&dir)
+            .status()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Failed to run pre-build step [{}/{}]: {} {} — {}",
+                    i + 1,
+                    PRE_BUILD_STEPS.len(),
+                    cmd,
+                    args.join(" "),
+                    e,
+                )
+            });
+        if !status.success() {
+            panic!(
+                "Pre-build step [{}/{}] failed with exit code {:?}: {} {}",
+                i + 1,
+                PRE_BUILD_STEPS.len(),
+                status.code(),
+                cmd,
+                args.join(" "),
+            );
+        }
+    }
+    println!("cargo:warning=All pre-build steps completed.");
+}
 
 fn main() {
+    let workspace_root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("../..");
+    run_pre_build_steps(&workspace_root);
+
     // Compile proto definitions for gRPC server stubs.
     tonic_build::compile_protos("../../proto/aman.proto")
         .expect("failed to compile aman.proto");

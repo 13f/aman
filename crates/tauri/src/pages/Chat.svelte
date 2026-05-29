@@ -223,14 +223,10 @@
   function applySkillPickerSelection(skillName: string) {
     inputText = "/skill " + skillName + " ";
     showSkillPicker = false;
-    // Focus back on textarea
-    setTimeout(() => {
-      const ta = document.querySelector(".input-area textarea") as HTMLTextAreaElement;
-      if (ta) {
-        ta.focus();
-        ta.setSelectionRange(inputText.length, inputText.length);
-      }
-    }, 10);
+    if (chatInputRef) {
+      chatInputRef.value = inputText;
+      chatInputRef.focus();
+    }
   }
 
   function closeSkillPicker() {
@@ -1589,11 +1585,13 @@
     unlisteners.push(unsub1);
 
     // Check chat capability directly in case we missed runtime events.
+    // Be optimistic on failure — runtime capability events are authoritative.
     try {
       const caps = await invoke<{ capability: string }[]>("get_capabilities");
       chatCapabilityAvailable = caps.some((c) => c.capability === "chat");
     } catch {
-      chatCapabilityAvailable = false;
+      // Keep the default (true). If chat is truly unavailable, the gateway
+      // will send capability_removed/degraded events once the listener is up.
     }
 
     // Load agents first (sets activeAgentKey, triggers session load for the right agent).
@@ -2539,23 +2537,14 @@
     padding: 12px 16px;
     border-top: 1px solid var(--border);
     background: var(--bg);
-  }
-
-  .input-area textarea {
-    flex: 1;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    resize: none;
-    font-family: inherit;
-    font-size: 13px;
-    line-height: 1.4;
-    min-height: 36px;
-    max-height: 120px;
-  }
-
-  .input-area textarea:disabled {
-    background: var(--bg-card);
+    --chat-input-bg: var(--bg-card);
+    --chat-input-fg: var(--fg);
+    --chat-input-border: var(--border);
+    --chat-input-accent: var(--accent);
+    --chat-input-accent-hover: var(--accent-hover);
+    --chat-input-red: var(--red);
+    --chat-input-yellow: var(--yellow);
+    --chat-input-disabled-bg: var(--bg);
   }
 
   /* Skill picker dropdown */

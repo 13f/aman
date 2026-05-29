@@ -1830,10 +1830,21 @@ def _render_project_kanban(project_key: str) -> dict:
 
     columns_html = _build_kanban_columns(proj)
     tmpl = _load_template("project-kanban.html")
+
+    # Read frontend asset version hashes for cache busting
+    chat_input_version = ""
+    hash_file = os.path.join(_STATIC_DIR, "chat-input.hash")
+    try:
+        with open(hash_file, "r") as f:
+            chat_input_version = f.read().strip()
+    except (FileNotFoundError, IOError):
+        pass
+
     html = tmpl.substitute(
         project_key=_esc(project_key),
         project_name=_esc(proj.get("project_name", project_key)),
         columns_html=columns_html,
+        chat_input_version=chat_input_version,
     )
     return _html_response(html)
 

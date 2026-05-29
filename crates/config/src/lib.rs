@@ -5,7 +5,7 @@
 
 
 use daily_life::DailyLifeConfig;
-use idle::IdlePersonality;
+use idle::{BoredomConfig, IdlePersonality};
 use study::StudyConfig;
 use work::WorkConfig;
 use kernel::event::{Event, EventType};
@@ -344,6 +344,8 @@ pub struct IdleConfig {
     #[serde(default)]
     pub personality: IdlePersonality,
     #[serde(default)]
+    pub boredom: Option<BoredomConfig>,
+    #[serde(default)]
     pub arousal: ArousalConfig,
     #[serde(default)]
     pub context: IdleContextConfig,
@@ -363,6 +365,7 @@ impl Default for IdleConfig {
             enabled: true,
             reflection: ReflectionConfig::default(),
             personality: IdlePersonality::default(),
+            boredom: None,
             arousal: ArousalConfig::default(),
             context: IdleContextConfig::default(),
             sleep: SleepConfig::default(),

@@ -186,7 +186,13 @@ impl AgentRegistry {
             // Create per-agent idle manager only if both global idle is enabled
             // AND this specific agent is enabled.
             if idle_enabled && entry.enabled {
-                let boredom_actor = idle_personality.boredom.as_ref().and_then(|cfg| {
+                let boredom_cfg = config
+                    .runtime
+                    .idle
+                    .boredom
+                    .as_ref()
+                    .or(idle_personality.boredom.as_ref());
+                let boredom_actor = boredom_cfg.and_then(|cfg| {
                     match (&self.skill_search, &self.skill_registry) {
                         (Some(ss), Some(sr)) => {
                             let global_bus = Some(Arc::clone(&self.bus) as Arc<dyn EventBus>);
@@ -333,7 +339,13 @@ impl AgentRegistry {
                 .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
             let ss = self.get_or_create_system_state(agent_id).await;
             let personality = config.runtime.idle.personality.clone();
-            let boredom_actor = personality.boredom.as_ref().and_then(|cfg| {
+            let boredom_cfg = config
+                .runtime
+                .idle
+                .boredom
+                .as_ref()
+                .or(personality.boredom.as_ref());
+            let boredom_actor = boredom_cfg.and_then(|cfg| {
                 match (&self.skill_search, &self.skill_registry) {
                     (Some(ss_idx), Some(sr)) => {
                         let global_bus = Some(Arc::clone(&self.bus) as Arc<dyn EventBus>);

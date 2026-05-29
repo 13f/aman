@@ -300,6 +300,49 @@ mod tests {
         assert!(actor.try_act(3, "a").await.is_none());
     }
 
+    #[tokio::test]
+    async fn fun_tag_selects_luck_skill() {
+        // Simulate: boredom config has "fun" tag at weight 1.0,
+        // and the luck skill has tags [fun, idle_run, bitcoin, ...].
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![BoredomActivity { tag: "fun".into(), weight: 1.0 }],
+        };
+        let search = Arc::new(SkillSearch::new());
+        // Mirror the real luck skill tags
+        search.index_skill(skill::IndexedSkill {
+            name: "lifecycle/luck".into(),
+            version: "1.0.0".into(),
+            description: "Bitcoin dormant address lottery".into(),
+            tags: vec![
+                "idle_run".into(), "bitcoin".into(), "btc".into(),
+                "fun".into(), "game".into(), "lottery".into(),
+                "luck".into(), "crypto".into(),
+            ],
+        });
+        // Also index a non-fun skill to prove filtering works
+        search.index_skill(skill::IndexedSkill {
+            name: "investment/btc-bottom-model".into(),
+            version: "1.0.0".into(),
+            description: "BTC bottom model".into(),
+            tags: vec!["investment".into(), "btc".into()],
+        });
+
+        let registry = Arc::new(SkillRegistry::new());
+        // Register the skill so try_act can look it up.
+        registry
+            .register(Arc::new(TestSkill::new(
+                "lifecycle/luck",
+                Arc::new(Mutex::new(false)),
+            )))
+            .expect("register");
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // poll_count == trigger_poll (1), tag "fun" → should find luck skill
+        let result = actor.try_act(1, "test-agent").await;
+        assert_eq!(result, Some("fun".into()));
+    }
+
     #[test]
     fn weighted_pick_respects_distribution() {
         let config = BoredomConfig {

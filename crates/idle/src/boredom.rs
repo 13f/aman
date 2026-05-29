@@ -2,22 +2,24 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 //! BoredomActor — weighted random tag selection, filtered skill lookup,
-//! and direct skill execution.
+//! random idle-prompt pick, and MessageReceived event publication so the
+//! agent harness processes the skill through the ReAct loop.
 //!
 //! When the agent has been in Boredom for `trigger_poll` consecutive polls,
 //! a weighted random tag is selected. Skills matching the tag AND the
-//! `idle_run` marker tag are filtered, one is picked at random, and
-//! executed directly via `Skill::execute()`.
+//! `idle_run` marker tag are filtered, one is picked at random, an
+//! `idle_prompt` is selected from the skill's SKILL.md frontmatter (with
+//! `{agent_id}` substitution), and a `MessageReceived` event is published
+//! to the global bus so the agent harness picks it up.
 
 use std::sync::Arc;
 
-use kernel::context::{BaseContext, SkillContext};
+use event_bus::EventBus;
 use kernel::event::{Event, EventType};
-use kernel::types::TraceId;
 use rand::Rng;
 use serde_json::json;
 use skill::{SkillRegistry, SkillSearch};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::types::BoredomConfig;
 
@@ -30,6 +32,7 @@ pub struct BoredomActor {
     config: BoredomConfig,
     skill_index: Arc<SkillSearch>,
     skill_registry: Arc<SkillRegistry>,
+    global_bus: Option<Arc<dyn EventBus>>,
 }
 
 impl BoredomActor {
@@ -39,17 +42,20 @@ impl BoredomActor {
         config: BoredomConfig,
         skill_index: Arc<SkillSearch>,
         skill_registry: Arc<SkillRegistry>,
+        global_bus: Option<Arc<dyn EventBus>>,
     ) -> Self {
         Self {
             config,
             skill_index,
             skill_registry,
+            global_bus,
         }
     }
 
-    /// Try to pick and execute a skill. Returns `Some(tag)` if a skill was
-    /// selected and executed (the caller should use the tag to notify the
-    /// corresponding system). Returns `None` when:
+    /// Try to pick a skill and publish a MessageReceived event for the
+    /// agent harness to process. Returns `Some(tag)` if a skill was
+    /// selected (the caller should use the tag to update system state).
+    /// Returns `None` when:
     /// - `poll_count` != `trigger_poll`
     /// - Weighted pick lands on "idle"
     /// - No skills match the tag + `idle_run` filter
@@ -69,7 +75,6 @@ impl BoredomActor {
         }
 
         // Filter: skills must carry both the selected tag AND idle_run.
-        // Search by idle_run first (fewer results), then filter by tag in Rust.
         let candidates: Vec<_> = self
             .skill_index
             .search_by_tag(IDLE_RUN_TAG)
@@ -93,19 +98,65 @@ impl BoredomActor {
             skill_name, tag, agent_id, poll_count
         );
 
-        let event = Event::new(
-            "idle.boredom",
-            EventType::Custom("idle.boredom.action".into()),
-            json!({ "skill": skill_name, "tag": tag, "agent_id": agent_id }),
-        );
+        // Pick a random idle_prompt and substitute agent_id.
+        let idle_prompt = self
+            .skill_registry
+            .idle_prompts(&skill_name)
+            .and_then(|prompts| {
+                let i = rand::thread_rng().gen_range(0..prompts.len());
+                Some(prompts[i].replace("{agent_id}", agent_id))
+            });
 
-        let ctx = SkillContext {
-            base: BaseContext::new(TraceId::new()),
-            skill_name: Some(skill_name),
-            soul_name: None,
+        let text = match idle_prompt {
+            Some(prompt) => {
+                let body = self.skill_registry.skill_body(&skill_name);
+                match body {
+                    Some(b) => format!(
+                        "[IDLE ACTION] {prompt}\n\n\
+                         --- SKILL METHODOLOGY ---\n\
+                         {b}\n\
+                         --- END SKILL ---\n\n\
+                         Execute the action above using the skill's methodology. \
+                         Do not skip or abbreviate any prescribed stage."
+                    ),
+                    None => format!(
+                        "[IDLE ACTION] {prompt}\n\n\
+                         Execute the action above using your available tools and \
+                         knowledge. Be thorough and complete the task."
+                    ),
+                }
+            }
+            None => {
+                // No idle_prompt configured — fall back to a generic action
+                // based on the skill's description.
+                format!(
+                    "[IDLE ACTION] Execute the skill \"{skill_name}\": {}.\n\
+                     Use your available tools and follow your standard methodology.",
+                    skill.description()
+                )
+            }
         };
 
-        let _ = skill.execute(event, ctx).await;
+        // Publish MessageReceived event so the agent harness picks it up
+        // and runs it through the ReAct loop — same path as "/skill name prompt".
+        if let Some(ref bus) = self.global_bus {
+            let session_id = format!("{agent_id}:idle");
+            let event = Event::new(
+                "idle.boredom",
+                EventType::MessageReceived,
+                json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "text": text,
+                    "skill_name": skill_name,
+                    "tag": tag,
+                }),
+            );
+            if let Err(e) = bus.publish(event).await {
+                warn!("boredom: failed to publish MessageReceived event: {e}");
+            }
+        }
+
         Some(tag)
     }
 
@@ -164,7 +215,7 @@ mod tests {
         fn description(&self) -> &str { "test skill" }
         fn triggers(&self) -> &[TriggerCondition] { &[] }
 
-        async fn execute(&self, _event: Event, _ctx: SkillContext) -> AmanResult<()> {
+        async fn execute(&self, _event: Event, _ctx: kernel::context::SkillContext) -> AmanResult<()> {
             *self.called.lock().expect("called lock") = true;
             Ok(())
         }
@@ -199,7 +250,7 @@ mod tests {
             .register(Arc::new(TestSkill::new(skill_name, called)))
             .expect("register");
 
-        BoredomActor::new(config, search, registry)
+        BoredomActor::new(config, search, registry, None)
     }
 
     #[tokio::test]
@@ -230,8 +281,10 @@ mod tests {
         };
         let actor = setup_actor(config, "check-inbox", vec!["work", "idle_run"], Arc::clone(&called));
 
+        // Without a global bus, the skill is selected but no event is published.
+        // The tag is still returned for system state update.
         assert_eq!(actor.try_act(3, "a").await, Some("work".into()));
-        assert!(*called.lock().expect("lock"));
+        // Note: execute() is no longer called since we publish MessageReceived instead.
     }
 
     #[tokio::test]
@@ -258,7 +311,7 @@ mod tests {
         };
         let search = Arc::new(SkillSearch::new());
         let registry = Arc::new(SkillRegistry::new());
-        let actor = BoredomActor::new(config, search, registry);
+        let actor = BoredomActor::new(config, search, registry, None);
 
         for _ in 0..100 {
             let tag = actor.weighted_pick_tag().expect("should pick");

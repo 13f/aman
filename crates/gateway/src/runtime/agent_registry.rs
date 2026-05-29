@@ -189,10 +189,12 @@ impl AgentRegistry {
                 let boredom_actor = idle_personality.boredom.as_ref().and_then(|cfg| {
                     match (&self.skill_search, &self.skill_registry) {
                         (Some(ss), Some(sr)) => {
+                            let global_bus = Some(Arc::clone(&self.bus) as Arc<dyn EventBus>);
                             Some(Arc::new(BoredomActor::new(
                                 cfg.clone(),
                                 Arc::clone(ss),
                                 Arc::clone(sr),
+                                global_bus,
                             )))
                         }
                         _ => None,
@@ -334,10 +336,12 @@ impl AgentRegistry {
             let boredom_actor = personality.boredom.as_ref().and_then(|cfg| {
                 match (&self.skill_search, &self.skill_registry) {
                     (Some(ss_idx), Some(sr)) => {
+                        let global_bus = Some(Arc::clone(&self.bus) as Arc<dyn EventBus>);
                         Some(Arc::new(BoredomActor::new(
                             cfg.clone(),
                             Arc::clone(ss_idx),
                             Arc::clone(sr),
+                            global_bus,
                         )))
                     }
                     _ => None,

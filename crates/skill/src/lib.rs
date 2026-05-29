@@ -36,6 +36,8 @@ struct SkillRegistration {
     skill: Arc<dyn Skill>,
     enabled: bool,
     concurrency: SkillConcurrencyModel,
+    idle_prompts: Vec<String>,
+    body: Option<String>,
 }
 
 #[derive(Clone)]
@@ -100,13 +102,32 @@ impl SkillRegistry {
                 skill,
                 enabled: true,
                 concurrency,
+                idle_prompts: vec![],
+                body: None,
             },
         );
         Ok(())
     }
 
     pub fn register_loaded(&self, loaded: LoadedSkill) -> AmanResult<()> {
-        self.register_with_model(loaded.skill, loaded.concurrency)
+        let name = loaded.skill.name().to_owned();
+        let mut skills = self.skills.write().expect("skill registry write lock");
+        if skills.contains_key(&name) {
+            return Err(Error::AlreadyExists {
+                name: format!("skill:{name}"),
+            });
+        }
+        skills.insert(
+            name,
+            SkillRegistration {
+                skill: loaded.skill,
+                enabled: true,
+                concurrency: loaded.concurrency,
+                idle_prompts: loaded.idle_prompts,
+                body: loaded.body,
+            },
+        );
+        Ok(())
     }
 
     pub fn upsert_loaded(&self, loaded: LoadedSkill) -> SkillUpsertOutcome {
@@ -117,6 +138,8 @@ impl SkillRegistry {
             let new_version = loaded.skill.version().clone();
             existing.skill = loaded.skill;
             existing.concurrency = loaded.concurrency;
+            existing.idle_prompts = loaded.idle_prompts;
+            existing.body = loaded.body;
             if old_version == new_version {
                 return SkillUpsertOutcome::ReplacedSameVersion {
                     version: new_version,
@@ -134,6 +157,8 @@ impl SkillRegistry {
                 skill: loaded.skill,
                 enabled: true,
                 concurrency: loaded.concurrency,
+                idle_prompts: loaded.idle_prompts,
+                body: loaded.body,
             },
         );
         SkillUpsertOutcome::Inserted
@@ -234,6 +259,25 @@ impl SkillRegistry {
             .expect("skill registry read lock")
             .get(name)
             .map(|entry| entry.concurrency)
+    }
+
+    #[must_use]
+    pub fn idle_prompts(&self, name: &str) -> Option<Vec<String>> {
+        self.skills
+            .read()
+            .expect("skill registry read lock")
+            .get(name)
+            .filter(|entry| !entry.idle_prompts.is_empty())
+            .map(|entry| entry.idle_prompts.clone())
+    }
+
+    #[must_use]
+    pub fn skill_body(&self, name: &str) -> Option<String> {
+        self.skills
+            .read()
+            .expect("skill registry read lock")
+            .get(name)
+            .and_then(|entry| entry.body.clone())
     }
 
     #[must_use]
@@ -445,6 +489,10 @@ impl SkillExecutor {
 pub struct LoadedSkill {
     pub skill: Arc<dyn Skill>,
     pub concurrency: SkillConcurrencyModel,
+    pub tags: Vec<String>,
+    pub idle_prompts: Vec<String>,
+    /// Full SKILL.md body with YAML frontmatter stripped (None for pure YAML skills).
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -453,8 +501,12 @@ struct DeclarativeSkillSpec {
     version: String,
     description: Option<String>,
     #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
     triggers: Vec<TriggerCondition>,
     concurrency: Option<serde_yaml::Value>,
+    #[serde(default, alias = "idle_prompt")]
+    idle_prompts: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -497,7 +549,7 @@ impl SkillLoader {
                 message: format!("invalid skill yaml: {error}"),
             }
         })?;
-        Self::build_loaded_skill(spec)
+        Self::build_loaded_skill(spec, None)
     }
 
     pub fn load_from_yaml_file(path: &Path) -> AmanResult<LoadedSkill> {
@@ -506,7 +558,8 @@ impl SkillLoader {
     }
 
     pub fn load_from_skill_markdown_str(content: &str) -> AmanResult<LoadedSkill> {
-        let yaml = extract_skill_markdown_yaml(content)?;
+        let (yaml, body) = extract_skill_markdown_yaml(content)?;
+        let body = if body.is_empty() { None } else { Some(body) };
         if yaml.trim().is_empty() {
             // No YAML metadata — derive name from the first markdown heading.
             let name = content
@@ -519,10 +572,17 @@ impl SkillLoader {
                 version: "0.1.0".to_owned(),
                 description: None,
                 triggers: vec![],
+                tags: vec![],
                 concurrency: None,
-            });
+                idle_prompts: vec![],
+            }, body);
         }
-        Self::load_from_yaml_str(&yaml)
+        let spec: DeclarativeSkillSpec = serde_yaml::from_str(&yaml).map_err(|error| {
+            Error::ConfigInvalid {
+                message: format!("invalid skill yaml: {error}"),
+            }
+        })?;
+        Self::build_loaded_skill(spec, body)
     }
 
     pub fn load_from_skill_markdown_file(path: &Path) -> AmanResult<LoadedSkill> {
@@ -549,7 +609,7 @@ impl SkillLoader {
         }
     }
 
-    fn build_loaded_skill(spec: DeclarativeSkillSpec) -> AmanResult<LoadedSkill> {
+    fn build_loaded_skill(spec: DeclarativeSkillSpec, body: Option<String>) -> AmanResult<LoadedSkill> {
         let version = Version::parse(&spec.version).map_err(|error| Error::ConfigInvalid {
             message: format!("invalid skill version `{}`: {error}", spec.version),
         })?;
@@ -564,6 +624,9 @@ impl SkillLoader {
         Ok(LoadedSkill {
             skill: Arc::new(skill),
             concurrency: parse_skill_concurrency(spec.concurrency)?,
+            tags: spec.tags,
+            idle_prompts: spec.idle_prompts,
+            body,
         })
     }
 }
@@ -1148,6 +1211,7 @@ impl HotReloadManager {
                 }
             };
             let name = loaded.skill.name().to_owned();
+            let declared_tags = loaded.tags.clone();
             if let (Some(version_manager), Some(content)) = (&self.version_manager, content) {
                 let version = loaded.skill.version().to_string();
                 if version_manager
@@ -1163,7 +1227,20 @@ impl HotReloadManager {
             let skill = self.registry.get(&name).ok_or_else(|| Error::NotFound {
                 name: format!("skill:{name}"),
             })?;
-            self.search.index_runtime_skill(skill.as_ref());
+            let mut tags: Vec<String> = skill
+                .triggers()
+                .iter()
+                .flat_map(|t| t.event_types.iter().map(ToString::to_string))
+                .collect();
+            tags.extend(declared_tags);
+            tags.sort();
+            tags.dedup();
+            self.search.index_skill(IndexedSkill {
+                name: skill.name().to_owned(),
+                version: skill.version().to_string(),
+                description: skill.description().to_owned(),
+                tags,
+            });
             loaded_mapping.insert(file, name.clone());
             match outcome {
                 SkillUpsertOutcome::Inserted => report.inserted.push(name),
@@ -1308,7 +1385,7 @@ fn discover_files_recursive(root: &Path, found: &mut Vec<PathBuf>) -> AmanResult
     Ok(())
 }
 
-fn extract_skill_markdown_yaml(content: &str) -> AmanResult<String> {
+fn extract_skill_markdown_yaml(content: &str) -> AmanResult<(String, String)> {
     // 1. Try --- YAML frontmatter format (standard SKILL.md convention)
     let trimmed = content.trim();
     if let Some(after_first) = trimmed.strip_prefix("---")
@@ -1316,32 +1393,44 @@ fn extract_skill_markdown_yaml(content: &str) -> AmanResult<String> {
     {
         let frontmatter = after_first[..end].trim().to_owned();
         if !frontmatter.is_empty() {
-            return Ok(frontmatter);
+            let body_start = end + 4; // "\n---" is 4 chars
+            let body = after_first[body_start..].trim().to_owned();
+            return Ok((frontmatter, body));
         }
     }
 
     // 2. Try fenced ```yaml block format
     let mut in_block = false;
-    let mut lines = Vec::new();
-    for line in content.lines() {
+    let mut yaml_lines = Vec::new();
+    let mut body_lines: Vec<&str> = Vec::new();
+    let mut yaml_end = 0;
+    for (i, line) in content.lines().enumerate() {
         let line_trimmed = line.trim();
         if !in_block && (line_trimmed == "```yaml" || line_trimmed == "```yml") {
             in_block = true;
             continue;
         }
         if in_block && line_trimmed == "```" {
-            break;
+            in_block = false;
+            yaml_end = i;
+            continue;
         }
         if in_block {
-            lines.push(line);
+            yaml_lines.push(line);
         }
     }
-    if !lines.is_empty() {
-        return Ok(lines.join("\n"));
+    if !yaml_lines.is_empty() {
+        // Body is everything after the closing ```
+        let all_lines: Vec<&str> = content.lines().collect();
+        if yaml_end + 1 < all_lines.len() {
+            body_lines = all_lines[yaml_end + 1..].to_vec();
+        }
+        let body = body_lines.join("\n").trim().to_owned();
+        return Ok((yaml_lines.join("\n"), body));
     }
 
-    // No YAML metadata found — skill is markdown-only.
-    Ok(String::new())
+    // No YAML metadata found — full content is the body.
+    Ok((String::new(), trimmed.to_owned()))
 }
 
 #[cfg(test)]
@@ -1713,6 +1802,42 @@ triggers:
         let loaded_md =
             SkillLoader::load_from_skill_markdown_str(&skill_md).expect("markdown skill loads");
         assert_eq!(loaded_md.skill.name(), "invoice-review");
+    }
+
+    #[test]
+    fn skill_loader_parses_idle_prompts_and_body() {
+        // Test singular alias "idle_prompt"
+        let yaml = r#"
+name: team
+version: 0.1.0
+description: team work item management
+idle_prompt:
+  - "do task A for {agent_id}"
+  - "do task B"
+"#;
+        let loaded = SkillLoader::load_from_yaml_str(yaml).expect("yaml loads");
+        assert_eq!(loaded.idle_prompts.len(), 2);
+        assert_eq!(loaded.idle_prompts[0], "do task A for {agent_id}");
+        assert_eq!(loaded.idle_prompts[1], "do task B");
+        assert!(loaded.body.is_none(), "pure YAML has no body");
+
+        // Test plural "idle_prompts"
+        let yaml2 = r#"
+name: other
+version: 0.1.0
+idle_prompts:
+  - "only one prompt"
+"#;
+        let loaded2 = SkillLoader::load_from_yaml_str(yaml2).expect("yaml loads");
+        assert_eq!(loaded2.idle_prompts.len(), 1);
+
+        // Test SKILL.md with body extraction
+        let skill_md = "---\nname: team\nversion: 0.1.0\nidle_prompt:\n  - \"check work\"\n---\n\n# Team Skill\n\nThis is the methodology body.";
+        let loaded_md = SkillLoader::load_from_skill_markdown_str(skill_md).expect("markdown loads");
+        assert_eq!(loaded_md.idle_prompts.len(), 1);
+        assert_eq!(loaded_md.idle_prompts[0], "check work");
+        assert!(loaded_md.body.is_some());
+        assert!(loaded_md.body.unwrap().contains("This is the methodology body"));
     }
 
     #[test]

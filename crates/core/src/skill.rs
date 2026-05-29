@@ -7,15 +7,62 @@ use crate::event::{Event, EventType};
 use crate::types::{Priority, SourceId};
 use async_trait::async_trait;
 use semver::Version;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(default)]
 pub struct TriggerCondition {
     pub event_types: Vec<EventType>,
     pub sources: Vec<SourceId>,
     pub priorities: Vec<Priority>,
     pub match_all: bool,
+}
+
+/// Helper for deserializing a `TriggerCondition` from a map (struct form).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct TriggerConditionHelper {
+    event_types: Vec<EventType>,
+    sources: Vec<SourceId>,
+    priorities: Vec<Priority>,
+    match_all: bool,
+}
+
+impl<'de> Deserialize<'de> for TriggerCondition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct TriggerConditionVisitor;
+
+        impl<'de> de::Visitor<'de> for TriggerConditionVisitor {
+            type Value = TriggerCondition;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a trigger condition struct or a plain string")
+            }
+
+            fn visit_str<E: de::Error>(self, _v: &str) -> Result<Self::Value, E> {
+                Ok(TriggerCondition::default())
+            }
+
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                let helper = TriggerConditionHelper::deserialize(
+                    de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(TriggerCondition {
+                    event_types: helper.event_types,
+                    sources: helper.sources,
+                    priorities: helper.priorities,
+                    match_all: helper.match_all,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(TriggerConditionVisitor)
+    }
 }
 
 #[async_trait]

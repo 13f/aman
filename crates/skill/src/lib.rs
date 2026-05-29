@@ -495,9 +495,14 @@ pub struct LoadedSkill {
     pub body: Option<String>,
 }
 
+fn default_skill_version() -> String {
+    "0.1.0".to_owned()
+}
+
 #[derive(Debug, Deserialize)]
 struct DeclarativeSkillSpec {
     name: String,
+    #[serde(default = "default_skill_version")]
     version: String,
     description: Option<String>,
     #[serde(default)]

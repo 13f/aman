@@ -1,57 +1,170 @@
-# Work System — Architecture Design (v2: Passive Push Queue)
+# Work System — Architecture Design (v3: Lifecycle Engine)
 
-> **核心变更**：从「主动巡检 + 认领竞争」退化为「被动队列消费者」。
-> 外部系统 (CLI/API/kanban/todo) 直接将 WorkItem 推送到 Agent，
-> Work System 只负责顺序消费，不做发现、不做认领、不做竞争。
+> **核心变更**：从「独立 2 状态机」重构为「LifecycleEngine 的领域适配层」。
+> Work/Study/Daily-Life 三个系统的共用逻辑（状态机、FIFO 队列、步骤链式执行、
+> 中断/重试、IdleSignal 反馈、全局总线通知）全部提取到 `crates/lifecycle`。
+> Work System 只需实现 `SystemSpec` trait，提供 Work 领域特有的类型和逻辑。
 >
-> 为什么叫 **WorkItem** 而非 Task？Task 暗示"任务"，但推送到 Work 队列的可以是
-> 任何工作单元——用户指派的任务、看板拖动的卡片、API 触发的请求、Idle Boredom
-> 找回来的活、定时提醒等等。WorkItem 是更通用的抽象。
+> 架构层次：
+> ```
+> LifecycleEngine<WorkSpec>   ← 通用引擎（lifecycle crate）
+>   └─ WorkSpec              ← 领域适配（work crate，实现 SystemSpec trait）
+>        ├─ Item  = WorkItem
+>        ├─ Step  = Step
+>        ├─ decompose()       → 工作分解策略（预定义步骤 / LLM 自动分解）
+>        ├─ execute_step_impl() → 步骤执行（LLM / Tool）
+>        └─ collect_result()  → 结果收集
+> ```
 
 ---
 
-## 1. Why This Simplification
+## 1. Why This Refactoring
 
-旧设计（v1）的问题：
+v2 中 Work、Study、Daily-Life 三个系统各自实现了几乎相同的：
 
-| 问题 | v1 做法 | 实际需求 |
-|------|--------|---------|
-| 主动巡检 | WorkTick / DelayedWorkTick 周期性检查任务板 | 工作由外部驱动，外部知道何时有新任务，不需要 Agent 轮询 |
-| 认领竞争 | CHECKING → CLAIMING，乐观锁 | 谁分配任务给哪个 Agent 是调度器/看板的职责，Agent 不参与竞争 |
-| 冷却退避 | claim 失败后指数退避 | 没有认领就没有失败，冷却只在一轮工作完成后才需要 |
-| 状态机膨胀 | 5 状态 + 10+ 事件类型 | 只需要 2 状态：IDLE / BUSY |
+| 重复逻辑 | v2 做法 | v3 做法 |
+|---------|--------|--------|
+| 2 状态机 (Idle/Busy) | 每个系统一份 | `LifecycleEngine` 统一管理 |
+| FIFO 队列 + 上下文 | 每个系统一个 `XxxContext` | `LifecycleContext<I, St>` 泛型 |
+| 步骤链式执行 | 每个系统手写 `advance_pipeline` | 引擎内部 `execute_step` → `publish_step_event` |
+| Interrupt → checkpoint | 每个系统手写 | `engine.handle_interrupt()` |
+| IdleSignal 发送 | 每个系统手写 mpsc channel | 引擎内部 `send_idle_signal()` |
+| 全局总线通知 | 每个系统手写 | 引擎在 complete/fail 时自动发布 |
+| 重试逻辑 | 每个系统手写 `push_front` | 引擎内部 `handle_failed()` |
 
-核心理念转变：
-
-```
-旧：Agent 主动巡视任务板、评估能力、认领、执行
-    → Work System 承担了「调度器」的职责
-
-新：外部系统决定谁做什么，Agent 只负责执行
-    → Work System 就是一个带 Hook 的 FIFO 工作队列消费者
-```
-
-谁来决定「哪个工作给哪个 Agent」？**外部调度器**（看板、CLI、API、全局调度器）。
-调度策略可以独立演化（轮询、负载均衡、优先级、亲和性），Agent 不需要关心。
+提取后，每个系统从 ~500 行事件处理代码缩减为 ~100 行 `SystemSpec` 实现 + ~100 行薄封装。
 
 ---
 
-## 2. Simplified State Machine
+## 2. Lifecycle Engine Architecture
 
-### 2.1 Two States
+### 2.1 Shared Engine (`crates/lifecycle`)
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkState {
-    /// 队列为空，无工作执行。Event Bus 空闲时 Idle System 自然运行。
-    Idle,
-    /// 正在执行当前 WorkItem 的某个步骤。Bus 保持非空，Idle 不触发。
-    Busy,
+/// 泛型生命周期引擎。S 是实现 SystemSpec 的领域适配器。
+pub struct LifecycleEngine<S: SystemSpec> {
+    agent_id: String,
+    spec: S,                                       // 领域适配器
+    ctx: Mutex<LifecycleContext<S::Item, S::Step>>, // 泛型上下文
+    local_bus: Arc<dyn EventBus>,
+    global_bus: Arc<dyn EventBus>,
+    idle_signal_tx: Mutex<Option<mpsc::UnboundedSender<IdleSignal>>>,
+    // ...
 }
 ```
 
-### 2.2 State Transitions
+引擎提供的方法：
+
+| 方法 | 用途 |
+|------|------|
+| `handle_assigned(item, source)` | 入队，IDLE → BUSY，开始执行 |
+| `handle_completed(item_id, result, duration)` | 通知全局总线，发 IdleSignal，处理下一个 |
+| `handle_failed(item_id, error, retryable)` | 可重试则重新入队，否则发通知 + IdleSignal |
+| `handle_interrupt(reason, by_system)` | 保存 checkpoint → 无条件 IDLE |
+| `handle_step(step_index)` | 执行当前步骤，自动推进或完成 |
+| `current_state()` / `snapshot()` | 查询当前状态和上下文 |
+
+### 2.2 SystemSpec Trait
+
+```rust
+pub trait SystemSpec: Send + Sync + 'static {
+    type Item: Clone + Send + Sync + Serialize + 'static;
+    type Step: Clone + Send + Sync + 'static;
+
+    // ── 事件路由常量 ──
+    fn event_source() -> &'static str;       // "work.system"
+    fn step_event_kind() -> &'static str;    // "work.step.execute"
+    fn assigned_kind() -> &'static str;      // "work.item.assigned"
+    fn completed_kind() -> &'static str;     // "work.item.completed"
+    fn failed_kind() -> &'static str;        // "work.item.failed"
+    fn interrupt_kind() -> &'static str;     // "work.interrupt"
+
+    // ── Item 访问器 ──
+    fn item_id(item: &Self::Item) -> String;
+    fn notify_on_complete(item: &Self::Item) -> bool;
+
+    // ── 事件负载序列化 ──
+    fn serialize_item(item: &Self::Item) -> serde_json::Value;
+    fn make_assigned_payload(...) -> serde_json::Value;
+    fn make_completed_payload(...) -> serde_json::Value;
+    fn make_failed_payload(...) -> serde_json::Value;
+    fn make_step_payload(step_index: usize) -> serde_json::Value;
+    fn make_result_notify(...) -> serde_json::Value;
+    fn make_failure_notify(...) -> serde_json::Value;
+
+    // ── 领域逻辑 ──
+    fn default_step(item: &Self::Item, max_retries: u32) -> Self::Step;
+    fn step_max_retries(step: &Self::Step) -> u32;
+    fn decompose(&self, item: &Self::Item, max_retries: u32) -> Vec<Self::Step>;
+    fn execute_step_impl(&self, item: &Self::Item, step: &Self::Step, step_index: usize) -> Result<StepOutput, LifecycleError>;
+    fn collect_result(item: &Self::Item, outputs: &[StepOutput]) -> serde_json::Value;
+    fn completion_signal(item: &Self::Item) -> IdleSignal;
+}
+```
+
+### 2.3 WorkSystem — Thin Wrapper
+
+```rust
+pub struct WorkSystem {
+    engine: LifecycleEngine<WorkSpec>,  // 泛型引擎
+    config: WorkConfig,
+    local_bus: Arc<dyn EventBus>,
+    global_bus: Arc<dyn EventBus>,
+    idle_signal_tx: Mutex<Option<mpsc::UnboundedSender<IdleSignal>>>,
+}
+
+impl WorkSystem {
+    pub fn new(agent_id, config, local_bus, global_bus, system_state) -> Self {
+        let spec = WorkSpec::new(config.execution.auto_decompose);
+        let engine = LifecycleEngine::new(
+            agent_id, spec,
+            config.queue.max_size,
+            config.retry.max_step_retries,
+            local_bus, global_bus,
+            system_state,
+            AgentSystemState::Working,  // BUSY 时设置的系统状态
+        );
+        // ...
+    }
+
+    pub async fn handle(&self, event: WorkEvent) -> WorkResult<()> {
+        match event {
+            WorkEvent::Interrupt { reason, by_system } => {
+                // 记录 trace → 委托引擎
+                self.engine.handle_interrupt(&reason, &by_system).await?;
+            }
+            WorkEvent::WorkItemAssigned { item, source } => {
+                // 记录 trace → 委托引擎
+                self.engine.handle_assigned(item, source_json).await?;
+            }
+            WorkEvent::WorkItemCompleted { item_id, result, duration } => {
+                // 领域通知 + trace → 委托引擎
+                self.engine.handle_completed(&item_id, result_json, duration).await?;
+            }
+            WorkEvent::WorkItemFailed { item_id, error, retryable } => {
+                // 领域通知 + trace → 委托引擎
+                self.engine.handle_failed(&item_id, lc_error, retryable).await?;
+            }
+        }
+    }
+}
+```
+
+---
+
+## 3. State Machine (provided by LifecycleEngine)
+
+### 3.1 Two States
+
+```rust
+// 定义在 lifecycle::types
+pub enum LifecycleState {
+    Idle,   // 队列为空，无工作执行
+    Busy,   // 正在执行当前 WorkItem 的某个步骤
+}
+```
+
+### 3.2 State Transitions
 
 ```
                   WorkItemAssigned
@@ -69,57 +182,50 @@ pub enum WorkState {
          │  → IDLE → BUSY
          │
          └───────────────────────────────
-
-    Interrupt: 任何状态收到 → 保存 checkpoint → 无条件切回 IDLE。
 ```
 
-### 2.3 Comparison with v1
+引擎在状态切换时自动更新 `AgentSystemState`：
+- `LifecycleState::Idle` → `AgentSystemState::Idle`
+- `LifecycleState::Busy` → `AgentSystemState::Working`（构造时传入）
 
-| 维度 | v1 (主动拉取) | v2 (被动推送) |
-|------|-------------|-------------|
-| 状态数 | 5 (IDLE/CHECKING/CLAIMING/EXECUTING/REVIEWING) | 2 (IDLE/BUSY) |
-| 事件类型 | 10+ | 3 + Interrupt |
-| 巡检 | DelayedWorkTick 定时器 | 无 |
-| 认领 | Agent 间乐观锁竞争 | 外部调度器直接指派 |
-| 冷却 | 认领失败退避 + 巡检冷却 | 仅 Item 间可选冷却 |
-| Idle 协作 | DelayedWorkTick 控制 Bus 空/非空节奏 | 队列空时 Bus 自然空 |
-| 竞争 | Agent 之间抢任务 | 调度器侧解决 |
+### 3.3 Context (provided by LifecycleEngine)
+
+```rust
+// 泛型上下文，引擎内部使用
+pub struct LifecycleContext<I: Clone, St: Clone> {
+    pub state: LifecycleState,
+    pub queue: VecDeque<I>,        // FIFO 工作队列
+    pub current: Option<I>,        // 当前执行的工作项
+    pub steps: Vec<St>,            // 当前工作项的步骤列表
+    pub step_index: usize,         // 当前步骤索引
+    pub step_outputs: Vec<StepOutput>,  // 累积的步骤输出
+}
+```
+
+WorkSystem 通过 `engine.snapshot()` 获取上下文快照（用于测试和外部查询）。
 
 ---
 
-## 3. Type System
+## 4. Domain Types (work-specific)
 
-### 3.1 WorkEvent
+### 4.1 WorkEvent
 
 ```rust
-/// Work System 的领域事件——只有 3 个业务事件 + 1 个系统事件。
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkEvent {
-    /// 外部系统推送工作项到 Agent。
-    /// 来源：CLI、API、看板调度器、todo、Boredom→SeekTask 响应等。
     WorkItemAssigned {
         item: WorkItem,
-        /// 来源标识（用于日志、Hook 决策、trace 分析）。
         source: WorkItemSource,
     },
-
-    /// 当前工作项执行完成。
     WorkItemCompleted {
         item_id: WorkItemId,
         result: WorkItemResult,
         duration: Duration,
     },
-
-    /// 当前工作项执行失败。
     WorkItemFailed {
         item_id: WorkItemId,
         error: WorkError,
-        /// 是否可重试（如果 true，WorkItem 重新入队）。
         retryable: bool,
     },
-
-    /// 中断当前执行，强制切回 IDLE。
-    /// 任何状态收到此事件 → 保存 checkpoint → 无条件 IDLE。
     Interrupt {
         reason: String,
         by_system: String,
@@ -127,634 +233,218 @@ pub enum WorkEvent {
 }
 ```
 
-### 3.2 WorkItemSource
+### 4.2 WorkItemSource
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkItemSource {
-    /// 通过 aman CLI 直接指派。
     Cli { operator: String },
-    /// 通过 HTTP API 指派。
     Api { endpoint: String, operator: String },
-    /// 看板插件调度器分配。
     Kanban { board_id: String, scheduler: String },
-    /// Todo 列表插件分配。
     Todo { list_id: String },
-    /// Idle Boredom 下 Agent 主动 SeekTask 后，调度器响应。
     SeekResponse { request_id: String },
-    /// 其他自定义来源。
     Custom { name: String, metadata: HashMap<String, Value> },
 }
 ```
 
-### 3.3 WorkItem
+### 4.3 WorkItem
 
 ```rust
-/// 推送到 Work 队列的工作单元。
-///
-/// 比 "Task" 更通用：可以是用户指派的任务、看板卡片、API 触发、
-/// 定时提醒、Idle Boredom 找回的活——任何需要 Agent 执行的工作。
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkItem {
     pub id: WorkItemId,
     pub title: String,
     pub description: String,
-
-    /// 预设的执行步骤（可选）。
-    /// 如果为空，Work System 调用 LLM 自行分解。
-    pub steps: Option<Vec<Step>>,
-
-    /// 优先级（队列内排序用）。
+    pub steps: Option<Vec<Step>>,    // 预设步骤（可选，为空时由 Spec 分解）
     pub priority: Priority,
-
-    /// 执行超时。
     pub timeout: Option<Duration>,
-
-    /// 附带的上下文。
     pub context: HashMap<String, Value>,
-
-    /// 完成后是否通知调用方（通过 Global Bus）。
     pub notify_on_complete: bool,
-
-    /// 创建时间。
     pub created_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
     pub index: usize,
     pub description: String,
-    pub tool: Option<String>,       // 指定工具（可选）
-    pub expect_llm: bool,           // 是否需要 LLM 推理
+    pub tool: Option<String>,
+    pub expect_llm: bool,
     pub max_retries: u32,
-}
-```
-
-### 3.4 WorkContext
-
-```rust
-#[derive(Debug, Clone)]
-pub struct WorkContext {
-    pub state: WorkState,
-    /// FIFO 工作队列。
-    pub queue: VecDeque<WorkItem>,
-    /// 当前正在执行的工作项。
-    pub current: Option<WorkItem>,
-    /// 当前工作项的步骤列表。
-    pub steps: Vec<Step>,
-    /// 当前步骤索引。
-    pub step_index: usize,
-}
-
-impl WorkContext {
-    pub fn new() -> Self {
-        Self {
-            state: WorkState::Idle,
-            queue: VecDeque::new(),
-            current: None,
-            steps: Vec::new(),
-            step_index: 0,
-        }
-    }
-
-    pub fn enqueue(&mut self, item: WorkItem) {
-        self.queue.push_back(item);
-    }
-
-    pub fn dequeue(&mut self) -> Option<WorkItem> {
-        self.queue.pop_front()
-    }
-
-    pub fn reset_to_idle(&mut self) {
-        self.state = WorkState::Idle;
-        self.current = None;
-        self.steps.clear();
-        self.step_index = 0;
-    }
 }
 ```
 
 ---
 
-## 4. Core Execution Logic
+## 5. WorkSpec — Domain Adapter
 
-### 4.1 Event Handler
+`WorkSpec` 是 Work 领域对 `SystemSpec` trait 的实现，是 Work System 的核心。
+
+### 5.1 Step Decomposition
 
 ```rust
-impl WorkSystem {
-    pub async fn handle(
-        &mut self,
-        event: WorkEvent,
-        ctx: &mut WorkContext,
-        local_bus: &dyn EventBus,
-        global_bus: &dyn GlobalEventBus,
-        idle_coord: &IdleCoordination,
-        trace: &mut TraceStore,
-    ) -> WorkResult<()> {
-        match event {
-            // ── Interrupt（最高优先级，任何状态）────────────────
-            WorkEvent::Interrupt { reason, by_system } => {
-                if ctx.state == WorkState::Busy {
-                    let checkpoint = self.save_checkpoint(ctx);
-                    trace.record(WorkTraceEvent::Interrupted { checkpoint, by_system });
-                }
-                ctx.reset_to_idle();
-                return Ok(());
-            }
+impl SystemSpec for WorkSpec {
+    type Item = WorkItem;
+    type Step = Step;
 
-            // ── 收到新工作项 ──────────────────────────────────
-            WorkEvent::WorkItemAssigned { item, source } => {
-                trace.record(WorkTraceEvent::ItemReceived {
-                    item_id: item.id,
-                    source: source.clone(),
-                });
-                ctx.enqueue(item);
-
-                if ctx.state == WorkState::Idle {
-                    ctx.state = WorkState::Busy;
-                    let next = ctx.dequeue().unwrap();
-                    self.start_item(next, ctx, local_bus).await?;
-                }
-                // else: 正在 BUSY，Item 已在队列中，当前完成后自动出队
-            }
-
-            // ── 工作项完成 ────────────────────────────────────
-            WorkEvent::WorkItemCompleted { item_id, result, duration } => {
-                trace.record(WorkTraceEvent::ItemCompleted {
-                    item_id, duration, outcome: "completed".into(),
-                });
-
-                if let Some(ref item) = ctx.current {
-                    if item.notify_on_complete {
-                        global_bus.post(WorkItemResultEvent {
-                            item_id,
-                            result: result.clone(),
-                            agent_id: self.agent_id.clone(),
-                        }).await?;
-                    }
-                }
-
-                idle_coord.inject(IdleSignal::Satisfaction { work_item_id: item_id });
-                self.process_next(ctx, local_bus).await?;
-            }
-
-            // ── 工作项失败 ────────────────────────────────────
-            WorkEvent::WorkItemFailed { item_id, error, retryable } => {
-                trace.record(WorkTraceEvent::ItemFailed {
-                    item_id,
-                    error: error.to_string(),
-                    retryable,
-                });
-
-                if retryable && self.should_retry(&error) {
-                    if let Some(item) = ctx.current.take() {
-                        ctx.queue.push_front(item); // 重新入队到头部
-                    }
-                } else {
-                    global_bus.post(WorkItemFailedEvent {
-                        item_id,
-                        error: error.to_string(),
-                        agent_id: self.agent_id.clone(),
-                    }).await?;
-
-                    idle_coord.inject(IdleSignal::Frustration {
-                        reason: Some(error.to_string()),
-                    });
-                }
-
-                self.process_next(ctx, local_bus).await?;
+    async fn decompose(&self, item: &WorkItem, max_retries: u32) -> Vec<Step> {
+        // 1. 有预设步骤 → 直接使用
+        if let Some(ref predefined) = item.steps {
+            if !predefined.is_empty() {
+                return predefined.clone();
             }
         }
-        Ok(())
-    }
 
-    /// 处理队列中下一个工作项；队列为空则切回 IDLE。
-    async fn process_next(
-        &mut self,
-        ctx: &mut WorkContext,
-        local_bus: &dyn EventBus,
-    ) -> WorkResult<()> {
-        match ctx.dequeue() {
-            Some(next) => {
-                self.start_item(next, ctx, local_bus).await?;
-            }
-            None => {
-                // 队列空 → IDLE，Bus 变空，Idle System 自然接管
-                ctx.reset_to_idle();
-            }
+        // 2. 未开启自动分解 → 返回空，引擎使用 default_step
+        if !self.auto_decompose {
+            return vec![];
         }
-        Ok(())
-    }
 
-    /// 开始执行一个工作项：运行前置 Hook，分解步骤，投递首个 ExecuteStep。
-    async fn start_item(
-        &mut self,
-        item: WorkItem,
-        ctx: &mut WorkContext,
-        local_bus: &dyn EventBus,
-    ) -> WorkResult<()> {
-        self.run_hooks(HookPoint::BeforeExecution, &item).await?;
+        // 3. LLM 自动分解（placeholder → 实际调用 LLM）
+        let mut steps = vec![Step {
+            index: 0,
+            description: format!("Analyze: {}", item.title),
+            expect_llm: true,
+            max_retries: 1,
+            ..
+        }];
 
-        ctx.steps = match item.steps {
-            Some(predefined) => predefined,
-            None => self.decompose_with_llm(&item).await?,
-        };
-        ctx.step_index = 0;
-        ctx.current = Some(item);
+        if item.description.contains("code") || item.description.contains("fix") {
+            steps.push(Step {
+                description: format!("Implement: {}", item.title),
+                tool: Some("file".into()),
+                expect_llm: true,
+                max_retries,
+                ..
+            });
+        }
 
-        // 投递首个执行步骤 → Bus 保持非空
-        local_bus.post(StepEvent::Execute { step_index: 0 }).await?;
-        Ok(())
+        steps.push(Step {
+            description: format!("Finalize: {}", item.title),
+            expect_llm: true,
+            max_retries: 1,
+            ..
+        });
+        steps
     }
 }
 ```
 
-### 4.2 Step Execution (Internal)
+引擎行为：
+- `decompose()` 返回空 → 引擎调用 `default_step()` 创建单步骤
+- `decompose()` 返回步骤列表 → 引擎直接使用，依次执行
 
-步骤执行是 Work System 的内部循环，不暴露为 WorkEvent（只通过 `StepEvent` 内部流转）。
-保持"一步完成即投递下一步"的链式模式，确保 Bus 持续非空。
+### 5.2 Step Execution
 
 ```rust
-impl WorkSystem {
-    pub async fn execute_step(
-        &mut self,
-        step_index: usize,
-        ctx: &mut WorkContext,
-        local_bus: &dyn EventBus,
-    ) -> WorkResult<()> {
-        let step = &ctx.steps[step_index];
-        let item = ctx.current.as_ref().unwrap();
-        let start = Instant::now();
-
-        // 步骤前置 Hook
-        self.run_hooks(HookPoint::BeforeStep, item).await?;
-
-        let result = if step.expect_llm {
-            self.execute_llm_step(step, item).await
-        } else if let Some(ref tool_name) = step.tool {
-            self.execute_tool_step(tool_name, step, item).await
-        } else {
-            self.execute_simple_step(step, item).await
-        };
-
-        // 步骤后置 Hook
-        self.run_hooks(HookPoint::AfterStep, item).await?;
-
-        match result {
-            Ok(_output) => {
-                if step_index + 1 < ctx.steps.len() {
-                    ctx.step_index = step_index + 1;
-                    local_bus.post(StepEvent::Execute { step_index: step_index + 1 }).await?;
-                } else {
-                    let duration = start.elapsed();
-                    let result = self.collect_result(ctx);
-                    local_bus.post(WorkEvent::WorkItemCompleted {
-                        item_id: item.id.clone(),
-                        result,
-                        duration,
-                    }).await?;
-                }
-            }
-            Err(error) => {
-                if step_index < step.max_retries as usize {
-                    local_bus.post(StepEvent::Execute { step_index }).await?;
-                } else {
-                    local_bus.post(WorkEvent::WorkItemFailed {
-                        item_id: item.id.clone(),
-                        error,
-                        retryable: false,
-                    }).await?;
-                }
-            }
-        }
-        Ok(())
-    }
+async fn execute_step_impl(
+    &self,
+    _item: &WorkItem,
+    step: &Step,
+    _step_index: usize,
+) -> Result<StepOutput, LifecycleError> {
+    // 实际集成中：根据 step.expect_llm / step.tool 调用 LLM 或工具
+    Ok(StepOutput {
+        success: true,
+        summary: format!("Completed: {}", step.description),
+        artifacts: Vec::new(),
+        duration: std::time::Duration::from_millis(50),
+    })
 }
 ```
 
-### 4.3 Bus Non-Empty Guarantee
+### 5.3 Event Routing Constants
+
+```rust
+fn event_source() -> &'static str { "work.system" }
+fn step_event_kind() -> &'static str { "work.step.execute" }
+fn assigned_kind() -> &'static str { "work.item.assigned" }
+fn completed_kind() -> &'static str { "work.item.completed" }
+fn failed_kind() -> &'static str { "work.item.failed" }
+fn interrupt_kind() -> &'static str { "work.interrupt" }
+```
+
+### 5.4 Result Collection
+
+```rust
+fn collect_result(_item: &WorkItem, outputs: &[StepOutput]) -> serde_json::Value {
+    let steps_completed = outputs.iter().filter(|o| o.success).count();
+    let steps_failed = outputs.iter().filter(|o| !o.success).count();
+    serde_json::json!({
+        "outcome": "completed",
+        "steps_completed": steps_completed,
+        "steps_failed": steps_failed,
+    })
+}
+```
+
+---
+
+## 6. Bus Non-Empty Guarantee (handled by Engine)
 
 ```
-WorkItemAssigned → IDLE→BUSY → ExecuteStep(0)
-  → 执行 → ExecuteStep(1)
-  → 执行 → ExecuteStep(2)
-  → 执行 → WorkItemCompleted
-  → dequeue → 有下一个? ExecuteStep(0) for next item
+WorkItemAssigned → IDLE→BUSY → engine.start_item() → publish_step_event(0)
+  → 执行 → publish_step_event(1)
+  → 执行 → publish_step_event(2)
+  → 执行 → finish_item() → publish completed event
+  → dequeue → 有下一个? start_item() for next item
             → 无下一个? IDLE
 
 执行期间 Bus 始终非空 → Idle System 不触发。
 队列空 → Bus 空 → Idle System 自然接管。
 ```
 
-无需任何 DelayedWorkTick、冷却计时器。
+步骤之间的链式推进由引擎内部管理，`WorkSystem` 无需关心。
 
 ---
 
-## 5. How External Systems Push Work
+## 7. How External Systems Push Work
 
-### 5.1 Unified Push Interface
+### 7.1 Unified Push Interface
 
 ```rust
-/// 外部系统向 Agent 推送工作项的统一接口。
-#[async_trait]
 pub trait WorkItemPushChannel {
-    /// 向指定 Agent 推送工作项。
-    async fn push(
-        &self,
-        agent_id: &AgentId,
-        item: WorkItem,
-        source: WorkItemSource,
-    ) -> Result<()>;
-
-    /// 推送工作项，由全局调度器决定目标 Agent。
-    async fn push_any(
-        &self,
-        item: WorkItem,
-        source: WorkItemSource,
-        strategy: DispatchStrategy,
-    ) -> Result<AgentId>;
+    async fn push(&self, agent_id: &AgentId, item: WorkItem, source: WorkItemSource) -> Result<()>;
+    async fn push_any(&self, item: WorkItem, source: WorkItemSource, strategy: DispatchStrategy) -> Result<AgentId>;
 }
 
-#[derive(Debug, Clone)]
 pub enum DispatchStrategy {
-    /// 指定目标。
     Direct(AgentId),
-    /// 随机空闲 Agent。
     RandomIdle,
-    /// 队列最短的 Agent。
     LeastLoaded,
-    /// 根据能力标签匹配。
     BestMatch { capabilities: Vec<String> },
-    /// 自定义（看板/全局调度器实现）。
     Custom(Box<dyn Fn(&[AgentStatus]) -> AgentId>),
 }
 ```
 
-### 5.2 CLI / API
+### 7.2 CLI / API
 
 ```
-用户: aman work assign --agent alice "fix bug #1234"
-
-CLI:
-  1. 构造 WorkItem { title: "fix bug #1234", ... }
-  2. POST /api/v1/agents/alice/work/push
-     Body: { item: {...}, source: "cli" }
-  3. AgentRuntime → 构造 WorkItemAssigned 事件
-  4. 投递到 alice 的 Local Event Bus
-  5. WorkSystem.handle() 消费
+aman work assign --agent alice "fix bug #1234"
+  → POST /api/v1/agents/alice/work/push
+  → AgentRuntime → WorkItemAssigned 事件
+  → WorkSystem.handle() → engine.handle_assigned()
 ```
 
-### 5.3 Kanban / Team Board
+### 7.3 Kanban / Team Board
 
-```
-┌──────────────────────────────────────────┐
-│              Kanban Plugin               │
-│                                          │
-│  ┌──────────┐   ┌────────────────────┐  │
-│  │ 看板 UI  │   │  Item Scheduler    │  │
-│  │ (列/卡片)│   │                    │  │
-│  └────┬─────┘   │  1. 监控 Backlog   │  │
-│       │         │  2. 根据策略选择    │  │
-│       │ 拖动卡片 │     目标 Agent     │  │
-│       │ 到 "开发中"│  3. push(item)    │  │
-│       │         │                    │  │
-│       └─────────┤  策略:             │  │
-│                 │  - 手动指派         │  │
-│                 │  - 自动分配（空闲） │  │
-│                 │  - 能力匹配         │  │
-│                 │  - 负载均衡         │  │
-│                 └────────────────────┘  │
-└──────────────────────────────────────────┘
+Kanban 调度器决定目标 Agent → `push(agent_id, item)` → Agent 的 Work 队列。
 
-Agent 不看任务板，看板决定任务给谁。
-```
+### 7.4 Todo List
 
-### 5.4 Todo List
-
-```
-Todo Plugin:
-  - 用户设定每日任务清单
-  - 到达执行时间 → Todo Scheduler.push(item) 到配置的 Agent
-  - Agent 执行 → 完成后通过 Global Bus 通知 Todo 更新状态
-```
+到达执行时间 → Todo Scheduler `push(item)` → Agent 执行 → 完成后全局总线通知 Todo 更新状态。
 
 ---
 
-## 6. Hook Mechanism
+## 8. IdleSignal Feedback (handled by Engine)
 
-### 6.1 Hook Points
-
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HookPoint {
-    /// 工作项开始执行前。
-    BeforeExecution,
-    /// 每个步骤执行前。
-    BeforeStep,
-    /// 每个步骤执行后。
-    AfterStep,
-    /// 工作项执行完成后（无论成败）。
-    AfterExecution,
-    /// 工作项成功时。
-    OnSuccess,
-    /// 工作项失败时。
-    OnFailure,
-}
-```
-
-Hook 调用次序：
-
-```
-BeforeExecution
-  ├─ BeforeStep → (execute) → AfterStep
-  ├─ BeforeStep → (execute) → AfterStep
-  ├─ ...
-  └─ AfterExecution
-       ├─ OnSuccess (if completed)
-       └─ OnFailure (if failed)
-```
-
-### 6.2 Hook Registration
+引擎在完成/失败时自动发送 `IdleSignal`：
 
 ```rust
-#[derive(Debug, Clone)]
-pub struct Hook {
-    pub name: String,
-    pub point: HookPoint,
-    pub action: HookAction,
-    /// Hook 失败时是否中止整个 WorkItem。
-    pub abort_on_failure: bool,
-}
+// 引擎内部的 handle_completed:
+self.send_idle_signal(IdleSignal::Satisfaction { item_id }).await;
 
-#[derive(Debug, Clone)]
-pub enum HookAction {
-    /// 调用内置工具。
-    Tool { tool_name: String, params: HashMap<String, Value> },
-    /// 调用 LLM（传入 WorkItem 上下文）。
-    Llm { system_prompt: String, max_tokens: u32 },
-    /// 发送事件到 Global Bus。
-    EmitEvent { event_type: String, payload_template: String },
-}
+// 引擎内部的 handle_failed (非重试):
+self.send_idle_signal(IdleSignal::Frustration { reason: Some(error.message) }).await;
 ```
 
-### 6.3 Configuration
-
-```yaml
-work:
-  hooks:
-    before_execution:
-      - name: log_start
-        action:
-          type: tool
-          tool_name: trace.record
-          params:
-            event: "work.item.started"
-
-      - name: check_permissions
-        action:
-          type: llm
-          system_prompt: "检查此工作项是否需要额外权限。如需确认，返回 'block'。"
-        abort_on_failure: false
-
-    before_step: []
-
-    after_step:
-      - name: update_progress
-        action:
-          type: emit_event
-          event_type: "work.progress.updated"
-          payload_template: |
-            { "item_id": "{{item.id}}", "step": "{{step_index}}/{{total_steps}}" }
-
-    after_execution: []
-
-    on_success:
-      - name: notify_completion
-        action:
-          type: emit_event
-          event_type: "kanban.item.completed"
-
-    on_failure:
-      - name: log_failure
-        action:
-          type: tool
-          tool_name: trace.record
-          params:
-            event: "work.item.failed"
-```
-
-### 6.4 Hook Execution
-
-```rust
-impl WorkSystem {
-    async fn run_hooks(&self, point: HookPoint, item: &WorkItem) -> WorkResult<()> {
-        for hook in &self.config.hooks.for_point(point) {
-            let result = match &hook.action {
-                HookAction::Tool { tool_name, params } => {
-                    self.call_tool(tool_name, params, item).await
-                }
-                HookAction::Llm { system_prompt, max_tokens } => {
-                    self.call_llm(system_prompt, *max_tokens, item).await
-                }
-                HookAction::EmitEvent { event_type, payload_template } => {
-                    let payload = self.render_template(payload_template, item);
-                    self.global_bus.emit(event_type, payload).await
-                }
-            };
-
-            if result.is_err() && hook.abort_on_failure {
-                return Err(WorkError::HookFailed {
-                    hook: hook.name.clone(),
-                    error: result.unwrap_err().to_string(),
-                });
-            }
-        }
-        Ok(())
-    }
-}
-```
-
----
-
-## 7. Integration with Idle System
-
-### 7.1 Natural Collaboration
-
-```
-Work 队列空 + IDLE
-  → Event Bus 为空
-  → Idle System 运行（Daze → Boredom → ...）
-
-外部推送 WorkItemAssigned
-  → 事件进入 Event Bus → Bus 非空，Idle 停止
-  → Work System 切到 BUSY，开始执行
-  → 执行期间链式投递 StepEvent → Bus 持续非空
-
-队列空 + 当前 Item 完成
-  → Work 切回 IDLE
-  → Bus 为空
-  → Idle System 自然恢复
-```
-
-### 7.2 Boredom → SeekTask (Active Exploration)
-
-Agent 在无聊时主动找活的需求完全归入 Idle System：
-
-```rust
-// IdleSystem 的 Boredom 处理中：
-if self.boredom_level >= self.config.seek_task_threshold {
-    global_bus.post(SeekTaskRequest {
-        agent_id: self.agent_id,
-        capabilities: self.capabilities.clone(),
-    }).await?;
-}
-
-// 看板/全局调度器收到 SeekTaskRequest：
-//   1. 查找适合该 Agent 的工作
-//   2. 如果有 → push(agent_id, item, WorkItemSource::SeekResponse { ... })
-//   3. 如果无 → 忽略
-//
-// Agent 收到 WorkItemAssigned(SeekResponse) → 退出 Boredom → 开始工作
-```
-
-Work System 不感知 SeekTask 协议，只接收结果。主动探索的拟人行为在 Idle 侧闭环。
-
-### 7.3 Feedback Loop
-
-```
-WorkItemCompleted → IdleSignal::Satisfaction   → arousal ↑
-WorkItemFailed    → IdleSignal::Frustration    → arousal ↓
-```
-
-直接在事件处理中调用 `idle_coord.inject()`，无需额外的注入路径。
-
----
-
-## 8. Interrupt Protocol
-
-与 v1 一致，但因只有 2 个状态而更简单：
-
-```rust
-impl AgentScheduler {
-    pub async fn activate_system(&mut self, target: SystemKind, activation_event: Event) {
-        if let Some(active) = self.active_system {
-            if active != target {
-                self.local_bus.post(WorkEvent::Interrupt {
-                    reason: format!("{:?}_activated", target),
-                    by_system: target.to_string(),
-                }).await?;
-            }
-        }
-        self.local_bus.post(activation_event).await?;
-    }
-}
-```
-
-| 触发条件 | 行为 |
-|---------|------|
-| 用户切换（"别工作了，学习吧"） | Interrupt → Work save checkpoint → IDLE → 激活 Study |
-| 高优事件到达 | Interrupt → IDLE → 路由事件到其他系统 |
-| Work 自然完成（队列空） | 自己回到 IDLE，无需 Interrupt |
+`WorkSystem` 通过 `set_idle_signal_tx()` 将 mpsc channel 传递给引擎，无需在事件处理中手动发送。
 
 ---
 
@@ -763,25 +453,12 @@ impl AgentScheduler {
 ```yaml
 work:
   execution:
-    # 是否启用 LLM 自动分解步骤（当 WorkItem.steps 为空时）
-    auto_decompose: true
-    # 单步最大执行时间
+    auto_decompose: true       # 当 WorkItem.steps 为空时，LLM 自动分解步骤
     step_timeout: 120s
-    # 工作项之间的可选冷却（0 = 无冷却）
     inter_item_cooldown: 0s
 
-  hooks:
-    before_execution: []
-    before_step: []
-    after_step: []
-    after_execution: []
-    on_success: []
-    on_failure: []
-
   queue:
-    # 最大队列长度（超过后拒绝新 WorkItem）
     max_size: 100
-    # 是否启用优先级队列（false = 纯 FIFO）
     priority_queue: false
 
   retry:
@@ -789,22 +466,19 @@ work:
     retry_delay: 5s
 ```
 
-对比 v1：不再有 `capabilities`、`auto_claim`、`selection strategy`、`claim_retry`、`board`、`review`——这些要么属于外部调度器，要么通过 Hook 实现。
-
 ---
 
 ## 10. Runtime Integration
-
-与 v1 相同：Phase 4 初始化，Phase 0 销毁。构造更简单：
 
 ```rust
 impl AgentBuilder {
     pub fn build(self) -> Result<AgentRuntime> {
         let work_sys = WorkSystem::new(
+            self.config.agent_id.clone(),
             self.config.work.clone(),
             local_bus.clone(),
             global_bus.clone(),
-            self.persistence.trace_store(),
+            Some(system_state.clone()),
         );
         // ...
     }
@@ -823,53 +497,25 @@ routes:
   - match: { event_type: "work.interrupt" }       → handler:work
 ```
 
-说明：
-- 事件类型的 wire name 使用 `work.item.*`（snake_case 的 `WorkItemAssigned` → `work.item.assigned`）
-- `StepEvent` 是内部流转事件，不走路由表，直接在 WorkSystem 内部消费
-- `SeekTaskRequest` / `SeekTaskResponse` 是 Idle System 的事件，不经过 Work System
+`StepEvent`（`work.step.execute`）是内部事件，引擎自己发布和消费，不经过路由表。
 
 ---
 
-## 12. Migration Path from v1
+## 12. Summary
 
-| 删除 | 替换为 |
-|------|-------|
-| `WorkState::Checking` | 删除 |
-| `WorkState::Claiming` | 删除 |
-| `WorkState::Reviewing` | `on_success` / `on_failure` Hook |
-| `WorkState::Executing` | `WorkState::Busy` |
-| `Task` 类型 | `WorkItem` |
-| `WorkTick` / `DelayedWorkTick` | 外部推送 |
-| `StartCheck` / `ClaimTask` / `ClaimResponse` | 删除 |
-| `ReviewTask` / `ReviewComplete` | Hook |
-| `TaskBoardUpdated` | 移到看板插件内部 |
-| `WorkPersonality` (capabilities, selection, claim_retry) | 外部调度器配置 |
-| `WorkBoardClient` trait | `WorkItemPushChannel` trait |
-
-保留：
-- `Interrupt` 事件 + checkpoint 机制
-- `IdleSignal` 注入（简化路径）
-- Phase 4 初始化 / Phase 0 销毁
-- Per-Agent 架构 + Trace Store 集成
-
----
-
-## 13. Summary
-
-| 维度 | v1 (主动拉取) | v2 (被动推送) |
-|------|-------------|-------------|
-| **状态** | 5 | 2 (IDLE/BUSY) |
-| **事件类型** | 10+ | 3 + Interrupt |
-| **巡检** | DelayedWorkTick 定时器 | 无 |
-| **认领** | Agent 间乐观锁竞争 | 外部调度器决定 |
-| **Bus 非空保证** | ExecuteStep + DelayedWorkTick | 链式 ExecuteStep |
-| **Idle 协作** | DelayedWorkTick 控制节奏 | 队列空时自然空 |
-| **Hook** | 无 | 6 个 Hook 点 |
-| **主动找活** | Work System 自身 | Idle Boredom → SeekTask |
-| **配置项** | 10+ 项（含 board、review、claim_retry 等） | 4 组（execution、hooks、queue、retry） |
+| 维度 | v2 (独立实现) | v3 (Lifecycle Engine) |
+|------|-------------|----------------------|
+| **状态机** | 每个系统手写 | `LifecycleEngine` 统一提供 |
+| **队列管理** | 每个系统一个 `XxxContext` | `LifecycleContext<I, St>` 泛型 |
+| **步骤链** | 手写 `advance_pipeline` / `process_next` | 引擎内部自动推进 |
+| **Interrupt** | 手写 checkpoint 保存 | `engine.handle_interrupt()` |
+| **重试** | 手写 `push_front` | `engine.handle_failed()` |
+| **IdleSignal** | 手写 mpsc 发送 | 引擎自动发送 |
+| **全局通知** | 手写 `global_bus.publish` | 引擎自动发布 |
+| **领域代码量** | ~500 行 | ~100 行 (spec + wrapper) |
 
 **核心原则**：
-1. Work System 就是一个带 Hook 的 FIFO 工作队列消费者。
-2. 谁做什么由外部调度器决定，Agent 只负责执行。
-3. 队列空时 Idle System 自然运行，无需任何协调代码。
-4. 「主动找活」保留在 Idle Boredom 中，不污染 Work 的简洁性。
+1. Work System 是 `LifecycleEngine<WorkSpec>` 的薄封装。
+2. 所有通用的队列/状态/步骤/中断/重试逻辑在 lifecycle crate 中统一维护。
+3. Work 领域特有逻辑（分解策略、执行方式、结果收集）集中在 `WorkSpec` 中。
+4. 三个系统（Work/Study/Daily-Life）的引擎行为一致，修改引擎一处即可惠及全部。

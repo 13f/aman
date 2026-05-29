@@ -19,9 +19,11 @@ use crate::config::WorkConfig;
 use crate::spec::WorkSpec;
 use crate::trace::WorkTraceEvent;
 use crate::types::{
-    IdleSignal, WorkContext, WorkError, WorkEvent, WorkItem, WorkItemFailedEvent,
-    WorkItemResultEvent, WorkItemSource, WorkResult, WorkState, WORK_SOURCE,
+    IdleSignal, Priority, WorkContext, WorkError, WorkEvent, WorkItem, WorkItemFailedEvent,
+    WorkItemId, WorkItemResultEvent, WorkItemSource, WorkResult, WorkState, WORK_SOURCE,
 };
+use kernel::types::Timestamp;
+use std::collections::HashMap;
 
 /// The per-agent Work System engine (v2: passive queue consumer).
 ///
@@ -265,6 +267,33 @@ impl WorkSystem {
         );
         self.engine.handle_step(step_index).await?;
         Ok(())
+    }
+
+    /// Handle a boredom action tag. Pushes a seek-unfinished-work item
+    /// onto the queue so the agent spontaneously looks for things to do.
+    pub async fn on_boredom_action(&self, _tag: &str) {
+        let title = "检查未完成的工作";
+        info!("random_hit:action: {title}");
+
+        let item = WorkItem {
+            id: WorkItemId::new(),
+            title: title.into(),
+            description: "Boredom: seek unfinished tasks".into(),
+            steps: None,
+            priority: Priority::Low,
+            timeout: None,
+            context: HashMap::new(),
+            notify_on_complete: false,
+            created_at: Timestamp::now(),
+        };
+        let _ = self
+            .publish_work_event(WorkEvent::WorkItemAssigned {
+                item,
+                source: WorkItemSource::SeekResponse {
+                    request_id: "boredom".into(),
+                },
+            })
+            .await;
     }
 
     /// Push a work item onto this agent's queue by publishing a

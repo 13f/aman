@@ -40,6 +40,9 @@ pub struct IdleDetector {
     pub(crate) last_poll: Option<Instant>,
     /// Ring buffer of recent idle outputs (max 10)
     pub(crate) last_idle_outputs: Vec<String>,
+    /// Number of consecutive polls within the current Boredom episode.
+    /// Reset to 0 when the resolved kind is not Boredom.
+    pub(crate) boredom_poll_count: u32,
 }
 
 impl IdleDetector {
@@ -58,6 +61,7 @@ impl IdleDetector {
             last_chat_seen: None,
             last_poll: None,
             last_idle_outputs: Vec::new(),
+            boredom_poll_count: 0,
         }
     }
 
@@ -247,6 +251,7 @@ mod tests {
                 pollute_chat_history: false,
                 suspend_on_user_input: true,
             },
+            boredom: None,
         }
     }
 

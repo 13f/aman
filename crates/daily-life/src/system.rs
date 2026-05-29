@@ -18,9 +18,12 @@ use crate::config::DailyLifeConfig;
 use crate::spec::DailySpec;
 use crate::trace::DailyTraceEvent;
 use crate::types::{
-    DailyContext, DailyError, DailyEvent, DailyItem, DailyItemSource, DailyResult,
-    DailyState, IdleSignal, DAILY_SOURCE,
+    DailyContext, DailyError, DailyEvent, DailyItem, DailyItemId, DailyItemSource,
+    DailyResult, DailyState, IdleSignal, Priority, Routine, RoutineAction, RoutinePriority,
+    TimeWindow, DAILY_SOURCE,
 };
+use kernel::types::Timestamp;
+use std::collections::HashMap;
 
 pub struct DailyLifeSystem {
     engine: LifecycleEngine<DailySpec>,
@@ -229,6 +232,45 @@ impl DailyLifeSystem {
         );
         self.engine.handle_step(routine_index).await?;
         Ok(())
+    }
+
+    /// Handle a boredom action tag. Maps tags to light daily activities.
+    pub async fn on_boredom_action(&self, tag: &str) {
+        let (routine_name, prompt) = match tag {
+            "internet" => ("网上冲浪", "浏览最近的技术资讯和行业动态，简要总结有趣的发现"),
+            "entertainment" => ("找点乐子", "找一个小娱乐活动——可以是一段有趣的视频、一首歌、或者一个轻松的小游戏"),
+            _ => return,
+        };
+        info!("random_hit:action: {routine_name}");
+
+        let item = DailyItem {
+            id: DailyItemId::new(),
+            window: TimeWindow::Midday, // any window, routine is explicit
+            routines: Some(vec![Routine {
+                name: routine_name.into(),
+                action: RoutineAction::CustomPrompt {
+                    prompt: prompt.into(),
+                },
+                priority: RoutinePriority::Optional,
+            }]),
+            priority: Priority::Low,
+            context: HashMap::new(),
+            notify_on_complete: false,
+            created_at: Timestamp::now(),
+        };
+        let _ = self
+            .push_daily_item(
+                item,
+                DailyItemSource::Custom {
+                    name: "boredom".into(),
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert("tag".into(), serde_json::Value::String(tag.into()));
+                        m
+                    },
+                },
+            )
+            .await;
     }
 
     pub async fn push_daily_item(

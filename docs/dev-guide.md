@@ -507,6 +507,85 @@ Source → poll() → Event → publish(Event) → admit_event()
 
 ---
 
+### 4.7 Idle 系统与 Boredom 随机行动
+
+aman 的 Idle 系统在 Agent 无事可做时运行，沿深度逐步推进：**Daze → Boredom → Sleep → Exploration → Meditation → Incubation**。
+
+#### 深度推进
+
+```
+Depth 0   → Daze        发呆
+Depth 5   → Boredom     无聊——触发随机行动
+Depth 20  → Sleep        休眠
+Depth 50  → Exploration  探索
+Depth 100 → Meditation   冥想（知识整理）
+Depth 200 → Incubation   孵化（后台线程）
+```
+
+每个深度都有独立的 poll 间隔和 arousal（唤醒度）衰减策略。event bus 有任何新事件到达 → depth 重置为 0，idle 从头开始。
+
+#### Boredom 随机行动
+
+当 Agent 进入 Boredom 状态后，在第 N 次 poll 时（`trigger_poll`），BoredomActor 按配置的概率权重随机选择一个 tag：
+
+```yaml
+idle:
+  personality:
+    boredom:
+      trigger_poll: 3
+      activities:
+        - tag: idle
+          weight: 0.75          # 75% — 什么都不做，继续推进深度
+        - tag: work
+          weight: 0.10          # 10% — 找点工作
+        - tag: internet
+          weight: 0.08          # 8% — 网上冲浪
+        - tag: entertainment
+          weight: 0.07          # 7% — 小娱乐
+```
+
+选中非 `idle` tag 后，BoredomActor 发布 `idle.boredom.action` 事件到 Agent 的本地事件总线。各系统监听此事件，按 tag 响应：
+
+| Tag | 响应系统 | 行为 |
+|-----|---------|------|
+| `work` | WorkSystem | 推送一个 "检查未完成工作" 的 WorkItem |
+| `study` | StudySystem | 推送一个 "探索感兴趣主题" 的 StudyItem |
+| `internet` | DailyLifeSystem | 推送一个 "网上冲浪" 的 DailyItem（CustomPrompt 例行） |
+| `entertainment` | DailyLifeSystem | 推送一个 "找点乐子" 的 DailyItem |
+| `idle` | — | 哨兵，不做事，继续推进 |
+
+#### 事件格式
+
+```json
+{
+  "source": "idle.boredom",
+  "event_type": "idle.boredom.action",
+  "payload": {
+    "tag": "work",
+    "agent_id": "my-agent"
+  }
+}
+```
+
+#### 日志输出
+
+BoredomActor 每次加权选择后输出：
+
+```
+random_hit:tag: work         # 选中的标签（包括 idle）
+random_hit:action: 检查未完成的工作   # 系统实际执行的动作
+```
+
+#### 扩展：添加新的 Boredom 标签
+
+1. 在 `idle.personality.boredom.activities` 中添加新 tag 和权重
+2. 创建一个 Skill 或 Hook 监听 `idle.boredom.action` 事件
+3. 在 handler 中检查 tag 是否匹配，执行相应逻辑
+
+或者在对应系统的 `on_boredom_action()` 方法中添加新 tag 的处理分支。
+
+---
+
 ## 5. Plugin 系统——完整的扩展能力
 
 ### 5.1 Plugin Trait

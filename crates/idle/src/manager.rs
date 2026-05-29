@@ -21,6 +21,7 @@ use event_bus::EventBus;
 use kernel::agent::AgentSystemState;
 use kernel::AmanResult;
 
+use crate::boredom::BoredomActor;
 use crate::coordination::IdleCoordination;
 use crate::detector::IdleDetector;
 use crate::incubation::IncubationManager;
@@ -47,6 +48,8 @@ pub struct AgentIdleManager {
     system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
     /// Per-agent incubation manager for background idle threads
     incubation: Arc<IncubationManager>,
+    /// Optional boredom actor for random tag selection
+    boredom_actor: Option<Arc<BoredomActor>>,
     /// Stop signal for the background idle loop
     stop_token: CancellationToken,
     /// Handle for the background idle loop task
@@ -64,6 +67,7 @@ impl AgentIdleManager {
         arousal_initial: f64,
         arousal_half_life_secs: f64,
         system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
+        boredom_actor: Option<Arc<BoredomActor>>,
     ) -> Self {
         let agent_id = agent_id.into();
         let coord = Arc::new(IdleCoordination::new(arousal_initial, arousal_half_life_secs));
@@ -76,6 +80,7 @@ impl AgentIdleManager {
             global_bus,
             system_state,
             incubation: Arc::new(IncubationManager::new()),
+            boredom_actor,
             stop_token: CancellationToken::new(),
             task: tokio::sync::Mutex::new(None),
         }
@@ -110,6 +115,7 @@ impl AgentIdleManager {
         let global_bus = self.global_bus.clone();
         let system_state = self.system_state.clone();
         let stop_token = self.stop_token.clone();
+        let boredom_actor = self.boredom_actor.clone();
 
         *task_slot = Some(tokio::spawn(async move {
             let mut detector = IdleDetector::new(
@@ -313,6 +319,13 @@ impl AgentIdleManager {
                 // Apply arousal behavior for this idle kind
                 coord.arousal.apply_behavior(kind.arousal_behavior());
 
+                // Track boredom poll count
+                if kind == IdleKind::Boredom {
+                    detector.boredom_poll_count = detector.boredom_poll_count.saturating_add(1);
+                } else {
+                    detector.boredom_poll_count = 0;
+                }
+
                 let event: kernel::event::Event = idle_event.into();
                 detector.idle_depth = detector.idle_depth.saturating_add(1);
                 detector.last_poll = Some(Instant::now());
@@ -321,6 +334,7 @@ impl AgentIdleManager {
                     agent_id = %agent_id,
                     depth = detector.idle_depth - 1,
                     kind = ?kind,
+                    boredom_poll = detector.boredom_poll_count,
                     "AgentIdleManager produced idle event"
                 );
 
@@ -330,6 +344,32 @@ impl AgentIdleManager {
                 // can observe per-agent idle state
                 if let Some(ref global) = global_bus {
                     let _ = global.publish(event).await;
+                }
+
+                // Boredom action: on trigger poll, pick a tag and publish
+                if kind == IdleKind::Boredom {
+                    if let Some(ref actor) = boredom_actor {
+                        if let Some(tag) = actor.pick(detector.boredom_poll_count) {
+                            info!(
+                                agent_id = %agent_id,
+                                %tag,
+                                poll = detector.boredom_poll_count,
+                                "BoredomActor: picked tag"
+                            );
+                            let action_event = kernel::event::Event::new(
+                                "idle.boredom",
+                                kernel::event::EventType::Custom("idle.boredom.action".into()),
+                                serde_json::json!({
+                                    "tag": tag,
+                                    "agent_id": agent_id,
+                                }),
+                            );
+                            let _ = local_bus.publish(action_event.clone()).await;
+                            if let Some(ref global) = global_bus {
+                                let _ = global.publish(action_event).await;
+                            }
+                        }
+                    }
                 }
             }
         }));

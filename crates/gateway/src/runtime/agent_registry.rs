@@ -3,8 +3,8 @@
 
 use config::AmanConfig;
 use daily_life::DailyLifeSystem;
-use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
-use idle::AgentIdleManager;
+use event_bus::{EventBus, EventHandler, InMemoryBus, InMemoryBusConfig, SubscriptionFilter};
+use idle::{AgentIdleManager, BoredomActor};
 use study::StudySystem;
 use work::WorkSystem;
 use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus, AgentSystemState};
@@ -168,8 +168,11 @@ impl AgentRegistry {
             }
 
             // Create per-agent idle manager only if both global idle is enabled
-            // AND this specific agent is enabled (has a configured provider).
+            // AND this specific agent is enabled.
             if idle_enabled && entry.enabled {
+                let boredom_actor = idle_personality.boredom.as_ref().map(|cfg| {
+                    Arc::new(BoredomActor::new(cfg.clone()))
+                });
                 let idle_manager = Arc::new(AgentIdleManager::new(
                     agent_id.clone(),
                     Arc::clone(&local_bus) as Arc<dyn EventBus>,
@@ -178,6 +181,7 @@ impl AgentRegistry {
                     arousal_initial,
                     arousal_half_life,
                     Some(Arc::clone(&system_state)),
+                    boredom_actor,
                 ));
                 self.set_idle_manager(agent_id, idle_manager).await;
             }
@@ -210,6 +214,28 @@ impl AgentRegistry {
                     Some(Arc::clone(&system_state)),
                 ));
                 self.set_daily_life_system(agent_id, daily_system).await;
+
+                // Subscribe to boredom actions — route tag → system.
+                if idle_personality.boredom.is_some() {
+                    let work = self.get_work_system(agent_id).await;
+                    let study = self.get_study_system(agent_id).await;
+                    let daily = self.get_daily_life_system(agent_id).await;
+
+                    let filter = SubscriptionFilter {
+                        event_types: Some(vec![EventType::Custom(
+                            "idle.boredom.action".into(),
+                        )]),
+                        ..Default::default()
+                    };
+
+                    let _ = local_bus
+                        .subscribe(filter, Box::new(BoredomActionHandler {
+                            work,
+                            study,
+                            daily,
+                        }))
+                        .await;
+                }
             }
         }
 
@@ -301,14 +327,19 @@ impl AgentRegistry {
                 .await
                 .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
             let ss = self.get_or_create_system_state(agent_id).await;
+            let personality = config.runtime.idle.personality.clone();
+            let boredom_actor = personality.boredom.as_ref().map(|cfg| {
+                Arc::new(BoredomActor::new(cfg.clone()))
+            });
             let idle_manager = Arc::new(AgentIdleManager::new(
                 agent_id.to_string(),
                 local_bus,
                 Some(Arc::clone(&self.bus) as Arc<dyn EventBus>),
-                config.runtime.idle.personality.clone(),
+                personality,
                 config.runtime.idle.arousal.initial_value,
                 config.runtime.idle.arousal.half_life_secs,
                 Some(ss),
+                boredom_actor,
             ));
             self.set_idle_manager(agent_id, idle_manager.clone()).await;
             // Start the idle loop immediately.
@@ -409,6 +440,35 @@ impl AgentRegistry {
             }
             self.remove_daily_life_system(agent_id).await;
             tracing::info!(agent = %agent_id, "daily-life system shut down after reload");
+        }
+
+        // Wire boredom action listener if any system was created in this reload.
+        if work_enabled {
+            let personality = &config.runtime.idle.personality;
+            if personality.boredom.is_some() {
+                let local_bus = self
+                    .get_local_bus(agent_id)
+                    .await
+                    .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+                let work = self.get_work_system(agent_id).await;
+                let study = self.get_study_system(agent_id).await;
+                let daily = self.get_daily_life_system(agent_id).await;
+
+                let filter = SubscriptionFilter {
+                    event_types: Some(vec![EventType::Custom(
+                        "idle.boredom.action".into(),
+                    )]),
+                    ..Default::default()
+                };
+
+                let _ = local_bus
+                    .subscribe(filter, Box::new(BoredomActionHandler {
+                        work,
+                        study,
+                        daily,
+                    }))
+                    .await;
+            }
         }
 
         let _ = self
@@ -858,5 +918,49 @@ impl AgentRegistry {
         for manager in managers.values() {
             manager.start().await;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BoredomActionHandler — routes idle.boredom.action to the right system
+// ---------------------------------------------------------------------------
+
+/// Per-agent handler that listens for `idle.boredom.action` events and
+/// calls `on_boredom_action` on the matching system.
+struct BoredomActionHandler {
+    work: Option<Arc<WorkSystem>>,
+    study: Option<Arc<StudySystem>>,
+    daily: Option<Arc<DailyLifeSystem>>,
+}
+
+#[async_trait::async_trait]
+impl EventHandler for BoredomActionHandler {
+    async fn handle(&self, event: Event) -> AmanResult<()> {
+        let tag = event
+            .payload
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        match tag {
+            "work" => {
+                if let Some(ref w) = self.work {
+                    w.on_boredom_action(tag).await;
+                }
+            }
+            "study" => {
+                if let Some(ref s) = self.study {
+                    s.on_boredom_action(tag).await;
+                }
+            }
+            "internet" | "entertainment" => {
+                if let Some(ref d) = self.daily {
+                    d.on_boredom_action(tag).await;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
     }
 }

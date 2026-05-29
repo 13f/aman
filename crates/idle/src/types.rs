@@ -137,6 +137,9 @@ pub struct IdlePersonality {
     pub reflection_breaker: ReflectionBreaker,
     /// 上下文隔离配置
     pub context_isolation: ContextIsolation,
+    /// Boredom 随机行动配置
+    #[serde(default)]
+    pub boredom: Option<BoredomConfig>,
 }
 
 impl Default for IdlePersonality {
@@ -163,6 +166,7 @@ impl Default for IdlePersonality {
             chat_mode: ChatMode::default(),
             reflection_breaker: ReflectionBreaker::default(),
             context_isolation: ContextIsolation::default(),
+            boredom: None,
         }
     }
 }
@@ -251,6 +255,7 @@ impl ChatMode {
                 pollute_chat_history: false,
                 suspend_on_user_input: true,
             },
+            boredom: None,
         }
     }
 }
@@ -328,6 +333,32 @@ impl Default for ContextIsolation {
             suspend_on_user_input: true,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Boredom action types
+// ---------------------------------------------------------------------------
+
+/// Configuration for boredom-triggered random actions.
+///
+/// When the agent enters Boredom and reaches `trigger_poll` consecutive polls
+/// in that state, a weighted random tag is selected. If the tag is not "idle",
+/// a random skill matching the tag is picked and dispatched.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoredomConfig {
+    /// Which poll within the Boredom state triggers the decision (1-indexed).
+    pub trigger_poll: u32,
+    /// Activity categories with relative probability weights.
+    pub activities: Vec<BoredomActivity>,
+}
+
+/// A single activity category in the boredom config.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoredomActivity {
+    /// Tag used to find matching skills. "idle" is the sentinel for no action.
+    pub tag: String,
+    /// Relative weight (normalized internally, values don't need to sum to 1.0).
+    pub weight: f64,
 }
 
 #[cfg(test)]
@@ -410,6 +441,7 @@ mod tests {
                 pollute_chat_history: false,
                 suspend_on_user_input: true,
             },
+            boredom: None,
         };
         assert_eq!(p.resolve(0), IdleKind::Daze);
         assert_eq!(p.resolve(1), IdleKind::Boredom);

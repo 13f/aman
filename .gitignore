@@ -9,3 +9,4 @@ dist/
 .vscode/
 *.iml
 .fastembed_cache/
+predefined/plugins/team/static/*.hash

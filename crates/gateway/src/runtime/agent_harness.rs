@@ -7,7 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use event_bus::EventBus;
-use kernel::agent::{AgentInstance, AgentStatus};
+use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
 use kernel::budget::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest};
@@ -678,6 +678,7 @@ impl AgentHarness {
             .set_active_session(agent_id, Some(session_id.to_owned()))
             .await?;
         self.registry.set_status(agent_id, AgentStatus::Busy).await?;
+        self.registry.set_system_state(agent_id, AgentSystemState::Chatting).await;
 
         // Cancel any running idle workflows for this agent and boost arousal
         if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {
@@ -881,6 +882,7 @@ impl AgentHarness {
         self.registry
             .set_status(agent_id, AgentStatus::Idle)
             .await?;
+        self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
 
         // Publish agent:idle event to the agent's local bus
         let _ = self

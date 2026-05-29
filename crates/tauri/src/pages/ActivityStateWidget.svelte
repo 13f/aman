@@ -19,14 +19,9 @@
     reflectionConsecutiveCount: number;
   }
 
-  interface MetricsData {
-    queue_depth: { high: number; normal: number; low: number };
-    inflight_pipelines: number;
-    inflight_skills: number;
-    backpressure_level: string;
-  }
-
-  type Mode = "idle" | "reflection" | "processing";
+  // idleSubMode only matters when the agent is idle; it distinguishes
+  // quiet-idle from the reflection phase that follows queue drain.
+  type IdleSubMode = "idle" | "reflection";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -50,19 +45,18 @@
   // State
   // ---------------------------------------------------------------------------
 
-  let mode = $state<Mode>("idle");
+  let idleSubMode = $state<IdleSubMode>("idle");
   let idleSnap = $state<IdleSnap | null>(null);
   let reflectSnap = $state<ReflectSnap | null>(null);
-  let metrics = $state<MetricsData | null>(null);
-  let systemState = $state<string>("idle");
+  let systemState = $state<string>("");
   let unlisteners: (() => void)[] = [];
 
   $effect(() => {
     if (!runtimeRunning) {
-      mode = "idle";
+      idleSubMode = "idle";
       idleSnap = null;
       reflectSnap = null;
-      metrics = null;
+      systemState = "";
     }
   });
 
@@ -83,28 +77,38 @@
     incubation: "Incubation", waiting: "Waiting",
   };
 
-  const COLORS: Record<Mode, { outer: string; inner: string }> = {
+  const SS_LABEL: Record<string, string> = {
+    idle: "Idle", working: "Working", chatting: "Chatting",
+    studying: "Studying", daily_life: "Daily Life",
+  };
+
+  const STATE_EMOJI: Record<string, string> = {
+    chatting: "\u{1F4AC}",   // 💬
+    working: "\u{1F6E0}\u{FE0F}",  // 🛠️
+    studying: "\u{1F4DA}",   // 📚
+    daily_life: "\u{1F3E0}", // 🏠
+  };
+
+  const COLORS: Record<string, { outer: string; inner: string }> = {
     idle:       { outer: "#6c8cff", inner: "#f59e0b" },
     reflection: { outer: "#a78bfa", inner: "#f472b6" },
-    processing: { outer: "#4ade80", inner: "#22d3ee" },
+    chatting:   { outer: "#4ade80", inner: "#22d3ee" },
+    working:    { outer: "#f59e0b", inner: "#fbbf24" },
+    studying:   { outer: "#a78bfa", inner: "#c4b5fd" },
+    daily_life: { outer: "#fb923c", inner: "#fdba74" },
   };
 
-  const MODE_ICON: Record<Mode, string> = {
-    idle:       "\u{1F4A4}",
-    reflection: "\u{1F9E0}",
-    processing: "\u{26A1}",
-  };
+  // --- derived: is the agent in an active lifecycle state? ---
 
-  // --- derived ---
+  let isActive = $derived(
+    systemState !== "idle" && systemState !== "" && systemState in SS_LABEL
+  );
 
-  let totalQueue = $derived(
-    (metrics?.queue_depth.high ?? 0) +
-    (metrics?.queue_depth.normal ?? 0) +
-    (metrics?.queue_depth.low ?? 0)
+  let displayState = $derived(
+    isActive ? systemState : idleSubMode
   );
-  let totalInflight = $derived(
-    (metrics?.inflight_pipelines ?? 0) + (metrics?.inflight_skills ?? 0)
-  );
+
+  // --- ring values ---
 
   function depthPct(depth: number): number {
     if (depth <= 0) return 0;
@@ -119,61 +123,48 @@
   }
 
   let outerPct = $derived.by(() => {
-    if (mode === "idle" && idleSnap) return depthPct(idleSnap.depth);
-    if (mode === "reflection" && reflectSnap) return reflectSnap.arousalLevel * 100;
-    if (mode === "processing") return Math.min(100, totalQueue * 5);
+    if (displayState === "idle" && idleSnap) return depthPct(idleSnap.depth);
+    if (displayState === "reflection" && reflectSnap) return reflectSnap.arousalLevel * 100;
     return 0;
   });
 
   let innerPct = $derived.by(() => {
-    if (mode === "idle" && idleSnap) return Math.round(idleSnap.arousal * 100);
-    if (mode === "reflection" && reflectSnap)
+    if (displayState === "idle" && idleSnap) return Math.round(idleSnap.arousal * 100);
+    if (displayState === "reflection" && reflectSnap)
       return Math.min(100, reflectSnap.reflectionConsecutiveCount * 10);
-    if (mode === "processing") return Math.min(100, totalInflight * 20);
     return 0;
   });
 
-  const STATE_EMOJI: Record<string, string> = {
-    chatting: "\u{1F4AC}",   // 💬
-    working: "\u{1F6E0}\u{FE0F}",  // 🛠️
-    studying: "\u{1F4DA}",   // 📚
-    daily_life: "\u{1F3E0}", // 🏠
-  };
+  // --- display ---
 
   let emoji = $derived.by(() => {
-    if (mode === "idle") return idleSnap ? (IDLE_EMOJI[idleSnap.kind] ?? MODE_ICON.idle) : MODE_ICON.idle;
-    return STATE_EMOJI[systemState] ?? MODE_ICON[mode];
+    if (displayState === "idle")
+      return idleSnap ? (IDLE_EMOJI[idleSnap.kind] ?? "\u{1F4A4}") : "\u{1F4A4}";
+    if (displayState === "reflection") return "\u{1F9E0}";
+    return STATE_EMOJI[displayState] ?? "\u{26A1}";
   });
 
-  const SS_LABEL: Record<string, string> = {
-    idle: "Idle", working: "Working", chatting: "Chatting", studying: "Studying", daily_life: "Daily Life",
-  };
-
   let label = $derived.by(() => {
-    const ss = SS_LABEL[systemState] ?? systemState;
-    if (mode === "idle") return ss + (idleSnap ? "/" + idleSnap.kind : "");
-    if (mode === "reflection") return ss + "/Reflection";
-    return (ss === "Working" || ss === "Chatting") ? ss : ss + "/Processing";
+    if (displayState === "idle")
+      return "Idle" + (idleSnap ? "/" + IDLE_LABEL[idleSnap.kind] : "");
+    if (displayState === "reflection") return "Idle/Reflection";
+    return SS_LABEL[displayState] ?? displayState;
   });
 
   let info1 = $derived.by(() => {
-    if (mode === "idle") return `Depth: ${Math.round(outerPct)}%`;
-    if (mode === "reflection") return `Arousal: ${Math.round(outerPct)}%`;
-    return `Queue: ${totalQueue}`;
-  });
-
-  let info2 = $derived.by(() => {
-    if (mode === "idle") return `Arousal: ${innerPct}%`;
-    if (mode === "reflection")
-      return `Cycle: ${reflectSnap?.reflectionConsecutiveCount ?? 0}`;
-    if (mode === "processing") {
-      const bp = metrics?.backpressure_level;
-      return bp && bp !== "Normal" ? `BP: ${bp}` : `Inflight: ${totalInflight}`;
-    }
+    if (displayState === "idle") return `Depth: ${Math.round(outerPct)}%`;
+    if (displayState === "reflection") return `Arousal: ${Math.round(outerPct)}%`;
     return "";
   });
 
-  let ringColors = $derived(COLORS[mode]);
+  let info2 = $derived.by(() => {
+    if (displayState === "idle") return `Arousal: ${innerPct}%`;
+    if (displayState === "reflection")
+      return `Cycle: ${reflectSnap?.reflectionConsecutiveCount ?? 0}`;
+    return "";
+  });
+
+  let ringColors = $derived(COLORS[displayState] ?? COLORS["idle"]);
 
   // ---------------------------------------------------------------------------
   // Event handlers
@@ -182,52 +173,39 @@
   function matchesAgent(data: any): boolean {
     if (!agentId) return true;
     const eventAgentId: string | undefined = data.agent_id ?? data.payload?.agent_id;
-    if (!eventAgentId) return true; // global events pass through
+    if (!eventAgentId) return true;
     return eventAgentId === agentId;
   }
 
   function onEvent(e: any) {
+    // Only track idle/reflection events when the agent is actually idle.
+    if (systemState !== "idle" && systemState !== "") return;
+
     const p = e.payload;
     if (!p?.event_type) return;
-
     const et: string = p.event_type;
     const data = p.payload ?? {};
-
-    // Filter by agent when an agentId is specified
     if (!matchesAgent(data)) return;
 
     if (et === "idle") {
-      const d = data;
       idleSnap = {
-        kind: d.kind ?? "daze",
-        depth: d.depth ?? 0,
-        arousal: d.context?.arousal_level ?? 0.5,
+        kind: data.kind ?? "daze",
+        depth: data.depth ?? 0,
+        arousal: data.context?.arousal_level ?? 0.5,
       };
-      mode = "idle";
+      idleSubMode = "idle";
     } else if (et === "system.queue_drained") {
-      const d = data;
       reflectSnap = {
-        lastEventType: d.lastEventType ?? "",
-        arousalLevel: d.arousalLevel ?? 0.5,
-        reflectionConsecutiveCount: d.reflectionConsecutiveCount ?? 0,
+        lastEventType: data.lastEventType ?? "",
+        arousalLevel: data.arousalLevel ?? 0.5,
+        reflectionConsecutiveCount: data.reflectionConsecutiveCount ?? 0,
       };
-      mode = "reflection";
-    } else {
-      mode = "processing";
-    }
-  }
-
-  function onMetrics(e: any) {
-    const m = e.payload;
-    metrics = m;
-    if (m && (m.inflight_pipelines > 0 || m.inflight_skills > 0) && mode === "idle") {
-      mode = "processing";
+      idleSubMode = "reflection";
     }
   }
 
   onMount(async () => {
     unlisteners.push(await listen("event:processed", onEvent));
-    unlisteners.push(await listen("metrics:updated", onMetrics));
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
       const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
       for (const a of list) {
@@ -251,7 +229,7 @@
     {/if}
 
     <IdleRing
-      {mode}
+      mode={displayState}
       {outerPct}
       {innerPct}
       {emoji}
@@ -262,7 +240,7 @@
       size={compact ? 36 : 110}
       active={runtimeRunning}
       showLabel={!compact}
-      showInfo={!compact}
+      showInfo={!compact && !isActive}
     />
 
   </div>

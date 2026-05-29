@@ -146,6 +146,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/tool-auth/respond", post(tool_auth_respond))
         .route("/tools/{name}/execute", post(tool_execute))
         .route("/explore/start", post(explore_start))
+        .route("/idle-run", post(idle_run))
         .route("/agents", get(agent_list))
         .route("/agent/{agent_id}", get(agent_get))
         .route("/agent/{agent_id}/status", post(agent_set_status))
@@ -3601,4 +3602,187 @@ async fn agent_reload(
         Ok(()) => Json(json!({ "ok": true, "agent_id": agent_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
     }
+}
+
+// ── Idle-run endpoint ───────────────────────────────────────────────────────
+
+async fn idle_run(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Json(payload): Json<Value>,
+) -> Response {
+    let tag = payload
+        .get("tag")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if tag.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "missing 'tag' field"})),
+        )
+            .into_response();
+    }
+
+    // Resolve agent
+    let agent_id = match payload
+        .get("agent_key")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| {
+            config::AmanConfig::from_default_path()
+                .ok()
+                .and_then(|c| c.agents.into_keys().next())
+        }) {
+        Some(k) => k,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "no agent configured"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Find skills with both idle_run tag and the requested tag
+    let candidates: Vec<_> = runtime
+        .skill_search()
+        .search_by_tag("idle_run")
+        .into_iter()
+        .filter(|s| s.tags.iter().any(|t| *t == tag))
+        .collect();
+
+    if candidates.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "执行失败，还没有实装有关的技能"})),
+        )
+            .into_response();
+    }
+
+    // Pick a random skill (scope RNG so it's dropped before any await)
+    let (skill_name, prompt_idx) = {
+        let mut rng = rand::thread_rng();
+        let idx = rng.gen_range(0..candidates.len());
+        let name = candidates[idx].name.clone();
+        let pidx = rng.gen_range(0..100usize);
+        (name, pidx)
+    };
+
+    let Some(skill) = runtime.skills().get(&skill_name) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "执行失败，还没有实装有关的技能"})),
+        )
+            .into_response();
+    };
+
+    // Pick an idle_prompt (no RNG needed — use the pre-rolled index)
+    let idle_prompt = runtime
+        .skills()
+        .idle_prompts(&skill_name)
+        .and_then(|prompts| {
+            let i = prompt_idx % prompts.len();
+            Some(prompts[i].replace("{agent_id}", &agent_id))
+        });
+
+    let text = match idle_prompt {
+        Some(prompt) => {
+            let body = runtime.skills().skill_body(&skill_name);
+            match body {
+                Some(b) => format!(
+                    "[IDLE ACTION] {prompt}\n\n\
+                     --- SKILL METHODOLOGY ---\n\
+                     {b}\n\
+                     --- END SKILL ---\n\n\
+                     Execute the action above using the skill's methodology. \
+                     Do not skip or abbreviate any prescribed stage."
+                ),
+                None => format!(
+                    "[IDLE ACTION] {prompt}\n\n\
+                     Execute the action above using your available tools and \
+                     knowledge. Be thorough and complete the task."
+                ),
+            }
+        }
+        None => {
+            format!(
+                "[IDLE ACTION] Execute the skill \"{skill_name}\": {}.\n\
+                 Use your available tools and follow your standard methodology.",
+                skill.description()
+            )
+        }
+    };
+
+    // Create session
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let data = json!({
+        "session_type": "persistent",
+        "version": 0,
+        "created_at": now_ms,
+        "last_active_at": now_ms,
+    });
+
+    let instance = match runtime
+        .workflow_engine()
+        .create_instance("message-session", data)
+    {
+        Ok(i) => i,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("failed to create session: {e}")})),
+            )
+                .into_response();
+        }
+    };
+    let session_id = instance.id.clone();
+
+    // Persist session
+    if let Some(store) = runtime.session_store_for_agent(&agent_id) {
+        let _ = store.upsert(&session_store::SessionRecord {
+            id: session_id.clone(),
+            agent_id: agent_id.clone(),
+            state: instance.current_state.clone(),
+            message_count: 0,
+            created_at: now_ms as i64,
+            last_active_at: now_ms as i64,
+            session_type: "persistent".to_owned(),
+            reflected_at: None,
+            title: None,
+        });
+    }
+
+    // Publish MessageReceived event so the agent harness picks it up
+    let event = Event::new(
+        "idle.manual",
+        EventType::MessageReceived,
+        json!({
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "text": text,
+            "skill_name": skill_name,
+            "tag": tag,
+        }),
+    );
+    if let Err(e) = runtime.publish_event(event).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to publish event: {e}")})),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "session_id": session_id,
+            "skill_name": skill_name,
+            "tag": tag,
+        })),
+    )
+        .into_response()
 }

@@ -826,6 +826,17 @@ pub async fn explore_start(
     client.explore_start(agent_key.as_deref()).await
 }
 
+/// Trigger an idle-run action for a specific tag (work, study, fun).
+#[tauri::command]
+pub async fn idle_run(
+    state: State<'_, AppState>,
+    tag: String,
+    agent_key: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let client = require_gateway(&state).await?;
+    client.idle_run(&tag, agent_key.as_deref()).await
+}
+
 /// Create a branch session forked from a specific message in an existing session.
 #[tauri::command]
 pub async fn chat_session_branch(

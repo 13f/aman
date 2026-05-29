@@ -859,6 +859,34 @@ impl GatewayClient {
             Err(status_error("explore_start", resp.status()).await)
         }
     }
+    pub async fn idle_run(&self, tag: &str, agent_key: Option<&str>) -> Result<Value, String> {
+        let mut body = serde_json::json!({ "tag": tag });
+        if let Some(k) = agent_key {
+            body["agent_key"] = serde_json::json!(k);
+        }
+        let resp = self
+            .client
+            .post(self.url("/idle-run"))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("idle_run: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("idle_run decode: {e}"))
+        } else {
+            // Try to extract the server error message from the response body
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            if let Ok(val) = serde_json::from_str::<Value>(&body_text) {
+                if let Some(msg) = val.get("error").and_then(|v| v.as_str()) {
+                    return Err(msg.to_owned());
+                }
+            }
+            Err(format!("idle_run failed: {status}"))
+        }
+    }
 }
 
 async fn status_error(context: &str, status: reqwest::StatusCode) -> String {

@@ -98,6 +98,8 @@
   let sessionsPerPage = 10;
   let sessionsLoaded = $state(false);
   let isExploring = $state(false);
+  let idleRunningTag = $state<string | null>(null);
+  let dailyLifeOpen = $state(false);
   let deletingSessionId = $state<string | null>(null);
 
   const paginatedSessions = $derived(
@@ -479,6 +481,31 @@
       showToast("error", `Explore failed: ${e}`);
     } finally {
       isExploring = false;
+    }
+  }
+
+  async function startIdleRun(tag: string) {
+    if (idleRunningTag) return;
+    idleRunningTag = tag;
+    try {
+      const result = await invoke<{ session_id: string; skill_name: string; tag: string }>("idle_run", {
+        tag,
+        agentKey: activeAgentKey || null,
+      });
+      const count = sessions.length + 1;
+      const label = tag.charAt(0).toUpperCase() + tag.slice(1);
+      sessions = [{ id: result.session_id, title: `${label} ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
+      activeSessionId = result.session_id;
+      currentPage = 1;
+    } catch (e) {
+      const err = String(e);
+      if (err.includes("执行失败")) {
+        showToast("error", "执行失败，还没有实装有关的技能");
+      } else {
+        showToast("error", `${tag} run failed: ${err}`);
+      }
+    } finally {
+      idleRunningTag = null;
     }
   }
 
@@ -1656,11 +1683,37 @@
   <!-- Left Sidebar with Sessions -->
   <aside class="session-panel">
     <div class="panel-header">
-      <h2>Chat</h2>
       <div class="panel-header-actions">
-        <button class="explore-btn" onclick={startExplore} title="Explore" disabled={isExploring}>
-          {isExploring ? "⏳" : "🔍"}
-        </button>
+        <div class="panel-header-left">
+          <div class="daily-life-dropdown">
+            <button
+              class="idle-run-btn daily-life-trigger"
+              onclick={() => dailyLifeOpen = !dailyLifeOpen}
+              title="Daily Life"
+              disabled={idleRunningTag !== null}
+            >
+              {idleRunningTag ? "⏳" : "Daily Life ▾"}
+            </button>
+            {#if dailyLifeOpen}
+              <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+              <div class="dropdown-backdrop" onclick={() => dailyLifeOpen = false} onkeydown={() => {}} role="presentation"></div>
+              <div class="dropdown-menu">
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("work"); }}>
+                  💼 Work
+                </button>
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("study"); }}>
+                  📚 Study
+                </button>
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("fun"); }}>
+                  🎲 Fun
+                </button>
+              </div>
+            {/if}
+          </div>
+          <button class="explore-btn" onclick={startExplore} title="Explore" disabled={isExploring}>
+            {isExploring ? "⏳" : "🔍"}
+          </button>
+        </div>
         <button class="new-btn" onclick={createSession} title="New chat">+</button>
       </div>
     </div>
@@ -2023,16 +2076,91 @@
 
   .panel-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
     padding: 12px;
     border-bottom: 1px solid var(--border);
   }
 
-  .panel-header h2 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
+  .panel-header-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+  }
+
+  .panel-header-left {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+
+  .daily-life-dropdown {
+    position: relative;
+  }
+
+  .idle-run-btn {
+    height: 28px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    color: var(--fg);
+  }
+
+  .idle-run-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .idle-run-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .dropdown-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+  }
+
+  .dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 10;
+    min-width: 130px;
+    background: var(--bg-card, var(--bg));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  }
+
+  .dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 10px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .dropdown-item:hover {
+    background: var(--bg-hover);
   }
 
   .new-btn {
@@ -2047,16 +2175,11 @@
     cursor: pointer;
     font-size: 18px;
     line-height: 1;
+    color: var(--fg);
   }
 
   .new-btn:hover {
     background: var(--bg-hover);
-  }
-
-  .panel-header-actions {
-    display: flex;
-    gap: 6px;
-    align-items: center;
   }
 
   .explore-btn {
@@ -2330,7 +2453,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
+    padding: 4px 16px;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
   }
@@ -2392,7 +2515,7 @@
   .message-area {
     flex: 1;
     overflow-y: auto;
-    padding: 16px;
+    padding-left: 16px;
   }
 
   .empty-state {
@@ -2534,7 +2657,7 @@
     position: relative;
     display: flex;
     gap: 8px;
-    padding: 12px 16px;
+    padding: 8px 16px;
     border-top: 1px solid var(--border);
     background: var(--bg);
     --chat-input-bg: var(--bg-card);

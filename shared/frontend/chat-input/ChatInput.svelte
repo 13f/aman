@@ -47,11 +47,18 @@
     }
   });
 
+  function dispatch(name: string, detail?: unknown) {
+    textareaEl?.dispatchEvent(
+      new CustomEvent(name, { detail, bubbles: true, composed: true })
+    );
+  }
+
   function handleInput(e: Event) {
     const text = (e.target as HTMLTextAreaElement).value;
     value = text;
     autoGrow();
     oninput?.(text);
+    dispatch("input", { text });
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -67,6 +74,7 @@
     if (rateLimit > 0) return;
     if (processing !== undefined) {
       onstop?.();
+      dispatch("stop");
     } else {
       doSend();
     }
@@ -76,6 +84,7 @@
     const text = value.trim();
     if (!text) return;
     onsend?.(text);
+    dispatch("send", { text });
   }
 
   export function focus() {

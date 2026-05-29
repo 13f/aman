@@ -63,10 +63,10 @@ pub enum AgentSystemState {
     Working,
     /// chat 对话中
     Chatting,
-    // /// study 系统掌控中
-    // Studying,
-    // /// daily-life 系统掌控中
-    // DailyLife,
+    /// study 系统掌控中
+    Studying,
+    /// daily-life 系统掌控中
+    DailyLife,
 }
 
 /// Agent 运行时状态。

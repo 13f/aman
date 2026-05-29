@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 use config::AmanConfig;
+use daily_life::DailyLifeSystem;
 use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
 use idle::AgentIdleManager;
+use study::StudySystem;
 use work::WorkSystem;
 use kernel::agent::{AgentDescriptor, AgentInstance, AgentStatus, AgentSystemState};
 use kernel::event::{Event, EventType};
@@ -35,6 +37,8 @@ pub struct AgentRegistry {
     local_buses: RwLock<HashMap<String, Arc<dyn EventBus>>>,
     idle_managers: RwLock<HashMap<String, Arc<AgentIdleManager>>>,
     work_systems: RwLock<HashMap<String, Arc<WorkSystem>>>,
+    study_systems: RwLock<HashMap<String, Arc<StudySystem>>>,
+    daily_life_systems: RwLock<HashMap<String, Arc<DailyLifeSystem>>>,
     /// Per-agent session stores (None for disabled agents).
     session_stores: RwLock<HashMap<String, Option<Arc<SessionStore>>>>,
     /// Per-agent memory providers (knowledge graph).
@@ -56,6 +60,8 @@ impl AgentRegistry {
             local_buses: RwLock::new(HashMap::new()),
             idle_managers: RwLock::new(HashMap::new()),
             work_systems: RwLock::new(HashMap::new()),
+            study_systems: RwLock::new(HashMap::new()),
+            daily_life_systems: RwLock::new(HashMap::new()),
             session_stores: RwLock::new(HashMap::new()),
             memory_providers: RwLock::new(HashMap::new()),
             llm_providers: RwLock::new(HashMap::new()),
@@ -181,11 +187,29 @@ impl AgentRegistry {
                 let work_system = Arc::new(WorkSystem::new(
                     agent_id.clone(),
                     config.runtime.work.clone(),
-                    local_bus,
+                    Arc::clone(&local_bus) as Arc<dyn EventBus>,
                     Arc::clone(&self.bus) as Arc<dyn EventBus>,
                     Some(Arc::clone(&system_state)),
                 ));
                 self.set_work_system(agent_id, work_system).await;
+
+                let study_system = Arc::new(StudySystem::new(
+                    agent_id.clone(),
+                    config.runtime.study.clone(),
+                    Arc::clone(&local_bus) as Arc<dyn EventBus>,
+                    Arc::clone(&self.bus) as Arc<dyn EventBus>,
+                    Some(Arc::clone(&system_state)),
+                ));
+                self.set_study_system(agent_id, study_system).await;
+
+                let daily_system = Arc::new(DailyLifeSystem::new(
+                    agent_id.clone(),
+                    config.runtime.daily_life.clone(),
+                    Arc::clone(&local_bus) as Arc<dyn EventBus>,
+                    Arc::clone(&self.bus) as Arc<dyn EventBus>,
+                    Some(Arc::clone(&system_state)),
+                ));
+                self.set_daily_life_system(agent_id, daily_system).await;
             }
         }
 
@@ -315,19 +339,76 @@ impl AgentRegistry {
             let work_system = Arc::new(WorkSystem::new(
                 agent_id.to_string(),
                 config.runtime.work.clone(),
-                local_bus,
+                Arc::clone(&local_bus) as Arc<dyn EventBus>,
                 Arc::clone(&self.bus) as Arc<dyn EventBus>,
                 Some(ss),
             ));
             self.set_work_system(agent_id, work_system).await;
             tracing::info!(agent = %agent_id, "work system created after reload");
         } else if !work_enabled && has_work {
-            // Agent was disabled — shut down the work system.
             if let Some(ws) = self.get_work_system(agent_id).await {
                 ws.shutdown().await;
             }
             self.remove_work_system(agent_id).await;
             tracing::info!(agent = %agent_id, "work system shut down after reload");
+        }
+
+        // Create or destroy study system based on enabled state.
+        let has_study = {
+            let systems = self.study_systems.read().await;
+            systems.contains_key(agent_id)
+        };
+
+        if work_enabled && !has_study {
+            let local_bus = self
+                .get_local_bus(agent_id)
+                .await
+                .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+            let ss = self.get_or_create_system_state(agent_id).await;
+            let study_system = Arc::new(StudySystem::new(
+                agent_id.to_string(),
+                config.runtime.study.clone(),
+                Arc::clone(&local_bus) as Arc<dyn EventBus>,
+                Arc::clone(&self.bus) as Arc<dyn EventBus>,
+                Some(ss),
+            ));
+            self.set_study_system(agent_id, study_system).await;
+            tracing::info!(agent = %agent_id, "study system created after reload");
+        } else if !work_enabled && has_study {
+            if let Some(ss) = self.get_study_system(agent_id).await {
+                ss.shutdown().await;
+            }
+            self.remove_study_system(agent_id).await;
+            tracing::info!(agent = %agent_id, "study system shut down after reload");
+        }
+
+        // Create or destroy daily-life system based on enabled state.
+        let has_daily = {
+            let systems = self.daily_life_systems.read().await;
+            systems.contains_key(agent_id)
+        };
+
+        if work_enabled && !has_daily {
+            let local_bus = self
+                .get_local_bus(agent_id)
+                .await
+                .unwrap_or_else(|| Arc::clone(&self.bus) as Arc<dyn EventBus>);
+            let ss = self.get_or_create_system_state(agent_id).await;
+            let daily_system = Arc::new(DailyLifeSystem::new(
+                agent_id.to_string(),
+                config.runtime.daily_life.clone(),
+                Arc::clone(&local_bus) as Arc<dyn EventBus>,
+                Arc::clone(&self.bus) as Arc<dyn EventBus>,
+                Some(ss),
+            ));
+            self.set_daily_life_system(agent_id, daily_system).await;
+            tracing::info!(agent = %agent_id, "daily-life system created after reload");
+        } else if !work_enabled && has_daily {
+            if let Some(ds) = self.get_daily_life_system(agent_id).await {
+                ds.shutdown().await;
+            }
+            self.remove_daily_life_system(agent_id).await;
+            tracing::info!(agent = %agent_id, "daily-life system shut down after reload");
         }
 
         let _ = self
@@ -506,6 +587,22 @@ impl AgentRegistry {
         for ws in &work_systems {
             ws.shutdown().await;
         }
+
+        let study_systems: Vec<Arc<StudySystem>> = {
+            let systems = self.study_systems.read().await;
+            systems.values().cloned().collect()
+        };
+        for ss in &study_systems {
+            ss.shutdown().await;
+        }
+
+        let daily_systems: Vec<Arc<DailyLifeSystem>> = {
+            let systems = self.daily_life_systems.read().await;
+            systems.values().cloned().collect()
+        };
+        for ds in &daily_systems {
+            ds.shutdown().await;
+        }
     }
 
     /// 清空注册表（shutdown 时调用）。
@@ -528,6 +625,24 @@ impl AgentRegistry {
             ws.shutdown().await;
         }
 
+        // Shut down all per-agent study systems
+        let study_systems: Vec<Arc<StudySystem>> = {
+            let systems = self.study_systems.read().await;
+            systems.values().cloned().collect()
+        };
+        for ss in &study_systems {
+            ss.shutdown().await;
+        }
+
+        // Shut down all per-agent daily-life systems
+        let daily_systems: Vec<Arc<DailyLifeSystem>> = {
+            let systems = self.daily_life_systems.read().await;
+            systems.values().cloned().collect()
+        };
+        for ds in &daily_systems {
+            ds.shutdown().await;
+        }
+
         let mut agents = self.agents.write().await;
         agents.clear();
         let mut buses = self.local_buses.write().await;
@@ -536,6 +651,10 @@ impl AgentRegistry {
         managers.clear();
         let mut systems = self.work_systems.write().await;
         systems.clear();
+        let mut study_systems = self.study_systems.write().await;
+        study_systems.clear();
+        let mut daily_systems = self.daily_life_systems.write().await;
+        daily_systems.clear();
         let mut states = self.system_states.write().await;
         states.clear();
         let mut stores = self.session_stores.write().await;
@@ -599,6 +718,40 @@ impl AgentRegistry {
     /// 移除 Agent 的 WorkSystem。
     pub async fn remove_work_system(&self, agent_id: &str) {
         let mut systems = self.work_systems.write().await;
+        systems.remove(agent_id);
+    }
+
+    // ── StudySystem ─────────────────────────────────────────────────
+
+    pub async fn set_study_system(&self, agent_id: &str, system: Arc<StudySystem>) {
+        let mut systems = self.study_systems.write().await;
+        systems.insert(agent_id.to_owned(), system);
+    }
+
+    pub async fn get_study_system(&self, agent_id: &str) -> Option<Arc<StudySystem>> {
+        let systems = self.study_systems.read().await;
+        systems.get(agent_id).cloned()
+    }
+
+    pub async fn remove_study_system(&self, agent_id: &str) {
+        let mut systems = self.study_systems.write().await;
+        systems.remove(agent_id);
+    }
+
+    // ── DailyLifeSystem ─────────────────────────────────────────────
+
+    pub async fn set_daily_life_system(&self, agent_id: &str, system: Arc<DailyLifeSystem>) {
+        let mut systems = self.daily_life_systems.write().await;
+        systems.insert(agent_id.to_owned(), system);
+    }
+
+    pub async fn get_daily_life_system(&self, agent_id: &str) -> Option<Arc<DailyLifeSystem>> {
+        let systems = self.daily_life_systems.read().await;
+        systems.get(agent_id).cloned()
+    }
+
+    pub async fn remove_daily_life_system(&self, agent_id: &str) {
+        let mut systems = self.daily_life_systems.write().await;
         systems.remove(agent_id);
     }
 

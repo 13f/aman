@@ -1087,11 +1087,13 @@ dependencies = [
 name = "config"
 version = "0.1.0"
 dependencies = [
+ "daily-life",
  "idle",
  "kernel",
  "serde",
  "serde_json",
  "serde_yaml",
+ "study",
  "uuid",
  "work",
 ]
@@ -1462,6 +1464,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
 dependencies = [
  "cipher",
+]
+
+[[package]]
+name = "daily-life"
+version = "0.1.0"
+dependencies = [
+ "event-bus",
+ "kernel",
+ "lifecycle",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -2413,6 +2429,7 @@ dependencies = [
  "axum",
  "blake3",
  "config",
+ "daily-life",
  "event-bus",
  "futures",
  "hook",
@@ -2442,6 +2459,7 @@ dependencies = [
  "skm-select",
  "soul",
  "source",
+ "study",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -3757,6 +3775,20 @@ dependencies = [
  "cc",
  "pkg-config",
  "vcpkg",
+]
+
+[[package]]
+name = "lifecycle"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "event-bus",
+ "kernel",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -6903,6 +6935,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "study"
+version = "0.1.0"
+dependencies = [
+ "event-bus",
+ "kernel",
+ "lifecycle",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9670,8 +9716,10 @@ dependencies = [
 name = "work"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "event-bus",
  "kernel",
+ "lifecycle",
  "serde",
  "serde_json",
  "tokio",

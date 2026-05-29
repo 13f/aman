@@ -4,7 +4,9 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 
+use daily_life::DailyLifeConfig;
 use idle::IdlePersonality;
+use study::StudyConfig;
 use work::WorkConfig;
 use kernel::event::{Event, EventType};
 use kernel::{AmanResult, Error};
@@ -392,6 +394,10 @@ pub struct AgentConfig {
     pub idle: IdleConfig,
     #[serde(default)]
     pub work: WorkConfig,
+    #[serde(default)]
+    pub study: StudyConfig,
+    #[serde(default)]
+    pub daily_life: DailyLifeConfig,
     #[serde(default)]
     pub compression: CompressionConfig,
     /// Self-module configuration — Python prompt builders for agent self-evolution.
@@ -1034,6 +1040,8 @@ pub struct PartialAgentConfig {
     pub security: Option<PartialSecurityConfig>,
     pub idle: Option<PartialIdleConfig>,
     pub work: Option<PartialWorkConfig>,
+    pub study: Option<PartialStudyConfig>,
+    pub daily_life: Option<PartialDailyLifeConfig>,
     pub compression: Option<PartialCompressionConfig>,
 }
 
@@ -1099,6 +1107,16 @@ pub struct PartialIdleConfig {
 pub struct PartialWorkConfig {
     /// Override the entire work configuration (v2).
     pub config: Option<WorkConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartialStudyConfig {
+    pub config: Option<StudyConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartialDailyLifeConfig {
+    pub config: Option<DailyLifeConfig>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

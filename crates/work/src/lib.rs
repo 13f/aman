@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 pub mod config;
+pub mod spec;
 pub mod system;
 pub mod trace;
 pub mod types;

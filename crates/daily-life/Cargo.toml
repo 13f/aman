@@ -1,5 +1,5 @@
 [package]
-name = "config"
+name = "daily-life"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,13 +11,10 @@ workspace = true
 
 [dependencies]
 kernel = { path = "../core", version = "0.1.0" }
-idle = { path = "../idle", version = "0.1.0" }
-work = { path = "../work", version = "0.1.0" }
-study = { path = "../study", version = "0.1.0" }
-daily-life = { path = "../daily-life", version = "0.1.0" }
+event-bus = { path = "../event-bus", version = "0.1.0" }
+lifecycle = { path = "../lifecycle", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml = "0.9.34"
-
-[dev-dependencies]
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+tracing.workspace = true
 uuid.workspace = true

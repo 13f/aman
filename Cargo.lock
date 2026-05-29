@@ -3245,6 +3245,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "skill",
  "tokio",
  "tokio-util",
  "tracing",

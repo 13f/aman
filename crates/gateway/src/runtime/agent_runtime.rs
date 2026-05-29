@@ -449,7 +449,12 @@ impl AgentRuntimeBuilder {
         ));
 
         // ── Agent registry ──────────────────────────────────────────
-        let agent_registry = Arc::new(super::AgentRegistry::new(Arc::clone(&bus)));
+        let mut agent_registry_inner = super::AgentRegistry::new(Arc::clone(&bus));
+        agent_registry_inner.set_skill_index(
+            Arc::clone(&skill_search),
+            Arc::clone(&skills),
+        );
+        let agent_registry = Arc::new(agent_registry_inner);
         // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
 

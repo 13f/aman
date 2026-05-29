@@ -524,9 +524,9 @@ Depth 200 → Incubation   孵化（后台线程）
 
 每个深度都有独立的 poll 间隔和 arousal（唤醒度）衰减策略。event bus 有任何新事件到达 → depth 重置为 0，idle 从头开始。
 
-#### Boredom 随机行动
+#### Boredom 随机行动（tag → skill）
 
-当 Agent 进入 Boredom 状态后，在第 N 次 poll 时（`trigger_poll`），BoredomActor 按配置的概率权重随机选择一个 tag：
+当 Agent 进入 Boredom 状态后，在第 N 次 poll 时（`trigger_poll`），BoredomActor 按配置的概率权重随机选择一个 tag，然后从 Skill 注册表中查找同时匹配该 tag 和 `idle_run` 标记的 skill，随机挑选一个直接执行。
 
 ```yaml
 idle:
@@ -537,52 +537,67 @@ idle:
         - tag: idle
           weight: 0.75          # 75% — 什么都不做，继续推进深度
         - tag: work
-          weight: 0.10          # 10% — 找点工作
+          weight: 0.10          # 10% — 随机一个 work + idle_run skill
         - tag: internet
-          weight: 0.08          # 8% — 网上冲浪
+          weight: 0.08          # 8% — 随机一个 internet + idle_run skill
         - tag: entertainment
-          weight: 0.07          # 7% — 小娱乐
+          weight: 0.07          # 7% — 随机一个 entertainment + idle_run skill
 ```
 
-选中非 `idle` tag 后，BoredomActor 发布 `idle.boredom.action` 事件到 Agent 的本地事件总线。各系统监听此事件，按 tag 响应：
-
-| Tag | 响应系统 | 行为 |
-|-----|---------|------|
-| `work` | WorkSystem | 推送一个 "检查未完成工作" 的 WorkItem |
-| `study` | StudySystem | 推送一个 "探索感兴趣主题" 的 StudyItem |
-| `internet` | DailyLifeSystem | 推送一个 "网上冲浪" 的 DailyItem（CustomPrompt 例行） |
-| `entertainment` | DailyLifeSystem | 推送一个 "找点乐子" 的 DailyItem |
-| `idle` | — | 哨兵，不做事，继续推进 |
-
-#### 事件格式
-
-```json
-{
-  "source": "idle.boredom",
-  "event_type": "idle.boredom.action",
-  "payload": {
-    "tag": "work",
-    "agent_id": "my-agent"
-  }
-}
-```
-
-#### 日志输出
-
-BoredomActor 每次加权选择后输出：
+#### 执行流程
 
 ```
-random_hit:tag: work         # 选中的标签（包括 idle）
-random_hit:action: 检查未完成的工作   # 系统实际执行的动作
+BoredomActor::try_act(poll_count, agent_id)
+  │
+  ├─ poll ≠ trigger_poll → None（继续 idle）
+  ├─ weighted_pick → 选中 tag
+  │    └─ info: random_hit:tag: {tag}
+  ├─ tag == "idle" → None
+  ├─ SkillSearch::search_by_tag(tag) → 候选列表
+  ├─ 过滤：只保留 tags 中包含 "idle_run" 的 skill
+  ├─ 随机挑一个 → skill_name
+  │    └─ info: random_hit:skill: {skill_name}
+  ├─ SkillRegistry::get(skill_name) → skill.execute(event, ctx)
+  └─ 返回 Some(tag)
+        │
+        ▼     Manager 根据 tag 更新 AgentSystemState：
+              "work"    → Working
+              "study"   → Studying
+              其他      → DailyLife
 ```
+
+#### idle_run 标签
+
+`idle_run` 是一个哨兵标签，标记该 skill 适合在 idle 后台执行。只有同时携带功能 tag（如 `work`）和 `idle_run` 的 skill 才会被 BoredomActor 选中。这防止了通用 tag 匹配到不适合后台运行的 skill。
+
+在 Skill 的 YAML 配置中：
+
+```yaml
+name: check-inbox
+version: 0.1.0
+description: 检查未完成的工作
+triggers: []
+tags: [work, idle_run]
+```
+
+或 SKILL.md frontmatter：
+
+```yaml
+---
+name: check-inbox
+tags: [work, idle_run]
+---
+```
+
+#### 没匹配到 skill 时
+
+如果选中的 tag 下没有带 `idle_run` 的 skill，`try_act` 返回 `None`，idle 继续推进，零副作用、零额外延迟。Agent 照常进入更深层的 Sleep/Exploration/Meditation。
 
 #### 扩展：添加新的 Boredom 标签
 
 1. 在 `idle.personality.boredom.activities` 中添加新 tag 和权重
-2. 创建一个 Skill 或 Hook 监听 `idle.boredom.action` 事件
-3. 在 handler 中检查 tag 是否匹配，执行相应逻辑
-
-或者在对应系统的 `on_boredom_action()` 方法中添加新 tag 的处理分支。
+2. 创建一个 Skill，在 tags 中包含该 tag + `idle_run`
+3. 无需修改任何系统代码——BoredomActor 自动发现并随机匹配
 
 ---
 

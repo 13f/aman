@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 kernel = { path = "../core", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
+skill = { path = "../skill", version = "0.1.0" }
 async-trait.workspace = true
 rand.workspace = true
 serde.workspace = true

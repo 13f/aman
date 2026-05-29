@@ -654,7 +654,7 @@ impl SkillSearch {
         let name_raw = schema_builder.add_text_field("name_raw", STRING | STORED);
         let version = schema_builder.add_text_field("version", TEXT | STORED);
         let description = schema_builder.add_text_field("description", TEXT | STORED);
-        let tags = schema_builder.add_text_field("tags", TEXT | STORED);
+        let tags = schema_builder.add_text_field("tags", STRING | STORED);
         let schema = schema_builder.build();
 
         let index = Index::create_in_ram(schema);
@@ -733,6 +733,32 @@ impl SkillSearch {
                 .flat_map(|trigger| trigger.event_types.iter().map(ToString::to_string))
                 .collect(),
         });
+    }
+
+    /// Find skills matching an exact tag. Returns all indexed skills whose
+    /// tags contain the given value.
+    #[must_use]
+    pub fn search_by_tag(&self, tag: &str) -> Vec<IndexedSkill> {
+        let state = self.state.lock().expect("skill search state lock");
+        let searcher = state.reader.searcher();
+        let term = Term::from_field_text(state.fields.tags, tag);
+        let query =
+            tantivy::query::TermQuery::new(term, tantivy::schema::IndexRecordOption::Basic);
+        let Ok(top_docs) = searcher.search(&query, &TopDocs::with_limit(50)) else {
+            return Vec::new();
+        };
+
+        top_docs
+            .into_iter()
+            .filter_map(|(_score, doc_address)| {
+                let doc: TantivyDocument = searcher.doc(doc_address).ok()?;
+                let name = doc
+                    .get_first(state.fields.name_raw)
+                    .and_then(|value| value.as_str())?
+                    .to_owned();
+                state.skills.get(&name).cloned()
+            })
+            .collect()
     }
 
     pub fn remove_skill(&self, name: &str) {

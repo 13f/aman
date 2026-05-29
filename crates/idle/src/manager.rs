@@ -346,27 +346,24 @@ impl AgentIdleManager {
                     let _ = global.publish(event).await;
                 }
 
-                // Boredom action: on trigger poll, pick a tag and publish
+                // Boredom action: on trigger poll, pick and execute a skill
                 if kind == IdleKind::Boredom {
                     if let Some(ref actor) = boredom_actor {
-                        if let Some(tag) = actor.pick(detector.boredom_poll_count) {
-                            info!(
-                                agent_id = %agent_id,
-                                %tag,
-                                poll = detector.boredom_poll_count,
-                                "BoredomActor: picked tag"
-                            );
-                            let action_event = kernel::event::Event::new(
-                                "idle.boredom",
-                                kernel::event::EventType::Custom("idle.boredom.action".into()),
-                                serde_json::json!({
-                                    "tag": tag,
-                                    "agent_id": agent_id,
-                                }),
-                            );
-                            let _ = local_bus.publish(action_event.clone()).await;
-                            if let Some(ref global) = global_bus {
-                                let _ = global.publish(action_event).await;
+                        if let Some(tag) =
+                            actor.try_act(detector.boredom_poll_count, &agent_id).await
+                        {
+                            // Notify the corresponding system state so the UI
+                            // reflects what the agent is doing.
+                            if let Some(ref ss) = system_state {
+                                let state = match tag.as_str() {
+                                    "work" => AgentSystemState::Working,
+                                    "study" => AgentSystemState::Studying,
+                                    "internet" | "entertainment" => {
+                                        AgentSystemState::DailyLife
+                                    }
+                                    _ => AgentSystemState::Idle,
+                                };
+                                *ss.lock().expect("system_state lock") = state;
                             }
                         }
                     }

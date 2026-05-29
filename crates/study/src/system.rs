@@ -19,11 +19,9 @@ use crate::config::StudyConfig;
 use crate::spec::StudySpec;
 use crate::trace::StudyTraceEvent;
 use crate::types::{
-    IdleSignal, Priority, StudyContext, StudyDepth, StudyError, StudyEvent, StudyItem,
-    StudyItemId, StudyItemSource, StudyOutcome, StudyResult, StudyState, STUDY_SOURCE,
+    IdleSignal, StudyContext, StudyError, StudyEvent, StudyItem, StudyItemSource,
+    StudyOutcome, StudyResult, StudyState, STUDY_SOURCE,
 };
-use kernel::types::Timestamp;
-use std::collections::HashMap;
 
 /// The per-agent Study System engine.
 pub struct StudySystem {
@@ -240,42 +238,6 @@ impl StudySystem {
         );
         self.engine.handle_step(phase_index).await?;
         Ok(())
-    }
-
-    /// Handle a boredom action tag. Pushes a curiosity-driven study item.
-    pub async fn on_boredom_action(&self, _tag: &str) {
-        let topic = "探索感兴趣的主题";
-        info!("random_hit:action: {topic}");
-
-        let item = StudyItem {
-            id: StudyItemId::new(),
-            topic: topic.into(),
-            materials: None,
-            depth: StudyDepth::Read,
-            priority: Priority::Low,
-            timeout: None,
-            context: {
-                let mut ctx = HashMap::new();
-                ctx.insert(
-                    "source".into(),
-                    serde_json::to_value(StudyItemSource::IdleExploration {
-                        curiosity_topic: "boredom".into(),
-                    })
-                    .unwrap_or_default(),
-                );
-                ctx
-            },
-            notify_on_complete: false,
-            created_at: Timestamp::now(),
-        };
-        let _ = self
-            .push_study_item(
-                item,
-                StudyItemSource::IdleExploration {
-                    curiosity_topic: "boredom".into(),
-                },
-            )
-            .await;
     }
 
     /// Push a study item onto this agent's queue.

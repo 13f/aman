@@ -3355,16 +3355,24 @@ fn start_im_channel_sources(
         .unwrap_or_default();
 
     // ── Telegram ─────────────────────────────────────────────────
-    // Read config from env vars (preferred) or keychain.
+    // Env var naming:
+    //   AMAN_BOT_TELEGRAM_TOKEN              → default instance
+    //   AMAN_BOT_TELEGRAM_{INSTANCE}_TOKEN   → named instance (uppercase)
+    //   e.g. AMAN_BOT_TELEGRAM_WORK_TOKEN, AMAN_BOT_TELEGRAM_PERSONAL_TOKEN
     let instances = if secrets_mode.prefer_env() {
-        // Check the primary env var for the default instance.
-        if std::env::var("AMAN_BOT_TELEGRAM_TOKEN").ok().filter(|s| !s.is_empty()).is_some() {
-            vec!["default".to_owned()]
-        } else {
-            vec![]
+        let mut found = vec![];
+        for inst in &["default", "work", "personal", "trading"] {
+            let token_var = if *inst == "default" {
+                "AMAN_BOT_TELEGRAM_TOKEN".to_owned()
+            } else {
+                format!("AMAN_BOT_TELEGRAM_{}_TOKEN", inst.to_ascii_uppercase())
+            };
+            if std::env::var(&token_var).ok().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
         }
+        found
     } else {
-        // Scan keychain for configured instances.
         use secret::{KeychainBackend, SecretBackend};
         let backend = KeychainBackend;
         let mut found = vec![];
@@ -3379,14 +3387,24 @@ fn start_im_channel_sources(
 
     for instance in instances {
         let (token, bot_username, allowed_chat_ids) = if secrets_mode.prefer_env() {
-            let token = std::env::var("AMAN_BOT_TELEGRAM_TOKEN")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default();
-            let bot_username = std::env::var("AMAN_BOT_TELEGRAM_USERNAME")
-                .ok()
-                .unwrap_or_default();
-            let allowed_chat_ids: Vec<i64> = std::env::var("AMAN_BOT_TELEGRAM_ALLOWED_CHAT_IDS")
+            let token_var = if instance == "default" {
+                "AMAN_BOT_TELEGRAM_TOKEN".to_owned()
+            } else {
+                format!("AMAN_BOT_TELEGRAM_{}_TOKEN", instance.to_ascii_uppercase())
+            };
+            let username_var = if instance == "default" {
+                "AMAN_BOT_TELEGRAM_USERNAME".to_owned()
+            } else {
+                format!("AMAN_BOT_TELEGRAM_{}_USERNAME", instance.to_ascii_uppercase())
+            };
+            let chat_ids_var = if instance == "default" {
+                "AMAN_BOT_TELEGRAM_ALLOWED_CHAT_IDS".to_owned()
+            } else {
+                format!("AMAN_BOT_TELEGRAM_{}_ALLOWED_CHAT_IDS", instance.to_ascii_uppercase())
+            };
+            let token = std::env::var(&token_var).ok().filter(|s| !s.is_empty()).unwrap_or_default();
+            let bot_username = std::env::var(&username_var).ok().unwrap_or_default();
+            let allowed_chat_ids: Vec<i64> = std::env::var(&chat_ids_var)
                 .ok()
                 .map(|ids| ids.split(',').filter_map(|s| s.trim().parse().ok()).collect())
                 .unwrap_or_default();

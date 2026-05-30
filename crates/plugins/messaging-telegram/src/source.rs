@@ -41,7 +41,7 @@ struct HandlerState {
 // ── Teloxide message handler ──────────────────────────────────────
 
 async fn message_handler(
-    _bot: Bot,
+    bot: Bot,
     msg: Message,
     state: Arc<HandlerState>,
 ) -> ResponseResult<()> {
@@ -61,9 +61,21 @@ async fn message_handler(
     if !state.allowed_chat_ids.is_empty()
         && !state.allowed_chat_ids.contains(&chat_id)
     {
-        tracing::debug!(
+        // Reply to unauthorized users so they can share their chat ID
+        // with the admin for pairing.
+        let reply = format!(
+            "👋 Hi! You're not authorized to use this bot yet.\n\
+             \n\
+             Your chat ID: `{chat_id}`\n\
+             \n\
+             Please send this ID to the bot administrator to get access."
+        );
+        let _ = bot
+            .send_message(teloxide::types::Recipient::Id(teloxide::types::ChatId(chat_id)), reply)
+            .await;
+        tracing::info!(
             chat_id = %chat_id,
-            "telegram: message from non-whitelisted chat, ignoring"
+            "telegram: unauthorized user, sent pairing instructions"
         );
         return Ok(());
     }

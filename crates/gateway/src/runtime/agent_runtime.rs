@@ -3277,6 +3277,7 @@ fn start_im_channel_sources(
     for instance in &["default", "work", "personal", "trading"] {
         let token_key = format!("aman.bot.telegram.{instance}.token");
         let username_key = format!("aman.bot.telegram.{instance}.username");
+        let chat_ids_key = format!("aman.bot.telegram.{instance}.allowed_chat_ids");
 
         if let Ok(Some(token)) = backend.get(&token_key) {
             if token.is_empty() {
@@ -3295,10 +3296,22 @@ fn start_im_channel_sources(
                 .flatten()
                 .unwrap_or_default();
 
+            let allowed_chat_ids: Vec<i64> = backend
+                .get(&chat_ids_key)
+                .ok()
+                .flatten()
+                .map(|ids| {
+                    ids.split(',')
+                        .filter_map(|s| s.trim().parse().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+
             tracing::info!(
                 source_id = %source_id,
                 instance = %instance,
                 username = %bot_username,
+                allowed_chat_count = allowed_chat_ids.len(),
                 "starting telegram IM channel source"
             );
 
@@ -3310,7 +3323,7 @@ fn start_im_channel_sources(
             let source = messaging_telegram::source::TelegramSource::new(
                 source_id.clone(),
                 &token,
-                vec![], // allow all chat IDs
+                allowed_chat_ids,
             )
             .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
 

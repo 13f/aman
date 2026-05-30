@@ -1219,6 +1219,7 @@ static IM_CHANNEL_PLATFORMS: &[(&str, &str, &[(&str, &str)])] = &[
     ("telegram", "Telegram", &[
         ("token", "Bot Token"),
         ("username", "Bot Username"),
+        ("allowed_chat_ids", "Allowed Chat IDs (comma-separated, empty = allow all)"),
     ]),
     ("slack", "Slack", &[
         ("bot_token", "Bot User OAuth Token (xoxb-...)"),

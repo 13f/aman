@@ -1508,9 +1508,9 @@ pub async fn test_im_channel(
 
 /// Reload an IM channel source from keychain without restarting the gateway.
 ///
-/// Uses `curl` with `--noproxy '*'` to bypass any local proxy (SOCKS5/HTTP).
-/// We spawn curl directly because the Tauri process may have proxy settings
-/// that interfere with reqwest even when `.no_proxy()` is set.
+/// Uses a raw TCP stream (no reqwest, no curl) to bypass any proxy
+/// interference. Sends a minimal HTTP/1.1 POST request directly to
+/// the gateway's localhost port.
 #[tauri::command]
 pub async fn reload_im_channel(
     _state: State<'_, AppState>,
@@ -1519,21 +1519,38 @@ pub async fn reload_im_channel(
 ) -> Result<String, String> {
     let instance = instance.unwrap_or_else(|| "default".to_owned());
     let port = get_gateway_port().await?;
-    let url = format!("http://127.0.0.1:{port}/im-channel/{}/{}/reload", platform, instance);
+    let path = format!("/im-channel/{}/{}/reload", platform, instance);
 
-    let output = tokio::process::Command::new("curl")
-        .args(["--noproxy", "*", "-s", "-X", "POST", "-o", "/dev/null", "-w", "%{http_code}"])
-        .arg(&url)
-        .output()
+    // Build a minimal HTTP/1.1 POST request.
+    let request = format!(
+        "POST {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        path, port
+    );
+
+    // Connect directly via TCP — bypasses ALL proxy settings.
+    let addr = format!("127.0.0.1:{port}");
+    let mut stream = tokio::net::TcpStream::connect(&addr)
         .await
-        .map_err(|e| format!("Failed to run curl: {e}"))?;
+        .map_err(|e| format!("TCP connect failed: {e}"))?;
 
-    let status = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if status == "200" {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| format!("Write failed: {e}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .map_err(|e| format!("Read failed: {e}"))?;
+
+    let response_str = String::from_utf8_lossy(&response);
+    if response_str.contains("200 OK") {
         Ok(format!("{platform}/{instance} reloaded"))
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!("Reload failed (HTTP {status}): {stderr}"))
+        let first_line = response_str.lines().next().unwrap_or("no response");
+        Err(format!("Reload failed: {first_line}"))
     }
 }
 

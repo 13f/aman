@@ -13,7 +13,7 @@ workspace = true
 tauri = { version = "2", default-features = false, features = ["devtools", "wry", "image-png"] }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process", "net", "io-util"] }
 config = { path = "../config", version = "0.1.0" }
 secret = { path = "../secret", version = "0.1.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }

@@ -358,7 +358,7 @@ impl AgentIdleManager {
                                 let state = match tag.as_str() {
                                     "work" => AgentSystemState::Working,
                                     "study" => AgentSystemState::Studying,
-                                    "internet" | "entertainment" => {
+                                    "internet" | "entertainment" | "fun" => {
                                         AgentSystemState::DailyLife
                                     }
                                     _ => AgentSystemState::Idle,

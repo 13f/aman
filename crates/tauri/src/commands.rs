@@ -1200,6 +1200,113 @@ pub async fn set_third_party_config(
 }
 
 // ---------------------------------------------------------------------------
+// IM Channel key management
+// ---------------------------------------------------------------------------
+
+/// Known IM channel platforms with their config fields.
+static IM_CHANNEL_PLATFORMS: &[(&str, &str, &[(&str, &str, &str)])] = &[
+    ("telegram", "Telegram", &[
+        ("token", "Bot Token", "aman.bot.telegram.token"),
+        ("username", "Bot Username", "aman.bot.telegram.username"),
+    ]),
+    ("slack", "Slack", &[
+        ("bot_token", "Bot User OAuth Token (xoxb-...)", "aman.bot.slack.bot_token"),
+        ("app_token", "App-Level Token (xapp-...)", "aman.bot.slack.app_token"),
+    ]),
+    ("discord", "Discord", &[
+        ("token", "Bot Token", "aman.bot.discord.token"),
+    ]),
+    ("matrix", "Matrix", &[
+        ("homeserver_url", "Homeserver URL", "aman.bot.matrix.homeserver_url"),
+        ("username", "Username / MXID", "aman.bot.matrix.username"),
+        ("access_token", "Access Token / Password", "aman.bot.matrix.access_token"),
+    ]),
+];
+
+#[derive(Serialize)]
+pub struct ImChannelField {
+    pub key: String,
+    pub label: String,
+    pub configured: bool,
+}
+
+#[derive(Serialize)]
+pub struct ImChannel {
+    pub id: String,
+    pub display_name: String,
+    pub enabled: bool,
+    pub fields: Vec<ImChannelField>,
+}
+
+#[tauri::command]
+pub async fn list_im_channels() -> Result<Vec<ImChannel>, String> {
+    let backend = KeychainBackend;
+    let mut channels: Vec<ImChannel> = Vec::new();
+    for (id, display_name, fields) in IM_CHANNEL_PLATFORMS {
+        let channel_fields: Vec<ImChannelField> = fields
+            .iter()
+            .map(|(key, label, keychain_key)| ImChannelField {
+                key: key.to_string(),
+                label: label.to_string(),
+                configured: backend.get(keychain_key).ok().flatten().is_some(),
+            })
+            .collect();
+        channels.push(ImChannel {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            enabled: true,
+            fields: channel_fields,
+        });
+    }
+    Ok(channels)
+}
+
+#[tauri::command]
+pub async fn save_im_channel(
+    platform: String,
+    field_key: String,
+    value: String,
+) -> Result<String, String> {
+    let platform_def = IM_CHANNEL_PLATFORMS
+        .iter()
+        .find(|(id, _, _)| *id == platform)
+        .ok_or_else(|| format!("Unknown platform: {platform}"))?;
+    let field_def = platform_def
+        .2
+        .iter()
+        .find(|(key, _, _)| *key == field_key)
+        .ok_or_else(|| format!("Unknown field '{field_key}' for platform '{platform}'"))?;
+    let keychain_key = field_def.2;
+    let backend = KeychainBackend;
+    backend
+        .set(keychain_key, &value)
+        .map_err(|e| format!("Failed to save to Keychain: {e}"))?;
+    Ok(format!("{platform}.{field_key} saved to Keychain"))
+}
+
+#[tauri::command]
+pub async fn delete_im_channel_field(
+    platform: String,
+    field_key: String,
+) -> Result<String, String> {
+    let platform_def = IM_CHANNEL_PLATFORMS
+        .iter()
+        .find(|(id, _, _)| *id == platform)
+        .ok_or_else(|| format!("Unknown platform: {platform}"))?;
+    let field_def = platform_def
+        .2
+        .iter()
+        .find(|(key, _, _)| *key == field_key)
+        .ok_or_else(|| format!("Unknown field '{field_key}' for platform '{platform}'"))?;
+    let keychain_key = field_def.2;
+    let backend = KeychainBackend;
+    backend
+        .set(keychain_key, "")
+        .map_err(|e| format!("Failed to delete from Keychain: {e}"))?;
+    Ok(format!("{platform}.{field_key} removed"))
+}
+
+// ---------------------------------------------------------------------------
 // Provider management (multi-agent P2) — no runtime required (LOCAL)
 // ---------------------------------------------------------------------------
 

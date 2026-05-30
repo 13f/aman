@@ -643,6 +643,10 @@ pub struct AmanConfig {
     /// Info-hub plugin configuration. Raw value deserialized by the info-hub plugin.
     #[serde(default)]
     pub info_hub: Option<Value>,
+    /// Messaging channel configuration (Telegram, Slack, Discord, Matrix).
+    /// Raw JSON/Value, deserialized by individual messaging plugins.
+    #[serde(default)]
+    pub channels: Option<Value>,
     /// Evaluation system configuration.
     #[serde(default)]
     pub eval: Option<eval::config::EvalConfig>,

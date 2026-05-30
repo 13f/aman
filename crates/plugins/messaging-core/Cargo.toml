@@ -1,0 +1,18 @@
+[package]
+name = "messaging-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared messaging abstractions: MessageSender trait, ChannelRegistry, ChatSessionStore, StickyAgentRouter"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kernel = { path = "../../core" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["sync", "rt", "time"] }
+tracing.workspace = true

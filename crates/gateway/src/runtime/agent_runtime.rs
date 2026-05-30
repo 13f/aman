@@ -10,6 +10,7 @@ use kernel::llm::LlmProvider;
 use memory::{MemoryConfig, YantrikdbProvider};
 use memory_store::MemoryStorePlugin;
 use info_hub::InfoHubPlugin;
+use messaging_core;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
 use kernel::skill::Skill;
@@ -440,6 +441,23 @@ impl AgentRuntimeBuilder {
 
         // ── Notification store ─────────────────────────────────────
         let notifications = Arc::new(notification::NotificationStore::new(500));
+
+        // ── Messaging channel state ────────────────────────────────
+        let chat_session_store = Arc::new(messaging_core::ChatSessionStore::new());
+        let channel_registry = Arc::new(messaging_core::ChannelRegistry::new());
+        let sticky_router = Arc::new(messaging_core::StickyAgentRouter::new(
+            // Seed known agents from config; updated dynamically as agents register.
+            aman_cfg
+                .as_ref()
+                .map(|c| c.agents.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+            // Default agent is the first enabled agent, or empty string.
+            aman_cfg
+                .as_ref()
+                .and_then(|c| c.agents.keys().next())
+                .cloned()
+                .unwrap_or_default(),
+        ));
 
         // ── Subscribe notification subscriber ─────────────────────
         let notif_sub = notification::NotificationSubscriber::new(Arc::clone(&notifications));
@@ -1050,6 +1068,70 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
+        // ── Subscribe agent:reply_ready → deliver replies via messaging channels ──
+        struct ChatReplyHandler {
+            chat_session_store: Arc<messaging_core::ChatSessionStore>,
+            channel_registry: Arc<messaging_core::ChannelRegistry>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for ChatReplyHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let session_id = event
+                    .payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let reply = event
+                    .payload
+                    .get("reply")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                if session_id.is_empty() || reply.is_empty() {
+                    return Ok(());
+                }
+
+                // Only act if this session was initiated from a chat platform.
+                let Some(target) = self.chat_session_store.get(session_id) else {
+                    return Ok(());
+                };
+
+                // Look up the sender for this platform source.
+                let Some(sender) = self.channel_registry.get(&target.source_id) else {
+                    tracing::debug!(
+                        source_id = %target.source_id,
+                        session_id = %session_id,
+                        "ChatReplyHandler: no sender registered for source"
+                    );
+                    return Ok(());
+                };
+
+                // Deliver the reply.
+                if let Err(e) = sender.send_text(&target, reply).await {
+                    tracing::error!(
+                        error = %e,
+                        session_id = %session_id,
+                        platform = ?target.platform,
+                        "ChatReplyHandler: failed to send chat reply"
+                    );
+                }
+
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![EventType::Custom("agent:reply_ready".to_owned())]),
+                sources: None,
+                priorities: None,
+                payload_match: None,
+            },
+            Box::new(ChatReplyHandler {
+                chat_session_store: Arc::clone(&chat_session_store),
+                channel_registry: Arc::clone(&channel_registry),
+            }),
+        ));
+
         // ── Subscribe work item event forwarder for dual-write ──
         // Forwards events from work item sessions (session_id matching
         // "{agent}:work:{project}:{work_id}") as "work:item:event" on the
@@ -1298,6 +1380,9 @@ impl AgentRuntimeBuilder {
             skill_registry,
             cascade_selector,
             notifications,
+            chat_session_store,
+            channel_registry,
+            sticky_router,
             agent_registry,
             agent_harness,
             session_manager,
@@ -1648,6 +1733,12 @@ pub struct AgentRuntime {
     auth_registry: Arc<tool::auth::AuthRegistry>,
     /// Notification center — user-facing alerts (critical/warning).
     notifications: Arc<notification::NotificationStore>,
+    /// Chat session store — maps session IDs to chat targets for reply routing.
+    chat_session_store: Arc<messaging_core::ChatSessionStore>,
+    /// Channel registry — maps source IDs to MessageSender instances.
+    channel_registry: Arc<messaging_core::ChannelRegistry>,
+    /// Sticky agent router — @mention-based agent affinity for chat platforms.
+    sticky_router: Arc<messaging_core::StickyAgentRouter>,
     /// Agent runtime registry — manages agent instances and lifecycle.
     agent_registry: Arc<super::AgentRegistry>,
     /// Agent harness — orchestrates the ReAct loop for agent message processing.
@@ -1762,6 +1853,21 @@ impl AgentRuntime {
     #[must_use]
     pub fn notifications(&self) -> Arc<notification::NotificationStore> {
         Arc::clone(&self.notifications)
+    }
+
+    #[must_use]
+    pub fn chat_session_store(&self) -> Arc<messaging_core::ChatSessionStore> {
+        Arc::clone(&self.chat_session_store)
+    }
+
+    #[must_use]
+    pub fn channel_registry(&self) -> Arc<messaging_core::ChannelRegistry> {
+        Arc::clone(&self.channel_registry)
+    }
+
+    #[must_use]
+    pub fn sticky_router(&self) -> Arc<messaging_core::StickyAgentRouter> {
+        Arc::clone(&self.sticky_router)
     }
 
     #[must_use]
@@ -2571,12 +2677,17 @@ impl AgentRuntime {
                 tracing::info!("Phase2: refresh_capabilities");
                 let _ = self.refresh_capabilities().await;
                 tracing::info!("Phase2: load agents from config");
-                if let Ok(aman_cfg) = config::AmanConfig::from_default_path() {
-                    let count = self.agent_registry.load_from_config(&aman_cfg).await;
-                    tracing::info!(count, "agents loaded from config");
-                    // Subscribe per-agent script hooks to each agent's local bus.
-                    for agent in self.agent_registry.list().await {
-                        self.subscribe_per_agent_hooks(&agent.descriptor.agent_id).await;
+                match config::AmanConfig::from_default_path() {
+                    Ok(aman_cfg) => {
+                        let count = self.agent_registry.load_from_config(&aman_cfg).await;
+                        tracing::info!(count, "agents loaded from config");
+                        // Subscribe per-agent script hooks to each agent's local bus.
+                        for agent in self.agent_registry.list().await {
+                            self.subscribe_per_agent_hooks(&agent.descriptor.agent_id).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Phase2: failed to load config, agents not loaded");
                     }
                 }
                 tracing::info!("Phase2: store");

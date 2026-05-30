@@ -14,7 +14,7 @@
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
   import NotificationOverlay from "./pages/NotificationOverlay.svelte";
   import Settings from "./pages/Settings.svelte";
-  import ThirdPartyServices from "./pages/ThirdPartyServices.svelte";
+  import Integration from "./pages/Integration.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -47,7 +47,7 @@
       items: [
         { id: "agents", label: "Agents", short: "Ag" },
         { id: "providers", label: "Providers", short: "Pr" },
-        { id: "third-party", label: "Third Party Services", short: "3P" },
+        { id: "integration", label: "Integration", short: "In" },
         { id: "dashboard", label: "Dashboard", short: "Db" },
       ],
     },
@@ -316,8 +316,8 @@
     <PluginManager />
   {:else if currentPage === "providers"}
     <Providers />
-  {:else if currentPage === "third-party"}
-    <ThirdPartyServices />
+  {:else if currentPage === "integration"}
+    <Integration />
   {:else if currentPage === "agents"}
     <Agents onNavigate={(p) => navigateTo(p)} />
   {:else if currentPage === "chat"}

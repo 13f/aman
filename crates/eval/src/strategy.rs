@@ -217,6 +217,7 @@ pub struct EvalDimension {
     /// Weight in the aggregate [0.0, 1.0].
     pub weight: f64,
     /// Human-readable description of what this dimension measures.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
 }
 

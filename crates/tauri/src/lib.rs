@@ -208,6 +208,10 @@ pub fn run() {
             commands::list_third_party_services,
             commands::set_third_party_key,
             commands::set_third_party_config,
+            // IM Channels
+            commands::list_im_channels,
+            commands::save_im_channel,
+            commands::delete_im_channel_field,
             // Notifications
             commands::get_notifications,
             commands::get_notifications_unread_count,

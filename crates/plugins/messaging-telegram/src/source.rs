@@ -216,7 +216,7 @@ impl EventSource for TelegramSource {
             allowed_chat_ids: self.allowed_chat_ids.clone(),
         });
 
-        let bot = Bot::new(&self.bot_token);
+        let bot = crate::sender::build_telegram_bot(&self.bot_token);
 
         let handler = dptree::entry()
             .branch(Update::filter_message().endpoint(message_handler));

@@ -10,6 +10,35 @@ use messaging_core::types::ChatTarget;
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, ParseMode, Recipient};
 
+/// Build a proxy-aware reqwest client for Telegram API calls.
+/// Reads the proxy URL from (in order): `ALL_PROXY`, `HTTPS_PROXY`, `https_proxy`.
+#[must_use]
+pub fn build_telegram_client() -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy_url) = detect_proxy_url() {
+        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().expect("build telegram reqwest client")
+}
+
+/// Detect proxy URL from environment variables (OS system proxy settings
+/// are typically exported as these vars by the shell).
+fn detect_proxy_url() -> Option<String> {
+    std::env::var("ALL_PROXY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HTTPS_PROXY").ok().filter(|s| !s.is_empty()))
+        .or_else(|| std::env::var("https_proxy").ok().filter(|s| !s.is_empty()))
+}
+
+/// Build a teloxide [`Bot`] using the proxy-aware client.
+#[must_use]
+pub fn build_telegram_bot(bot_token: &str) -> Bot {
+    Bot::with_client(bot_token, build_telegram_client())
+}
+
 /// Sends messages back to Telegram via the Bot API.
 pub struct TelegramSender {
     bot: Bot,
@@ -19,7 +48,7 @@ impl TelegramSender {
     #[must_use]
     pub fn new(bot_token: &str) -> Self {
         Self {
-            bot: Bot::new(bot_token),
+            bot: build_telegram_bot(bot_token),
         }
     }
 
@@ -70,12 +99,12 @@ impl MessageSender for TelegramSender {
         reply_to_message_id: &str,
         text: &str,
     ) -> AmanResult<()> {
+        use teloxide::types::{MessageId, ReplyParameters};
         let chat_id = parse_chat_id(&target.chat_id)
             .map_err(|e| kernel::Error::config_invalid(e))?;
         let reply_to: i32 = reply_to_message_id
             .parse()
             .map_err(|e| kernel::Error::config_invalid(format!("invalid message_id: {e}")))?;
-        use teloxide::types::{MessageId, ReplyParameters};
         let req = self
             .bot
             .send_message(Recipient::Id(chat_id), text)

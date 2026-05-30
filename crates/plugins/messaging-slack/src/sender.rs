@@ -6,10 +6,28 @@ use kernel::AmanResult;
 use messaging_core::sender::MessageSender;
 use messaging_core::types::ChatTarget;
 
+/// Build a proxy-aware reqwest client.
+/// Reads the proxy URL from (in order): `ALL_PROXY`, `HTTPS_PROXY`, `https_proxy`.
+#[must_use]
+pub fn build_proxy_client() -> reqwest::Client {
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy_url) = detect_proxy_url() {
+        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    builder.build().expect("build slack reqwest client")
+}
+
+fn detect_proxy_url() -> Option<String> {
+    std::env::var("ALL_PROXY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("HTTPS_PROXY").ok().filter(|s| !s.is_empty()))
+        .or_else(|| std::env::var("https_proxy").ok().filter(|s| !s.is_empty()))
+}
+
 /// Sends messages back to Slack via the Web API.
-///
-/// Uses the Slack `chat.postMessage` HTTP endpoint. A dedicated Slack SDK client
-/// (e.g. `slack-morphism`) can be swapped in for full socket-mode / block-kit support.
 pub struct SlackSender {
     bot_token: String,
     http: reqwest::Client,
@@ -20,7 +38,7 @@ impl SlackSender {
     pub fn new(bot_token: impl Into<String>) -> Self {
         Self {
             bot_token: bot_token.into(),
-            http: reqwest::Client::new(),
+            http: build_proxy_client(),
         }
     }
 }
@@ -32,10 +50,6 @@ impl MessageSender for SlackSender {
             "channel": target.chat_id,
             "text": text,
         });
-        if let Some(thread_ts) = &target.thread_id {
-            // thread_ts included in payload for threading
-            let _ = thread_ts;
-        }
         let resp = self
             .http
             .post("https://slack.com/api/chat.postMessage")

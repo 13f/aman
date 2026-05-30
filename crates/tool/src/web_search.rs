@@ -121,8 +121,22 @@ impl Tool for WebSearchTool {
     }
 }
 
-/// Read a third-party credential from macOS Keychain.
+/// Read a third-party credential. Checks env vars first, falls back to keychain.
+///
+/// Env var naming: `AMAN_3RD_{NAME}_{SUB}` (uppercase, underscores).
+///   e.g. `kc_get("tavily", "api_key")` → `AMAN_3RD_TAVILY_API_KEY`
 fn kc_get(name: &str, sub: &str) -> String {
+    // Env var first (instant, no keychain prompt).
+    let env_var = format!(
+        "AMAN_3RD_{}_{}",
+        name.to_ascii_uppercase(),
+        sub.to_ascii_uppercase()
+    );
+    let from_env = std::env::var(&env_var).unwrap_or_default();
+    if !from_env.is_empty() {
+        return from_env;
+    }
+    // Fall back to keychain.
     let key = format!("{KC_3RD}.{name}.{sub}");
     KeychainBackend
         .get(&key)

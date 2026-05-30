@@ -64,7 +64,7 @@ impl StickyAgentRouter {
                 let key = (platform, chat_id.to_owned());
                 self.affinity
                     .write()
-                    .expect("StickyAgentRouter lock poisoned")
+                    .unwrap_or_else(|e| e.into_inner())
                     .insert(key, agent.clone());
                 return RouterResolution {
                     agent_id: agent.clone(),
@@ -78,7 +78,7 @@ impl StickyAgentRouter {
             let guard = self
                 .affinity
                 .read()
-                .expect("StickyAgentRouter lock poisoned");
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(agent_id) = guard.get(&(platform, chat_id.to_owned())) {
                 return RouterResolution {
                     agent_id: agent_id.clone(),
@@ -98,7 +98,7 @@ impl StickyAgentRouter {
     pub fn set_affinity(&self, platform: PlatformKind, chat_id: &str, agent_id: &str) {
         self.affinity
             .write()
-            .expect("StickyAgentRouter lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert((platform, chat_id.to_owned()), agent_id.to_owned());
     }
 
@@ -106,7 +106,7 @@ impl StickyAgentRouter {
     pub fn clear_affinity(&self, platform: PlatformKind, chat_id: &str) {
         self.affinity
             .write()
-            .expect("StickyAgentRouter lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&(platform, chat_id.to_owned()));
     }
 
@@ -115,7 +115,7 @@ impl StickyAgentRouter {
     pub fn get_affinity(&self, platform: PlatformKind, chat_id: &str) -> Option<String> {
         self.affinity
             .read()
-            .expect("StickyAgentRouter lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&(platform, chat_id.to_owned()))
             .cloned()
     }
@@ -125,7 +125,7 @@ impl StickyAgentRouter {
     pub fn len(&self) -> usize {
         self.affinity
             .read()
-            .expect("StickyAgentRouter lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .len()
     }
 
@@ -134,7 +134,7 @@ impl StickyAgentRouter {
     pub fn is_empty(&self) -> bool {
         self.affinity
             .read()
-            .expect("StickyAgentRouter lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .is_empty()
     }
 }

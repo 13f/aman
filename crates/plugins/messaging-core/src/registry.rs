@@ -24,20 +24,15 @@ impl ChannelRegistry {
         }
     }
 
-    /// Register a sender for the given source ID.
+    /// Register (or replace) a sender for the given source ID.
     ///
-    /// # Panics
-    /// Panics if a sender is already registered for `source_id`. Each source
-    /// must have a unique ID.
+    /// If a sender already exists for `source_id`, it is silently replaced.
     pub fn register(&self, source_id: String, sender: Arc<dyn MessageSender>) {
         let mut guard = self
             .senders
             .write()
-            .expect("ChannelRegistry lock poisoned");
-        assert!(
-            guard.insert(source_id.clone(), sender).is_none(),
-            "ChannelRegistry: duplicate source_id {source_id}"
-        );
+            .unwrap_or_else(|e| e.into_inner());
+        guard.insert(source_id, sender);
     }
 
     /// Look up the sender for a given source ID.
@@ -45,7 +40,7 @@ impl ChannelRegistry {
     pub fn get(&self, source_id: &str) -> Option<Arc<dyn MessageSender>> {
         self.senders
             .read()
-            .expect("ChannelRegistry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(source_id)
             .cloned()
     }
@@ -54,7 +49,7 @@ impl ChannelRegistry {
     pub fn unregister(&self, source_id: &str) {
         self.senders
             .write()
-            .expect("ChannelRegistry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(source_id);
     }
 
@@ -63,7 +58,7 @@ impl ChannelRegistry {
     pub fn len(&self) -> usize {
         self.senders
             .read()
-            .expect("ChannelRegistry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .len()
     }
 
@@ -72,7 +67,7 @@ impl ChannelRegistry {
     pub fn is_empty(&self) -> bool {
         self.senders
             .read()
-            .expect("ChannelRegistry lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .is_empty()
     }
 }
@@ -127,12 +122,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "duplicate source_id")]
-    fn duplicate_register_panics() {
+    fn duplicate_register_overwrites() {
         let registry = ChannelRegistry::new();
         let s1: Arc<dyn MessageSender> = Arc::new(DummySender);
         let s2: Arc<dyn MessageSender> = Arc::new(DummySender);
         registry.register("chat:telegram:bot".to_owned(), s1);
         registry.register("chat:telegram:bot".to_owned(), s2);
+        assert_eq!(registry.len(), 1);
     }
 }

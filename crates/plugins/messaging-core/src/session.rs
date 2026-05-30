@@ -32,7 +32,7 @@ impl ChatSessionStore {
     pub fn store(&self, session_id: String, target: ChatTarget) {
         self.sessions
             .write()
-            .expect("ChatSessionStore lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(session_id, target);
     }
 
@@ -41,7 +41,7 @@ impl ChatSessionStore {
     pub fn get(&self, session_id: &str) -> Option<ChatTarget> {
         self.sessions
             .read()
-            .expect("ChatSessionStore lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .get(session_id)
             .cloned()
     }
@@ -50,7 +50,7 @@ impl ChatSessionStore {
     pub fn remove(&self, session_id: &str) {
         self.sessions
             .write()
-            .expect("ChatSessionStore lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
     }
 
@@ -59,7 +59,7 @@ impl ChatSessionStore {
     pub fn len(&self) -> usize {
         self.sessions
             .read()
-            .expect("ChatSessionStore lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .len()
     }
 
@@ -68,7 +68,7 @@ impl ChatSessionStore {
     pub fn is_empty(&self) -> bool {
         self.sessions
             .read()
-            .expect("ChatSessionStore lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .is_empty()
     }
 
@@ -77,7 +77,7 @@ impl ChatSessionStore {
     pub fn list_ids(&self) -> Vec<String> {
         self.sessions
             .read()
-            .expect("ChatSessionStore lock poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .keys()
             .cloned()
             .collect()

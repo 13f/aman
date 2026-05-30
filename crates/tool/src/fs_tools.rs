@@ -4,7 +4,7 @@
 use kernel::context::ToolContext;
 use kernel::schema::JsonSchema;
 use kernel::tool::Tool;
-use kernel::types::ToolMode;
+use kernel::types::{ExecutionModel, ToolMode};
 use kernel::{AmanResult, Error};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -259,6 +259,10 @@ impl Tool for WriteTool {
         ToolMode::Local
     }
 
+    fn execution_model(&self) -> ExecutionModel {
+        ExecutionModel::Stateful
+    }
+
     fn parameters(&self) -> &JsonSchema {
         static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
             JsonSchema::from(json!({
@@ -329,6 +333,10 @@ impl Tool for EditTool {
 
     fn mode(&self) -> ToolMode {
         ToolMode::Local
+    }
+
+    fn execution_model(&self) -> ExecutionModel {
+        ExecutionModel::Stateful
     }
 
     fn parameters(&self) -> &JsonSchema {

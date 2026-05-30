@@ -16,7 +16,7 @@ pub use web_search::WebSearchTool;
 use kernel::context::ToolContext;
 use kernel::schema::JsonSchema;
 use kernel::tool::Tool;
-use kernel::types::ToolMode;
+use kernel::types::{ExecutionModel, ToolMode};
 use kernel::{AmanResult, Error};
 use rusqlite::types::{Value as SqlValue, ValueRef as SqlValueRef};
 use serde_json::{json, Value};
@@ -640,6 +640,10 @@ impl Tool for ExecTool {
         ToolMode::Sandbox
     }
 
+    fn execution_model(&self) -> ExecutionModel {
+        ExecutionModel::SideEffect
+    }
+
     fn parameters(&self) -> &JsonSchema {
         static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
             JsonSchema::from(json!({
@@ -722,6 +726,10 @@ impl Tool for DbTool {
 
     fn mode(&self) -> ToolMode {
         ToolMode::Local
+    }
+
+    fn execution_model(&self) -> ExecutionModel {
+        ExecutionModel::Stateful
     }
 
     fn parameters(&self) -> &JsonSchema {

@@ -16,6 +16,7 @@ use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
     SoulSnapshot, StreamEvent, ToolDescriptor,
 };
+use kernel::types::ExecutionModel;
 use kernel::router::AgentRouter;
 use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
@@ -520,25 +521,88 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         ctx: &ReActContext,
         calls: &[ParsedToolCall],
     ) -> Result<Vec<ChatMessage>, kernel::react::ReActError> {
-        let executor = ToolExecutor::new(
+        let executor = Arc::new(ToolExecutor::new(
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.agent_registry),
             Arc::clone(&self.bus),
-        );
-        let mut results = Vec::with_capacity(calls.len());
+        ));
 
         const TOOL_MAX_RETRIES: u32 = 3;
         const TOOL_RETRY_DELAY_SECS: u64 = 1;
 
-        for call in calls {
-            // Retry tool calls on transient failures (network, timeout).
-            // Skip retry for permanent errors: unrecoverable, not found,
-            // permission denied, file missing.
+        // ── Classify calls by execution model ──────────────────────────
+        // (original_index, is_independent)
+        let models: Vec<(usize, ExecutionModel)> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, call)| {
+                let model = self
+                    .tool_registry
+                    .get(&call.tool_name)
+                    .map(|t| t.execution_model())
+                    .unwrap_or_default();
+                (i, model)
+            })
+            .collect();
+
+        // ── Phase 1: Launch all Independent calls concurrently ─────────
+        let mut independent_handles: Vec<(usize, tokio::task::JoinHandle<react::ToolCallResult>)> =
+            Vec::new();
+
+        for (i, call) in calls.iter().enumerate() {
+            if models.iter().any(|(idx, m)| *idx == i && *m == ExecutionModel::Independent) {
+                let exec = Arc::clone(&executor);
+                let agent_id = ctx.agent_id.clone();
+                let session_id = ctx.session_id.clone();
+                let call = call.clone();
+                let handle = tokio::spawn(async move {
+                    let mut attempt = 0;
+                    loop {
+                        attempt += 1;
+                        let r = exec.execute_for_agent(&call, &agent_id, &session_id).await;
+                        if r.success
+                            || attempt >= TOOL_MAX_RETRIES
+                            || !Self::is_retryable_error(&r.output)
+                        {
+                            return r;
+                        }
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            session_id = %session_id,
+                            tool = %call.tool_name,
+                            attempt,
+                            error = %r.output,
+                            "tool call failed, retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_secs(TOOL_RETRY_DELAY_SECS))
+                            .await;
+                    }
+                });
+                independent_handles.push((i, handle));
+            }
+        }
+
+        // ── Phase 2: Execute Stateful/SideEffect calls sequentially ────
+        let mut serial_results: Vec<(usize, react::ToolCallResult)> = Vec::new();
+
+        for (i, call) in calls.iter().enumerate() {
+            let is_independent = models
+                .iter()
+                .any(|(idx, m)| *idx == i && *m == ExecutionModel::Independent);
+            if is_independent {
+                continue;
+            }
+
             let mut attempt = 0;
             let result = loop {
                 attempt += 1;
-                let r = executor.execute_for_agent(call, &ctx.agent_id, &ctx.session_id).await;
-                if r.success || attempt >= TOOL_MAX_RETRIES || !Self::is_retryable_error(&r.output) {
+                let r = executor
+                    .execute_for_agent(call, &ctx.agent_id, &ctx.session_id)
+                    .await;
+                if r.success
+                    || attempt >= TOOL_MAX_RETRIES
+                    || !Self::is_retryable_error(&r.output)
+                {
                     break r;
                 }
                 tracing::warn!(
@@ -551,14 +615,41 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(TOOL_RETRY_DELAY_SECS)).await;
             };
-            results.push(ChatMessage::tool_result(
-                &result.id,
-                &result.tool_name,
-                &result.output,
-            ));
+            serial_results.push((i, result));
         }
 
-        Ok(results)
+        // ── Await all independent futures ──────────────────────────────
+        let mut independent_results: Vec<(usize, react::ToolCallResult)> = Vec::new();
+        for (i, handle) in independent_handles {
+            match handle.await {
+                Ok(result) => independent_results.push((i, result)),
+                Err(join_err) => independent_results.push((
+                    i,
+                    react::ToolCallResult {
+                        id: String::new(),
+                        tool_name: String::new(),
+                        success: false,
+                        output: format!("tool task panicked or was cancelled: {join_err}"),
+                        duration_ms: 0,
+                    },
+                )),
+            }
+        }
+
+        // ── Merge results in original call order ───────────────────────
+        let mut all: Vec<(usize, react::ToolCallResult)> = Vec::with_capacity(calls.len());
+        all.extend(independent_results);
+        all.extend(serial_results);
+        all.sort_by_key(|(i, _)| *i);
+
+        let messages: Vec<ChatMessage> = all
+            .into_iter()
+            .map(|(_, result)| {
+                ChatMessage::tool_result(&result.id, &result.tool_name, &result.output)
+            })
+            .collect();
+
+        Ok(messages)
     }
 }
 

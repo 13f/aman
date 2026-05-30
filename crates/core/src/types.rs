@@ -210,6 +210,26 @@ pub enum ConcurrencyModel {
     Limited(usize),
 }
 
+/// Declares how tool calls should be scheduled relative to each other.
+///
+/// Tools declare their own execution model — the runtime uses this metadata
+/// to automatically parallelize Independent calls while keeping Stateful
+/// and SideEffect calls serial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionModel {
+    /// Tool calls are independent of each other — can run concurrently.
+    /// Examples: read, grep, find, list, web_search, http(GET).
+    #[default]
+    Independent,
+    /// Tool calls may depend on earlier results — must be serial.
+    /// Examples: write (may create a file that a later edit targets), edit, db.
+    Stateful,
+    /// Tool has irreversible external effects — needs explicit ordering.
+    /// Examples: exec, deploy, delete.
+    SideEffect,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolMode {
@@ -258,7 +278,7 @@ pub enum CompensationStrategy {
 mod tests {
     use super::{
         BackpressureLevel, CompensationStrategy, ConcurrencyModel, DedupKey, DeliveryGuarantee,
-        HealthStatus, Priority, SourceId, SourceType, Timestamp, ToolMode, TraceId,
+        ExecutionModel, HealthStatus, Priority, SourceId, SourceType, Timestamp, ToolMode, TraceId,
     };
     use serde_json::json;
 
@@ -327,6 +347,18 @@ mod tests {
             serde_json::to_value(CompensationStrategy::ReverseOrder).expect("serialize"),
             json!("reverse_order")
         );
+        assert_eq!(
+            serde_json::to_value(ExecutionModel::Independent).expect("serialize"),
+            json!("independent")
+        );
+        assert_eq!(
+            serde_json::to_value(ExecutionModel::Stateful).expect("serialize"),
+            json!("stateful")
+        );
+        assert_eq!(
+            serde_json::to_value(ExecutionModel::SideEffect).expect("serialize"),
+            json!("side_effect")
+        );
     }
 
     #[test]
@@ -359,6 +391,14 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<HealthStatus>(json!("failed")).expect("deserialize"),
             HealthStatus::Failed
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionModel>(json!("independent")).expect("deserialize"),
+            ExecutionModel::Independent
+        );
+        assert_eq!(
+            serde_json::from_value::<ExecutionModel>(json!("stateful")).expect("deserialize"),
+            ExecutionModel::Stateful
         );
     }
 }

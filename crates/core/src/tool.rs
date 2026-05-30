@@ -4,7 +4,7 @@
 use crate::context::ToolContext;
 use crate::error::AmanResult;
 use crate::schema::JsonSchema;
-use crate::types::ToolMode;
+use crate::types::{ExecutionModel, ToolMode};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -19,6 +19,11 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str { "" }
     fn parameters(&self) -> &JsonSchema;
     fn returns(&self) -> &JsonSchema;
+    /// How this tool's calls should be scheduled relative to each other.
+    ///
+    /// Default is [`ExecutionModel::Independent`] — most tools are read-only
+    /// and can run concurrently. Override for stateful or side-effect tools.
+    fn execution_model(&self) -> ExecutionModel { ExecutionModel::Independent }
 
     async fn execute(&self, params: Value, ctx: ToolContext) -> ToolResult;
 }

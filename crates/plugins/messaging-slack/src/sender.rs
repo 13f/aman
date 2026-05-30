@@ -25,6 +25,13 @@ fn detect_proxy_url() -> Option<String> {
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HTTPS_PROXY").ok().filter(|s| !s.is_empty()))
         .or_else(|| std::env::var("https_proxy").ok().filter(|s| !s.is_empty()))
+        .map(|url| {
+            if url.starts_with("socks5://") && !url.starts_with("socks5h://") {
+                url.replacen("socks5://", "socks5h://", 1)
+            } else {
+                url
+            }
+        })
 }
 
 /// Sends messages back to Slack via the Web API.

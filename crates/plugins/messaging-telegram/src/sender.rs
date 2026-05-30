@@ -32,12 +32,22 @@ pub fn build_telegram_client() -> reqwest::Client {
 }
 
 /// Detect proxy URL from environment variables.
+/// Converts `socks5://` to `socks5h://` so DNS is resolved by the proxy
+/// (required for `api.telegram.org` behind GFW).
 fn detect_proxy_url() -> Option<String> {
     std::env::var("ALL_PROXY")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HTTPS_PROXY").ok().filter(|s| !s.is_empty()))
         .or_else(|| std::env::var("https_proxy").ok().filter(|s| !s.is_empty()))
+        .map(|url| {
+            // reqwest: socks5:// = local DNS, socks5h:// = remote DNS
+            if url.starts_with("socks5://") && !url.starts_with("socks5h://") {
+                url.replacen("socks5://", "socks5h://", 1)
+            } else {
+                url
+            }
+        })
 }
 
 /// Build a teloxide [`Bot`] using the proxy-aware client.

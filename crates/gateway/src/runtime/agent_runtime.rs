@@ -3633,10 +3633,7 @@ fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: 
 
 /// Get API key for a provider from Keychain, falling back to env var.
 fn get_llm_api_key(provider_key: &str) -> String {
-    let backend = KeychainBackend;
-    if let Ok(Some(key)) = backend.get(&format!("aman.providers.{provider_key}.api_key")) {
-        return key;
-    }
+    // Check env var first (instant), fall back to keychain.
     let env_var = format!(
         "AMAN_PROVIDER_{}_API_KEY",
         provider_key
@@ -3645,7 +3642,16 @@ fn get_llm_api_key(provider_key: &str) -> String {
             .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
             .collect::<String>()
     );
-    std::env::var(env_var).unwrap_or_default()
+    let from_env = std::env::var(&env_var).unwrap_or_default();
+    if !from_env.is_empty() {
+        return from_env;
+    }
+    // Keychain access may block on first use (macOS authorization prompt).
+    let backend = KeychainBackend;
+    if let Ok(Some(key)) = backend.get(&format!("aman.providers.{provider_key}.api_key")) {
+        return key;
+    }
+    String::new()
 }
 
 /// Get API key checking Keychain → env var → inline provider config.

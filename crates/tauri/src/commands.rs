@@ -1507,6 +1507,7 @@ pub async fn test_im_channel(
 }
 
 /// Reload an IM channel source from keychain without restarting the gateway.
+/// Uses a direct HTTP client with explicit no-proxy to bypass SOCKS5/HTTP proxy.
 #[tauri::command]
 pub async fn reload_im_channel(
     state: State<'_, AppState>,
@@ -1514,9 +1515,24 @@ pub async fn reload_im_channel(
     instance: Option<String>,
 ) -> Result<String, String> {
     let instance = instance.unwrap_or_else(|| "default".to_owned());
-    let client = require_gateway(&state).await?;
-    client.im_channel_reload(&platform, &instance).await?;
-    Ok(format!("{platform}/{instance} reloaded"))
+    let port = get_gateway_port().await?;
+    let url = format!("http://127.0.0.1:{port}/im-channel/{}/{}/reload", platform, instance);
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("build client: {e}"))?;
+    let resp = client
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {e}"))?;
+    if resp.status().is_success() {
+        Ok(format!("{platform}/{instance} reloaded"))
+    } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("Reload failed ({status}): {body}"))
+    }
 }
 
 /// Delete an entire instance (all fields) for a given platform.

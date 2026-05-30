@@ -12,13 +12,14 @@ use kernel::AmanResult;
 use messaging_core::router::StickyAgentRouter;
 use messaging_core::session::ChatSessionStore;
 use messaging_core::types::{
-    make_session_id, ChatTarget, PlatformKind, AGENT_ID_KEY, CHAT_TARGET_KEY, SESSION_ID_KEY,
+    ChatTarget, PlatformKind, AGENT_ID_KEY, CHAT_TARGET_KEY, SESSION_ID_KEY,
 };
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::UpdateKind;
+use uuid::Uuid;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -35,6 +36,8 @@ struct HandlerState {
     sticky_router: Arc<StickyAgentRouter>,
     chat_session_store: Arc<ChatSessionStore>,
     allowed_chat_ids: Vec<i64>,
+    /// Active session ID per chat_id (set by /new or first message, used by all subsequent messages).
+    active_sessions: std::sync::RwLock<std::collections::HashMap<String, String>>,
 }
 
 // ── Teloxide message handler ──────────────────────────────────────
@@ -100,16 +103,18 @@ async fn message_handler(
             .await;
         return Ok(());
     }
-    // `/new` command — create a fresh session with the same agent affinity.
+    // Session management: each chat gets a UUID v7 session_id.
+    // `/new` forces a new session; otherwise reuse the active one.
     let is_new_session = user_text.trim() == "/new";
-    let session_id = if is_new_session {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        format!("chat:telegram:{}:{}", chat_id_str, ts)
-    } else {
-        make_session_id(PlatformKind::Telegram, &chat_id_str)
+    let session_id = {
+        let mut sessions = state.active_sessions.write().unwrap_or_else(|e| e.into_inner());
+        if is_new_session || !sessions.contains_key(&chat_id_str) {
+            let id = Uuid::now_v7().to_string();
+            sessions.insert(chat_id_str.clone(), id.clone());
+            id
+        } else {
+            sessions.get(&chat_id_str).cloned().unwrap_or_default()
+        }
     };
 
     // Store session → chat target mapping for reply routing.
@@ -240,6 +245,7 @@ impl EventSource for TelegramSource {
             sticky_router,
             chat_session_store,
             allowed_chat_ids: self.allowed_chat_ids.clone(),
+            active_sessions: std::sync::RwLock::new(std::collections::HashMap::new()),
         });
 
         let bot = crate::sender::build_telegram_bot(&self.bot_token);

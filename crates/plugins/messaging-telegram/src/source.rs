@@ -17,9 +17,8 @@ use messaging_core::types::{
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use teloxide::dispatching::Dispatcher;
-use teloxide::dptree;
 use teloxide::prelude::*;
+use teloxide::types::UpdateKind;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -218,24 +217,63 @@ impl EventSource for TelegramSource {
 
         let bot = crate::sender::build_telegram_bot(&self.bot_token);
 
-        let handler = dptree::entry()
-            .branch(Update::filter_message().endpoint(message_handler));
-
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
         self.shutdown_tx = Some(shutdown_tx);
 
         self.task = Some(tokio::spawn(async move {
-            let mut dispatcher = Dispatcher::builder(bot, handler)
-                .dependencies(dptree::deps![handler_state])
-                .build();
-
-            // Graceful shutdown via oneshot channel.
-            // Dispatcher::shutdown_token() can be used to stop dispatch.
-            tokio::select! {
-                _ = dispatcher.dispatch() => {}
-                _ = shutdown_rx => {
-                    // Shutdown requested — the dispatcher will be dropped.
+            // Manual long-polling loop — uses our proxy-aware bot instead of
+            // teloxide's Dispatcher (which creates its own reqwest client and
+            // doesn't inherit our proxy settings).
+            //
+            // We call GetUpdates in a loop and process each update through the
+            // same message_handler that the Dispatcher would use.
+            let mut offset: i32 = 0;
+            loop {
+                // Check shutdown / pause
+                if shutdown_rx.try_recv().is_ok() {
+                    break;
                 }
+                if handler_state.paused.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+
+                // Fetch updates
+                let updates = match bot.get_updates()
+                    .offset(offset)
+                    .timeout(30)
+                    .send()
+                    .await
+                {
+                    Ok(updates) => updates,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "telegram: getUpdates failed, retrying in 5s");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
+                    }
+                };
+
+                for update in updates {
+                    // Track the highest update_id for the next poll.
+                    let update_id: i32 = update.id.0.try_into().unwrap_or(i32::MAX);
+                    offset = offset.max(update_id + 1);
+
+                    // Process messages only.
+                    if let UpdateKind::Message(msg) = update.kind {
+                        if let Err(e) = message_handler(
+                            bot.clone(),
+                            msg,
+                            Arc::clone(&handler_state),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %e, "telegram: message handler error");
+                        }
+                    }
+                }
+
+                // Small delay between polls to avoid hammering the API.
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }));
 

@@ -1507,31 +1507,33 @@ pub async fn test_im_channel(
 }
 
 /// Reload an IM channel source from keychain without restarting the gateway.
-/// Uses a direct HTTP client with explicit no-proxy to bypass SOCKS5/HTTP proxy.
+///
+/// Uses `curl` with `--noproxy '*'` to bypass any local proxy (SOCKS5/HTTP).
+/// We spawn curl directly because the Tauri process may have proxy settings
+/// that interfere with reqwest even when `.no_proxy()` is set.
 #[tauri::command]
 pub async fn reload_im_channel(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     platform: String,
     instance: Option<String>,
 ) -> Result<String, String> {
     let instance = instance.unwrap_or_else(|| "default".to_owned());
     let port = get_gateway_port().await?;
     let url = format!("http://127.0.0.1:{port}/im-channel/{}/{}/reload", platform, instance);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .map_err(|e| format!("build client: {e}"))?;
-    let resp = client
-        .post(&url)
-        .send()
+
+    let output = tokio::process::Command::new("curl")
+        .args(["--noproxy", "*", "-s", "-X", "POST", "-o", "/dev/null", "-w", "%{http_code}"])
+        .arg(&url)
+        .output()
         .await
-        .map_err(|e| format!("Request failed: {e}"))?;
-    if resp.status().is_success() {
+        .map_err(|e| format!("Failed to run curl: {e}"))?;
+
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if status == "200" {
         Ok(format!("{platform}/{instance} reloaded"))
     } else {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        Err(format!("Reload failed ({status}): {body}"))
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Reload failed (HTTP {status}): {stderr}"))
     }
 }
 

@@ -212,10 +212,10 @@ impl SessionManager {
                 },
             ],
             error_recovery: workflow::ErrorRecovery {
-                auto_retry_count: 0,
+                auto_retry_count: 3,
                 max_retry_count: 5,
                 on_retry_failure: workflow::RetryFailurePolicy::ManualOnly,
-                retry_backoff: Default::default(),
+                retry_backoff: kernel::retry::RetryBackoff::Fixed(1000),
             },
         });
     }

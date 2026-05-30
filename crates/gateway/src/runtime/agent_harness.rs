@@ -367,21 +367,43 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             .await;
 
         let cb = ctx.stream_cb.as_ref().map(Arc::clone);
-
-        let req = LlmChatRequest {
-            model: ctx.model.clone(),
-            system_prompt,
-            messages,
-            tools: ctx.agent_tools.clone(),
-            max_output_tokens: ctx.token_budget.max_output_tokens as u32,
-        };
+        let model = ctx.model.clone();
+        let tools = ctx.agent_tools.clone();
+        let max_tokens = ctx.token_budget.max_output_tokens as u32;
 
         let Some(llm_provider) = self.agent_registry.get_llm_provider(&ctx.agent_id).await else {
             return Err(kernel::react::ReActError::LlmError(
                 format!("no LLM provider configured for agent '{}'", ctx.agent_id)
             ));
         };
-        let result = llm_provider.chat_completion(req, cb).await;
+
+        // Retry LLM API calls with increasing backoff: 1s, 2s, 3s
+        const LLM_MAX_RETRIES: u32 = 3;
+        let mut llm_attempt = 0;
+        let result = loop {
+            llm_attempt += 1;
+            let req = LlmChatRequest {
+                model: model.clone(),
+                system_prompt: system_prompt.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+                max_output_tokens: max_tokens,
+            };
+            let r = llm_provider.chat_completion(req, cb.clone()).await;
+            if r.is_ok() || llm_attempt >= LLM_MAX_RETRIES {
+                break r;
+            }
+            let delay_secs = llm_attempt as u64; // 1s, 2s, 3s
+            tracing::warn!(
+                agent_id = %ctx.agent_id,
+                session_id = %ctx.session_id,
+                turn = ctx.turn,
+                attempt = llm_attempt,
+                delay_secs,
+                "LLM API call failed, retrying"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+        };
 
         // Publish llm:call_ended to local bus
         let _ = self
@@ -449,9 +471,28 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         );
         let mut results = Vec::with_capacity(calls.len());
 
+        const TOOL_MAX_RETRIES: u32 = 3;
+        const TOOL_RETRY_DELAY_SECS: u64 = 1;
+
         for call in calls {
-            // Use execute_for_agent to enforce per-agent tool permissions (M3)
-            let result = executor.execute_for_agent(call, &ctx.agent_id, &ctx.session_id).await;
+            // Retry tool calls on failure (e.g. network errors, transient I/O)
+            let mut attempt = 0;
+            let result = loop {
+                attempt += 1;
+                let r = executor.execute_for_agent(call, &ctx.agent_id, &ctx.session_id).await;
+                if r.success || attempt >= TOOL_MAX_RETRIES {
+                    break r;
+                }
+                tracing::warn!(
+                    agent_id = %ctx.agent_id,
+                    session_id = %ctx.session_id,
+                    tool = %call.tool_name,
+                    attempt,
+                    error = %r.output,
+                    "tool call failed, retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(TOOL_RETRY_DELAY_SECS)).await;
+            };
             results.push(ChatMessage::tool_result(
                 &result.id,
                 &result.tool_name,

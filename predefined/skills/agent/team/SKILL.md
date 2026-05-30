@@ -22,6 +22,10 @@ triggers:
   - "加一个任务"
   - "记录任务"
   - "登记任务"
+tags:
+  - team
+  - task
+  - kanban
 metadata:
   triggers: "create work item, submit task, track this, add to kanban, create a ticket, file this as a task"
 ---

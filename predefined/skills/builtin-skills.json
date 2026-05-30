@@ -23,6 +23,7 @@
     { "name": "opencode",              "files": ["code/opencode/SKILL.md"] },
     { "name": "gemini-cli",            "files": ["code/gemini-cli/SKILL.md"] },
     { "name": "kimi",                  "files": ["code/kimi/SKILL.md"] },
-    { "name": "create-skill",         "files": ["agent/create-skill/SKILL.md"] }
+    { "name": "create-skill",         "files": ["agent/create-skill/SKILL.md"] },
+    { "name": "kanban-worker",        "files": ["agent/kanban-worker/SKILL.md"] }
   ]
 }

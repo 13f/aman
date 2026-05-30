@@ -100,7 +100,17 @@ async fn message_handler(
             .await;
         return Ok(());
     }
-    let session_id = make_session_id(PlatformKind::Telegram, &chat_id_str);
+    // `/new` command — create a fresh session with the same agent affinity.
+    let is_new_session = user_text.trim() == "/new";
+    let session_id = if is_new_session {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("chat:telegram:{}:{}", chat_id_str, ts)
+    } else {
+        make_session_id(PlatformKind::Telegram, &chat_id_str)
+    };
 
     // Store session → chat target mapping for reply routing.
     state.chat_session_store.store(

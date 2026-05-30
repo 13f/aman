@@ -206,6 +206,19 @@ impl AgentRegistry {
                         _ => None,
                     }
                 });
+                let deferred_queue = {
+                    let dir = super::agent_seed::aman_data_dir()
+                        .join("agents")
+                        .join(&agent_id)
+                        .join("deferred");
+                    match persistence::FileDeferredTaskQueue::open(&dir) {
+                        Ok(q) => Some(Arc::new(q) as Arc<dyn kernel::deferred_task::DeferredTaskQueue>),
+                        Err(e) => {
+                            tracing::warn!(agent = %agent_id, error = %e, "Failed to open deferred task queue");
+                            None
+                        }
+                    }
+                };
                 let idle_manager = Arc::new(AgentIdleManager::new(
                     agent_id.clone(),
                     Arc::clone(&local_bus) as Arc<dyn EventBus>,
@@ -215,6 +228,7 @@ impl AgentRegistry {
                     arousal_half_life,
                     Some(Arc::clone(&system_state)),
                     boredom_actor,
+                    deferred_queue,
                 ));
                 self.set_idle_manager(agent_id, idle_manager).await;
             }
@@ -359,6 +373,19 @@ impl AgentRegistry {
                     _ => None,
                 }
             });
+            let deferred_queue = {
+                let dir = super::agent_seed::aman_data_dir()
+                    .join("agents")
+                    .join(agent_id)
+                    .join("deferred");
+                match persistence::FileDeferredTaskQueue::open(&dir) {
+                    Ok(q) => Some(Arc::new(q) as Arc<dyn kernel::deferred_task::DeferredTaskQueue>),
+                    Err(e) => {
+                        tracing::warn!(agent = %agent_id, error = %e, "Failed to open deferred task queue");
+                        None
+                    }
+                }
+            };
             let idle_manager = Arc::new(AgentIdleManager::new(
                 agent_id.to_string(),
                 local_bus,
@@ -368,6 +395,7 @@ impl AgentRegistry {
                 config.runtime.idle.arousal.half_life_secs,
                 Some(ss),
                 boredom_actor,
+                deferred_queue,
             ));
             self.set_idle_manager(agent_id, idle_manager.clone()).await;
             // Start the idle loop immediately.

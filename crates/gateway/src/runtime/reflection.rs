@@ -183,8 +183,9 @@ impl ReflectionRunner {
 
     /// Step 1: Detect incomplete task chains via TraceStore.
     ///
-    /// Queries `find_incomplete` for partial traces with no `ended_at_ms`, logs
-    /// them and publishes a low-priority event so the UI / operator can inspect
+    /// Queries `find_incomplete` for partial traces with no `ended_at_ms`,
+    /// categorizes them by `task_type` via `load_by_task_type`, logs them
+    /// and publishes a low-priority event so the UI / operator can inspect
     /// stalled task chains.
     async fn chain_tasks(&self, agent_id: &str) {
         let Some(registry) = self.agent_registry.get() else {
@@ -205,7 +206,16 @@ impl ReflectionRunner {
                     count = incomplete.len(),
                     "Reflection::chain_tasks: incomplete traces detected",
                 );
+
+                // Categorize incomplete traces by task_type for targeted
+                // recovery analysis (e.g. all stalled "skill_run" tasks may
+                // indicate a tool timeout).
+                let mut task_types: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
                 for trace in &incomplete {
+                    *task_types
+                        .entry(trace.task_type.clone())
+                        .or_default() += 1;
                     debug!(
                         agent_id,
                         trace_id = %trace.trace_id,
@@ -213,6 +223,53 @@ impl ReflectionRunner {
                         description = %trace.description,
                         "Reflection::chain_tasks: stalled task",
                     );
+                }
+                if task_types.len() > 1 {
+                    info!(
+                        agent_id,
+                        ?task_types,
+                        "Reflection::chain_tasks: stalled tasks by type",
+                    );
+                }
+
+                // Use load_by_task_type to check if any specific task_type
+                // has a history of failures that may explain the stalls.
+                for (task_type, count) in &task_types {
+                    if *count >= 2 {
+                        match ts
+                            .load_by_task_type(agent_id, task_type, 5)
+                            .await
+                        {
+                            Ok(recent) => {
+                                let failures = recent
+                                    .iter()
+                                    .filter(|t| {
+                                        matches!(
+                                            t.outcome,
+                                            kernel::trace::TraceOutcome::Failure
+                                        )
+                                    })
+                                    .count();
+                                if failures > 0 {
+                                    info!(
+                                        agent_id,
+                                        task_type,
+                                        failures,
+                                        recent_count = recent.len(),
+                                        "Reflection::chain_tasks: prior failures for stalled task type",
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                debug!(
+                                    agent_id,
+                                    task_type,
+                                    error = %e,
+                                    "Reflection::chain_tasks: load_by_task_type failed",
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Err(e) => {

@@ -15,11 +15,13 @@ use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use event_bus::EventBus;
 use kernel::agent::AgentSystemState;
 use kernel::AmanResult;
+
+use kernel::deferred_task::{current_time_ms, DeferredTaskQueue};
 
 use crate::boredom::BoredomActor;
 use crate::coordination::IdleCoordination;
@@ -50,6 +52,8 @@ pub struct AgentIdleManager {
     incubation: Arc<IncubationManager>,
     /// Optional boredom actor for random tag selection
     boredom_actor: Option<Arc<BoredomActor>>,
+    /// Optional deferred task queue (checked before random skill selection)
+    deferred_queue: Option<Arc<dyn DeferredTaskQueue>>,
     /// Stop signal for the background idle loop
     stop_token: CancellationToken,
     /// Handle for the background idle loop task
@@ -68,6 +72,7 @@ impl AgentIdleManager {
         arousal_half_life_secs: f64,
         system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
         boredom_actor: Option<Arc<BoredomActor>>,
+        deferred_queue: Option<Arc<dyn DeferredTaskQueue>>,
     ) -> Self {
         let agent_id = agent_id.into();
         let coord = Arc::new(IdleCoordination::new(arousal_initial, arousal_half_life_secs));
@@ -81,6 +86,7 @@ impl AgentIdleManager {
             system_state,
             incubation: Arc::new(IncubationManager::new()),
             boredom_actor,
+            deferred_queue,
             stop_token: CancellationToken::new(),
             task: tokio::sync::Mutex::new(None),
         }
@@ -96,6 +102,12 @@ impl AgentIdleManager {
     #[must_use]
     pub fn incubation(&self) -> &Arc<IncubationManager> {
         &self.incubation
+    }
+
+    /// Returns a reference to this agent's deferred task queue, if configured.
+    #[must_use]
+    pub fn deferred_queue(&self) -> Option<&Arc<dyn DeferredTaskQueue>> {
+        self.deferred_queue.as_ref()
     }
 
     /// Start the background idle detection loop.
@@ -116,6 +128,7 @@ impl AgentIdleManager {
         let system_state = self.system_state.clone();
         let stop_token = self.stop_token.clone();
         let boredom_actor = self.boredom_actor.clone();
+        let deferred_queue = self.deferred_queue.clone();
 
         *task_slot = Some(tokio::spawn(async move {
             let mut detector = IdleDetector::new(
@@ -346,28 +359,92 @@ impl AgentIdleManager {
                     let _ = global.publish(event).await;
                 }
 
-                // Boredom action: on trigger poll, pick and execute a skill
+                // Boredom action: check deferred tasks first (higher priority
+                // than random skill selection), then fall through to the
+                // weighted random tag pick.
                 if kind == IdleKind::Boredom {
-                    if let Some(ref actor) = boredom_actor {
-                        if let Some(tag) =
-                            actor.try_act(
-                                detector.boredom_poll_count,
-                                &agent_id,
-                                pending,
-                            ).await
-                        {
-                            // Notify the corresponding system state so the UI
-                            // reflects what the agent is doing.
-                            if let Some(ref ss) = system_state {
-                                let state = match tag.as_str() {
-                                    "work" => AgentSystemState::Working,
-                                    "study" => AgentSystemState::Studying,
-                                    "internet" | "entertainment" | "fun" => {
-                                        AgentSystemState::DailyLife
+                    // ── Deferred task queue check ────────────────────────────
+                    // If there are deferred tasks ready to execute, publish one
+                    // as a MessageReceived event and skip random skill selection
+                    // this cycle. The agent harness will process it through the
+                    // ReAct loop.
+                    let mut deferred_acted = false;
+                    if let Some(ref queue) = deferred_queue {
+                        // Dequeue pending tasks and filter by execute_after_ms.
+                        // We use the base trait's dequeue() + manual filtering
+                        // because the extension trait's blanket impl requires
+                        // Sized (not satisfied for dyn DeferredTaskQueue).
+                        match queue.dequeue(5).await {
+                            Ok(tasks) => {
+                                let now = current_time_ms();
+                                let ready: Vec<_> = tasks
+                                    .into_iter()
+                                    .filter(|t| t.is_ready_at(now))
+                                    .collect();
+                                if let Some(task) = ready.first() {
+                                    info!(
+                                        agent_id = %agent_id,
+                                        task_id = %task.id,
+                                        title = %task.title,
+                                        source = %task.source,
+                                        "DeferredQueue: executing deferred task",
+                                    );
+                                    let event = kernel::event::Event::new(
+                                        format!("idle:deferred:{agent_id}:{}", task.id),
+                                        kernel::event::EventType::MessageReceived,
+                                        serde_json::json!({
+                                            "session_id": format!("{agent_id}:deferred:{}", task.id),
+                                            "agent_id": agent_id,
+                                            "text": format!(
+                                                "[DEFERRED TASK] {}\n\n{}",
+                                                task.title, task.description,
+                                            ),
+                                            "source": task.source,
+                                            "deferred_task_id": task.id,
+                                            "session_type": "background",
+                                            "background": true,
+                                        }),
+                                    );
+                                    let _ = local_bus.publish(event.clone()).await;
+                                    if let Some(ref global) = global_bus {
+                                        let _ = global.publish(event).await;
                                     }
-                                    _ => AgentSystemState::Idle,
-                                };
-                                *ss.lock().expect("system_state lock") = state;
+                                    deferred_acted = true;
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    agent_id = %agent_id,
+                                    error = %e,
+                                    "DeferredQueue: dequeue failed",
+                                );
+                            }
+                        }
+                    }
+
+                    // ── Random skill selection (only if no deferred task) ────
+                    if !deferred_acted {
+                        if let Some(ref actor) = boredom_actor {
+                            if let Some(tag) =
+                                actor.try_act(
+                                    detector.boredom_poll_count,
+                                    &agent_id,
+                                    pending,
+                                ).await
+                            {
+                                // Notify the corresponding system state so the UI
+                                // reflects what the agent is doing.
+                                if let Some(ref ss) = system_state {
+                                    let state = match tag.as_str() {
+                                        "work" => AgentSystemState::Working,
+                                        "study" => AgentSystemState::Studying,
+                                        "internet" | "entertainment" | "fun" => {
+                                            AgentSystemState::DailyLife
+                                        }
+                                        _ => AgentSystemState::Idle,
+                                    };
+                                    *ss.lock().expect("system_state lock") = state;
+                                }
                             }
                         }
                     }

@@ -10,7 +10,8 @@
 > - **AtomicWrite** — `kernel::fs::atomic_write()` + `cleanup_temp_files()` 抽取为通用工具，TraceStore 3 处 + Meditation 1 处全部替换。
 > - **TraceStore 查询** — 新增 `load_by_task_type()` 和 `load_by_time_range()` 两个 trait 方法，JsonlTraceStore 中实现。
 > - **Incubation extract_entities** — 从 whitespace-split + `search_entities()` 改为批量 LLM 调用（单次 `chat_completion` 提取所有 unique content entities），LLM 不可用时自动回退到关键词搜索。
-> - **DeferredTaskQueue** — 新增 `DeferredTaskQueue` trait + `DeferredTaskQueueExt` 扩展 trait + `MemoryDeferredTaskQueue`（in-memory）+ `FileDeferredTaskQueue`（JSON 文件持久化）。Kanban 版由客户端插件提供，不在核心实现。
+> - **DeferredTaskQueue** — 新增 `DeferredTaskQueue` trait + `DeferredTaskQueueExt` 扩展 trait + `MemoryDeferredTaskQueue`（in-memory）+ `FileDeferredTaskQueue`（JSON 文件持久化）。Kanban 版由客户端插件提供，不在核心实现。**已接入**：`AgentIdleManager` 在 Boredom 状态下优先检查 deferred queue，有就绪任务时发布为 `MessageReceived` 事件，再 fall through 到随机 skill 选择。
+> - **TraceStore 查询接入** — `ReflectionRunner::chain_tasks`（step 1）现在用 `load_by_task_type` 按类型分组分析 stalled task chains，检测与历史失败模式的重合。
 
 ---
 

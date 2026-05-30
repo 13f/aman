@@ -7,6 +7,11 @@
 
 > ⚠️ **This project has no Meme / Token / Coin. Beware of scams.**
 
+> ⚠️ **WORK IN PROGRESS — USE AT YOUR OWN RISK**
+>
+> - Data structures, storage formats, and policies are **not yet finalized** and may change without notice.
+> - Critical harness features — **sandboxing, input/output sanitization, permission review, content filtering, and audit logging** — are **not yet implemented**. The agent may execute arbitrary actions without guardrails.
+
 An event-driven agent framework for building safe, observable, and extensible autonomous systems.
 
 ## Quick Start

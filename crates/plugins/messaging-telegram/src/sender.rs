@@ -16,15 +16,22 @@ use teloxide::types::{ChatId, ParseMode, Recipient};
 pub fn build_telegram_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
     if let Some(proxy_url) = detect_proxy_url() {
-        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-            builder = builder.proxy(proxy);
+        match reqwest::Proxy::all(&proxy_url) {
+            Ok(proxy) => {
+                tracing::info!(%proxy_url, "telegram: using proxy");
+                builder = builder.proxy(proxy);
+            }
+            Err(e) => {
+                tracing::warn!(%proxy_url, error = %e, "telegram: invalid proxy URL");
+            }
         }
+    } else {
+        tracing::info!("telegram: no proxy configured (ALL_PROXY/HTTPS_PROXY not set)");
     }
     builder.build().expect("build telegram reqwest client")
 }
 
-/// Detect proxy URL from environment variables (OS system proxy settings
-/// are typically exported as these vars by the shell).
+/// Detect proxy URL from environment variables.
 fn detect_proxy_url() -> Option<String> {
     std::env::var("ALL_PROXY")
         .ok()

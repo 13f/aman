@@ -18,8 +18,8 @@ DEST="$HOME/.aman/bin/gateway"
 if [[ "${1:-}" == "--export-env" ]]; then
     echo "# Add these to your ~/.zshrc to skip keychain prompts during dev:"
     security dump-keychain ~/Library/Keychains/login.keychain-db 2>/dev/null \
-        | grep -oP '"labl"<blob>="aman\.[^"]*"' \
-        | sed 's/"labl"<blob>="//;s/"//' \
+        | grep '"labl".*aman\.' \
+        | sed 's/.*"labl"<blob>="//;s/".*//' \
         | sort -u \
         | while read -r item; do
         # Map keychain keys to env var names
@@ -60,8 +60,8 @@ if [ ! -f "$ACL_DONE" ]; then
     echo "==> One-time: authorizing keychain access..."
     echo "    (macOS may ask for your password — grant 'Always Allow')"
     security dump-keychain ~/Library/Keychains/login.keychain-db 2>/dev/null \
-        | grep -oP '"labl"<blob>="aman\.[^"]*"' \
-        | sed 's/"labl"<blob>="//;s/"//' \
+        | grep '"labl".*aman\.' \
+        | sed 's/.*"labl"<blob>="//;s/".*//' \
         | sort -u \
         | while read -r item; do
         echo "     $item"

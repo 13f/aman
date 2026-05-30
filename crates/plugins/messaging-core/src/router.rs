@@ -23,33 +23,34 @@ use std::sync::RwLock;
 /// Result of resolving a chat message to a target agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouterResolution {
-    /// The resolved agent ID.
+    /// The resolved agent ID (empty if no agent could be resolved).
     pub agent_id: String,
     /// `true` if an explicit @mention was detected in this message.
     pub was_mentioned: bool,
+    /// `true` if a valid agent was resolved (either via @mention or affinity).
+    pub agent_resolved: bool,
 }
 
 /// Sticky agent router — maintains `(platform, chat_id) → agent_id` affinity.
+///
+/// If no @mention and no affinity exist, returns `agent_resolved: false`.
+/// The caller should prompt the user to @mention an agent.
 pub struct StickyAgentRouter {
     /// `(platform, chat_id)` → last-mentioned agent ID.
     affinity: RwLock<HashMap<(PlatformKind, String), String>>,
     /// Ordered list of known agent IDs for @mention matching.
     known_agents: Vec<String>,
-    /// Default agent when no affinity exists and no @mention is detected.
-    default_agent: String,
 }
 
 impl StickyAgentRouter {
     /// Create a new router.
     ///
     /// `known_agents` should be the list of agent IDs that users can @mention.
-    /// `default_agent` is used when no affinity has been established.
     #[must_use]
-    pub fn new(known_agents: Vec<String>, default_agent: String) -> Self {
+    pub fn new(known_agents: Vec<String>) -> Self {
         Self {
             affinity: RwLock::new(HashMap::new()),
             known_agents,
-            default_agent,
         }
     }
 
@@ -69,6 +70,7 @@ impl StickyAgentRouter {
                 return RouterResolution {
                     agent_id: agent.clone(),
                     was_mentioned: true,
+                    agent_resolved: true,
                 };
             }
         }
@@ -83,14 +85,16 @@ impl StickyAgentRouter {
                 return RouterResolution {
                     agent_id: agent_id.clone(),
                     was_mentioned: false,
+                    agent_resolved: true,
                 };
             }
         }
 
-        // 3. Fall back to default.
+        // 3. No agent resolved — caller should prompt user to @mention.
         RouterResolution {
-            agent_id: self.default_agent.clone(),
+            agent_id: String::new(),
             was_mentioned: false,
+            agent_resolved: false,
         }
     }
 
@@ -185,7 +189,6 @@ mod tests {
     fn router() -> StickyAgentRouter {
         StickyAgentRouter::new(
             vec!["alice".to_owned(), "bob".to_owned(), "charlie".to_owned()],
-            "alice".to_owned(),
         )
     }
 
@@ -225,11 +228,12 @@ mod tests {
     // ── Affinity routing ────────────────────────────────────────────
 
     #[test]
-    fn no_mention_no_affinity_returns_default() {
+    fn no_mention_no_affinity_returns_unresolved() {
         let r = router();
         let res = r.resolve(PlatformKind::Telegram, "chat_1", "hello");
-        assert_eq!(res.agent_id, "alice");
+        assert!(!res.agent_resolved);
         assert!(!res.was_mentioned);
+        assert_eq!(res.agent_id, "");
     }
 
     #[test]

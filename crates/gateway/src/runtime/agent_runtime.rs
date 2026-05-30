@@ -446,16 +446,9 @@ impl AgentRuntimeBuilder {
         let chat_session_store = Arc::new(messaging_core::ChatSessionStore::new());
         let channel_registry = Arc::new(messaging_core::ChannelRegistry::new());
         let sticky_router = Arc::new(messaging_core::StickyAgentRouter::new(
-            // Seed known agents from config; updated dynamically as agents register.
             aman_cfg
                 .as_ref()
                 .map(|c| c.agents.keys().cloned().collect::<Vec<_>>())
-                .unwrap_or_default(),
-            // Default agent is the first enabled agent, or empty string.
-            aman_cfg
-                .as_ref()
-                .and_then(|c| c.agents.keys().next())
-                .cloned()
                 .unwrap_or_default(),
         ));
 

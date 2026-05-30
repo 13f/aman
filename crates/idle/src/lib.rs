@@ -8,6 +8,7 @@ pub mod arousal;
 pub mod boredom;
 pub mod config;
 pub mod coordination;
+pub mod deferred_memory;
 pub mod detector;
 pub mod incubation;
 pub mod manager;
@@ -22,3 +23,4 @@ pub use types::{
 pub use coordination::IdleCoordination;
 pub use manager::AgentIdleManager;
 pub use boredom::BoredomActor;
+pub use deferred_memory::MemoryDeferredTaskQueue;

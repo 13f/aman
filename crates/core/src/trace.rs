@@ -291,4 +291,30 @@ pub trait TraceStore: Send + Sync {
         let _ = (agent_id, older_than_secs);
         unimplemented!("TraceStore::prune")
     }
+
+    // ── Phase E: filtered queries ──────────────────────────────────────────
+
+    /// Load traces matching a specific `task_type`, newest first.
+    async fn load_by_task_type(
+        &self,
+        agent_id: &str,
+        task_type: &str,
+        limit: usize,
+    ) -> AmanResult<Vec<TraceRecord>> {
+        let _ = (agent_id, task_type, limit);
+        unimplemented!("TraceStore::load_by_task_type")
+    }
+
+    /// Load traces whose `started_at_ms` falls within the given range
+    /// (inclusive on both ends), newest first.
+    async fn load_by_time_range(
+        &self,
+        agent_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        limit: usize,
+    ) -> AmanResult<Vec<TraceRecord>> {
+        let _ = (agent_id, start_ms, end_ms, limit);
+        unimplemented!("TraceStore::load_by_time_range")
+    }
 }

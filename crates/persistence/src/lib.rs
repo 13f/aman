@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 
+mod deferred_file;
 mod dlq;
 mod index_store;
 mod overflow;
@@ -12,6 +13,7 @@ mod state_store;
 mod trace_store;
 mod wal;
 
+pub use deferred_file::FileDeferredTaskQueue;
 pub use dlq::{
     DeadLetterEntry, DeadLetterQueue, DlqExpiryAlert, DlqFilter, DlqRetryRecord,
     InMemoryDeadLetterQueue,

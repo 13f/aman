@@ -16,7 +16,6 @@ use kernel::trace::{
 };
 use kernel::AmanResult;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -96,7 +95,7 @@ impl JsonlTraceStore {
     ///
     /// The closure receives the current [`TraceRecord`] and should return the
     /// modified version (or `None` to abort the update). The trace is written
-    /// atomically via temp → fsync → rename.
+    /// atomically via [`kernel::fs::atomic_write`].
     fn update_trace<F>(&self, agent_id: &str, trace_id: &str, f: F) -> AmanResult<()>
     where
         F: FnOnce(&mut TraceRecord),
@@ -110,13 +109,7 @@ impl JsonlTraceStore {
         f(&mut trace);
 
         let json = serde_json::to_string_pretty(&trace)?;
-        let tmp = dir.join(format!(".tmp.{trace_id}.json"));
-        {
-            let mut fh = fs::File::create(&tmp)?;
-            fh.write_all(json.as_bytes())?;
-            fh.sync_all()?;
-        }
-        fs::rename(&tmp, &path)?;
+        kernel::fs::atomic_write(&path, json.as_bytes())?;
         Ok(())
     }
 }
@@ -134,13 +127,7 @@ impl TraceStore for JsonlTraceStore {
         let path = dir.join(format!("{}.json", trace.trace_id));
         let json = serde_json::to_string_pretty(trace)?;
 
-        let tmp = dir.join(format!(".tmp.{}.json", trace.trace_id));
-        {
-            let mut f = fs::File::create(&tmp)?;
-            f.write_all(json.as_bytes())?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp, &path)?;
+        kernel::fs::atomic_write(&path, json.as_bytes())?;
 
         tracing::trace!(
             agent_id = %trace.agent_id,
@@ -184,13 +171,7 @@ impl TraceStore for JsonlTraceStore {
         };
 
         let json = serde_json::to_string_pretty(&trace)?;
-        let tmp = dir.join(format!(".tmp.{trace_id}.json"));
-        {
-            let mut f = fs::File::create(&tmp)?;
-            f.write_all(json.as_bytes())?;
-            f.sync_all()?;
-        }
-        fs::rename(&tmp, dir.join(format!("{trace_id}.json")))?;
+        kernel::fs::atomic_write(&dir.join(format!("{trace_id}.json")), json.as_bytes())?;
 
         tracing::trace!(
             agent_id,
@@ -463,6 +444,39 @@ impl TraceStore for JsonlTraceStore {
             );
         }
         Ok(pruned)
+    }
+
+    // ── Phase E: filtered queries ──────────────────────────────────────────
+
+    async fn load_by_task_type(
+        &self,
+        agent_id: &str,
+        task_type: &str,
+        limit: usize,
+    ) -> AmanResult<Vec<TraceRecord>> {
+        let all = self.load_all_traces(agent_id)?;
+        let mut filtered: Vec<TraceRecord> = all
+            .into_iter()
+            .filter(|t| t.task_type == task_type)
+            .collect();
+        filtered.truncate(limit);
+        Ok(filtered)
+    }
+
+    async fn load_by_time_range(
+        &self,
+        agent_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        limit: usize,
+    ) -> AmanResult<Vec<TraceRecord>> {
+        let all = self.load_all_traces(agent_id)?;
+        let mut filtered: Vec<TraceRecord> = all
+            .into_iter()
+            .filter(|t| t.started_at_ms >= start_ms && t.started_at_ms <= end_ms)
+            .collect();
+        filtered.truncate(limit);
+        Ok(filtered)
     }
 }
 
@@ -759,5 +773,75 @@ mod tests {
         assert_eq!(traces[0].tool_calls.len(), 1);
         assert_eq!(traces[0].tool_calls[0].tool_name, "read_file");
         assert!(traces[0].tool_calls[0].success);
+    }
+
+    // ── Phase E: filtered queries ──────────────────────────────────────
+
+    #[test]
+    fn load_by_task_type_filter() {
+        let tmp = temp_dir();
+        let store = JsonlTraceStore::open(&tmp).unwrap();
+
+        let mut t1 = make_trace("agent1", "t1", TraceOutcome::Success);
+        t1.task_type = "meditation".to_owned();
+        let mut t2 = make_trace("agent1", "t2", TraceOutcome::Success);
+        t2.task_type = "reflection".to_owned();
+        let mut t3 = make_trace("agent1", "t3", TraceOutcome::Success);
+        t3.task_type = "meditation".to_owned();
+
+        pollster::block_on(store.save_trace(&t1)).unwrap();
+        pollster::block_on(store.save_trace(&t2)).unwrap();
+        pollster::block_on(store.save_trace(&t3)).unwrap();
+
+        let med = pollster::block_on(store.load_by_task_type("agent1", "meditation", 10)).unwrap();
+        assert_eq!(med.len(), 2);
+        for t in &med {
+            assert_eq!(t.task_type, "meditation");
+        }
+
+        let refs = pollster::block_on(store.load_by_task_type("agent1", "reflection", 10)).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].trace_id, "t2");
+
+        let none = pollster::block_on(store.load_by_task_type("agent1", "sleep", 10)).unwrap();
+        assert!(none.is_empty());
+
+        // limit works
+        let limited = pollster::block_on(store.load_by_task_type("agent1", "meditation", 1)).unwrap();
+        assert_eq!(limited.len(), 1);
+    }
+
+    #[test]
+    fn load_by_time_range_filter() {
+        let tmp = temp_dir();
+        let store = JsonlTraceStore::open(&tmp).unwrap();
+
+        let mut t1 = make_trace("agent1", "t1", TraceOutcome::Success);
+        t1.started_at_ms = 1000;
+        let mut t2 = make_trace("agent1", "t2", TraceOutcome::Success);
+        t2.started_at_ms = 2000;
+        let mut t3 = make_trace("agent1", "t3", TraceOutcome::Success);
+        t3.started_at_ms = 3000;
+
+        pollster::block_on(store.save_trace(&t1)).unwrap();
+        pollster::block_on(store.save_trace(&t2)).unwrap();
+        pollster::block_on(store.save_trace(&t3)).unwrap();
+
+        // Middle only
+        let mid = pollster::block_on(store.load_by_time_range("agent1", 1500, 2500, 10)).unwrap();
+        assert_eq!(mid.len(), 1);
+        assert_eq!(mid[0].trace_id, "t2");
+
+        // All three
+        let all = pollster::block_on(store.load_by_time_range("agent1", 0, 5000, 10)).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // None in range
+        let none = pollster::block_on(store.load_by_time_range("agent1", 5000, 6000, 10)).unwrap();
+        assert!(none.is_empty());
+
+        // limit works
+        let limited = pollster::block_on(store.load_by_time_range("agent1", 0, 5000, 1)).unwrap();
+        assert_eq!(limited.len(), 1);
     }
 }

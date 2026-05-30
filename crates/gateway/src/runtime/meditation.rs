@@ -17,12 +17,10 @@ use kernel::trace::TraceStore;
 use kernel::AmanResult;
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 use super::agent_registry::AgentRegistry;
 
@@ -467,9 +465,8 @@ impl MeditationRunner {
             .unwrap_or_default()
             .as_secs();
         let final_path = report_dir.join(format!("{unix_ts}.md"));
-        let temp_path = report_dir.join(format!(".tmp.{}.md", Uuid::new_v4()));
 
-        let entity_section = if entity_introspections.is_empty() {
+        let entity_section =if entity_introspections.is_empty() {
             "- Entity introspection: skipped (no trace entities)\n".to_owned()
         } else {
             let mut s = String::new();
@@ -558,24 +555,8 @@ impl MeditationRunner {
             conflicts_found = think.conflicts_found,
         );
 
-        // atomic write: temp → fsync → rename
-        {
-            let mut f = fs::File::create(&temp_path)?;
-            f.write_all(report.as_bytes())?;
-            f.sync_all()?;
-        }
-        fs::rename(&temp_path, &final_path)?;
-
-        // Clean up stale temp files from previous crashes
-        if let Ok(entries) = fs::read_dir(&report_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                if let Some(s) = name.to_str()
-                    && s.starts_with(".tmp.") {
-                        let _ = fs::remove_file(entry.path());
-                    }
-            }
-        }
+        kernel::fs::atomic_write(&final_path, report.as_bytes())?;
+        let _ = kernel::fs::cleanup_temp_files(&report_dir, 86400);
 
         Ok(final_path.display().to_string())
     }

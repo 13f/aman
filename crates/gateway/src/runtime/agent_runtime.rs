@@ -648,6 +648,7 @@ impl AgentRuntimeBuilder {
             .map(|c| c.runtime.idle.sleep.clone())
             .unwrap_or_default();
         sleep_runner.set_sleep_config(sleep_cfg);
+        let memory_llm_for_incubation = memory_llm_cfg.clone();
         if let Some(cfg) = memory_llm_cfg {
             sleep_runner.set_memory_llm(cfg);
         }
@@ -759,6 +760,9 @@ impl AgentRuntimeBuilder {
             .unwrap_or_default();
         incubation_runner.set_incubation_config(incubation_cfg);
         incubation_runner.set_global_bus(Arc::clone(&bus) as Arc<dyn event_bus::EventBus>);
+        if let Some(cfg) = memory_llm_for_incubation {
+            incubation_runner.set_memory_llm(cfg);
+        }
 
         {
             struct IncubationSub {

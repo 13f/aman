@@ -5,6 +5,12 @@
 > **架构更新 (2026-05-24)**：idle skill 系统已移除（idle-system plugin + 7 个 YAML skill 文件 + workflow.rs stubs）。真正有执行逻辑的 idle 状态全部使用 **EventHandler** 模式（SleepRunner / ReflectionRunner / ExplorationRunner），通过 OnceLock 注入依赖，直接在 global event bus 上订阅 Idle 事件。不经过 Skill trait 路径，避免 Plugin/Skill trait 的依赖注入改造。
 > **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生；**Sleep 已实现**（SleepRunner EventHandler，phase 2/3/4/6 完整实现，phase 1/5 stub）。
 > **更新 (2026-05-26)**：**Meditation 和 Incubation 已实现。** MeditationRunner (`crates/gateway/src/runtime/meditation.rs`) — EventHandler，7 phases；IncubationRunner (`crates/gateway/src/runtime/incubation_runner.rs`) — EventHandler + 后台线程，5 phases。TraceStore（JsonlTraceStore）和 think() YantrikDB 桥接也已落地。think() 桥接完成后 Sleep phase 5 consolidation 已可获得真实 ThinkResult。
+> 
+> **更新 (2026-05-30)**：
+> - **AtomicWrite** — `kernel::fs::atomic_write()` + `cleanup_temp_files()` 抽取为通用工具，TraceStore 3 处 + Meditation 1 处全部替换。
+> - **TraceStore 查询** — 新增 `load_by_task_type()` 和 `load_by_time_range()` 两个 trait 方法，JsonlTraceStore 中实现。
+> - **Incubation extract_entities** — 从 whitespace-split + `search_entities()` 改为批量 LLM 调用（单次 `chat_completion` 提取所有 unique content entities），LLM 不可用时自动回退到关键词搜索。
+> - **DeferredTaskQueue** — 新增 `DeferredTaskQueue` trait + `DeferredTaskQueueExt` 扩展 trait + `MemoryDeferredTaskQueue`（in-memory）+ `FileDeferredTaskQueue`（JSON 文件持久化）。Kanban 版由客户端插件提供，不在核心实现。
 
 ---
 
@@ -251,7 +257,7 @@ TraceStore 是通用的任务级执行追踪层，与 MemoryProvider 同为 idle
 | 局限 | 说明 |
 |------|------|
 | **写入性能** | `append_*` 每次 read-modify-write 全量 JSON，高频场景（如 ReAct 每步都记录）会有瓶颈。当前仅 idle 周期末低频调用，未暴露 |
-| **查询能力** | 仅支持按最近时间、session_id、是否有错误查询，不支持按 `task_type`、时间范围、工具名过滤。扩展查询或换后端（如 SQLite）均较直接 |
+| **查询能力** | 已支持按最近时间、session_id、是否有错误、**task_type**、**时间范围** 查询（2026-05-30 新增 `load_by_task_type` / `load_by_time_range`）。尚不支持按工具名过滤。扩展查询或换后端（如 SQLite）均较直接 |
 | **无调用方** | `append_decision_point` / `append_tool_call` 已定义但暂无生产代码调用 — 预留基础设施，随时可接入 workflow 引擎或 ReAct harness |
 | **无 prune 调用** | `prune()` 方法存在但无 runner 调用，trace 文件会无限增长 |
 | **Partial/Cancelled 跳过** | Meditation 模式提取跳过非 Success/Failure 的 trace，中断频繁的 agent 可能遗漏模式 |
@@ -346,7 +352,7 @@ AgentIdleManager 后台循环
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `DeferredTaskQueue` | **未实现** | 原 §2 step 2-4 的 pending/overdue 任务扫描。当前通过 kanban-worker skill 的 kanban API 间接覆盖 |
+| `DeferredTaskQueue` | **✅ 部分实现** | `DeferredTaskQueue` trait + `MemoryDeferredTaskQueue` + `FileDeferredTaskQueue` 已实现（`crates/core/src/deferred_task.rs`, `crates/idle/src/deferred_memory.rs`, `crates/persistence/src/deferred_file.rs`）。Kanban 版由客户端插件提供，不在核心实现。当前 BoredomActor 通过 kanban-worker skill 间接覆盖 |
 | `TimerRegistry` | **部分实现** | `crates/source/` 有 Timer source，但无统一的注册表 API |
 | MemoryProvider 随机浏览 | **未实现** | 原 §2 step 5-6。当前 BoredomActor 走 skill 路径，不走 MemoryProvider |
 | `boredom.starvation_threshold` | **未实现** | 原 §2 step 8 的任务饥饿度评估 |
@@ -1059,7 +1065,7 @@ pipeline 部分 (<1ms):
 
 | 局限 | 说明 |
 |------|------|
-| `extract_entities()` 过于简单 | 基于 whitespace split + `search_entities()`，无 NLP/LLM 提取。长于 3 字符的常见词（"this", "that", "with"）也会被查询 |
+| `extract_entities()` LLM 调用开销 | Phase 2 改为单次批量 LLM 调用（2026-05-30），所有 unique content strings 合并为一次 `chat_completion`。LLM 不可用时自动回退到关键词搜索。**已解决。** |
 | Phase 4 种子演进评分硬编码 | 变体的 novelty/feasibility 固定为 0.8/0.5，不做实际计算 |
 | `Hypothesis.pair_index` 未使用 | `#[allow(dead_code)]` — 字段计算后从未读取 |
 | 单 domain 时静默降级 | `by_domain.len() < 2` 时跳过 Phase 2-4，仅执行 think pass，无 warning 日志 |
@@ -1094,17 +1100,20 @@ pipeline 部分 (<1ms):
  9       CacheStore (文件系统 TTL)         ✅ 已实现              std::fs (sleep.rs)       Sleep (phase 3)
 10       Health snapshot 存储              ✅ 已实现              JSON 文件 (per-agent)     Sleep (phase 6)
 11       CPU time tracker                 ✅ 已实现              CpuTracker (sleep.rs)     Sleep
-12       AtomicWrite                      未实现                  无                       全局复用
+12       AtomicWrite                       ✅ 已实现              kernel::fs (crates/core/src/fs.rs)   Sleep, Meditation, TraceStore, FileDeferredTaskQueue
 13       ExplorationRunner                ✅ 已实现              info-hub adapters        Exploration
 14       ExternalSearchEngine (info-hub)   ✅ 已实现              info-hub API/CLI/DB      Exploration
 15       InterestScorer (启发式 v1)        ✅ 已实现              简单规则评分              Exploration
 16       RateLimiter                       ✅ 已实现              inter-query sleep        Exploration
+16a      TraceStore::load_by_task_type      ✅ 已实现              JsonlTraceStore           Reflection, Meditation
+16b      TraceStore::load_by_time_range     ✅ 已实现              JsonlTraceStore           Reflection, Meditation
+16c      Incubation extract_entities (LLM)  ✅ 已实现              LlmProvider + MemoryLlmConfig  Incubation
  ── Phase 3 (中期 — 外部组件) ──
 17       BoredomActor + BoredomConfig      ✅ 已实现 (R9)          idle crate                Boredom
 18       kanban-worker skill               ✅ 已实现              预定义 skill                Boredom
 19       WorkPressureConfig               ✅ 已实现 (R9)          idle crate                Boredom
 20       Per-agent idle-availability EP    ✅ 已实现               gateway HTTP API           Frontend
-21       DeferredTaskQueue (本地)          未实现                  无                        Boredom (扩展)
+21       DeferredTaskQueue (本地)          ✅ 部分实现 (Memory+File) core/idle/persistence             Boredom (扩展)
 22       TimerRegistry                    部分实现                无                        Boredom, Waiting
 23       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较     Exploration (后续)
 24       ErrorSignatureExtractor          未实现                  ErrorLog 查询              Exploration (后续)
@@ -1181,12 +1190,13 @@ pipeline 部分 (<1ms):
 - [x] kanban-worker skill（idle_run + work）
 - [x] work_pressure dynamic weight scaling（R9）
 - [x] Per-agent idle-availability endpoint
-- [ ] `DeferredTaskQueue`（本地延迟任务队列，当前 kanban API 间接覆盖）
+- [x] `DeferredTaskQueue` trait + Memory/File 实现（2026-05-30）
+- [ ] Kanban 版 DeferredTaskQueue（由客户端插件提供，非核心实现）
 - [ ] Exploration 扩展：LLM 深度评分（通过 info-hub tools）
 - [ ] Exploration 扩展：skill_audit + error_signature_extractor
 
 **Milestone 4: Boredom + Waiting 完整**（Waiting 可能取消）
-- [ ] `DeferredTaskQueue`（本地延迟任务队列）
+- [x] `DeferredTaskQueue`（Memory + File 实现；Kanban 版由客户端插件提供）
 - [ ] `TimerRegistry`
 - [ ] MemoryProvider 随机浏览（Boredom 的 recall/stale_memories 路径）
 - [ ] Waiting 条件等待 — 需先确认是否有条件驱动入口的必要；若长期无此类场景，可考虑移除此状态

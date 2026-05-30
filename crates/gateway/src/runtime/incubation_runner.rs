@@ -11,17 +11,19 @@
 //! design: Pipeline triggers → spawn → return (<1ms).
 
 use async_trait::async_trait;
-use config::IncubationConfig;
+use config::{IncubationConfig, MemoryLlmConfig};
 use event_bus::{EventHandler, EventBus};
 use idle::IdleKind;
 use kernel::event::{Event, EventType};
+use kernel::llm::{LlmChatRequest, LlmProvider};
 use kernel::memory::{MemoryProvider, MemoryRecord, ThinkConfig};
+use kernel::react::ChatMessage;
 use kernel::AmanResult;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::agent_registry::AgentRegistry;
 
@@ -42,6 +44,7 @@ pub struct IncubationRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
     incubation_config: OnceLock<IncubationConfig>,
     global_bus: OnceLock<Arc<dyn EventBus>>,
+    memory_llm: OnceLock<MemoryLlmConfig>,
 }
 
 impl IncubationRunner {
@@ -50,6 +53,7 @@ impl IncubationRunner {
             agent_registry: OnceLock::new(),
             incubation_config: OnceLock::new(),
             global_bus: OnceLock::new(),
+            memory_llm: OnceLock::new(),
         }
     }
 
@@ -63,6 +67,10 @@ impl IncubationRunner {
 
     pub fn set_global_bus(&self, bus: Arc<dyn EventBus>) {
         let _ = self.global_bus.set(bus);
+    }
+
+    pub fn set_memory_llm(&self, config: MemoryLlmConfig) {
+        let _ = self.memory_llm.set(config);
     }
 }
 
@@ -122,6 +130,7 @@ impl EventHandler for IncubationRunner {
         // immediately after spawning.
         let agent_id_owned = agent_id.to_owned();
         let config = self.incubation_config.get().cloned().unwrap_or_default();
+        let memory_llm_cfg = self.memory_llm.get().cloned();
         let registry_clone = Arc::clone(registry);
         let bus = self.global_bus.get().cloned();
 
@@ -132,6 +141,7 @@ impl EventHandler for IncubationRunner {
                     let _ = run_phases(
                         &agent_id_owned,
                         &config,
+                        memory_llm_cfg.as_ref(),
                         &registry_clone,
                         bus.as_deref(),
                     )
@@ -157,6 +167,7 @@ impl EventHandler for IncubationRunner {
 async fn run_phases(
     agent_id: &str,
     config: &IncubationConfig,
+    memory_llm: Option<&MemoryLlmConfig>,
     registry: &AgentRegistry,
     global_bus: Option<&dyn EventBus>,
 ) -> AmanResult<()> {
@@ -204,6 +215,51 @@ async fn run_phases(
     );
 
     // ── Phase 2: 跨域联想 ──────────────────────────────────────────
+    //
+    // Pre-collect all unique content strings and batch-extract entities
+    // via LLM (or keyword fallback) in one call instead of calling per-pair.
+    let llm = registry.get_llm_provider(agent_id).await;
+    let mut entities_by_content: HashMap<&str, Vec<String>> = HashMap::new();
+
+    {
+        let mut unique_contents: Vec<&str> = Vec::new();
+        let mut content_index: HashMap<&str, usize> = HashMap::new();
+
+        for i in 0..domains.len() {
+            for j in (i + 1)..domains.len() {
+                let mems_a = &by_domain[domains[i]];
+                let mems_b = &by_domain[domains[j]];
+                for mem_a in mems_a.iter().take(3) {
+                    for mem_b in mems_b.iter().take(3) {
+                        for content in [mem_a.content.as_str(), mem_b.content.as_str()] {
+                            if !content_index.contains_key(content) {
+                                content_index.insert(content, unique_contents.len());
+                                unique_contents.push(content);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let entities_batch: Vec<Vec<String>> = if let Some(ref llm) = llm {
+            extract_entities_batch(
+                llm,
+                memory_llm,
+                &unique_contents,
+                &*provider,
+            )
+            .await
+        } else {
+            debug!(agent_id, "Incubation: no LLM provider, using keyword entity extraction");
+            fallback_extract_entities(&*provider, &unique_contents).await
+        };
+
+        for (content, idx) in content_index {
+            entities_by_content.insert(content, entities_batch[idx].clone());
+        }
+    }
+
     let mut hypotheses: Vec<Hypothesis> = Vec::new();
     for i in 0..domains.len() {
         for j in (i + 1)..domains.len() {
@@ -214,10 +270,14 @@ async fn run_phases(
 
             for (ai, mem_a) in mems_a.iter().take(3).enumerate() {
                 for (bi, mem_b) in mems_b.iter().take(3).enumerate() {
-                    let entities_a =
-                        extract_entities(&*provider, &mem_a.content).await;
-                    let entities_b =
-                        extract_entities(&*provider, &mem_b.content).await;
+                    let entities_a = entities_by_content
+                        .get(mem_a.content.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+                    let entities_b = entities_by_content
+                        .get(mem_b.content.as_str())
+                        .cloned()
+                        .unwrap_or_default();
 
                     let mut shared_entities: Vec<String> = Vec::new();
                     for ea in &entities_a {
@@ -447,26 +507,106 @@ async fn signal_cooldown(
     debug!(agent_id, cooldown_secs = config.cooldown_secs, "Incubation: cooldown set");
 }
 
-/// Extract known entity names from memory content via search_entities.
-async fn extract_entities(
+/// Extract named entities from a batch of content strings using the LLM.
+///
+/// Makes a single LLM call with all content strings and returns one entity
+/// list per input. Falls back to keyword-based extraction if the LLM call
+/// fails or returns unparseable output.
+async fn extract_entities_batch(
+    llm: &Arc<dyn LlmProvider>,
+    memory_llm: Option<&MemoryLlmConfig>,
+    contents: &[&str],
     provider: &dyn MemoryProvider,
-    content: &str,
-) -> Vec<String> {
-    let words: Vec<&str> = content
-        .split_whitespace()
-        .filter(|w| w.len() > 3)
-        .take(10)
-        .collect();
-    let mut entities = Vec::new();
-    for word in words {
-        if let Ok(results) = provider.search_entities(word, 5).await {
-            entities.extend(results);
-        }
+) -> Vec<Vec<String>> {
+    if contents.is_empty() {
+        return Vec::new();
     }
-    entities.sort();
-    entities.dedup();
-    entities.truncate(20);
-    entities
+
+    // Build a numbered content list for the LLM
+    let mut numbered = String::new();
+    for (i, c) in contents.iter().enumerate() {
+        numbered.push_str(&format!("--- Content {} ---\n{}\n\n", i + 1, c));
+    }
+
+    let model = memory_llm
+        .map(|c| c.model.as_str())
+        .unwrap_or("default");
+
+    let system_prompt = "\
+        You are an entity extraction system. Extract named entities \
+        (people, places, organizations, concepts, technical terms, product names, \
+        project names, tool names) from each content block below. \
+        Return ONLY a JSON object where keys are content indices (\"1\", \"2\", etc.) \
+        and values are arrays of entity strings. \
+        Example: {\"1\": [\"Neural Networks\", \"Yann LeCun\"], \"2\": [\"Rust\", \"Actix-Web\"]} \
+        If no entities are found in a block, return an empty array.";
+
+    let req = LlmChatRequest {
+        model: model.to_owned(),
+        system_prompt: system_prompt.to_owned(),
+        messages: vec![ChatMessage::user(numbered)],
+        tools: Vec::new(),
+        max_output_tokens: 2048,
+    };
+
+    let resp = match llm.chat_completion(req, None).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("Incubation: LLM entity extraction failed, falling back to keyword search: {e}");
+            return fallback_extract_entities(provider, contents).await;
+        }
+    };
+
+    // Parse JSON response
+    let parsed: serde_json::Value = match serde_json::from_str(&resp.content) {
+        Ok(v) => v,
+        Err(_) => {
+            warn!("Incubation: LLM returned unparseable JSON, falling back to keyword search");
+            return fallback_extract_entities(provider, contents).await;
+        }
+    };
+
+    let mut results: Vec<Vec<String>> = Vec::with_capacity(contents.len());
+    for i in 0..contents.len() {
+        let key = (i + 1).to_string();
+        let entities = parsed
+            .get(&key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        results.push(entities);
+    }
+    results
+}
+
+/// Fallback: keyword-based entity extraction, adapted for batch input.
+async fn fallback_extract_entities(
+    provider: &dyn MemoryProvider,
+    contents: &[&str],
+) -> Vec<Vec<String>> {
+    let mut results = Vec::with_capacity(contents.len());
+    for content in contents {
+        let words: Vec<&str> = content
+            .split_whitespace()
+            .filter(|w| w.len() > 3)
+            .take(10)
+            .collect();
+        let mut entities = Vec::new();
+        for word in words {
+            if let Ok(e) = provider.search_entities(word, 5).await {
+                entities.extend(e);
+            }
+        }
+        entities.sort();
+        entities.dedup();
+        entities.truncate(20);
+        results.push(entities);
+    }
+    results
 }
 
 /// Estimate novelty: how different the hypothesis is from existing

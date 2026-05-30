@@ -20,7 +20,7 @@ use kernel::types::TraceId;
 use kernel::Error;
 use notification::{Notification as NotificationModel, Severity};
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
-use plugin::PluginManifest;
+use plugin::{PluginLifecycleState, PluginManifest};
 use serde::{Deserialize, Serialize};
 use rand::Rng;
 use serde_json::{json, Value};
@@ -151,6 +151,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/agent/{agent_id}", get(agent_get))
         .route("/agent/{agent_id}/status", post(agent_set_status))
         .route("/agent/{agent_id}/reload", post(agent_reload))
+        .route("/agents/idle-availability", get(agents_idle_availability))
         .route_layer(middleware::from_fn_with_state(
             runtime.clone(),
             require_api_token,
@@ -3602,6 +3603,80 @@ async fn agent_reload(
         Ok(()) => Json(json!({ "ok": true, "agent_id": agent_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
     }
+}
+
+// ── Idle-run availability endpoint ───────────────────────────────────────────
+
+#[derive(Serialize)]
+struct AgentAvailability {
+    work: bool,
+    study: bool,
+    fun: bool,
+}
+
+/// Return per-agent work/study/fun button availability.
+///
+/// Three-step check:
+/// 1. Any skill with `idle_run` tag + requested tag exists? (global, all tags)
+/// 2. Only for "work": is the "team" plugin loaded and running?
+/// 3. Only for "work": does the agent have pending work items?
+async fn agents_idle_availability(
+    State(runtime): State<Arc<AgentRuntime>>,
+) -> Response {
+    // -- Step 1 (global): check for skills with idle_run + each requested tag --
+
+    let idle_run_skills: Vec<_> = runtime
+        .skill_search()
+        .search_by_tag("idle_run");
+
+    let has_work_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "work"));
+    let has_study_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "study"));
+    let has_fun_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "fun"));
+
+    // -- Step 2 (global, "work" only): is the team plugin running? --
+
+    let team_running = runtime
+        .plugin_loader()
+        .await
+        .state_of("team")
+        .map(|state| state == PluginLifecycleState::Running)
+        .unwrap_or(false);
+
+    // -- Step 3 (per-agent, "work" only): pending work items? --
+
+    let agents = runtime.agent_registry().list().await;
+
+    let mut availabilities = BTreeMap::new();
+
+    for agent in &agents {
+        let agent_id = &agent.descriptor.agent_id;
+
+        // work: requires all three steps
+        let work = if has_work_skills && team_running {
+            match runtime.agent_registry().get_work_system(agent_id).await {
+                Some(ws) => {
+                    let snap = ws.snapshot().await;
+                    snap.queue_len() > 0 || snap.current().is_some()
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+
+        // study: step 1 only
+        let study = has_study_skills;
+
+        // fun: step 1 only
+        let fun = has_fun_skills;
+
+        availabilities.insert(
+            agent_id.clone(),
+            AgentAvailability { work, study, fun },
+        );
+    }
+
+    Json(json!({"agents": availabilities})).into_response()
 }
 
 // ── Idle-run endpoint ───────────────────────────────────────────────────────

@@ -101,6 +101,7 @@
   let idleRunningTag = $state<string | null>(null);
   let dailyLifeOpen = $state(false);
   let deletingSessionId = $state<string | null>(null);
+  let idleAvailability = $state<Record<string, { work: boolean; study: boolean; fun: boolean }>>({});
 
   const paginatedSessions = $derived(
     sessions.slice((currentPage - 1) * sessionsPerPage, currentPage * sessionsPerPage)
@@ -145,6 +146,15 @@
     }
   }
 
+  async function loadIdleAvailability() {
+    try {
+      const result = await invoke<{ agents: Record<string, { work: boolean; study: boolean; fun: boolean }> }>("list_idle_availability");
+      idleAvailability = result.agents || {};
+    } catch {
+      // silently keep defaults — buttons stay enabled, backend errors surface on click
+    }
+  }
+
   async function handleAgentChange() {
     if (!activeAgentKey) return;
     try {
@@ -153,6 +163,7 @@
       activeSessionId = "";
       messages = [];
       await loadSessions();
+      await loadIdleAvailability();
       if (sessions.length > 0) {
         selectSession(sessions[0].id);
       }
@@ -1635,6 +1646,7 @@
 
     await loadSoulInfo();
     await loadSkills();
+    await loadIdleAvailability();
     window.addEventListener("keydown", handleGlobalKeydown);
   });
 
@@ -1698,13 +1710,13 @@
               <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
               <div class="dropdown-backdrop" onclick={() => dailyLifeOpen = false} onkeydown={() => {}} role="presentation"></div>
               <div class="dropdown-menu">
-                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("work"); }}>
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("work"); }} disabled={!idleAvailability[activeAgentKey]?.work}>
                   💼 Work
                 </button>
-                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("study"); }}>
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("study"); }} disabled={!idleAvailability[activeAgentKey]?.study}>
                   📚 Study
                 </button>
-                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("fun"); }}>
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("fun"); }} disabled={!idleAvailability[activeAgentKey]?.fun}>
                   🎲 Fun
                 </button>
               </div>
@@ -2159,8 +2171,13 @@
     text-align: left;
   }
 
-  .dropdown-item:hover {
+  .dropdown-item:hover:not(:disabled) {
     background: var(--bg-hover);
+  }
+
+  .dropdown-item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
   .new-btn {

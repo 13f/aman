@@ -887,6 +887,23 @@ impl GatewayClient {
             Err(format!("idle_run failed: {status}"))
         }
     }
+
+    /// Fetch per-agent work/study/fun idle-run button availability.
+    pub async fn list_idle_availability(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .get(self.url("/agents/idle-availability"))
+            .send()
+            .await
+            .map_err(|e| format!("list_idle_availability: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("list_idle_availability decode: {e}"))
+        } else {
+            Err(status_error("list_idle_availability", resp.status()).await)
+        }
+    }
 }
 
 async fn status_error(context: &str, status: reqwest::StatusCode) -> String {

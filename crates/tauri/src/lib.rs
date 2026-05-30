@@ -171,6 +171,7 @@ pub fn run() {
             commands::chat_session_rename,
             commands::explore_start,
             commands::idle_run,
+            commands::list_idle_availability,
             commands::chat_session_branch,
             commands::chat_session_close,
             commands::chat_session_delete,

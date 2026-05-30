@@ -837,6 +837,15 @@ pub async fn idle_run(
     client.idle_run(&tag, agent_key.as_deref()).await
 }
 
+/// Fetch per-agent work/study/fun idle-run button availability.
+#[tauri::command]
+pub async fn list_idle_availability(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let client = require_gateway(&state).await?;
+    client.list_idle_availability().await
+}
+
 /// Create a branch session forked from a specific message in an existing session.
 #[tauri::command]
 pub async fn chat_session_branch(

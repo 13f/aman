@@ -817,6 +817,7 @@ impl HookManifest {
 ///
 /// Each subdirectory with a valid `config.yaml` produces one `HookConfig`.
 /// Missing or unreadable directories are silently skipped.
+#[allow(clippy::print_stderr)]
 pub fn discover_hooks(hooks_dir: &std::path::Path) -> Vec<HookConfig> {
     let entries = match std::fs::read_dir(hooks_dir) {
         Ok(e) => e,

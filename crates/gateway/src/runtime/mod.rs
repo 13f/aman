@@ -23,6 +23,7 @@ mod session;
 mod session_store;
 mod skill_sync;
 mod plugin_sync;
+mod redact_layer;
 mod config_sync;
 mod agent_seed;
 mod self_bridge;
@@ -45,6 +46,7 @@ pub use session_store::{SessionRecord, SessionStore};
 pub use soul_runtime::SoulRuntime;
 pub use grpc::{serve_grpc, GrpcServerHandle};
 pub use stdio::serve_stdio;
+pub use redact_layer::RedactWriter;
 pub use tracing_setup::init_tracing;
 
 /// Re-export the notification store type for use in HTTP handlers and Tauri bridge.

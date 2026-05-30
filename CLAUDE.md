@@ -74,6 +74,26 @@ Workspace with 21 crates under `crates/`:
 - Error recovery in workflows: ERROR → RETRY event → last_active_state
 - Backpressure: L1(80%)→L2(90%)→L3(95%)→L4A(98%/overflow)→L4B(critical)
 - API auth: Bearer token, x-aman-operator, x-aman-confirm for destructive ops
+- **Log safety**: NEVER use raw `println!` or `eprintln!` — they are forbidden by
+  workspace-level `clippy::print_stdout` / `clippy::print_stderr` lints. Use:
+  - `tracing::info!` / `tracing::error!` / etc. — all output goes through
+    `RedactWriter` which strips API keys, tokens, and passwords automatically.
+  - `safe_println!` / `safe_eprintln!` from `kernel::redactor` — for CLI code
+    where `tracing` is not wired up. These apply the same redaction rules.
+  - Existing legitimate uses (build.rs, JSON-RPC protocol wire, pre-tracing
+    startup errors) carry explicit `#[allow(clippy::print_stdout)]` /
+    `#[allow(clippy::print_stderr)]` with a comment explaining WHY.
+
+## Redaction Module
+
+`kernel::redactor` (crates/core/src/redactor.rs) provides:
+- `redact_sensitive_data(input: &str) -> Cow<str>` — redacts API keys, tokens,
+  passwords, JWTs, and Bearer headers from arbitrary text.
+- `contains_sensitive_data(input: &str) -> bool` — fast-path pre-check.
+- 7 pre-compiled regex patterns covering: OpenAI/Anthropic keys (`sk-...`),
+  AWS keys (`AKIA...`), JWTs (`eyJ...`), Bearer tokens, `key=value` secrets,
+  JSON field secrets, and env-var-style tokens.
+- Tests in the same file serve as the canonical list of what gets redacted.
 
 ## CLI Architecture
 

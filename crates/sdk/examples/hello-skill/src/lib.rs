@@ -3,6 +3,8 @@
 
 //! Hello Skill — an example aman plugin demonstrating the Skill, Tool, and Plugin traits.
 #![allow(dead_code)]
+// Example code uses println! for demonstration purposes.
+#![allow(clippy::print_stdout)]
 //!
 //! This plugin provides:
 //! - An **EchoTool** that echoes back whatever parameters it receives.

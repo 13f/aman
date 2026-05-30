@@ -3644,6 +3644,7 @@ dependencies = [
  "axum",
  "blake3",
  "pollster",
+ "regex",
  "semver",
  "serde",
  "serde_json",

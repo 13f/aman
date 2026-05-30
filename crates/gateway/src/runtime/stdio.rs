@@ -7,6 +7,11 @@
 //! Reads newline-delimited JSON-RPC requests from stdin, dispatches to
 //! `AgentRuntime` methods, and writes JSON-RPC responses to stdout.
 //! No authentication — the caller is a trusted local process.
+//!
+//! println! is intentional here: this is the JSON-RPC wire protocol, not
+//! application logging. It must write structured JSON to stdout exactly.
+
+#![allow(clippy::print_stdout)]
 
 use super::agent_runtime::AgentRuntime;
 use kernel::agent::AgentStatus;

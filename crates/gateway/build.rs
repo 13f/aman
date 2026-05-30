@@ -4,6 +4,10 @@
 //! Build script for the gateway crate.
 //!
 //! Reads `predefined/builtin.json` as the top-level index, then follows its
+
+// build.rs must use println! for cargo directives (cargo:warning=, cargo:rerun-if-changed=).
+// safe_println! is not available in build scripts (no kernel dep).
+#![allow(clippy::print_stdout)]
 //! `skills` and `plugins` pointers to discover and embed all built-in files
 //! via `include_str!()` with pre-computed blake3 hashes.
 

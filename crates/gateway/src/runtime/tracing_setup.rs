@@ -1,6 +1,7 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+use super::RedactWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
@@ -8,8 +9,11 @@ use tracing_subscriber::EnvFilter;
 /// Initialize the global tracing subscriber.
 ///
 /// Sets up a subscriber that writes structured logs to stderr at INFO
-/// level by default. The log level can be overridden via the
-/// `AMAN_LOG` environment variable (e.g. `AMAN_LOG=debug`).
+/// level by default. All output is redacted via [`RedactWriter`] so
+/// secrets (API keys, tokens, passwords) never appear in plaintext.
+///
+/// The log level can be overridden via the `AMAN_LOG` environment
+/// variable (e.g. `AMAN_LOG=debug`).
 ///
 /// Safe to call multiple times — only the first call has an effect.
 pub fn init_tracing() {
@@ -18,7 +22,8 @@ pub fn init_tracing() {
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
-        .with_line_number(true);
+        .with_line_number(true)
+        .with_writer(|| RedactWriter::new(std::io::stderr()));
 
     let subscriber = tracing_subscriber::registry()
         .with(filter)

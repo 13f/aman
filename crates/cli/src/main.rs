@@ -9,6 +9,7 @@ use config::{ConfigLoader, AgentConfig};
 use gateway::runtime::{serve, serve_stdio, AgentRuntimeBuilder, HttpServerConfig};
 use gateway::ai_signal::AmanSignalV1;
 use grpc_client::GrpcClient;
+use kernel::{safe_eprintln, safe_println};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -97,7 +98,7 @@ async fn main() {
             }
         }
         "--version" | "-V" => {
-            println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
+            safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
         }
         _ => {
             print_usage();
@@ -169,7 +170,7 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
     .map_err(|_| 1)?;
 
     let addr = server.local_addr();
-    println!("{addr}");
+    safe_println!("{addr}");
 
     #[cfg(unix)]
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -222,7 +223,7 @@ async fn serve_cmd(args: &[String]) -> Result<(), i32> {
     serve_stdio(runtime)
         .await
         .map_err(|e| {
-            eprintln!("stdio server error: {e}");
+            safe_eprintln!("stdio server error: {e}");
             1
         })
 }
@@ -238,7 +239,7 @@ async fn health_cmd(args: &[String]) -> Result<(), i32> {
             if opts.use_grpc {
                 let mut client = connect_grpc(opts.addr).await?;
                 client.health_ready().await.map_err(|e| {
-                    eprintln!("gRPC: {e}");
+                    safe_eprintln!("gRPC: {e}");
                     1
                 })?;
                 Ok(())
@@ -299,7 +300,7 @@ fn build_client() -> Result<reqwest::Client, i32> {
 
 async fn connect_grpc(addr: SocketAddr) -> Result<GrpcClient, i32> {
     GrpcClient::connect(addr).await.map_err(|e| {
-        eprintln!("gRPC connect error: {e}");
+        safe_eprintln!("gRPC connect error: {e}");
         1
     })
 }
@@ -371,7 +372,7 @@ async fn agent_cmd(args: &[String]) -> Result<(), i32> {
             _ => return Err(2),
         }
         .map_err(|e| {
-            eprintln!("gRPC: {e}");
+            safe_eprintln!("gRPC: {e}");
             1
         })?;
         return Ok(());
@@ -410,7 +411,7 @@ async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
             "--format" => {
                 let raw = rest.get(i + 1).ok_or(2)?;
                 if raw != "json" {
-                    eprintln!("unsupported format: {raw} (only \"json\" is supported)");
+                    safe_eprintln!("unsupported format: {raw} (only \"json\" is supported)");
                     return Err(2);
                 }
                 i += 2;
@@ -422,7 +423,7 @@ async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
     if opts.use_grpc {
         let mut client = connect_grpc(opts.addr).await?;
         let json = client.get_metrics_json().await.map_err(|e| {
-            eprintln!("gRPC: {e}");
+            safe_eprintln!("gRPC: {e}");
             1
         })?;
         print!("{json}");
@@ -492,7 +493,7 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
             .audit_log_json(action, operator, since_ms, until_ms, limit, offset)
             .await
             .map_err(|e| {
-                eprintln!("gRPC: {e}");
+                safe_eprintln!("gRPC: {e}");
                 1
             })?;
         print!("{json}");
@@ -800,7 +801,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .inject_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -851,12 +852,12 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .push_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes, agent_id)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
         "types" => {
-            let types = client.event_types().await.map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+            let types = client.event_types().await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             let json = serde_json::to_string(&types).unwrap_or_default();
             print!("{json}");
             Ok(())
@@ -876,7 +877,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .dump_event_json(id.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -895,7 +896,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .event_trace_json(trace_id.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1060,7 +1061,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             let json = client
                 .dlq_list_json(reason, source, event_type, limit, offset)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1084,7 +1085,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             client
                 .dlq_retry(id.ok_or(2)?, reason)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "discard" => {
             let mut id: Option<String> = None;
@@ -1101,7 +1102,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             client
                 .dlq_discard(id.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         _ => Err(2),
     }
@@ -1207,7 +1208,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             client
                 .pause_source(id.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "resume" => {
             let mut id: Option<String> = None;
@@ -1224,7 +1225,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             client
                 .resume_source(id.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "config" => {
             let mut id: Option<String> = None;
@@ -1250,7 +1251,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             client
                 .source_config(id.ok_or(2)?, config_bytes)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         _ => Err(2),
     }
@@ -1362,7 +1363,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             let json = client
                 .list_plugins_json()
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1384,7 +1385,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
                 "disable" => client.disable_plugin(name).await,
                 _ => client.uninstall_plugin(name).await,
             }
-            .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+            .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "install" => {
             let mut file: Option<PathBuf> = None;
@@ -1402,7 +1403,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             let json = client
                 .install_plugin_json(data)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1549,7 +1550,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .list_skills_json()
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1574,7 +1575,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .search_skills_json(q.unwrap_or_default(), limit.unwrap_or(10))
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1601,16 +1602,16 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                     let json = client
                         .get_skill_json(name)
                         .await
-                        .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                        .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
                     print!("{json}");
                     Ok(())
                 }
-                "enable" => client.enable_skill(name).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
-                "disable" => client.disable_skill(name).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
-                "rollback" => client.rollback_skill(name, version.ok_or(2)?).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+                "enable" => client.enable_skill(name).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
+                "disable" => client.disable_skill(name).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
+                "rollback" => client.rollback_skill(name, version.ok_or(2)?).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
                 "version" => {
                     // gRPC proto doesn't have a list_skill_versions endpoint yet
-                    eprintln!("gRPC: skill version listing not yet available via gRPC");
+                    safe_eprintln!("gRPC: skill version listing not yet available via gRPC");
                     Err(1)
                 }
                 _ => unreachable!(),
@@ -1631,7 +1632,7 @@ fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
     };
 
     if !root.exists() {
-        eprintln!("skill directory not found: {}", root.display());
+        safe_eprintln!("skill directory not found: {}", root.display());
         return Err(1);
     }
 
@@ -1649,7 +1650,7 @@ fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
     };
 
     if report.findings.is_empty() {
-        println!("✓ all skills passed validation");
+        safe_println!("✓ all skills passed validation");
         Ok(())
     } else {
         for f in &report.findings {
@@ -1657,15 +1658,15 @@ fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
                 skill::Severity::Error => "✗",
                 skill::Severity::Warning => "⚠",
             };
-            println!("{icon} {} {}: {} — {}", f.rule, f.skill_name.as_deref().unwrap_or("?"), f.path.display(), f.message);
+            safe_println!("{icon} {} {}: {} — {}", f.rule, f.skill_name.as_deref().unwrap_or("?"), f.path.display(), f.message);
         }
         let errors = report.error_count();
         let warnings = report.warning_count();
         if errors > 0 {
-            eprintln!("{errors} error(s), {warnings} warning(s)");
+            safe_eprintln!("{errors} error(s), {warnings} warning(s)");
             Err(1)
         } else {
-            println!("{warnings} warning(s), 0 errors");
+            safe_println!("{warnings} warning(s), 0 errors");
             Ok(())
         }
     }
@@ -1676,7 +1677,7 @@ fn skill_export_cmd(args: &[String]) -> Result<(), i32> {
     let out_dir = match args.first() {
         Some(p) => std::path::PathBuf::from(p),
         None => {
-            eprintln!("usage: aman skill export <out_dir>");
+            safe_eprintln!("usage: aman skill export <out_dir>");
             return Err(2);
         }
     };
@@ -1685,23 +1686,23 @@ fn skill_export_cmd(args: &[String]) -> Result<(), i32> {
     let skills_root = std::path::PathBuf::from(home).join(".aman/skills");
 
     if !skills_root.exists() {
-        eprintln!("skill directory not found: {}", skills_root.display());
+        safe_eprintln!("skill directory not found: {}", skills_root.display());
         return Err(1);
     }
 
     let report = skill::export_all(&skills_root, &out_dir);
 
     for name in &report.exported {
-        println!("✓ {name}");
+        safe_println!("✓ {name}");
     }
     for (name, msg) in &report.errors {
-        eprintln!("✗ {name}: {msg}");
+        safe_eprintln!("✗ {name}: {msg}");
     }
     for (name, msg) in &report.skipped {
-        println!("⚠ {name}: {msg}");
+        safe_println!("⚠ {name}: {msg}");
     }
 
-    println!(
+    safe_println!(
         "exported {} skill(s) to {}",
         report.exported.len(),
         out_dir.display()
@@ -1794,7 +1795,7 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
             let json = client
                 .list_workflow_instances_json()
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
         }
@@ -1816,12 +1817,12 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
                     let json = client
                         .get_workflow_instance_json(id)
                         .await
-                        .map_err(|e| { eprintln!("gRPC: {e}"); 1 })?;
+                        .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
                     print!("{json}");
                     Ok(())
                 }
-                "retry" => client.retry_workflow(id).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
-                _ => client.cancel_workflow(id).await.map_err(|e| { eprintln!("gRPC: {e}"); 1 }),
+                "retry" => client.retry_workflow(id).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
+                _ => client.cancel_workflow(id).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
             }
         }
         _ => Err(2),
@@ -1956,7 +1957,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             client
                 .add_cron(id.ok_or(2)?, expression.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "update" => {
             let mut id: Option<String> = None;
@@ -1982,7 +1983,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             client
                 .update_cron(id.ok_or(2)?, patch_bytes)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "remove" => {
             let mut id: Option<String> = None;
@@ -1999,7 +2000,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             client
                 .remove_cron(id.ok_or(2)?)
                 .await
-                .map_err(|e| { eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         _ => Err(2),
     }
@@ -2051,7 +2052,7 @@ async fn config_cmd(args: &[String]) -> Result<(), i32> {
             .map_err(|_| 1)?;
             if !loaded.warnings.is_empty() {
                 for w in loaded.warnings {
-                    eprintln!("warning: {w}");
+                    safe_eprintln!("warning: {w}");
                 }
             }
             Ok(())
@@ -2079,7 +2080,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 }
 
 fn print_usage() {
-    eprintln!(
+    safe_eprintln!(
         "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }

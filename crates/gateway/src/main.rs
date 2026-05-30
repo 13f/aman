@@ -13,7 +13,7 @@
 //!   gateway [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]
 
 use config::ConfigLoader;
-use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig, RedactWriter};
 use gateway::ai_signal::AmanSignalV1;
 use kernel::event::{Event, EventType};
 use std::fs::File;
@@ -41,11 +41,13 @@ async fn main() {
     let log_path = log_dir.join("gateway.log");
     let log_file = File::create(&log_path).expect("failed to create gateway log file");
 
-    // disable ansi color in file
+    // Wrap writers with RedactWriter to strip secrets (API keys, tokens,
+    // passwords) before they reach disk or the terminal.
     let file_layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
-        .with_writer(Mutex::new(log_file));
-    let stdout_layer = tracing_subscriber::fmt::layer();
+        .with_writer(Mutex::new(RedactWriter::new(log_file)));
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(|| RedactWriter::new(std::io::stdout()));
 
     let env_filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
@@ -62,6 +64,10 @@ async fn main() {
     }
 }
 
+// eprintln! is used here for startup errors that occur BEFORE the tracing
+// subscriber is initialized. Once tracing is up, all logging goes through
+// the RedactWriter-wrapped subscriber.
+#[allow(clippy::print_stderr)]
 async fn run() -> Result<(), i32> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let mut config_path: Option<PathBuf> = None;

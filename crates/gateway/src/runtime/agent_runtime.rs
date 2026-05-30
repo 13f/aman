@@ -814,6 +814,7 @@ impl AgentRuntimeBuilder {
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
             self_bridge: super::self_bridge::SelfBridge,
+            session_manager: Arc<super::session::SessionManager>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for MessageReceivedHandler {
@@ -854,6 +855,24 @@ impl AgentRuntimeBuilder {
                 let agent_id = agent.descriptor.agent_id.clone();
                 let model = agent.descriptor.model.clone();
 
+                // Ensure a session record exists for this message.
+                // Background/boredom sessions may not have been created yet
+                // through the normal create_session path.
+                let session_type = event.payload.get("session_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("background");
+                if let Err(e) = self.session_manager
+                    .ensure_session(&session_id, &agent_id, session_type)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        agent_id = %agent_id,
+                        error = %e,
+                        "MessageReceivedHandler: failed to ensure session"
+                    );
+                }
+
                 // Build SoulSnapshot from pre-built prompt in event payload, or fall back
                 // to current soul (which includes skill instructions from the HTTP handler).
                 let soul_snapshot = event.payload.get("soul_system_prompt")
@@ -877,9 +896,18 @@ impl AgentRuntimeBuilder {
                             .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""))
                     });
 
+                // Extract background metadata for notification on completion
+                let background = event.payload.get("background")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let skill_name = event.payload.get("skill_name")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
                 // Spawn async ReAct processing — do not block the bus drain loop.
                 self.agent_harness.spawn_process_message(
                     agent_id, session_id, text, model, soul_snapshot,
+                    skill_name, background,
                 );
 
                 Ok(())
@@ -896,6 +924,7 @@ impl AgentRuntimeBuilder {
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
                 self_bridge: self_bridge.clone(),
+                session_manager: Arc::clone(&session_manager),
             }),
         ));
 
@@ -914,6 +943,18 @@ impl AgentRuntimeBuilder {
                     .and_then(|v| v.as_str()).unwrap_or("");
 
                 if !session_id.is_empty() && !agent_id.is_empty() {
+                    // Skip workflow state transition if no instance exists
+                    // (e.g. legacy sessions created before ensure_session was added).
+                    if self.session_manager.workflow_engine()
+                        .get_instance(session_id).is_none()
+                    {
+                        tracing::debug!(
+                            session_id,
+                            agent_id,
+                            "SessionReplyHandler: skipping handle_reply — no workflow instance"
+                        );
+                        return Ok(());
+                    }
                     self.session_manager.handle_reply(session_id, agent_id, reply).await;
                 }
                 Ok(())
@@ -931,6 +972,52 @@ impl AgentRuntimeBuilder {
             },
             Box::new(SessionReplyHandler {
                 session_manager: Arc::clone(&session_manager),
+            }),
+        ));
+
+        // ── Subscribe work item event forwarder for dual-write ──
+        // Forwards events from work item sessions (session_id matching
+        // "{agent}:work:{project}:{work_id}") as "work:item:event" on the
+        // global bus so the Python team plugin can pick them up and write
+        // to ~/.aman/team/projects/{project_key}/works/{work_id}.jsonl
+        struct WorkItemEventHandler {
+            bus: Arc<dyn EventBus>,
+        }
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for WorkItemEventHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let session_id = event
+                    .payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if let Some((agent_id, project_key, work_id)) =
+                    super::session::work_session::parse_work_session_id(session_id)
+                {
+                    let _ = self
+                        .bus
+                        .publish(Event::new(
+                            "gateway:work_item",
+                            EventType::Custom("work:item:event".to_owned()),
+                            json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "project_key": project_key,
+                                "work_id": work_id,
+                                "source_event": event.source,
+                                "source_event_type": format!("{:?}", event.event_type),
+                                "payload": event.payload,
+                            }),
+                        ))
+                        .await;
+                }
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter::default(),
+            Box::new(WorkItemEventHandler {
+                bus: Arc::clone(&bus),
             }),
         ));
 
@@ -984,6 +1071,8 @@ impl AgentRuntimeBuilder {
                     text,
                     model,
                     soul_snapshot,
+                    None,  // skill_name
+                    false, // background
                 );
 
                 Ok(())

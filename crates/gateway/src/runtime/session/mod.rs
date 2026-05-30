@@ -7,6 +7,7 @@
 //! OCC, persistence, and system prompt caching are independent of the chat transport.
 
 pub mod prompt_cache;
+pub mod work_session;
 
 use std::sync::Arc;
 
@@ -431,6 +432,87 @@ impl SessionManager {
         }
 
         Ok(id)
+    }
+
+    /// Ensure a session workflow instance and record exist for a given session_id.
+    ///
+    /// If the session already exists in any agent's store, this is a no-op.
+    /// Otherwise, creates the workflow instance (via `restore_instance` so the
+    /// caller controls the session_id) and persists a `SessionRecord`.
+    ///
+    /// This is idempotent — safe to call before every message for sessions that
+    /// may not have been created through the normal `create_session` path (e.g.
+    /// boredom-triggered background sessions, work-item sessions).
+    pub async fn ensure_session(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        session_type: &str,
+    ) -> AmanResult<()> {
+        // Check all stores — session may belong to a different agent
+        let stores = self.agent_registry.all_session_stores().await;
+        for s in &stores {
+            if s.has_session(session_id) {
+                return Ok(());
+            }
+        }
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let data = json!({
+            "session_type": session_type,
+            "agent_id": agent_id,
+            "version": 0,
+            "created_at": now_ms,
+            "last_active_at": now_ms,
+        });
+
+        // Use restore_instance so we control the session_id (needed for
+        // deterministic work-item session IDs and boredom run IDs).
+        let instance = self
+            .workflow_engine
+            .restore_instance(session_id, "message-session", data)?;
+
+        self.audit.record(
+            &format!("system:session_{session_type}"),
+            "chat.session.create",
+            format!("session:{session_id}"),
+            "ok",
+            "",
+        );
+
+        // Publish session:started event
+        let _ = self
+            .bus
+            .publish(Event::new(
+                "session:control",
+                EventType::Custom("session:started".to_owned()),
+                json!({
+                    "session_id": session_id,
+                    "session_type": session_type,
+                    "operator": "system",
+                }),
+            ))
+            .await;
+
+        // Persist to the agent's session store
+        if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
+            let _ = store.upsert(&session_store::SessionRecord {
+                id: session_id.to_owned(),
+                agent_id: agent_id.to_owned(),
+                state: instance.current_state,
+                message_count: 0,
+                created_at: now_ms as i64,
+                last_active_at: now_ms as i64,
+                session_type: session_type.to_owned(),
+                reflected_at: None,
+                title: None,
+            });
+        }
+
+        Ok(())
     }
 
     /// Handle a completed agent reply: transition the workflow engine from

@@ -631,11 +631,13 @@ impl AgentHarness {
         user_text: String,
         model: String,
         soul_snapshot: SoulSnapshot,
+        skill_name: Option<String>,
+        background: bool,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot)
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), background)
                 .await
             {
                 tracing::error!(
@@ -657,6 +659,8 @@ impl AgentHarness {
         user_text: &str,
         model: &str,
         soul_snapshot: SoulSnapshot,
+        skill_name: Option<&str>,
+        background: bool,
     ) -> AmanResult<String> {
         // 1. Get AgentInstance from registry
         let instance = self
@@ -861,17 +865,22 @@ impl AgentHarness {
         let final_reply = sanitize_api_keys(&final_reply);
 
         // 11. Publish reply event
+        let mut reply_payload = json!({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "reply": final_reply,
+            "turns_processed": ctx.turn,
+            "background": background,
+        });
+        if let Some(sn) = skill_name {
+            reply_payload["skill_name"] = json!(sn);
+        }
         let _ = self
             .bus
             .publish(Event::new(
                 "agent:harness",
                 EventType::Custom(event_type.to_owned()),
-                json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "reply": final_reply,
-                    "turns_processed": ctx.turn,
-                }),
+                reply_payload,
             ))
             .await;
 

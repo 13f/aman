@@ -3714,47 +3714,96 @@ async fn idle_run(
         }
     };
 
-    // Create session
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let data = json!({
-        "session_type": "persistent",
-        "version": 0,
-        "created_at": now_ms,
-        "last_active_at": now_ms,
-    });
+    // Determine session mode: background vs foreground, work item vs regular
+    let background = payload
+        .get("background")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let project_key = payload
+        .get("project_key")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let work_id = payload
+        .get("work_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
 
-    let instance = match runtime
-        .workflow_engine()
-        .create_instance("message-session", data)
-    {
-        Ok(i) => i,
-        Err(e) => {
+    let session_type = if background { "background" } else { "persistent" };
+
+    // Create or resume session
+    let session_id: String = if let (Some(pk), Some(wid)) = (project_key, work_id) {
+        // Work item session: deterministic ID so the agent can resume
+        // ("断点续传") across multiple idle-run invocations.
+        let sid = super::session::work_session::work_session_id(&agent_id, pk, wid);
+        if let Err(e) = runtime
+            .session_manager()
+            .ensure_session(&sid, &agent_id, session_type)
+            .await
+        {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("failed to create session: {e}")})),
+                Json(json!({"error": format!("failed to ensure work session: {e}")})),
             )
                 .into_response();
         }
-    };
-    let session_id = instance.id.clone();
 
-    // Persist session
-    if let Some(store) = runtime.session_store_for_agent(&agent_id) {
-        let _ = store.upsert(&session_store::SessionRecord {
-            id: session_id.clone(),
-            agent_id: agent_id.clone(),
-            state: instance.current_state.clone(),
-            message_count: 0,
-            created_at: now_ms as i64,
-            last_active_at: now_ms as i64,
-            session_type: "persistent".to_owned(),
-            reflected_at: None,
-            title: None,
+        // Resume: load previous history, apply compression if needed
+        if let Some(store) = runtime.session_store_for_agent(&agent_id) {
+            let _ = super::session::work_session::resume_work_session(
+                &runtime.agent_harness(),
+                &store,
+                &sid,
+                0, // max_history_tokens: 0 = no compression, just restore
+            )
+            .await;
+        }
+
+        sid
+    } else {
+        // Regular idle run (background or foreground): create a new session
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let data = json!({
+            "session_type": session_type,
+            "version": 0,
+            "created_at": now_ms,
+            "last_active_at": now_ms,
         });
-    }
+
+        let instance = match runtime
+            .workflow_engine()
+            .create_instance("message-session", data)
+        {
+            Ok(i) => i,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("failed to create session: {e}")})),
+                )
+                    .into_response();
+            }
+        };
+        let sid = instance.id.clone();
+
+        // Persist session
+        if let Some(store) = runtime.session_store_for_agent(&agent_id) {
+            let _ = store.upsert(&session_store::SessionRecord {
+                id: sid.clone(),
+                agent_id: agent_id.clone(),
+                state: instance.current_state.clone(),
+                message_count: 0,
+                created_at: now_ms as i64,
+                last_active_at: now_ms as i64,
+                session_type: session_type.to_owned(),
+                reflected_at: None,
+                title: None,
+            });
+        }
+
+        sid
+    };
 
     // Publish MessageReceived event so the agent harness picks it up
     let event = Event::new(
@@ -3766,6 +3815,8 @@ async fn idle_run(
             "text": text,
             "skill_name": skill_name,
             "tag": tag,
+            "session_type": session_type,
+            "background": background,
         }),
     );
     if let Err(e) = runtime.publish_event(event).await {
@@ -3782,6 +3833,7 @@ async fn idle_run(
             "session_id": session_id,
             "skill_name": skill_name,
             "tag": tag,
+            "background": background,
         })),
     )
         .into_response()

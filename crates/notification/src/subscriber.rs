@@ -170,6 +170,39 @@ impl NotificationSubscriber {
                 // Queues draining is normal, not actionable
             }
 
+            // ── Background task completed ────────────────────────────
+            EventType::Custom(s) if s == "agent:reply_ready" => {
+                let background = event
+                    .payload
+                    .get("background")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if background {
+                    let agent_id = event
+                        .payload
+                        .get("agent_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let skill_name = event
+                        .payload
+                        .get("skill_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("background task");
+                    let turns = event
+                        .payload
+                        .get("turns_processed")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    self.store.push(
+                        Notification::info(
+                            Category::Idle,
+                            format!("{agent_id} finished {skill_name}"),
+                            format!("Completed in {turns} turns"),
+                        ),
+                    );
+                }
+            }
+
             // ── Idle cycle completed ────────────────────────────────
             EventType::Custom(s) if s == "idle.cycle_completed" => {
                 let kind = event

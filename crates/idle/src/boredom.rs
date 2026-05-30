@@ -140,7 +140,8 @@ impl BoredomActor {
         // Publish MessageReceived event so the agent harness picks it up
         // and runs it through the ReAct loop — same path as "/skill name prompt".
         if let Some(ref bus) = self.global_bus {
-            let session_id = format!("{agent_id}:idle");
+            let run_id = format!("{:016x}", rand::random::<u64>());
+            let session_id = format!("{agent_id}:idle:{run_id}");
             let event = Event::new(
                 "idle.boredom",
                 EventType::MessageReceived,
@@ -150,6 +151,8 @@ impl BoredomActor {
                     "text": text,
                     "skill_name": skill_name,
                     "tag": tag,
+                    "session_type": "background",
+                    "background": true,
                 }),
             );
             if let Err(e) = bus.publish(event).await {

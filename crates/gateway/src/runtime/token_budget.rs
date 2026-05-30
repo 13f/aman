@@ -168,36 +168,52 @@ impl TokenBudget {
         (self.total_prompt_tokens() as f64 / self.context_window as f64) * 100.0
     }
 
+    /// Effective context window available for prompt tokens, accounting for
+    /// output allocation. The LLM API enforces `prompt + completion <= context_window`,
+    /// so we must reserve space for the model's response.
+    fn prompt_budget(&self) -> usize {
+        self.context_window.saturating_sub(self.max_output_tokens)
+    }
+
     /// Check whether history needs compression.
     ///
     /// Returns true when total prompt tokens reach the compression threshold
-    /// (default 80% of context window). When anti-thrashing has paused
-    /// compression, only the hard limit (>95%) will trigger.
+    /// (default 80% of available prompt budget, i.e. context_window - max_output_tokens).
+    /// When anti-thrashing has paused compression, only the hard limit (>95%) will trigger.
     pub fn needs_trim(&self) -> bool {
+        let budget = self.prompt_budget();
+        if budget == 0 {
+            return false;
+        }
         if self.compression_paused {
             // Safety valve: force compress if above 95% regardless of pause
-            let hard_limit = (self.context_window as f64 * 0.95) as usize;
+            let hard_limit = (budget as f64 * 0.95) as usize;
             return self.total_prompt_tokens() > hard_limit;
         }
-        let threshold_tokens = (self.context_window as f64 * self.compression_threshold) as usize;
+        let threshold_tokens = (budget as f64 * self.compression_threshold) as usize;
         self.total_prompt_tokens() >= threshold_tokens
     }
 
     /// Number of tokens to remove to get below the trigger threshold.
     pub fn trim_amount(&self) -> usize {
-        let target = (self.context_window as f64 * self.compression_threshold) as usize;
+        let budget = self.prompt_budget();
+        let target = (budget as f64 * self.compression_threshold) as usize;
         self.total_prompt_tokens().saturating_sub(target)
     }
 
     /// Quick estimate whether the given messages would exceed the threshold.
     /// Call before sending to the LLM API to avoid 400 errors.
     pub fn preflight_check(&self, messages: &[kernel::react::ChatMessage]) -> bool {
+        let budget = self.prompt_budget();
+        if budget == 0 {
+            return false;
+        }
         let estimated_tokens: usize = messages
             .iter()
             .map(|m| Self::estimate_tokens(&m.content))
             .sum();
         let extra = self.current_system_tokens + self.current_tool_schema_tokens;
-        let threshold = (self.context_window as f64 * self.compression_threshold) as usize;
+        let threshold = (budget as f64 * self.compression_threshold) as usize;
         estimated_tokens.saturating_add(extra) >= threshold
     }
 

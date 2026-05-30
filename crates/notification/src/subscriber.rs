@@ -193,13 +193,38 @@ impl NotificationSubscriber {
                         .get("turns_processed")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
-                    self.store.push(
-                        Notification::info(
-                            Category::Idle,
-                            format!("{agent_id} finished {skill_name}"),
-                            format!("Completed in {turns} turns"),
-                        ),
-                    );
+                    let reply = event
+                        .payload
+                        .get("reply")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // Detect idle outcome: agent found no work to do
+                    let reply_lower = reply.to_lowercase();
+                    let is_idle = reply_lower.contains("no work")
+                        || reply_lower.contains("idle")
+                        || reply_lower.contains("没有工作")
+                        || reply_lower.contains("没有任务")
+                        || reply_lower.contains("空闲");
+
+                    if is_idle && turns <= 2 {
+                        // Agent checked and found nothing — quick idle report
+                        self.store.push(
+                            Notification::info(
+                                Category::Idle,
+                                format!("{agent_id} — 当前没有工作"),
+                                String::new(),
+                            ),
+                        );
+                    } else {
+                        self.store.push(
+                            Notification::info(
+                                Category::Idle,
+                                format!("{agent_id} finished {skill_name}"),
+                                format!("Completed in {turns} turns"),
+                            ),
+                        );
+                    }
                 }
             }
 

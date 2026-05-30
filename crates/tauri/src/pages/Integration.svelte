@@ -190,6 +190,19 @@
     }
   }
 
+  async function testChannel(platform: string, instance: string) {
+    const msgKey = `${platform}:${instance}:__test__`;
+    chMessages[msgKey] = { type: "success", text: "Testing..." };
+    chMessages = { ...chMessages };
+    try {
+      const result = await invoke<string>("test_im_channel", { platform, instance });
+      chMessages[msgKey] = { type: "success", text: `Connected: ${result}` };
+    } catch (e) {
+      chMessages[msgKey] = { type: "error", text: `${e}` };
+    }
+    chMessages = { ...chMessages };
+  }
+
   function clearChMessage(key: string) {
     delete chMessages[key];
     chMessages = { ...chMessages };
@@ -343,6 +356,14 @@
                   <span class="status-badge small {instanceHasAnyField(inst) ? 'configured' : 'unconfigured'}">
                     {instanceHasAnyField(inst) ? "on" : "off"}
                   </span>
+                  {#if instanceHasAnyField(inst)}
+                    <button
+                      class="btn-test"
+                      onclick={() => testChannel(ch.id, inst.name)}
+                    >
+                      Test
+                    </button>
+                  {/if}
                   {#if inst.name !== "default"}
                     <button
                       class="btn-delete-instance"
@@ -353,6 +374,11 @@
                     </button>
                   {/if}
                 </div>
+                {#if chMessages[`${ch.id}:${inst.name}:__test__`]}
+                  <span class="msg {chMessages[`${ch.id}:${inst.name}:__test__`].type}">
+                    {chMessages[`${ch.id}:${inst.name}:__test__`].text}
+                  </span>
+                {/if}
 
                 {#each inst.fields as field (field.key)}
                   <div class="config-row">
@@ -471,6 +497,18 @@
   }
   .instance-name { font-weight: 600; font-size: 0.9rem; }
   .dim-label { font-size: 0.75rem; color: var(--fg-dim); font-weight: 400; margin-left: 4px; }
+
+  .btn-test {
+    padding: 3px 12px;
+    border: 1px solid var(--accent, #4a9eff);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--accent, #4a9eff);
+    cursor: pointer;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .btn-test:hover { background: var(--accent, #4a9eff); color: #fff; }
 
   .btn-delete-instance {
     margin-left: auto;

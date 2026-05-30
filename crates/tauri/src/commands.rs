@@ -1259,18 +1259,12 @@ fn im_keychain_key(platform: &str, instance: &str, field: &str) -> String {
     format!("aman.bot.{platform}.{instance}.{field}")
 }
 
-/// Build the prefix used for scanning instances of a platform.
-fn im_scan_prefix(platform: &str) -> String {
-    format!("aman.bot.{platform}.")
-}
-
 /// Scan the keychain for all configured instances of a platform by looking
 /// for token entries matching `aman.bot.{platform}.*.token` (or the
 /// platform's first field if it has no field named "token").
 fn discover_instances(backend: &KeychainBackend, platform: &str, fields: &[(&str, &str)]) -> Vec<String> {
     // The first field is the primary key used for discovery.
     let primary_field = fields[0].0;
-    let prefix = im_scan_prefix(platform);
     // We can't enumerate keychain entries, so we always include "default"
     // and let users add custom instances manually.
     let mut instances = vec![DEFAULT_INSTANCE.to_owned()];
@@ -1379,6 +1373,136 @@ pub async fn delete_im_channel_field(
         .set(&keychain_key, "")
         .map_err(|e| format!("Failed to delete from Keychain: {e}"))?;
     Ok(format!("{platform}.{instance}.{field_key} removed"))
+}
+
+/// Test connection to a configured IM channel. Returns the bot/account display
+/// name on success, or an error message on failure.
+#[tauri::command]
+pub async fn test_im_channel(
+    platform: String,
+    instance: Option<String>,
+) -> Result<String, String> {
+    let instance = instance.unwrap_or_else(|| "default".to_owned());
+    let backend = KeychainBackend;
+
+    match platform.as_str() {
+        "telegram" => {
+            let token_key = format!("aman.bot.telegram.{instance}.token");
+            let token = backend
+                .get(&token_key)
+                .map_err(|e| format!("Keychain error: {e}"))?
+                .ok_or_else(|| "No bot token configured for this instance".to_owned())?;
+
+            let url = format!("https://api.telegram.org/bot{token}/getMe");
+            let resp = reqwest::get(&url)
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?;
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Invalid response: {e}"))?;
+
+            if body["ok"].as_bool().unwrap_or(false) {
+                let username = body["result"]["username"]
+                    .as_str()
+                    .unwrap_or("unknown");
+                let first_name = body["result"]["first_name"]
+                    .as_str()
+                    .unwrap_or("");
+                return Ok(format!("@{username} — {first_name}"));
+            }
+
+            let desc = body["description"]
+                .as_str()
+                .unwrap_or("Unknown error");
+            Err(format!("Telegram API error: {desc}"))
+        }
+        "slack" => {
+            let token_key = format!("aman.bot.slack.{instance}.bot_token");
+            let token = backend
+                .get(&token_key)
+                .map_err(|e| format!("Keychain error: {e}"))?
+                .ok_or_else(|| "No bot token configured".to_owned())?;
+
+            let client = reqwest::Client::new();
+            let resp = client
+                .post("https://slack.com/api/auth.test")
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?;
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Invalid response: {e}"))?;
+
+            if body["ok"].as_bool().unwrap_or(false) {
+                let user = body["user"].as_str().unwrap_or("unknown");
+                let team = body["team"].as_str().unwrap_or("unknown");
+                return Ok(format!("{user} @ {team}"));
+            }
+            Err(format!("Slack API error: {}", body["error"].as_str().unwrap_or("unknown")))
+        }
+        "discord" => {
+            let token_key = format!("aman.bot.discord.{instance}.token");
+            let token = backend
+                .get(&token_key)
+                .map_err(|e| format!("Keychain error: {e}"))?
+                .ok_or_else(|| "No bot token configured".to_owned())?;
+
+            let client = reqwest::Client::new();
+            let resp = client
+                .get("https://discord.com/api/v10/users/@me")
+                .header("Authorization", format!("Bot {token}"))
+                .send()
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?;
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Invalid response: {e}"))?;
+
+            if let Some(username) = body["username"].as_str() {
+                let discrim = body["discriminator"].as_str().unwrap_or("0");
+                return Ok(format!("{username}#{discrim}"));
+            }
+            Err(format!("Discord API error: {}", body["message"].as_str().unwrap_or("unknown")))
+        }
+        "matrix" => {
+            let hs_key = format!("aman.bot.matrix.{instance}.homeserver_url");
+            let token_key = format!("aman.bot.matrix.{instance}.access_token");
+            let hs_url = backend
+                .get(&hs_key)
+                .map_err(|e| format!("Keychain error: {e}"))?
+                .ok_or_else(|| "No homeserver URL configured".to_owned())?;
+            let token = backend
+                .get(&token_key)
+                .map_err(|e| format!("Keychain error: {e}"))?
+                .ok_or_else(|| "No access token configured".to_owned())?;
+
+            let client = reqwest::Client::new();
+            let url = format!(
+                "{}/_matrix/client/v3/account/whoami",
+                hs_url.trim_end_matches('/')
+            );
+            let resp = client
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .map_err(|e| format!("Connection failed: {e}"))?;
+            let body: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Invalid response: {e}"))?;
+
+            if let Some(user_id) = body["user_id"].as_str() {
+                return Ok(user_id.to_owned());
+            }
+            Err(format!("Matrix API error: {}", body["error"].as_str().unwrap_or("unknown")))
+        }
+        _ => Err(format!("Unknown platform: {platform}")),
+    }
 }
 
 /// Delete an entire instance (all fields) for a given platform.

@@ -459,6 +459,14 @@ impl AgentRuntimeBuilder {
                 .unwrap_or_default(),
         ));
 
+        // ── Start IM channel sources from keychain config ──────────
+        start_im_channel_sources(
+            &sources,
+            &channel_registry,
+            &chat_session_store,
+            &sticky_router,
+        );
+
         // ── Subscribe notification subscriber ─────────────────────
         let notif_sub = notification::NotificationSubscriber::new(Arc::clone(&notifications));
         let _ = pollster::block_on(bus.subscribe(
@@ -3250,6 +3258,71 @@ impl EventBus for RuntimeBus {
             Self::Persistent { bus, .. } => bus.wait_for_event(timeout).await,
         }
     }
+}
+
+/// Scan keychain for configured IM channel bots and register them as
+/// event sources.  Called during `build()` so the sources are registered
+/// before Phase 4 starts them.
+fn start_im_channel_sources(
+    sources: &Arc<SourceRegistry>,
+    channel_registry: &Arc<messaging_core::ChannelRegistry>,
+    chat_session_store: &Arc<messaging_core::ChatSessionStore>,
+    sticky_router: &Arc<messaging_core::StickyAgentRouter>,
+) {
+    use secret::{KeychainBackend, SecretBackend};
+
+    let backend = KeychainBackend;
+
+    // ── Telegram ─────────────────────────────────────────────────
+    for instance in &["default", "work", "personal", "trading"] {
+        let token_key = format!("aman.bot.telegram.{instance}.token");
+        let username_key = format!("aman.bot.telegram.{instance}.username");
+
+        if let Ok(Some(token)) = backend.get(&token_key) {
+            if token.is_empty() {
+                continue;
+            }
+
+            let source_id = if *instance == "default" {
+                "chat:telegram:default".to_owned()
+            } else {
+                format!("chat:telegram:{instance}")
+            };
+
+            let bot_username = backend
+                .get(&username_key)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+
+            tracing::info!(
+                source_id = %source_id,
+                instance = %instance,
+                username = %bot_username,
+                "starting telegram IM channel source"
+            );
+
+            // Register sender for reply routing.
+            let sender = Arc::new(messaging_telegram::sender::TelegramSender::new(&token));
+            channel_registry.register(source_id.clone(), sender);
+
+            // Create and register the event source.
+            let source = messaging_telegram::source::TelegramSource::new(
+                source_id.clone(),
+                &token,
+                vec![], // allow all chat IDs
+            )
+            .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
+
+            let _ = pollster::block_on(sources.register(
+                Box::new(source),
+                source::SourceMode::Push,
+                source::TrustLevel::Untrusted,
+            ));
+        }
+    }
+
+    // TODO: Slack, Discord, Matrix — same pattern when their crates are wired.
 }
 
 fn source_context_for_cron() -> kernel::context::SourceContext {

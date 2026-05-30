@@ -17,7 +17,7 @@ pub mod types;
 
 pub use types::{
     BoredomActivity, BoredomConfig, ChatMode, IdleContext, IdleEvent, IdleKind,
-    IdlePersonality, QueueDrained, ArousalBehavior,
+    IdlePersonality, PressureMapping, QueueDrained, WorkPressureConfig, ArousalBehavior,
 };
 pub use coordination::IdleCoordination;
 pub use manager::AgentIdleManager;

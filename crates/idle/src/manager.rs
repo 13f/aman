@@ -350,7 +350,11 @@ impl AgentIdleManager {
                 if kind == IdleKind::Boredom {
                     if let Some(ref actor) = boredom_actor {
                         if let Some(tag) =
-                            actor.try_act(detector.boredom_poll_count, &agent_id).await
+                            actor.try_act(
+                                detector.boredom_poll_count,
+                                &agent_id,
+                                pending,
+                            ).await
                         {
                             // Notify the corresponding system state so the UI
                             // reflects what the agent is doing.

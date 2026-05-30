@@ -344,12 +344,19 @@ impl Default for ContextIsolation {
 /// When the agent enters Boredom and reaches `trigger_poll` consecutive polls
 /// in that state, a weighted random tag is selected. If the tag is not "idle",
 /// a random skill matching the tag is picked and dispatched.
+///
+/// When `work_pressure` is configured, the weight of the target tag (usually
+/// "work") is dynamically scaled based on the current queue depth, so a
+/// growing work backlog increases the probability of selecting work skills.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoredomConfig {
     /// Which poll within the Boredom state triggers the decision (1-indexed).
     pub trigger_poll: u32,
     /// Activity categories with relative probability weights.
     pub activities: Vec<BoredomActivity>,
+    /// Optional: dynamically adjust a tag's weight based on work queue depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_pressure: Option<WorkPressureConfig>,
 }
 
 /// A single activity category in the boredom config.
@@ -359,6 +366,88 @@ pub struct BoredomActivity {
     pub tag: String,
     /// Relative weight (normalized internally, values don't need to sum to 1.0).
     pub weight: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Work pressure — dynamic weight adjustment based on queue depth
+// ---------------------------------------------------------------------------
+
+/// Configuration for dynamically scaling a boredom activity weight based on
+/// the current work queue depth.
+///
+/// When the agent's work queue grows, the effective weight of `target_tag`
+/// (typically "work") is multiplied so the agent is more likely to pick it.
+/// This creates a natural backpressure loop: more pending work → higher
+/// probability of doing work during idle.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkPressureConfig {
+    /// Which activity tag to apply pressure to (e.g. "work").
+    pub target_tag: String,
+    /// The scaling function that maps queue depth → weight multiplier.
+    #[serde(flatten)]
+    pub mapping: PressureMapping,
+}
+
+/// How the weight multiplier scales with queue depth.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "curve", rename_all = "snake_case")]
+pub enum PressureMapping {
+    /// Linear: `multiplier = 1.0 + slope × depth`, clamped to `[1.0, max]`.
+    ///
+    /// Example: slope=0.3, max=10.0 → at depth=0 multiplier=1.0,
+    /// at depth=10 multiplier=4.0, at depth=30 multiplier=10.0 (capped).
+    Linear {
+        /// How much the multiplier increases per queued work item.
+        slope: f64,
+        /// Upper bound on the multiplier (default 10.0).
+        #[serde(default = "PressureMapping::default_max")]
+        max_multiplier: f64,
+    },
+    /// Sigmoid: smooth S-curve transition around a midpoint.
+    ///
+    /// `multiplier = 1.0 + (max - 1.0) / (1.0 + exp(-steepness × (depth - midpoint)))`
+    ///
+    /// Useful when you want the probability to rise sharply once the backlog
+    /// crosses a threshold, rather than scale linearly.
+    Sigmoid {
+        /// Queue depth at which the multiplier reaches half its max increase.
+        midpoint: f64,
+        /// Controls how sharp the transition is (higher = steeper).
+        steepness: f64,
+        /// Upper bound on the multiplier (default 10.0).
+        #[serde(default = "PressureMapping::default_max")]
+        max_multiplier: f64,
+    },
+}
+
+impl PressureMapping {
+    /// Compute the effective multiplier for a given queue depth.
+    #[must_use]
+    pub fn multiplier(&self, depth: usize) -> f64 {
+        let d = depth as f64;
+        match *self {
+            Self::Linear { slope, max_multiplier } => {
+                (1.0 + slope * d).clamp(1.0, max_multiplier)
+            }
+            Self::Sigmoid { midpoint, steepness, max_multiplier } => {
+                let s = 1.0 / (1.0 + (-steepness * (d - midpoint)).exp());
+                1.0 + (max_multiplier - 1.0) * s
+            }
+        }
+    }
+
+    fn default_max() -> f64 {
+        10.0
+    }
+}
+
+impl Default for PressureMapping {
+    fn default() -> Self {
+        Self::Linear {
+            slope: 0.3,
+            max_multiplier: 10.0,
+        }
+    }
 }
 
 #[cfg(test)]

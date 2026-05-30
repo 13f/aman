@@ -21,7 +21,7 @@ use serde_json::json;
 use skill::{SkillRegistry, SkillSearch};
 use tracing::{info, warn};
 
-use crate::types::BoredomConfig;
+use crate::types::{BoredomActivity, BoredomConfig};
 
 /// Sentinel tag — skills must also carry this tag to be eligible for
 /// boredom-triggered execution.
@@ -60,12 +60,22 @@ impl BoredomActor {
     /// - Weighted pick lands on "idle"
     /// - No skills match the tag + `idle_run` filter
     /// - Skill is not found in the registry
-    pub async fn try_act(&self, poll_count: u32, agent_id: &str) -> Option<String> {
+    ///
+    /// `queue_depth` is the total pending event count across all priority
+    /// levels. When `work_pressure` is configured, it dynamically scales
+    /// the weight of the target tag so a growing backlog increases the
+    /// probability of selecting work skills.
+    pub async fn try_act(
+        &self,
+        poll_count: u32,
+        agent_id: &str,
+        queue_depth: usize,
+    ) -> Option<String> {
         if poll_count != self.config.trigger_poll {
             return None;
         }
 
-        let Some(tag) = self.weighted_pick_tag() else {
+        let Some(tag) = self.weighted_pick_tag(queue_depth) else {
             return None;
         };
         info!("random_hit:tag: {}", tag);
@@ -163,9 +173,18 @@ impl BoredomActor {
         Some(tag)
     }
 
-    /// Weighted random tag selection.
-    fn weighted_pick_tag(&self) -> Option<String> {
-        let total: f64 = self.config.activities.iter().map(|a| a.weight).sum();
+    /// Weighted random tag selection with optional work-pressure scaling.
+    ///
+    /// When `work_pressure` is configured and `queue_depth > 0`, the
+    /// target tag's weight is multiplied by the pressure curve before
+    /// the weighted random draw, making it more likely to be selected
+    /// as the backlog grows.
+    fn weighted_pick_tag(&self, queue_depth: usize) -> Option<String> {
+        // Compute effective weights (base weight × pressure multiplier
+        // if work_pressure targets this tag).
+        let effective = self.effective_activities(queue_depth);
+
+        let total: f64 = effective.iter().map(|(_, w)| w).sum();
         if total <= 0.0 {
             return None;
         }
@@ -174,14 +193,34 @@ impl BoredomActor {
         let target = r * total;
 
         let mut acc = 0.0;
-        for activity in &self.config.activities {
-            acc += activity.weight;
+        for (activity, weight) in &effective {
+            acc += weight;
             if target <= acc {
                 return Some(activity.tag.clone());
             }
         }
 
-        self.config.activities.last().map(|a| a.tag.clone())
+        effective
+            .last()
+            .map(|(a, _)| a.tag.clone())
+    }
+
+    /// Build the list of `(activity, effective_weight)` pairs, applying
+    /// the work-pressure multiplier if configured.
+    fn effective_activities(
+        &self,
+        queue_depth: usize,
+    ) -> Vec<(&BoredomActivity, f64)> {
+        self.config.activities.iter().map(|activity| {
+            let effective = if let Some(ref wp) = self.config.work_pressure
+                && activity.tag == wp.target_tag
+            {
+                activity.weight * wp.mapping.multiplier(queue_depth)
+            } else {
+                activity.weight
+            };
+            (activity, effective)
+        }).collect()
     }
 }
 
@@ -194,7 +233,7 @@ mod tests {
     use semver::Version;
 
     use super::*;
-    use crate::types::BoredomActivity;
+    use crate::types::{BoredomActivity, PressureMapping, WorkPressureConfig};
 
     struct TestSkill {
         name: String,
@@ -231,6 +270,7 @@ mod tests {
                 BoredomActivity { tag: "idle".into(), weight: 7.5 },
                 BoredomActivity { tag: "work".into(), weight: 1.0 },
             ],
+            work_pressure: None,
         }
     }
 
@@ -260,8 +300,8 @@ mod tests {
     async fn returns_none_when_poll_mismatch() {
         let called = Arc::new(Mutex::new(false));
         let actor = setup_actor(test_config(), "s", vec!["work", "idle_run"], called);
-        assert!(actor.try_act(1, "a").await.is_none());
-        assert!(actor.try_act(2, "a").await.is_none());
+        assert!(actor.try_act(1, "a", 0).await.is_none());
+        assert!(actor.try_act(2, "a", 0).await.is_none());
     }
 
     #[tokio::test]
@@ -270,9 +310,10 @@ mod tests {
         let config = BoredomConfig {
             trigger_poll: 3,
             activities: vec![BoredomActivity { tag: "idle".into(), weight: 1.0 }],
+            work_pressure: None,
         };
         let actor = setup_actor(config, "s", vec!["idle"], called);
-        assert!(actor.try_act(3, "a").await.is_none());
+        assert!(actor.try_act(3, "a", 0).await.is_none());
     }
 
     #[tokio::test]
@@ -281,12 +322,13 @@ mod tests {
         let config = BoredomConfig {
             trigger_poll: 3,
             activities: vec![BoredomActivity { tag: "work".into(), weight: 1.0 }],
+            work_pressure: None,
         };
         let actor = setup_actor(config, "check-inbox", vec!["work", "idle_run"], Arc::clone(&called));
 
         // Without a global bus, the skill is selected but no event is published.
         // The tag is still returned for system state update.
-        assert_eq!(actor.try_act(3, "a").await, Some("work".into()));
+        assert_eq!(actor.try_act(3, "a", 0).await, Some("work".into()));
         // Note: execute() is no longer called since we publish MessageReceived instead.
     }
 
@@ -296,11 +338,12 @@ mod tests {
         let config = BoredomConfig {
             trigger_poll: 3,
             activities: vec![BoredomActivity { tag: "work".into(), weight: 1.0 }],
+            work_pressure: None,
         };
         // Skill has "work" tag but NOT "idle_run"
         let actor = setup_actor(config, "no-idle-skill", vec!["work"], called);
 
-        assert!(actor.try_act(3, "a").await.is_none());
+        assert!(actor.try_act(3, "a", 0).await.is_none());
     }
 
     #[tokio::test]
@@ -310,6 +353,7 @@ mod tests {
         let config = BoredomConfig {
             trigger_poll: 1,
             activities: vec![BoredomActivity { tag: "fun".into(), weight: 1.0 }],
+            work_pressure: None,
         };
         let search = Arc::new(SkillSearch::new());
         // Mirror the real luck skill tags
@@ -342,7 +386,7 @@ mod tests {
         let actor = BoredomActor::new(config, search, registry, None);
 
         // poll_count == trigger_poll (1), tag "fun" → should find luck skill
-        let result = actor.try_act(1, "test-agent").await;
+        let result = actor.try_act(1, "test-agent", 0).await;
         assert_eq!(result, Some("fun".into()));
     }
 
@@ -354,14 +398,216 @@ mod tests {
                 BoredomActivity { tag: "a".into(), weight: 0.0 },
                 BoredomActivity { tag: "b".into(), weight: 1.0 },
             ],
+            work_pressure: None,
         };
         let search = Arc::new(SkillSearch::new());
         let registry = Arc::new(SkillRegistry::new());
         let actor = BoredomActor::new(config, search, registry, None);
 
         for _ in 0..100 {
-            let tag = actor.weighted_pick_tag().expect("should pick");
+            let tag = actor.weighted_pick_tag(0).expect("should pick");
             assert_eq!(tag, "b");
+        }
+    }
+
+    // ── Work pressure tests ─────────────────────────────────────────
+
+    #[test]
+    fn pressure_linear_at_zero_depth_is_identity() {
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 5.0 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+            ],
+            work_pressure: Some(WorkPressureConfig {
+                target_tag: "work".into(),
+                mapping: PressureMapping::Linear {
+                    slope: 0.5,
+                    max_multiplier: 10.0,
+                },
+            }),
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // At depth=0, work weight should still be 1.0 (no boost)
+        let effective = actor.effective_activities(0);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w);
+        let idle_w = effective.iter().find(|(a, _)| a.tag == "idle").map(|(_, w)| *w);
+        assert!((work_w.unwrap() - 1.0).abs() < 0.001);
+        assert!((idle_w.unwrap() - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn pressure_linear_scales_with_depth() {
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 5.0 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+            ],
+            work_pressure: Some(WorkPressureConfig {
+                target_tag: "work".into(),
+                mapping: PressureMapping::Linear {
+                    slope: 0.5,
+                    max_multiplier: 10.0,
+                },
+            }),
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // At depth=4: multiplier = 1.0 + 0.5*4 = 3.0, work weight = 3.0
+        let effective = actor.effective_activities(4);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+        assert!((work_w - 3.0).abs() < 0.001);
+
+        // At depth=10: multiplier = 1.0 + 0.5*10 = 6.0, work weight = 6.0
+        let effective = actor.effective_activities(10);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+        assert!((work_w - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn pressure_linear_respects_max() {
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 5.0 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+            ],
+            work_pressure: Some(WorkPressureConfig {
+                target_tag: "work".into(),
+                mapping: PressureMapping::Linear {
+                    slope: 1.0,
+                    max_multiplier: 5.0,
+                },
+            }),
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // At depth=100: multiplier would be 101, but capped at 5.0
+        let effective = actor.effective_activities(100);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+        assert!((work_w - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn pressure_sigmoid_midpoint() {
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 5.0 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+            ],
+            work_pressure: Some(WorkPressureConfig {
+                target_tag: "work".into(),
+                mapping: PressureMapping::Sigmoid {
+                    midpoint: 10.0,
+                    steepness: 0.5,
+                    max_multiplier: 10.0,
+                },
+            }),
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // At depth=0: should be close to 1.0 (far below midpoint)
+        let effective = actor.effective_activities(0);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+        assert!(work_w < 1.1, "expected near 1.0, got {work_w}");
+
+        // At depth=10 (midpoint): should be ~5.5 (halfway between 1.0 and 10.0)
+        let effective = actor.effective_activities(10);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+        assert!((work_w - 5.5).abs() < 0.01, "expected ~5.5 at midpoint, got {work_w}");
+    }
+
+    #[test]
+    fn pressure_no_config_no_effect() {
+        // Without work_pressure, all weights stay at base values
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 7.5 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+            ],
+            work_pressure: None,
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // Depth should not matter when work_pressure is None
+        for depth in [0, 5, 50, 100] {
+            let effective = actor.effective_activities(depth);
+            let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+            assert!((work_w - 1.0).abs() < 0.001, "depth={depth}: expected 1.0, got {work_w}");
+        }
+    }
+
+    #[test]
+    fn pressure_wrong_tag_unchanged() {
+        // Work pressure on "work" tag should not affect "fun" tag
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 5.0 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+                BoredomActivity { tag: "fun".into(), weight: 0.5 },
+            ],
+            work_pressure: Some(WorkPressureConfig {
+                target_tag: "work".into(),
+                mapping: PressureMapping::Linear {
+                    slope: 0.5,
+                    max_multiplier: 10.0,
+                },
+            }),
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // At depth=10: work boosted, fun unchanged
+        let effective = actor.effective_activities(10);
+        let work_w = effective.iter().find(|(a, _)| a.tag == "work").map(|(_, w)| *w).unwrap();
+        let fun_w = effective.iter().find(|(a, _)| a.tag == "fun").map(|(_, w)| *w).unwrap();
+        assert!((work_w - 6.0).abs() < 0.001); // 1.0 + 1.0*0.5*10
+        assert!((fun_w - 0.5).abs() < 0.001); // unchanged
+    }
+
+    #[test]
+    fn pressure_biased_random_selection() {
+        // With extreme work pressure, "work" should always be picked
+        let config = BoredomConfig {
+            trigger_poll: 1,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 1.0 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+            ],
+            work_pressure: Some(WorkPressureConfig {
+                target_tag: "work".into(),
+                mapping: PressureMapping::Linear {
+                    slope: 100.0,       // huge boost at any depth
+                    max_multiplier: 1000.0,
+                },
+            }),
+        };
+        let search = Arc::new(SkillSearch::new());
+        let registry = Arc::new(SkillRegistry::new());
+        let actor = BoredomActor::new(config, search, registry, None);
+
+        // With depth=5: work multiplier = 1+100*5=501, idle stays at 1.0
+        // work: 501, idle: 1.0, total: 502 → work dominates
+        for _ in 0..50 {
+            let tag = actor.weighted_pick_tag(5).expect("should pick");
+            assert_eq!(tag, "work", "work pressure should make work dominate");
         }
     }
 }

@@ -413,8 +413,24 @@ def init_db(project_key: str) -> sqlite3.Connection:
         )"""
     )
 
+    # ── Schema migrations (add columns that may be missing from older DBs) ──
+    _migrate_stage_history(db)
+
     db.commit()
     return db
+
+
+def _migrate_stage_history(db: sqlite3.Connection) -> None:
+    """Add columns to stage_history if they don't exist (old DB compat)."""
+    cols = {row[1] for row in db.execute("PRAGMA table_info(stage_history)")}
+    if "work_id" not in cols:
+        db.execute("ALTER TABLE stage_history ADD COLUMN work_id TEXT")
+    if "assignee" not in cols:
+        db.execute("ALTER TABLE stage_history ADD COLUMN assignee TEXT NOT NULL DEFAULT ''")
+    if "completed_at" not in cols:
+        db.execute("ALTER TABLE stage_history ADD COLUMN completed_at TEXT")
+    if "confidence" not in cols:
+        db.execute("ALTER TABLE stage_history ADD COLUMN confidence REAL")
 
 
 def get_db(project_key: str) -> sqlite3.Connection:

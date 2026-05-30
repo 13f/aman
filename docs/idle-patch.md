@@ -13,7 +13,7 @@
 | 深度 | 状态 | 类型 | 核心动作 | 实现位置 | 就绪度 |
 |------|------|------|----------|----------|--------|
 | 0 | **Daze** | no-op | 纯状态声明，idle 序列锚点 | IdleDetector 内存跟踪 | ✅ 已实现 |
-| 1 | **Boredom** | no-op | 后续通过 kanban / deferred task queue | 无（待 kanban 机制） | ❌ 未实现 |
+| 1 | **Boredom** | BoredomActor 加权随机选技能 | trigger_poll 时随机选 idle_run 技能 → MessageReceived → ReAct loop | `crates/idle/src/boredom.rs` + kanban-worker skill | ✅ 部分实现 |
 | 2 | **Waiting** | no-op | 等待外部条件满足 | 无（被动状态） | ⚠️ 不需要 |
 | 3 | **Sleep** | EventHandler | 长期记忆整合，consolidation，temporal housekeeping，索引/缓存清理 | `crates/gateway/src/runtime/sleep.rs` | ✅ 已实现 |
 | 5 | **Exploration** | EventHandler | 外部信息探索：memory gap → info-hub 搜索 → 存储发现 | `crates/gateway/src/runtime/exploration.rs` | ✅ 已实现 |
@@ -185,7 +185,7 @@ pub struct ThinkResult {
 | Idle 状态 | store | recall | forget | session | graph | temporal | procedural | think | stats |
 |-----------|-------|--------|--------|---------|-------|----------|------------|-------|-------|
 | Daze | | | | | | | | | |
-| Boredom | | ✓ | | | ✓ | ✓ | | | |
+| Boredom | | | | | | | | | | (通过 skill 间接使用，不走 MemoryProvider 直接路径)
 | Waiting | | | | | | | | | |
 | **Sleep** | ✓ | ✓ | ✓ | ✓ | | ✓ | | ✓ | ✓ |
 | **Exploration** | ✓ | ✓ | | | ✓ | ✓ | | | |
@@ -288,67 +288,74 @@ Daze 是 idle 序列的深度 0 锚点。它的存在意义是区分"刚空闲"�
 
 ## 2. Boredom
 
-**路由**: `pipeline:idle-boredom`
-**类型**: Pipeline（同步，<10ms 正常模式，<1ms 聊天模式）
-**可打断**: 否
-**MemoryProvider 依赖**: `recall()` (随机浏览)、`stale_memories()` (标记 stale 条目)
+> **状态：部分实现（R9）。** `BoredomActor` 实现在 `crates/idle/src/boredom.rs`。
+> 当 Agent 在 Boredom 状态达到 `trigger_poll` 次连续 poll 时，按加权随机选择一个
+> activity tag，然后筛选同时带有该 tag 和 `idle_run` 标记的技能执行。
+> 执行路径：BoredomActor → MessageReceived 事件 → AgentHarness ReAct loop。
+> `kanban-worker` skill 是首个支持 `idle_run` + `work` 的生产技能。
 
-### 执行步骤
+**路由**: `AgentIdleManager` 后台循环 → `BoredomActor::try_act()` → `MessageReceived` 事件
+**类型**: 事件发布 + ReAct loop（异步，background session）
+**可打断**: 是（后台 session 可被真实事件中断）
+**MemoryProvider 依赖**: 通过 skill 间接使用（如 kanban-worker 的 kanban API 调用）
+
+### 当前执行流程
 
 ```
-step 1: 从 IdleEvent 读取 from_chat_mode
-        if from_chat_mode:
-            log!("Boredom skipped — chat mode")
-            return None  // 纯 no-op，<1ms
-
-step 2: 扫描 deferred_task_queue
-        pending = deferred_task_queue.count(status=Pending)
-        overdue = deferred_task_queue.count(status=Pending, scheduled_at < now)
-
-step 3: if overdue > 0:
-            取优先级最高的 overdue task → 包装为 Event(priority=Medium)
-            → 发布到 Agent Local EventBus
-            log!("Boredom emitted overdue task: {task_id}")
-            return Some(event)
-
-step 4: if pending > 0:
-            不做操作（让正常调度处理），仅记录 boredom_pending_seen 计数
-
-step 5: 随机浏览 —— 使用 MemoryProvider 随机召回
-        samples = provider.recall(agent_id, "*", n=min(3, pending_count * 2)).await
-        for item in samples:
-            快速回顾 item.content（不展开完整上下文）
-            如果 item.importance < 0.3 且 item.domain 为 stale → 产出低优先级 review Event
-
-step 6: 检查 stale 标记
-        stale = provider.stale_memories(agent_id, days=30).await
-        if stale.len() > 0:
-            取第一条 → 包装为 Event { type: "memory.review", payload: stale[0] }
-            return Some(event)
-
-step 7: 检查定时器注册表
-        expired_timers = timer_registry.get_expired()
-        if expired_timers.len() > 0:
-            取第一个 → 包装为 Event
-            return Some(event)
-
-step 8: 任务饥饿度评估
-        starvation_score = pending_count * 10 + overdue_count * 50
-        if starvation_score > config.boredom.starvation_threshold:
-            emit AlertEvent { severity: Low, message: "task starvation detected" }
+AgentIdleManager 后台循环
+  │
+  ├─ idle depth >= 5 → IdleKind::Boredom
+  │   boredom_poll_count++
+  │
+  ├─ poll_count == trigger_poll (默认 3):
+  │   │
+  │   ├─ BoredomActor::try_act(poll_count, agent_id, queue_depth)
+  │   │   │
+  │   │   ├─ weighted_pick_tag(queue_depth)
+  │   │   │   └─ effective_activities(): base_weight × pressure_multiplier
+  │   │   │      (work_pressure 可配置，根据 queue_depth 动态调整 work tag 权重)
+  │   │   │
+  │   │   ├─ tag == "idle" → return None (不做任何事)
+  │   │   │
+  │   │   ├─ 筛选技能: tag + idle_run 双标记
+  │   │   │
+  │   │   ├─ 随机选 idle_prompt from SKILL.md frontmatter
+  │   │   │
+  │   │   └─ 发布 MessageReceived 事件（session_id: {agent}:idle:{random}）
+  │   │
+  │   └─ 更新 AgentSystemState（tag → Working/Studying/DailyLife）
+  │
+  └─ AgentHarness 处理 MessageReceived → ReAct loop
+       └─ LLM + Tool Calls → skill 执行
 ```
 
-### 缺失组件
+### 已实现的能力
+
+| 能力 | 状态 | 实现位置 |
+|------|------|---------|
+| 加权随机 tag 选择 | ✅ | `BoredomActor::weighted_pick_tag()` |
+| idle_run 技能过滤 | ✅ | `BoredomActor::try_act()` → SkillSearch + SkillRegistry |
+| idle_prompt 选择与替换 | ✅ | `SkillRegistry::idle_prompts()` + `{agent_id}` 替换 |
+| MessageReceived 事件发布 | ✅ | background session（ReAct loop, retry 3×, 1s→2s→3s backoff） |
+| work_pressure 动态权重 | ✅ (R9) | `WorkPressureConfig` + `PressureMapping::{Linear,Sigmoid}` |
+| 系统状态映射 | ✅ | tag → AgentSystemState（work/study/fun→Working/Studying/DailyLife） |
+| Per-agent idle-availability | ✅ | `GET /agents/idle-availability`（三步检查） |
+| kanban-worker skill | ✅ | 首个 idle_run + work 技能（查询→执行或报告 idle） |
+
+### 缺失组件（原设计 scope）
 
 | 组件 | 状态 | 说明 |
 |------|------|------|
-| `DeferredTaskQueue` | **未实现** | 需要一个支持 priority + scheduled_at 的任务队列。建议放在 `crates/persistence/` 或新建 `crates/task-queue/`。存储后端：初期用 SQLite（与 WAL 同 store），后期可换 Redis。API：`enqueue(task, priority, scheduled_at)` / `dequeue()` / `count(filter)` |
-| `TimerRegistry` | **部分实现** | `crates/source/` 有 Timer source，但不清楚是否有注册表 API。需要：`register(timer_id, fire_at)` / `get_expired()` → Vec / `cancel(timer_id)` |
-| `boredom.starvation_threshold` 配置 | **未实现** | 需在 `IdleConfig` 的 boredom section 新增配置项。默认值建议：50 |
+| `DeferredTaskQueue` | **未实现** | 原 §2 step 2-4 的 pending/overdue 任务扫描。当前通过 kanban-worker skill 的 kanban API 间接覆盖 |
+| `TimerRegistry` | **部分实现** | `crates/source/` 有 Timer source，但无统一的注册表 API |
+| MemoryProvider 随机浏览 | **未实现** | 原 §2 step 5-6。当前 BoredomActor 走 skill 路径，不走 MemoryProvider |
+| `boredom.starvation_threshold` | **未实现** | 原 §2 step 8 的任务饥饿度评估 |
 
 ### 优先级
 
-**Phase 3** — 聊天模式已可用（纯 no-op）。完整模式需要 `DeferredTaskQueue`（kanban 机制）和 `TimerRegistry`。MemoryProvider 随机浏览能力已就绪（`recall` with wildcard query）。
+**Phase 3 (进行中)** — BoredomActor + kanban-worker 已覆盖核心路径：agent 在空闲时能自主发现并执行工作。
+`DeferredTaskQueue`（本地延迟任务队列）和 `TimerRegistry` 是下一步，但当前 kanban 机制已满足主要需求。
+work_pressure（R9）已实现，根据队列深度动态调整 work 概率。
 
 ---
 
@@ -1093,11 +1100,15 @@ pipeline 部分 (<1ms):
 15       InterestScorer (启发式 v1)        ✅ 已实现              简单规则评分              Exploration
 16       RateLimiter                       ✅ 已实现              inter-query sleep        Exploration
  ── Phase 3 (中期 — 外部组件) ──
-17       DeferredTaskQueue (kanban)       未实现                  无                       Boredom
-18       TimerRegistry                    部分实现                无                       Boredom, Waiting
-19       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较    Exploration (后续)
-20       ErrorSignatureExtractor          未实现                  ErrorLog 查询             Exploration (后续)
-21       SkillAuditReport                 未实现                  文件系统                   Exploration (后续)
+17       BoredomActor + BoredomConfig      ✅ 已实现 (R9)          idle crate                Boredom
+18       kanban-worker skill               ✅ 已实现              预定义 skill                Boredom
+19       WorkPressureConfig               ✅ 已实现 (R9)          idle crate                Boredom
+20       Per-agent idle-availability EP    ✅ 已实现               gateway HTTP API           Frontend
+21       DeferredTaskQueue (本地)          未实现                  无                        Boredom (扩展)
+22       TimerRegistry                    部分实现                无                        Boredom, Waiting
+23       UpstreamFreshnessChecker         未实现                  HTTP client + 版本比较     Exploration (后续)
+24       ErrorSignatureExtractor          未实现                  ErrorLog 查询              Exploration (后续)
+25       SkillAuditReport                 未实现                  文件系统                   Exploration (后续)
  ── Phase 4 (已完成 — 深度认知) ──
 22       TraceStore                       ✅ 已实现               JsonlTraceStore (persistence) Reflection, Meditation
 23       ErrorClassifier                  未实现                  TraceStore               Reflection
@@ -1165,15 +1176,19 @@ pipeline 部分 (<1ms):
 - [x] ExplorationRunner 单元测试通过（9 tests）
 - [x] workspace build 通过（0 warnings）
 
-**Milestone 3: Boredom + 深度 Exploration**（后续）
-- [ ] `DeferredTaskQueue`（kanban 机制）
+**Milestone 3: Boredom + 深度 Exploration**（进行中）
+- [x] BoredomActor + weighted random skill selection（R9）
+- [x] kanban-worker skill（idle_run + work）
+- [x] work_pressure dynamic weight scaling（R9）
+- [x] Per-agent idle-availability endpoint
+- [ ] `DeferredTaskQueue`（本地延迟任务队列，当前 kanban API 间接覆盖）
 - [ ] Exploration 扩展：LLM 深度评分（通过 info-hub tools）
 - [ ] Exploration 扩展：skill_audit + error_signature_extractor
 
 **Milestone 4: Boredom + Waiting 完整**（Waiting 可能取消）
-- [ ] `DeferredTaskQueue`（kanban 机制）
+- [ ] `DeferredTaskQueue`（本地延迟任务队列）
 - [ ] `TimerRegistry`
-- [ ] Boredom 完整模式
+- [ ] MemoryProvider 随机浏览（Boredom 的 recall/stale_memories 路径）
 - [ ] Waiting 条件等待 — 需先确认是否有条件驱动入口的必要；若长期无此类场景，可考虑移除此状态
 
 **Milestone 5: Meditation + Incubation**（✅ 已完成）

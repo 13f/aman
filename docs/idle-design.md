@@ -176,6 +176,9 @@ pub struct IdlePersonality {
     pub chat_mode: ChatMode,
     pub reflection_breaker: ReflectionBreaker,
     pub context_isolation: ContextIsolation,
+    /// Boredom 随机行动配置（R9）— 加权随机选择技能执行。
+    /// 当 work_pressure 配置时，work tag 权重根据队列深度动态调整。
+    pub boredom: Option<BoredomConfig>,
 }
 
 impl IdlePersonality {
@@ -255,6 +258,61 @@ impl IdleCoordination {
 }
 ```
 
+### 3.6 BoredomConfig — Boredom 状态下的随机行动配置（R9）
+
+当 Agent 连续 `trigger_poll` 次处于 Boredom 状态时，`BoredomActor` 按加权随机选择一个
+activity tag，然后从 SkillRegistry 中筛选同时带有该 tag 和 `idle_run` 标记的技能执行。
+
+当 `work_pressure` 配置时，目标 tag（通常为 "work"）的权重会根据当前队列深度动态调整——
+积压越多，agent 在空闲时越倾向于选 work 技能，形成自然的背压闭环。
+
+```rust
+/// Boredom 随机行动配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoredomConfig {
+    /// 触发 boredom 行动所需的连续 Boredom poll 次数（1-indexed）。
+    pub trigger_poll: u32,
+    /// 活动类别及其相对权重（内部归一化，无需总和为 1.0）。
+    pub activities: Vec<BoredomActivity>,
+    /// 可选：根据工作队列深度动态调整某 tag 的权重。
+    pub work_pressure: Option<WorkPressureConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoredomActivity {
+    /// 用于匹配技能（含 idle_run 标记）的 tag。"idle" 是特殊哨兵——不做任何事。
+    pub tag: String,
+    pub weight: f64,
+}
+
+/// 工作压力配置——基于队列深度的动态权重调整。
+pub struct WorkPressureConfig {
+    /// 要施加压力的 tag（如 "work"）。
+    pub target_tag: String,
+    /// 队列深度 → 权重乘数的映射函数。
+    pub mapping: PressureMapping,
+}
+
+pub enum PressureMapping {
+    /// Linear: multiplier = clamp(1.0 + slope × depth, 1.0, max)
+    /// 例：slope=0.3, max=10 → depth=0 时 multiplier=1.0,
+    ///     depth=10 → 4.0, depth=30 → 10.0(capped)
+    Linear { slope: f64, max_multiplier: f64 },
+    /// Sigmoid: 在 midpoint 附近平滑过渡
+    /// multiplier = 1.0 + (max-1.0) / (1 + exp(-steepness×(depth-midpoint)))
+    Sigmoid { midpoint: f64, steepness: f64, max_multiplier: f64 },
+}
+```
+
+**系统状态映射**（BoredomActor 选中的 tag → AgentSystemState）：
+
+| tag | AgentSystemState |
+|-----|-----------------|
+| `"work"` | `Working` |
+| `"study"` | `Studying` |
+| `"internet"` \| `"entertainment"` \| `"fun"` | `DailyLife` |
+| 其他 / `"idle"` | `Idle` |
+
 ---
 
 ## 4. State Machine
@@ -292,7 +350,8 @@ impl IdleCoordination {
          │         │                              (chat → 到此为止)              │
          │         │                              Boredom 为纯 no-op             │
          │         │                                                    │       │
-         │         │                              (完整 → 继续)   depth=3│       │
+         │         │              (完整 → BoredomActor 加权随机挑技能)     │       │
+         │         │              含 work_pressure 动态权重调整    depth=3│       │
          │         │                                                    ▼       │
          │         │                                              ┌──────────┐  │
          │         │                                              │  SLEEP   │  │
@@ -877,7 +936,7 @@ routes:
 |------|--------|---------|---------|------|
 | Reflection | Dispatcher | Pipeline + select! | select! 抢先 | 可被新事件抢先取消 |
 | Daze | IdleDetector | Pipeline（空） | — | 仅记录 metrics |
-| Boredom | IdleDetector | Pipeline（无状态） | 否（同步 Pipeline 执行） | 聊天模式下纯 no-op（读取 `from_chat_mode`） |
+| Boredom | IdleDetector | BoredomActor 加权随机选技能 + MessageReceived 事件 | 否（同步执行） | 聊天模式纯 no-op；完整模式随机挑选 idle_run 技能并通过 ReAct loop 执行。work_pressure 根据队列深度动态调整 work tag 权重 |
 | Sleep | IdleDetector | Workflow + cancel token | idle_cancel_token | checkpoint 保存进度 |
 | Exploration | IdleDetector | Workflow + cancel token | idle_cancel_token | 断点续传 |
 | Meditation | IdleDetector | Workflow + cancel token | idle_cancel_token | temp+rename 文件安全 |
@@ -975,6 +1034,20 @@ idle:
   arousal:
     initial_value: 1.0
     half_life_secs: 900
+
+  boredom:
+    trigger_poll: 3
+    activities:
+      - { tag: "idle", weight: 7.5 }
+      - { tag: "work", weight: 1.0 }
+      - { tag: "study", weight: 0.5 }
+      - { tag: "fun", weight: 0.3 }
+    # 可选：work 积压越多，越倾向于选 work 技能
+    work_pressure:
+      target_tag: "work"
+      curve: "linear"       # 或 "sigmoid"
+      slope: 0.3
+      max_multiplier: 10.0
 
   sleep:
     short_term_retention_days: 7

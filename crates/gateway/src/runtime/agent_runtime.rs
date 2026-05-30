@@ -488,6 +488,77 @@ impl AgentRuntimeBuilder {
             tracing::error!(error = %e, "failed to load built-in plugins");
         }
 
+        // ── Evaluation engine ─────────────────────────────────────────
+        let _eval_engine = match &aman_cfg.as_ref().and_then(|c| c.eval.as_ref()) {
+            Some(eval_cfg) if eval_cfg.enabled => {
+                tracing::info!(
+                    rules = eval_cfg.rules.len(),
+                    auto_evaluate = eval_cfg.auto_evaluate,
+                    "initializing eval engine"
+                );
+                let engine = eval::engine::EvalEngine::from_config(eval_cfg);
+                let engine = Arc::new(tokio::sync::RwLock::new(engine));
+
+                // Register built-in strategies
+                {
+                    let mut eng = pollster::block_on(engine.write());
+                    eng.register_strategy(
+                        "rule_based",
+                        std::sync::Arc::new(eval::strategies::rule_based::RuleBasedStrategy),
+                    );
+                    eng.register_strategy(
+                        "assertion",
+                        std::sync::Arc::new(eval::strategies::assertion::AssertionStrategy),
+                    );
+                    eng.register_strategy(
+                        "heuristic",
+                        std::sync::Arc::new(eval::strategies::heuristic::HeuristicStrategy),
+                    );
+                    // LLM-as-judge: resolve the judge LLM provider and create executor
+                    let judge_executor = eval_cfg.llm.as_ref().and_then(|judge_cfg| {
+                        resolve_judge_executor(judge_cfg, aman_cfg.as_ref())
+                    });
+                    if let Some(executor) = judge_executor {
+                        let strategy = eval::strategies::llm_judge::LlmJudgeStrategy::new(
+                            Some(Box::new(executor)),
+                            eval_cfg.llm.clone(),
+                        );
+                        eng.register_strategy("llm_as_judge", std::sync::Arc::new(strategy));
+                    } else {
+                        tracing::info!(
+                            "llm_as_judge strategy registered without executor \
+                             (no judge LLM configured — set eval.llm in config)"
+                        );
+                        eng.register_strategy(
+                            "llm_as_judge",
+                            std::sync::Arc::new(
+                                eval::strategies::llm_judge::LlmJudgeStrategy::noop(),
+                            ),
+                        );
+                    }
+                }
+
+                // Register eval tools directly with the tool registry
+                for t in eval::tools::create_eval_tools(Arc::clone(&engine)) {
+                    let _ = tools.register(t);
+                }
+
+                // Register eval hook
+                if eval_cfg.auto_evaluate {
+                    let eval_hook = eval::hook::EvalHook::new(Arc::clone(&engine));
+                    let _ = hook_registry.register(std::sync::Arc::new(eval_hook));
+                    tracing::info!("eval hook registered for automatic evaluation");
+                }
+
+                tracing::info!("eval engine initialized");
+                Some(engine)
+            }
+            _ => {
+                tracing::debug!("eval engine disabled (no config or enabled=false)");
+                None
+            }
+        };
+
         // ── Per-agent resources ─────────────────────────────────────
         // Each agent gets its own SessionStore, YantrikDB, and LlmProvider.
         let home = std::env::var("HOME")
@@ -3089,6 +3160,48 @@ fn embedder_dim(name: &str) -> Option<usize> {
         "potion-multilingual-128M" => Some(256),
         _ => None,
     }
+}
+
+/// Resolve the judge LLM executor from eval config + provider config.
+///
+/// Looks up the provider named in `EvalConfig::llm.provider` in the top-level
+/// `providers` map, resolves the API key and model, and builds an
+/// [`eval::strategies::llm_judge::LlmApiJudgeExecutor`].
+fn resolve_judge_executor(
+    judge_cfg: &eval::config::JudgeLlmConfig,
+    aman: Option<&config::AmanConfig>,
+) -> Option<eval::strategies::llm_judge::LlmApiJudgeExecutor> {
+    let aman = aman?;
+    let provider = aman.providers.get(&judge_cfg.provider)?;
+
+    // Resolve the actual model ID from the provider's model list
+    let api_model = provider
+        .models
+        .iter()
+        .find(|m| m.id == judge_cfg.model)
+        .map(|m| m.model_id.clone())
+        .unwrap_or_else(|| judge_cfg.model.clone());
+
+    let api_key = judge_cfg
+        .api_key
+        .clone()
+        .unwrap_or_else(|| get_llm_api_key_or_inline(&judge_cfg.provider, Some(provider)));
+
+    let base_url = judge_cfg
+        .base_url
+        .clone()
+        .unwrap_or_else(|| provider.base_url.clone());
+
+    Some(
+        eval::strategies::llm_judge::LlmApiJudgeExecutor::from_parts(
+            base_url,
+            Some(api_key),
+            api_model,
+        )
+        .with_max_tokens(1024)
+        .with_timeout(60)
+        .with_retries(3),
+    )
 }
 
 /// Resolve a [`memory::EmbeddingConfig`] from the top-level Aman config.

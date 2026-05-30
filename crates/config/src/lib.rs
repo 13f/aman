@@ -643,6 +643,9 @@ pub struct AmanConfig {
     /// Info-hub plugin configuration. Raw value deserialized by the info-hub plugin.
     #[serde(default)]
     pub info_hub: Option<Value>,
+    /// Evaluation system configuration.
+    #[serde(default)]
+    pub eval: Option<eval::config::EvalConfig>,
 }
 
 /// Top-level LLM configuration (optional).

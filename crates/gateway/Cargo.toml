@@ -25,6 +25,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 async-trait.workspace = true
 blake3.workspace = true
 config = { path = "../config", version = "0.1.0" }
+eval = { path = "../eval", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
 hook = { path = "../hook", version = "0.1.0" }
 idle = { path = "../idle", version = "0.1.0" }

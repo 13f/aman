@@ -1,0 +1,23 @@
+[package]
+name = "eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Evaluation system for LLM outputs and agent work items — quality scoring, assertions, heuristics, and LLM-as-judge"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+kernel = { path = "../core" }
+llm-api = { path = "../llm-api" }
+async-trait = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+uuid = { workspace = true }
+regex = { workspace = true }
+tokio = { version = "1", features = ["sync", "rt", "time"] }
+tracing = { workspace = true }

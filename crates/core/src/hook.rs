@@ -42,6 +42,7 @@ pub enum HookPoint {
     SourcePaused,
     SourceResumed,
     SourceStopped,
+    EvaluationCompleted,
 }
 
 #[async_trait]

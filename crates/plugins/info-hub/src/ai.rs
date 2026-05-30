@@ -1,11 +1,17 @@
 //! AI processing: scoring, summarization, and highlights generation.
 //!
 //! Uses the LLM configured via `memory.llm` in aman config. Makes
-//! OpenAI-compatible chat completion calls. No provider-specific logic.
+//! OpenAI-compatible chat completion calls via `llm_api`. No provider-specific logic.
 
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::debug;
+
+// Re-export LLM API primitives from the shared crate.
+pub use llm_api::LlmApiConfig as LlmConfig;
+pub use llm_api::parse_json_response;
+use llm_api::LlmApiProvider;
 
 const DESCRIPTION_MAX_LEN: usize = 384;
 
@@ -68,17 +74,9 @@ pub struct SummaryResult {
     pub reason: String,
 }
 
-/// LLM config for AI calls.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LlmConfig {
-    pub base_url: String,
-    pub api_key: Option<String>,
-    pub model: String,
-}
+// ── LLM Client (delegates to llm-api) ──────────────────────────────
 
-// ── LLM Client ──────────────────────────────────────────────────────
-
-/// Call an OpenAI-compatible chat completion API.
+/// One-shot chat completion via the shared `LlmApiProvider`.
 pub async fn chat_completion(
     config: &LlmConfig,
     system_prompt: &str,
@@ -87,56 +85,10 @@ pub async fn chat_completion(
     max_tokens: u64,
     timeout_secs: u64,
 ) -> Result<String, String> {
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-
-    let mut body = serde_json::json!({
-        "model": config.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    });
-
-    // DeepSeek API requires `max_completion_tokens` instead of `max_tokens` for some models.
-    // Include both — the API ignores the one it doesn't recognize.
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("max_completion_tokens".into(), serde_json::json!(max_tokens));
-    }
-
-    debug!(%url, model = %config.model, "info-hub ai call");
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(timeout_secs))
-        .build()
-        .map_err(|e| format!("client build: {e}"))?;
-
-    let mut req = client.post(&url).json(&body);
-
-    if let Some(key) = &config.api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-
-    let resp = req.send().await.map_err(|e| format!("request: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API error ({status}): {text}"));
-    }
-
-    let data: Value = resp.json().await.map_err(|e| format!("parse: {e}"))?;
-
-    let content = data
-        .pointer("/choices/0/message/content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    Ok(content.to_string())
+    LlmApiProvider::new().chat_completion(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs).await
 }
 
-/// Call with retries.
+/// Chat completion with retries via the shared `LlmApiProvider`.
 pub async fn chat_completion_with_retries(
     config: &LlmConfig,
     system_prompt: &str,
@@ -146,118 +98,7 @@ pub async fn chat_completion_with_retries(
     timeout_secs: u64,
     retries: u32,
 ) -> Result<String, String> {
-    let mut last_err = String::new();
-    for attempt in 0..retries {
-        if attempt > 0 {
-            let delay = std::time::Duration::from_millis(
-                std::cmp::min(1000u64 * 2u64.pow(attempt - 1), 8000),
-            );
-            tokio::time::sleep(delay).await;
-        }
-        match chat_completion(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs).await {
-            Ok(text) => return Ok(text),
-            Err(e) => {
-                warn!(attempt, %e, "info-hub ai call failed");
-                last_err = e;
-            }
-        }
-    }
-    Err(last_err)
-}
-
-// ── JSON Parsing ────────────────────────────────────────────────────
-
-/// Robust JSON extraction from LLM output (handles markdown fences, smart quotes, truncated JSON).
-pub fn parse_json_response<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
-    let mut json_text = text
-        .replace(['\u{201C}', '\u{201D}'], "\u{FF02}") // " → ＂
-        .replace(['\u{2018}', '\u{2019}'], "\u{FF07}") // ' → ＇
-        .trim()
-        .to_string();
-
-    // Strip markdown code fences
-    if json_text.starts_with("```") {
-        if let Some(rest) = json_text.strip_prefix("```json") {
-            json_text = rest.to_string();
-        } else if let Some(rest) = json_text.strip_prefix("```") {
-            json_text = rest.to_string();
-        }
-        if let Some(end) = json_text.rfind("```") {
-            json_text = json_text[..end].to_string();
-        }
-        json_text = json_text.trim().to_string();
-    }
-
-    // Strip trailing ``` mid-stream
-    if let Some(pos) = json_text.find("\n```") {
-        json_text = json_text[..pos].trim().to_string();
-    }
-
-    // Extract JSON object by brace matching
-    if let Some(first_brace) = json_text.find('{') {
-        let chars: Vec<char> = json_text.chars().collect();
-        let mut depth = 0i32;
-        let mut in_string = false;
-        let mut end = None;
-        for (i, &ch) in chars.iter().enumerate().skip(first_brace) {
-            if in_string {
-                if ch == '\\' { continue; }
-                if ch == '"' { in_string = false; }
-            } else {
-                match ch {
-                    '"' => in_string = true,
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            end = Some(i);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if let Some(e) = end {
-            json_text = chars[first_brace..=e].iter().collect();
-        } else {
-            json_text = chars[first_brace..].iter().collect();
-        }
-    }
-
-    // Try parse, then repair if needed
-    if let Ok(v) = serde_json::from_str::<T>(&json_text) {
-        return Ok(v);
-    }
-
-    // Repair: close unmatched braces
-    let mut repaired = json_text.clone();
-    let quotes = repaired.matches('"').count();
-    if !quotes.is_multiple_of(2) {
-        repaired.push('"');
-    }
-    let mut stack: Vec<char> = Vec::new();
-    let mut in_str = false;
-    for ch in repaired.chars() {
-        if in_str {
-            if ch == '\\' { continue; }
-            if ch == '"' { in_str = false; }
-        } else {
-            match ch {
-                '"' => in_str = true,
-                '{' | '[' => stack.push(ch),
-                '}' => { if stack.last() == Some(&'{') { stack.pop(); } }
-                ']' => { if stack.last() == Some(&'[') { stack.pop(); } }
-                _ => {}
-            }
-        }
-    }
-    for ch in stack.iter().rev() {
-        repaired.push(if *ch == '{' { '}' } else { ']' });
-    }
-
-    serde_json::from_str::<T>(&repaired)
-        .map_err(|e| format!("JSON parse after repair: {e}"))
+    LlmApiProvider::new().chat_completion_with_retries(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs, retries).await
 }
 
 // ── Prompt Templates ────────────────────────────────────────────────

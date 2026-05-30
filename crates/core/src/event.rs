@@ -31,6 +31,8 @@ pub enum EventType {
     QueueDrained,
     /// Agent-to-agent message event (M7).
     AgentMessage,
+    /// Evaluation completed event (from eval system).
+    EvaluationCompleted,
     Custom(String),
 }
 
@@ -56,6 +58,7 @@ impl EventType {
             Self::Idle => "idle",
             Self::QueueDrained => "system.queue_drained",
             Self::AgentMessage => "agent:message",
+            Self::EvaluationCompleted => "eval:evaluation_completed",
             Self::Custom(value) => value.as_str(),
         }
     }

@@ -20,7 +20,6 @@ mkdir -p "$HOME/.aman/bin"
 lsof -ti :9999 2>/dev/null | xargs kill -9 2>/dev/null || true
 
 cp -f "$SRC" "$DEST"
-codesign -s - -f "$DEST" 2>/dev/null || true
 
 echo "     Installed: $DEST"
 

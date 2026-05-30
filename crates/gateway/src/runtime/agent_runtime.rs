@@ -1952,6 +1952,87 @@ impl AgentRuntime {
         Arc::clone(&self.sources)
     }
 
+    /// Hot-reload an IM channel source from keychain config.
+    ///
+    /// Stops and unregisters the old source (if present), then reads the latest
+    /// config from keychain and starts a fresh source. No gateway restart needed.
+    pub async fn reload_im_channel_source(&self, platform: &str, instance: &str) -> AmanResult<()> {
+        use secret::{KeychainBackend, SecretBackend};
+        let backend = KeychainBackend;
+
+        match platform {
+            "telegram" => {
+                let token_key = format!("aman.bot.telegram.{instance}.token");
+                let chat_ids_key = format!("aman.bot.telegram.{instance}.allowed_chat_ids");
+
+                let token = backend
+                    .get(&token_key)?
+                    .ok_or_else(|| Error::NotFound {
+                        name: format!("keychain key {token_key}"),
+                    })?;
+                if token.is_empty() {
+                    return Err(Error::config_invalid("telegram bot token is empty"));
+                }
+
+                let source_id = if instance == "default" {
+                    "chat:telegram:default".to_owned()
+                } else {
+                    format!("chat:telegram:{instance}")
+                };
+
+                let allowed_chat_ids: Vec<i64> = backend
+                    .get(&chat_ids_key)
+                    .ok()
+                    .flatten()
+                    .map(|ids| {
+                        ids.split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // Shut down old source if running.
+                self.sources.shutdown(&source_id).await.ok();
+                self.sources.unregister(&source_id).await.ok();
+
+                // Register sender for reply routing.
+                let sender = Arc::new(messaging_telegram::sender::TelegramSender::new(&token));
+                self.channel_registry.register(source_id.clone(), sender);
+
+                // Create and register the fresh source.
+                let source = messaging_telegram::source::TelegramSource::new(
+                    source_id.clone(),
+                    &token,
+                    allowed_chat_ids,
+                )
+                .with_registries(
+                    Arc::clone(&self.sticky_router),
+                    Arc::clone(&self.chat_session_store),
+                );
+
+                self.sources
+                    .register(
+                        Box::new(source),
+                        source::SourceMode::Push,
+                        source::TrustLevel::Untrusted,
+                    )
+                    .await?;
+
+                self.sources.start(&source_id).await?;
+
+                tracing::info!(
+                    source_id = %source_id,
+                    instance = %instance,
+                    "hot-reloaded telegram IM channel source"
+                );
+                Ok(())
+            }
+            _ => Err(Error::NotFound {
+                name: format!("unsupported platform for hot-reload: {platform}"),
+            }),
+        }
+    }
+
     #[must_use]
     pub fn skills(&self) -> Arc<skill::SkillRegistry> {
         Arc::clone(&self.skills)

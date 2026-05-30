@@ -82,6 +82,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/source/{id}/pause", post(source_pause))
         .route("/source/{id}/resume", post(source_resume))
         .route("/source/{id}/config", put(source_config))
+        .route("/im-channel/{platform}/{instance}/reload", post(im_channel_reload))
         .route("/skills", get(skill_list))
         .route("/llm-skills", get(llm_skills_list))
         .route("/skills/search", get(skill_search))
@@ -349,6 +350,36 @@ async fn source_config(
                 operator,
                 "source.config",
                 format!("source:{id}"),
+                "error",
+                error.to_string(),
+            );
+            error_response(error)
+        }
+    }
+}
+
+async fn im_channel_reload(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path((platform, instance)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or("api");
+    match runtime.reload_im_channel_source(&platform, &instance).await {
+        Ok(()) => {
+            runtime.audit().record(
+                operator,
+                "im_channel.reload",
+                format!("{platform}/{instance}"),
+                "ok",
+                "",
+            );
+            StatusCode::OK.into_response()
+        }
+        Err(error) => {
+            runtime.audit().record(
+                operator,
+                "im_channel.reload",
+                format!("{platform}/{instance}"),
                 "error",
                 error.to_string(),
             );

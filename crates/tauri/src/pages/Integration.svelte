@@ -43,6 +43,8 @@
   let chInputs = $state<Record<string, string>>({});
   let chMessages = $state<Record<string, { type: "success" | "error"; text: string }>>({});
   let newInstanceInputs = $state<Record<string, string>>({});
+  // Track instances that need a refresh (dirty after save/delete).
+  let dirtyInstances = $state<Record<string, boolean>>({});
 
   // ── Tab state ────────────────────────────────────────────────────
   let activeTab = $state<"services" | "channels">("services");
@@ -138,9 +140,12 @@
     chSaving[inputKey] = true;
     try {
       await invoke("save_im_channel", { platform, instance, fieldKey, value });
-      chMessages[inputKey] = { type: "success", text: "Saved to Keychain" };
+      chMessages[inputKey] = { type: "success", text: "Saved — click Refresh to apply" };
       chInputs[inputKey] = "";
       await loadChannels();
+      // Mark instance as needing refresh.
+      dirtyInstances[`${platform}:${instance}`] = true;
+      dirtyInstances = { ...dirtyInstances };
     } catch (e) {
       chMessages[inputKey] = { type: "error", text: `${e}` };
     } finally {
@@ -153,13 +158,34 @@
     chSaving[inputKey] = true;
     try {
       await invoke("delete_im_channel_field", { platform, instance, fieldKey });
-      chMessages[inputKey] = { type: "success", text: "Removed from Keychain" };
+      chMessages[inputKey] = { type: "success", text: "Removed — click Refresh to apply" };
       await loadChannels();
+      dirtyInstances[`${platform}:${instance}`] = true;
+      dirtyInstances = { ...dirtyInstances };
     } catch (e) {
       chMessages[inputKey] = { type: "error", text: `${e}` };
     } finally {
       chSaving[inputKey] = false;
     }
+  }
+
+  function isDirty(platform: string, instance: string): boolean {
+    return !!dirtyInstances[`${platform}:${instance}`];
+  }
+
+  async function reloadInstance(platform: string, instance: string) {
+    const msgKey = `${platform}:${instance}:__reload__`;
+    chMessages[msgKey] = { type: "success", text: "Reloading..." };
+    chMessages = { ...chMessages };
+    try {
+      await invoke("reload_im_channel", { platform, instance });
+      chMessages[msgKey] = { type: "success", text: "Reloaded ✓" };
+      delete dirtyInstances[`${platform}:${instance}`];
+      dirtyInstances = { ...dirtyInstances };
+    } catch (e) {
+      chMessages[msgKey] = { type: "error", text: `${e}` };
+    }
+    chMessages = { ...chMessages };
   }
 
   async function addInstance(platform: string) {
@@ -363,6 +389,13 @@
                     >
                       Test
                     </button>
+                    <button
+                      class="btn-refresh"
+                      class:shake={isDirty(ch.id, inst.name)}
+                      onclick={() => reloadInstance(ch.id, inst.name)}
+                    >
+                      ↻ Refresh
+                    </button>
                   {/if}
                   {#if inst.name !== "default"}
                     <button
@@ -377,6 +410,11 @@
                 {#if chMessages[`${ch.id}:${inst.name}:__test__`]}
                   <span class="msg {chMessages[`${ch.id}:${inst.name}:__test__`].type}">
                     {chMessages[`${ch.id}:${inst.name}:__test__`].text}
+                  </span>
+                {/if}
+                {#if chMessages[`${ch.id}:${inst.name}:__reload__`]}
+                  <span class="msg {chMessages[`${ch.id}:${inst.name}:__reload__`].type}">
+                    {chMessages[`${ch.id}:${inst.name}:__reload__`].text}
                   </span>
                 {/if}
 
@@ -509,6 +547,33 @@
     white-space: nowrap;
   }
   .btn-test:hover { background: var(--accent, #4a9eff); color: #fff; }
+
+  .btn-refresh {
+    padding: 3px 12px;
+    border: 1px solid #4caf50;
+    border-radius: 4px;
+    background: transparent;
+    color: #4caf50;
+    cursor: pointer;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    transition: background 0.2s, color 0.2s;
+  }
+  .btn-refresh:hover { background: #4caf50; color: #fff; }
+
+  .btn-refresh.shake {
+    animation: shake 0.6s ease-in-out infinite;
+    border-color: #ff9800;
+    color: #ff9800;
+    font-weight: 600;
+  }
+  .btn-refresh.shake:hover { background: #ff9800; color: #fff; }
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    10%, 50%, 90% { transform: translateX(-3px); }
+    30%, 70% { transform: translateX(3px); }
+  }
 
   .btn-delete-instance {
     margin-left: auto;

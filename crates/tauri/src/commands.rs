@@ -1506,6 +1506,19 @@ pub async fn test_im_channel(
     }
 }
 
+/// Reload an IM channel source from keychain without restarting the gateway.
+#[tauri::command]
+pub async fn reload_im_channel(
+    state: State<'_, AppState>,
+    platform: String,
+    instance: Option<String>,
+) -> Result<String, String> {
+    let instance = instance.unwrap_or_else(|| "default".to_owned());
+    let client = require_gateway(&state).await?;
+    client.im_channel_reload(&platform, &instance).await?;
+    Ok(format!("{platform}/{instance} reloaded"))
+}
+
 /// Delete an entire instance (all fields) for a given platform.
 #[tauri::command]
 pub async fn delete_im_channel_instance(

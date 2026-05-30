@@ -214,6 +214,7 @@ pub fn run() {
             commands::delete_im_channel_field,
             commands::delete_im_channel_instance,
             commands::test_im_channel,
+            commands::reload_im_channel,
             // Notifications
             commands::get_notifications,
             commands::get_notifications_unread_count,

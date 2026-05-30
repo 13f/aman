@@ -61,6 +61,25 @@ impl GatewayClient {
         }
     }
 
+    // ── IM Channels ──────────────────────────────────────────────────────
+
+    pub async fn im_channel_reload(&self, platform: &str, instance: &str) -> Result<(), String> {
+        let path = format!("/im-channel/{}/{}/reload", platform, instance);
+        let resp = self
+            .client
+            .post(self.url(&path))
+            .send()
+            .await
+            .map_err(|e| format!("im_channel_reload: {e}"))?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(format!("Reload failed ({status}): {body}"))
+        }
+    }
+
     // ── Runtime ─────────────────────────────────────────────────────────
 
     pub async fn runtime_status(&self) -> Result<Value, String> {

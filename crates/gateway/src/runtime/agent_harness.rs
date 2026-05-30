@@ -331,6 +331,58 @@ impl LlmReActEngine {
             None => self.bus.publish(event).await,
         }
     }
+
+    /// LLM API errors that are worth retrying (transient network/HTTP issues).
+    fn is_retryable_llm_error(err: Option<&kernel::Error>) -> bool {
+        let Some(e) = err else { return false };
+        let msg = e.to_string().to_lowercase();
+        // HTTP 400 — bad request, don't retry
+        if msg.contains("400") || msg.contains("bad request") {
+            return false;
+        }
+        // Auth errors — don't retry
+        if msg.contains("401") || msg.contains("403") {
+            return false;
+        }
+        // Transient — retry
+        msg.contains("error sending request")
+            || msg.contains("timeout")
+            || msg.contains("connection")
+            || msg.contains("429")
+            || msg.contains("500")
+            || msg.contains("502")
+            || msg.contains("503")
+            || msg.contains("504")
+    }
+
+    /// Returns true if the error looks transient (worth retrying).
+    /// Permanent errors like "unrecoverable", "not found", "no such file"
+    /// should NOT be retried.
+    fn is_retryable_error(output: &str) -> bool {
+        let lower = output.to_lowercase();
+        // Permanent failures — skip retry
+        if lower.contains("unrecoverable") {
+            return false;
+        }
+        if lower.contains("no such file") || lower.contains("not found") {
+            return false;
+        }
+        if lower.contains("permission denied") || lower.contains("not allowed") {
+            return false;
+        }
+        if lower.contains("invalid") && lower.contains("configuration") {
+            return false;
+        }
+        // Transient failures — worth retrying
+        lower.contains("timeout")
+            || lower.contains("connection")
+            || lower.contains("refused")
+            || lower.contains("reset")
+            || lower.contains("temporary")
+            || lower.contains("rate limit")
+            || lower.contains("too many requests")
+            || lower.contains("error sending request")
+    }
 }
 
 #[async_trait::async_trait]
@@ -390,7 +442,10 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 max_output_tokens: max_tokens,
             };
             let r = llm_provider.chat_completion(req, cb.clone()).await;
-            if r.is_ok() || llm_attempt >= LLM_MAX_RETRIES {
+            let should_retry = r.is_err()
+                && llm_attempt < LLM_MAX_RETRIES
+                && Self::is_retryable_llm_error(r.as_ref().err());
+            if !should_retry {
                 break r;
             }
             let delay_secs = llm_attempt as u64; // 1s, 2s, 3s
@@ -400,6 +455,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 turn = ctx.turn,
                 attempt = llm_attempt,
                 delay_secs,
+                error = %r.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
                 "LLM API call failed, retrying"
             );
             tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
@@ -475,12 +531,14 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         const TOOL_RETRY_DELAY_SECS: u64 = 1;
 
         for call in calls {
-            // Retry tool calls on failure (e.g. network errors, transient I/O)
+            // Retry tool calls on transient failures (network, timeout).
+            // Skip retry for permanent errors: unrecoverable, not found,
+            // permission denied, file missing.
             let mut attempt = 0;
             let result = loop {
                 attempt += 1;
                 let r = executor.execute_for_agent(call, &ctx.agent_id, &ctx.session_id).await;
-                if r.success || attempt >= TOOL_MAX_RETRIES {
+                if r.success || attempt >= TOOL_MAX_RETRIES || !Self::is_retryable_error(&r.output) {
                     break r;
                 }
                 tracing::warn!(

@@ -1952,44 +1952,51 @@ impl AgentRuntime {
         Arc::clone(&self.sources)
     }
 
-    /// Hot-reload an IM channel source from keychain config.
-    ///
-    /// Stops and unregisters the old source (if present), then reads the latest
-    /// config from keychain and starts a fresh source. No gateway restart needed.
+    /// Hot-reload an IM channel source from config (env vars or keychain).
     pub async fn reload_im_channel_source(&self, platform: &str, instance: &str) -> AmanResult<()> {
-        use secret::{KeychainBackend, SecretBackend};
-        let backend = KeychainBackend;
+        let secrets_mode = self.config.security.secrets_mode;
 
         match platform {
             "telegram" => {
-                let token_key = format!("aman.bot.telegram.{instance}.token");
-                let chat_ids_key = format!("aman.bot.telegram.{instance}.allowed_chat_ids");
-
-                let token = backend
-                    .get(&token_key)?
-                    .ok_or_else(|| Error::NotFound {
-                        name: format!("keychain key {token_key}"),
-                    })?;
-                if token.is_empty() {
-                    return Err(Error::config_invalid("telegram bot token is empty"));
-                }
+                let (token, allowed_chat_ids) = if secrets_mode.prefer_env() {
+                    let token = std::env::var("AMAN_BOT_TELEGRAM_TOKEN")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| Error::NotFound {
+                            name: "env var AMAN_BOT_TELEGRAM_TOKEN".into(),
+                        })?;
+                    let allowed_chat_ids: Vec<i64> = std::env::var("AMAN_BOT_TELEGRAM_ALLOWED_CHAT_IDS")
+                        .ok()
+                        .map(|ids| ids.split(',').filter_map(|s| s.trim().parse().ok()).collect())
+                        .unwrap_or_default();
+                    (token, allowed_chat_ids)
+                } else {
+                    use secret::{KeychainBackend, SecretBackend};
+                    let backend = KeychainBackend;
+                    let token_key = format!("aman.bot.telegram.{instance}.token");
+                    let chat_ids_key = format!("aman.bot.telegram.{instance}.allowed_chat_ids");
+                    let token = backend
+                        .get(&token_key)?
+                        .ok_or_else(|| Error::NotFound {
+                            name: format!("keychain key {token_key}"),
+                        })?;
+                    if token.is_empty() {
+                        return Err(Error::config_invalid("telegram bot token is empty"));
+                    }
+                    let allowed_chat_ids: Vec<i64> = backend
+                        .get(&chat_ids_key)
+                        .ok()
+                        .flatten()
+                        .map(|ids| ids.split(',').filter_map(|s| s.trim().parse().ok()).collect())
+                        .unwrap_or_default();
+                    (token, allowed_chat_ids)
+                };
 
                 let source_id = if instance == "default" {
                     "chat:telegram:default".to_owned()
                 } else {
                     format!("chat:telegram:{instance}")
                 };
-
-                let allowed_chat_ids: Vec<i64> = backend
-                    .get(&chat_ids_key)
-                    .ok()
-                    .flatten()
-                    .map(|ids| {
-                        ids.split(',')
-                            .filter_map(|s| s.trim().parse().ok())
-                            .collect()
-                    })
-                    .unwrap_or_default();
 
                 // Shut down old source if running.
                 self.sources.shutdown(&source_id).await.ok();
@@ -3350,70 +3357,100 @@ fn start_im_channel_sources(
     chat_session_store: &Arc<messaging_core::ChatSessionStore>,
     sticky_router: &Arc<messaging_core::StickyAgentRouter>,
 ) {
-    use secret::{KeychainBackend, SecretBackend};
-
-    let backend = KeychainBackend;
+    let secrets_mode = config::AmanConfig::from_default_path()
+        .map(|c| c.runtime.security.secrets_mode)
+        .unwrap_or_default();
 
     // ── Telegram ─────────────────────────────────────────────────
-    for instance in &["default", "work", "personal", "trading"] {
-        let token_key = format!("aman.bot.telegram.{instance}.token");
-        let username_key = format!("aman.bot.telegram.{instance}.username");
-        let chat_ids_key = format!("aman.bot.telegram.{instance}.allowed_chat_ids");
-
-        if let Ok(Some(token)) = backend.get(&token_key) {
-            if token.is_empty() {
-                continue;
+    // Read config from env vars (preferred) or keychain.
+    let instances = if secrets_mode.prefer_env() {
+        // Check the primary env var for the default instance.
+        if std::env::var("AMAN_BOT_TELEGRAM_TOKEN").ok().filter(|s| !s.is_empty()).is_some() {
+            vec!["default".to_owned()]
+        } else {
+            vec![]
+        }
+    } else {
+        // Scan keychain for configured instances.
+        use secret::{KeychainBackend, SecretBackend};
+        let backend = KeychainBackend;
+        let mut found = vec![];
+        for inst in &["default", "work", "personal", "trading"] {
+            let token_key = format!("aman.bot.telegram.{inst}.token");
+            if backend.get(&token_key).ok().flatten().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
             }
+        }
+        found
+    };
 
-            let source_id = if *instance == "default" {
-                "chat:telegram:default".to_owned()
-            } else {
-                format!("chat:telegram:{instance}")
-            };
-
-            let bot_username = backend
-                .get(&username_key)
+    for instance in instances {
+        let (token, bot_username, allowed_chat_ids) = if secrets_mode.prefer_env() {
+            let token = std::env::var("AMAN_BOT_TELEGRAM_TOKEN")
                 .ok()
-                .flatten()
+                .filter(|s| !s.is_empty())
                 .unwrap_or_default();
-
+            let bot_username = std::env::var("AMAN_BOT_TELEGRAM_USERNAME")
+                .ok()
+                .unwrap_or_default();
+            let allowed_chat_ids: Vec<i64> = std::env::var("AMAN_BOT_TELEGRAM_ALLOWED_CHAT_IDS")
+                .ok()
+                .map(|ids| ids.split(',').filter_map(|s| s.trim().parse().ok()).collect())
+                .unwrap_or_default();
+            (token, bot_username, allowed_chat_ids)
+        } else {
+            use secret::{KeychainBackend, SecretBackend};
+            let backend = KeychainBackend;
+            let token_key = format!("aman.bot.telegram.{instance}.token");
+            let username_key = format!("aman.bot.telegram.{instance}.username");
+            let chat_ids_key = format!("aman.bot.telegram.{instance}.allowed_chat_ids");
+            let token = backend.get(&token_key).ok().flatten().unwrap_or_default();
+            let bot_username = backend.get(&username_key).ok().flatten().unwrap_or_default();
             let allowed_chat_ids: Vec<i64> = backend
                 .get(&chat_ids_key)
                 .ok()
                 .flatten()
-                .map(|ids| {
-                    ids.split(',')
-                        .filter_map(|s| s.trim().parse().ok())
-                        .collect()
-                })
+                .map(|ids| ids.split(',').filter_map(|s| s.trim().parse().ok()).collect())
                 .unwrap_or_default();
+            (token, bot_username, allowed_chat_ids)
+        };
 
-            tracing::info!(
-                source_id = %source_id,
-                instance = %instance,
-                username = %bot_username,
-                allowed_chat_count = allowed_chat_ids.len(),
-                "starting telegram IM channel source"
-            );
-
-            // Register sender for reply routing.
-            let sender = Arc::new(messaging_telegram::sender::TelegramSender::new(&token));
-            channel_registry.register(source_id.clone(), sender);
-
-            // Create and register the event source.
-            let source = messaging_telegram::source::TelegramSource::new(
-                source_id.clone(),
-                &token,
-                allowed_chat_ids,
-            )
-            .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
-
-            let _ = pollster::block_on(sources.register(
-                Box::new(source),
-                source::SourceMode::Push,
-                source::TrustLevel::Untrusted,
-            ));
+        if token.is_empty() {
+            continue;
         }
+
+        let source_id = if instance == "default" {
+            "chat:telegram:default".to_owned()
+        } else {
+            format!("chat:telegram:{instance}")
+        };
+
+        tracing::info!(
+            source_id = %source_id,
+            instance = %instance,
+            username = %bot_username,
+            allowed_chat_count = allowed_chat_ids.len(),
+            mode = ?secrets_mode,
+            "starting telegram IM channel source"
+        );
+
+        // Register sender for reply routing.
+        let sender = Arc::new(messaging_telegram::sender::TelegramSender::new(&token));
+        channel_registry.register(source_id.clone(), sender);
+
+        // Create and register the event source.
+        let source = messaging_telegram::source::TelegramSource::new(
+            source_id.clone(),
+            &token,
+            allowed_chat_ids,
+        )
+        .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
+
+        let _ = pollster::block_on(sources.register(
+            Box::new(source),
+            source::SourceMode::Push,
+            source::TrustLevel::Untrusted,
+        ));
     }
 
     // TODO: Slack, Discord, Matrix — same pattern when their crates are wired.

@@ -142,11 +142,43 @@ pub struct WorkflowConfig {
     pub definitions: Vec<WorkflowDefinition>,
 }
 
+/// Where to read secrets from: env vars, OS keyring, or 1Password CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretsMode {
+    /// Use environment variables only (no keychain prompts).
+    #[default]
+    Env,
+    /// Use OS keyring (macOS Keychain / freedesktop Secret Service).
+    Keyring,
+    /// Use 1Password CLI (`op`).
+    #[serde(rename = "1password")]
+    OnePassword,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct SecurityConfig {
+    /// Where to read API keys, tokens, and other secrets from.
+    #[serde(default)]
+    pub secrets_mode: SecretsMode,
     #[serde(default)]
     pub risky_capabilities_enabled: bool,
+}
+
+// ── Secrets mode helper ──────────────────────────────────────────
+impl SecretsMode {
+    /// Returns `true` if keychain/keyring access should be attempted.
+    #[must_use]
+    pub fn use_keyring(self) -> bool {
+        matches!(self, Self::Keyring | Self::OnePassword)
+    }
+
+    /// Returns `true` if env vars should be checked first.
+    #[must_use]
+    pub fn prefer_env(self) -> bool {
+        matches!(self, Self::Env)
+    }
 }
 
 // ── Idle State System config (M2.3) ───────────────────────────

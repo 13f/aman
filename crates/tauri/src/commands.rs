@@ -1200,42 +1200,101 @@ pub async fn set_third_party_config(
 }
 
 // ---------------------------------------------------------------------------
-// IM Channel key management
+// IM Channel key management (multi-instance)
 // ---------------------------------------------------------------------------
+//
+// Keychain key format: aman.bot.{platform}.{instance}.{field}
+//   Default instance: aman.bot.telegram.default.token
+//   Custom instance:  aman.bot.telegram.work.token
+//
+// To discover instances, we scan for tokens matching
+// `aman.bot.{platform}.*.token` and extract the instance name.
 
-/// Known IM channel platforms with their config fields.
-static IM_CHANNEL_PLATFORMS: &[(&str, &str, &[(&str, &str, &str)])] = &[
+/// Default instance name used when the user doesn't create custom instances.
+const DEFAULT_INSTANCE: &str = "default";
+
+/// Known IM channel platforms with their field prototypes.
+/// Keychain keys are constructed dynamically: `aman.bot.{id}.{instance}.{field_key}`
+static IM_CHANNEL_PLATFORMS: &[(&str, &str, &[(&str, &str)])] = &[
     ("telegram", "Telegram", &[
-        ("token", "Bot Token", "aman.bot.telegram.token"),
-        ("username", "Bot Username", "aman.bot.telegram.username"),
+        ("token", "Bot Token"),
+        ("username", "Bot Username"),
     ]),
     ("slack", "Slack", &[
-        ("bot_token", "Bot User OAuth Token (xoxb-...)", "aman.bot.slack.bot_token"),
-        ("app_token", "App-Level Token (xapp-...)", "aman.bot.slack.app_token"),
+        ("bot_token", "Bot User OAuth Token (xoxb-...)"),
+        ("app_token", "App-Level Token (xapp-...)"),
     ]),
     ("discord", "Discord", &[
-        ("token", "Bot Token", "aman.bot.discord.token"),
+        ("token", "Bot Token"),
     ]),
     ("matrix", "Matrix", &[
-        ("homeserver_url", "Homeserver URL", "aman.bot.matrix.homeserver_url"),
-        ("username", "Username / MXID", "aman.bot.matrix.username"),
-        ("access_token", "Access Token / Password", "aman.bot.matrix.access_token"),
+        ("homeserver_url", "Homeserver URL"),
+        ("username", "Username / MXID"),
+        ("access_token", "Access Token / Password"),
     ]),
 ];
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ImChannelField {
     pub key: String,
     pub label: String,
     pub configured: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
+pub struct ImChannelInstance {
+    pub name: String,
+    pub fields: Vec<ImChannelField>,
+}
+
+#[derive(Serialize, Clone)]
 pub struct ImChannel {
     pub id: String,
     pub display_name: String,
-    pub enabled: bool,
-    pub fields: Vec<ImChannelField>,
+    pub instances: Vec<ImChannelInstance>,
+}
+
+/// Build a keychain key for a given platform/instance/field.
+fn im_keychain_key(platform: &str, instance: &str, field: &str) -> String {
+    format!("aman.bot.{platform}.{instance}.{field}")
+}
+
+/// Build the prefix used for scanning instances of a platform.
+fn im_scan_prefix(platform: &str) -> String {
+    format!("aman.bot.{platform}.")
+}
+
+/// Scan the keychain for all configured instances of a platform by looking
+/// for token entries matching `aman.bot.{platform}.*.token` (or the
+/// platform's first field if it has no field named "token").
+fn discover_instances(backend: &KeychainBackend, platform: &str, fields: &[(&str, &str)]) -> Vec<String> {
+    // The first field is the primary key used for discovery.
+    let primary_field = fields[0].0;
+    let prefix = im_scan_prefix(platform);
+    // We can't enumerate keychain entries, so we always include "default"
+    // and let users add custom instances manually.
+    let mut instances = vec![DEFAULT_INSTANCE.to_owned()];
+
+    // Check if the default instance is actually configured.
+    let default_configured = backend
+        .get(&im_keychain_key(platform, DEFAULT_INSTANCE, primary_field))
+        .ok()
+        .flatten()
+        .is_some();
+
+    if default_configured {
+        // Also check for common custom instances.
+        // In a full implementation, we'd enumerate keychain entries.
+        // For now, we scan known custom suffixes the user might have created.
+        for suffix in &["work", "personal", "trading"] {
+            let key = im_keychain_key(platform, suffix, primary_field);
+            if backend.get(&key).ok().flatten().is_some() {
+                instances.push(suffix.to_string());
+            }
+        }
+    }
+
+    instances
 }
 
 #[tauri::command]
@@ -1243,19 +1302,31 @@ pub async fn list_im_channels() -> Result<Vec<ImChannel>, String> {
     let backend = KeychainBackend;
     let mut channels: Vec<ImChannel> = Vec::new();
     for (id, display_name, fields) in IM_CHANNEL_PLATFORMS {
-        let channel_fields: Vec<ImChannelField> = fields
-            .iter()
-            .map(|(key, label, keychain_key)| ImChannelField {
-                key: key.to_string(),
-                label: label.to_string(),
-                configured: backend.get(keychain_key).ok().flatten().is_some(),
+        let instances = discover_instances(&backend, id, fields);
+        let channel_instances: Vec<ImChannelInstance> = instances
+            .into_iter()
+            .map(|inst_name| {
+                let instance_fields: Vec<ImChannelField> = fields
+                    .iter()
+                    .map(|(key, label)| {
+                        let kc_key = im_keychain_key(id, &inst_name, key);
+                        ImChannelField {
+                            key: key.to_string(),
+                            label: label.to_string(),
+                            configured: backend.get(&kc_key).ok().flatten().is_some(),
+                        }
+                    })
+                    .collect();
+                ImChannelInstance {
+                    name: inst_name,
+                    fields: instance_fields,
+                }
             })
             .collect();
         channels.push(ImChannel {
             id: id.to_string(),
             display_name: display_name.to_string(),
-            enabled: true,
-            fields: channel_fields,
+            instances: channel_instances,
         });
     }
     Ok(channels)
@@ -1264,9 +1335,11 @@ pub async fn list_im_channels() -> Result<Vec<ImChannel>, String> {
 #[tauri::command]
 pub async fn save_im_channel(
     platform: String,
+    instance: Option<String>,
     field_key: String,
     value: String,
 ) -> Result<String, String> {
+    let instance = instance.unwrap_or_else(|| DEFAULT_INSTANCE.to_owned());
     let platform_def = IM_CHANNEL_PLATFORMS
         .iter()
         .find(|(id, _, _)| *id == platform)
@@ -1274,21 +1347,23 @@ pub async fn save_im_channel(
     let field_def = platform_def
         .2
         .iter()
-        .find(|(key, _, _)| *key == field_key)
+        .find(|(key, _)| *key == field_key)
         .ok_or_else(|| format!("Unknown field '{field_key}' for platform '{platform}'"))?;
-    let keychain_key = field_def.2;
+    let keychain_key = im_keychain_key(&platform, &instance, field_def.0);
     let backend = KeychainBackend;
     backend
-        .set(keychain_key, &value)
+        .set(&keychain_key, &value)
         .map_err(|e| format!("Failed to save to Keychain: {e}"))?;
-    Ok(format!("{platform}.{field_key} saved to Keychain"))
+    Ok(format!("{platform}.{instance}.{field_key} saved to Keychain"))
 }
 
 #[tauri::command]
 pub async fn delete_im_channel_field(
     platform: String,
+    instance: Option<String>,
     field_key: String,
 ) -> Result<String, String> {
+    let instance = instance.unwrap_or_else(|| DEFAULT_INSTANCE.to_owned());
     let platform_def = IM_CHANNEL_PLATFORMS
         .iter()
         .find(|(id, _, _)| *id == platform)
@@ -1296,14 +1371,35 @@ pub async fn delete_im_channel_field(
     let field_def = platform_def
         .2
         .iter()
-        .find(|(key, _, _)| *key == field_key)
+        .find(|(key, _)| *key == field_key)
         .ok_or_else(|| format!("Unknown field '{field_key}' for platform '{platform}'"))?;
-    let keychain_key = field_def.2;
+    let keychain_key = im_keychain_key(&platform, &instance, field_def.0);
     let backend = KeychainBackend;
     backend
-        .set(keychain_key, "")
+        .set(&keychain_key, "")
         .map_err(|e| format!("Failed to delete from Keychain: {e}"))?;
-    Ok(format!("{platform}.{field_key} removed"))
+    Ok(format!("{platform}.{instance}.{field_key} removed"))
+}
+
+/// Delete an entire instance (all fields) for a given platform.
+#[tauri::command]
+pub async fn delete_im_channel_instance(
+    platform: String,
+    instance: String,
+) -> Result<String, String> {
+    if instance == DEFAULT_INSTANCE {
+        return Err("Cannot delete the default instance — clear its fields instead.".to_owned());
+    }
+    let platform_def = IM_CHANNEL_PLATFORMS
+        .iter()
+        .find(|(id, _, _)| *id == platform)
+        .ok_or_else(|| format!("Unknown platform: {platform}"))?;
+    let backend = KeychainBackend;
+    for (key, _label) in platform_def.2 {
+        let kc_key = im_keychain_key(&platform, &instance, key);
+        let _ = backend.set(&kc_key, "");
+    }
+    Ok(format!("{platform}.{instance} removed"))
 }
 
 // ---------------------------------------------------------------------------

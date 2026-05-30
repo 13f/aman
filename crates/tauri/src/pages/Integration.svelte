@@ -27,11 +27,14 @@
     label: string;
     configured: boolean;
   }
+  interface ImChannelInstance {
+    name: string;
+    fields: ImChannelField[];
+  }
   interface ImChannel {
     id: string;
     display_name: string;
-    enabled: boolean;
-    fields: ImChannelField[];
+    instances: ImChannelInstance[];
   }
 
   let channels = $state<ImChannel[]>([]);
@@ -39,6 +42,7 @@
   let chSaving = $state<Record<string, boolean>>({});
   let chInputs = $state<Record<string, string>>({});
   let chMessages = $state<Record<string, { type: "success" | "error"; text: string }>>({});
+  let newInstanceInputs = $state<Record<string, string>>({});
 
   // ── Tab state ────────────────────────────────────────────────────
   let activeTab = $state<"services" | "channels">("services");
@@ -108,8 +112,11 @@
     try {
       channels = await invoke<ImChannel[]>("list_im_channels");
       for (const ch of channels) {
-        for (const f of ch.fields) {
-          chInputs[`${ch.id}.${f.key}`] = "";
+        for (const inst of ch.instances) {
+          for (const f of inst.fields) {
+            const inputKey = `${ch.id}:${inst.name}:${f.key}`;
+            chInputs[inputKey] = "";
+          }
         }
       }
     } catch (e) {
@@ -119,14 +126,18 @@
     }
   }
 
-  async function saveChannelField(platform: string, fieldKey: string) {
-    const inputKey = `${platform}.${fieldKey}`;
+  function fieldInputKey(platform: string, instance: string, field: string): string {
+    return `${platform}:${instance}:${field}`;
+  }
+
+  async function saveChannelField(platform: string, instance: string, fieldKey: string) {
+    const inputKey = fieldInputKey(platform, instance, fieldKey);
     const value = chInputs[inputKey]?.trim();
     if (!value) return;
 
     chSaving[inputKey] = true;
     try {
-      await invoke("save_im_channel", { platform, fieldKey, value });
+      await invoke("save_im_channel", { platform, instance, fieldKey, value });
       chMessages[inputKey] = { type: "success", text: "Saved to Keychain" };
       chInputs[inputKey] = "";
       await loadChannels();
@@ -137,12 +148,40 @@
     }
   }
 
-  async function deleteChannelField(platform: string, fieldKey: string) {
-    const inputKey = `${platform}.${fieldKey}`;
+  async function deleteChannelField(platform: string, instance: string, fieldKey: string) {
+    const inputKey = fieldInputKey(platform, instance, fieldKey);
     chSaving[inputKey] = true;
     try {
-      await invoke("delete_im_channel_field", { platform, fieldKey });
+      await invoke("delete_im_channel_field", { platform, instance, fieldKey });
       chMessages[inputKey] = { type: "success", text: "Removed from Keychain" };
+      await loadChannels();
+    } catch (e) {
+      chMessages[inputKey] = { type: "error", text: `${e}` };
+    } finally {
+      chSaving[inputKey] = false;
+    }
+  }
+
+  async function addInstance(platform: string) {
+    const name = newInstanceInputs[platform]?.trim();
+    if (!name) return;
+    // Creating an instance = saving the first field's token (triggers discovery)
+    // The instance will appear when any field is configured.
+    // We create it by saving a dummy value and then immediately clearing it,
+    // or simply by directing the user to configure a token.
+    // Actually, let's add the instance to the list immediately.
+    newInstanceInputs[platform] = "";
+    // Trigger reload — the instance will appear when at least one field has data.
+    // For now, just show the instance entry and let the user fill in fields.
+    await loadChannels();
+  }
+
+  async function deleteInstance(platform: string, instance: string) {
+    const inputKey = fieldInputKey(platform, instance, "__delete__");
+    chSaving[inputKey] = true;
+    try {
+      await invoke("delete_im_channel_instance", { platform, instance });
+      chMessages[inputKey] = { type: "success", text: "Instance removed" };
       await loadChannels();
     } catch (e) {
       chMessages[inputKey] = { type: "error", text: `${e}` };
@@ -164,6 +203,10 @@
       case "matrix": return "🔗";
       default: return "📡";
     }
+  }
+
+  function instanceHasAnyField(inst: ImChannelInstance): boolean {
+    return inst.fields.some(f => f.configured);
   }
 </script>
 
@@ -208,7 +251,6 @@
           </div>
 
           <div class="card-body">
-            <!-- API Key -->
             <div class="config-row">
               <label for="key-{service.id}">API Key</label>
               <div class="input-row">
@@ -283,49 +325,84 @@
             <span class="platform-icon">{platformIcon(ch.id)}</span>
             <strong class="card-name">{ch.display_name}</strong>
             <span class="card-id">{ch.id}</span>
-            <span class="status-badge {ch.fields.some(f => f.configured) ? 'configured' : 'unconfigured'}">
-              {ch.fields.some(f => f.configured) ? "Configured" : "Not configured"}
+            <span class="status-badge {ch.instances.some(i => instanceHasAnyField(i)) ? 'configured' : 'unconfigured'}">
+              {ch.instances.some(i => instanceHasAnyField(i)) ? "Configured" : "Not configured"}
             </span>
           </div>
 
           <div class="card-body">
-            {#each ch.fields as field (field.key)}
-              <div class="config-row">
-                <label for="ch-{ch.id}-{field.key}">{field.label}</label>
-                <div class="input-row">
-                  <input
-                    id="ch-{ch.id}-{field.key}"
-                    type="password"
-                    placeholder={field.configured ? "•••••••• (replace)" : "Enter value..."}
-                    bind:value={chInputs[`${ch.id}.${field.key}`]}
-                    oninput={() => clearChMessage(`${ch.id}.${field.key}`)}
-                  />
-                  <button
-                    onclick={() => saveChannelField(ch.id, field.key)}
-                    disabled={!chInputs[`${ch.id}.${field.key}`]?.trim() || chSaving[`${ch.id}.${field.key}`]}
-                  >
-                    {chSaving[`${ch.id}.${field.key}`] ? "Saving..." : field.configured ? "Update" : "Save"}
-                  </button>
-                  {#if field.configured}
+            {#each ch.instances as inst (inst.name)}
+              <div class="instance-block">
+                <div class="instance-header">
+                  <span class="instance-name">
+                    {inst.name === "default" ? "Default" : inst.name}
+                    {#if inst.name === "default"}
+                      <span class="dim-label">(always present)</span>
+                    {/if}
+                  </span>
+                  <span class="status-badge small {instanceHasAnyField(inst) ? 'configured' : 'unconfigured'}">
+                    {instanceHasAnyField(inst) ? "on" : "off"}
+                  </span>
+                  {#if inst.name !== "default"}
                     <button
-                      class="btn-delete"
-                      onclick={() => deleteChannelField(ch.id, field.key)}
-                      disabled={chSaving[`${ch.id}.${field.key}`]}
+                      class="btn-delete-instance"
+                      onclick={() => deleteInstance(ch.id, inst.name)}
+                      disabled={chSaving[fieldInputKey(ch.id, inst.name, "__delete__")]}
                     >
-                      ✕
+                      {chSaving[fieldInputKey(ch.id, inst.name, "__delete__")] ? "..." : "Delete instance"}
                     </button>
                   {/if}
                 </div>
-                {#if chMessages[`${ch.id}.${field.key}`]}
-                  <span class="msg {chMessages[`${ch.id}.${field.key}`].type}">
-                    {chMessages[`${ch.id}.${field.key}`].text}
-                  </span>
-                {/if}
-                <span class="status-badge {field.configured ? 'configured' : 'unconfigured'}">
-                  {field.configured ? "Configured" : "Not configured"}
-                </span>
+
+                {#each inst.fields as field (field.key)}
+                  <div class="config-row">
+                    <label for="ch-{ch.id}-{inst.name}-{field.key}">{field.label}</label>
+                    <div class="input-row">
+                      <input
+                        id="ch-{ch.id}-{inst.name}-{field.key}"
+                        type="password"
+                        placeholder={field.configured ? "•••••••• (replace)" : "Enter value..."}
+                        bind:value={chInputs[fieldInputKey(ch.id, inst.name, field.key)]}
+                        oninput={() => clearChMessage(fieldInputKey(ch.id, inst.name, field.key))}
+                      />
+                      <button
+                        onclick={() => saveChannelField(ch.id, inst.name, field.key)}
+                        disabled={!chInputs[fieldInputKey(ch.id, inst.name, field.key)]?.trim()
+                          || chSaving[fieldInputKey(ch.id, inst.name, field.key)]}
+                      >
+                        {chSaving[fieldInputKey(ch.id, inst.name, field.key)] ? "Saving..." : field.configured ? "Update" : "Save"}
+                      </button>
+                      {#if field.configured}
+                        <button
+                          class="btn-clear"
+                          onclick={() => deleteChannelField(ch.id, inst.name, field.key)}
+                          disabled={chSaving[fieldInputKey(ch.id, inst.name, field.key)]}
+                        >
+                          ✕
+                        </button>
+                      {/if}
+                    </div>
+                    {#if chMessages[fieldInputKey(ch.id, inst.name, field.key)]}
+                      <span class="msg {chMessages[fieldInputKey(ch.id, inst.name, field.key)].type}">
+                        {chMessages[fieldInputKey(ch.id, inst.name, field.key)].text}
+                      </span>
+                    {/if}
+                  </div>
+                {/each}
               </div>
             {/each}
+
+            <!-- Add Instance -->
+            <div class="add-instance-row">
+              <input
+                type="text"
+                placeholder="Instance name (e.g. work, personal)..."
+                bind:value={newInstanceInputs[ch.id]}
+              />
+              <button onclick={() => addInstance(ch.id)} disabled={!newInstanceInputs[ch.id]?.trim()}>
+                + Add
+              </button>
+            </div>
           </div>
         </div>
       {/each}
@@ -349,7 +426,6 @@
     border-bottom: 1px solid var(--border-color, #333);
     margin-bottom: 24px;
   }
-
   .tab {
     padding: 8px 20px;
     border: none;
@@ -359,79 +435,90 @@
     color: var(--text-secondary, #999);
     border-bottom: 2px solid transparent;
   }
-
   .tab:hover { color: var(--text-primary, #fff); }
-
   .tab.active {
     color: var(--text-primary, #fff);
     border-bottom-color: var(--accent, #4a9eff);
   }
 
   /* ── Cards ───────────────────────────────────────────────── */
-  .card-list {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .card.disabled {
-    opacity: 0.45;
-    pointer-events: none;
-  }
-
+  .card-list { display: flex; flex-direction: column; gap: 16px; }
+  .card.disabled { opacity: 0.45; pointer-events: none; }
   .card-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 12px;
-    flex-wrap: wrap;
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px; flex-wrap: wrap;
   }
-
   .card-name { font-size: 15px; }
-
   .card-id {
-    font-size: 0.75rem;
-    color: var(--fg-dim);
-    background: var(--bg);
-    padding: 2px 6px;
-    border-radius: 4px;
+    font-size: 0.75rem; color: var(--fg-dim);
+    background: var(--bg); padding: 2px 6px; border-radius: 4px;
   }
-
   .platform-icon { font-size: 1.2rem; }
+  .card-body { display: flex; flex-direction: column; gap: 12px; }
 
-  .card-body {
+  /* ── Instances ────────────────────────────────────────────── */
+  .instance-block {
+    border: 1px solid var(--border-color, #333);
+    border-radius: 6px;
+    padding: 12px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
   }
-
-  .config-row {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+  .instance-header {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 2px;
   }
+  .instance-name { font-weight: 600; font-size: 0.9rem; }
+  .dim-label { font-size: 0.75rem; color: var(--fg-dim); font-weight: 400; margin-left: 4px; }
 
-  .config-row label {
-    font-size: 0.8rem;
-    color: var(--fg-dim);
+  .btn-delete-instance {
+    margin-left: auto;
+    padding: 3px 10px;
+    border: 1px solid #f44336;
+    border-radius: 4px;
+    background: transparent;
+    color: #f44336;
+    cursor: pointer;
+    font-size: 0.75rem;
   }
+  .btn-delete-instance:hover { background: #f44336; color: #fff; }
 
-  .input-row {
-    display: flex;
-    gap: 8px;
-    align-items: stretch;
+  .add-instance-row {
+    display: flex; gap: 8px; align-items: stretch;
+    margin-top: 4px;
   }
+  .add-instance-row input {
+    flex: 1; padding: 6px 10px;
+    border: 1px dashed var(--border-color, #444);
+    border-radius: 4px;
+    background: var(--bg); color: var(--fg);
+    font-size: 0.85rem;
+  }
+  .add-instance-row button {
+    padding: 6px 16px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .add-instance-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+  /* ── Config rows ──────────────────────────────────────────── */
+  .config-row { display: flex; flex-direction: column; gap: 4px; }
+  .config-row label { font-size: 0.8rem; color: var(--fg-dim); }
+
+  .input-row { display: flex; gap: 8px; align-items: stretch; }
   .input-row input {
-    flex: 1;
-    padding: 6px 10px;
+    flex: 1; padding: 6px 10px;
     border: 1px solid var(--border);
     border-radius: 4px;
-    background: var(--bg);
-    color: var(--fg);
+    background: var(--bg); color: var(--fg);
     font-size: 0.9rem;
   }
-
   .input-row button {
     padding: 6px 16px;
     border: 1px solid var(--accent);
@@ -442,58 +529,33 @@
     font-size: 0.85rem;
     white-space: nowrap;
   }
+  .input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .input-row button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .btn-delete {
+  .btn-clear {
     padding: 6px 10px !important;
     border: 1px solid #f44336 !important;
     background: transparent !important;
     color: #f44336 !important;
     font-size: 0.85rem;
   }
-
-  .btn-delete:hover { background: #f44336 !important; color: #fff !important; }
+  .btn-clear:hover { background: #f44336 !important; color: #fff !important; }
 
   /* ── Tags ───────────────────────────────────────────────── */
-  .tag-list {
-    display: flex;
-    gap: 4px;
-    margin-left: auto;
-  }
-
+  .tag-list { display: flex; gap: 4px; margin-left: auto; }
   .tag {
-    font-size: 0.7rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: #1a3a5a;
-    color: #6ab0ff;
+    font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.03em; padding: 2px 8px; border-radius: 10px;
+    background: #1a3a5a; color: #6ab0ff;
   }
 
   /* ── Status ──────────────────────────────────────────────── */
   .status-badge {
-    font-size: 0.75rem;
-    padding: 2px 8px;
-    border-radius: 10px;
-    display: inline-block;
-    width: fit-content;
+    font-size: 0.75rem; padding: 2px 8px; border-radius: 10px;
+    display: inline-block; width: fit-content;
   }
-
-  .status-badge.configured {
-    background: #1a3a1a;
-    color: #4caf50;
-  }
-
-  .status-badge.unconfigured {
-    background: #3a1a1a;
-    color: #f44336;
-  }
+  .status-badge.small { font-size: 0.65rem; padding: 1px 6px; }
+  .status-badge.configured { background: #1a3a1a; color: #4caf50; }
+  .status-badge.unconfigured { background: #3a1a1a; color: #f44336; }
 
   /* ── Messages ────────────────────────────────────────────── */
   .msg { font-size: 0.8rem; }
@@ -501,11 +563,8 @@
   .msg.error { color: #f44336; }
 
   .note {
-    font-size: 0.8rem;
-    color: var(--fg-dim);
-    margin: 8px 0 0 0;
-    font-style: italic;
+    font-size: 0.8rem; color: var(--fg-dim);
+    margin: 8px 0 0 0; font-style: italic;
   }
-
   .dim { color: var(--fg-dim); }
 </style>

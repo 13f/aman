@@ -178,30 +178,28 @@ impl TokenBudget {
     /// Check whether history needs compression.
     ///
     /// Returns true when total prompt tokens reach the compression threshold
-    /// (default 80% of available prompt budget, i.e. context_window - max_output_tokens).
-    /// When anti-thrashing has paused compression, only the hard limit (>95%) will trigger.
+    /// (default 80% of context window). When anti-thrashing has paused
+    /// compression, only the hard limit (>95%) will trigger.
     pub fn needs_trim(&self) -> bool {
-        let budget = self.prompt_budget();
-        if budget == 0 {
-            return false;
-        }
         if self.compression_paused {
             // Safety valve: force compress if above 95% regardless of pause
-            let hard_limit = (budget as f64 * 0.95) as usize;
+            let hard_limit = (self.context_window as f64 * 0.95) as usize;
             return self.total_prompt_tokens() > hard_limit;
         }
-        let threshold_tokens = (budget as f64 * self.compression_threshold) as usize;
+        let threshold_tokens = (self.context_window as f64 * self.compression_threshold) as usize;
         self.total_prompt_tokens() >= threshold_tokens
     }
 
     /// Number of tokens to remove to get below the trigger threshold.
     pub fn trim_amount(&self) -> usize {
-        let budget = self.prompt_budget();
-        let target = (budget as f64 * self.compression_threshold) as usize;
+        let target = (self.context_window as f64 * self.compression_threshold) as usize;
         self.total_prompt_tokens().saturating_sub(target)
     }
 
-    /// Quick estimate whether the given messages would exceed the threshold.
+    /// Quick estimate whether the given messages would exceed the API limit.
+    ///
+    /// Uses `context_window - max_output_tokens` as the hard budget because
+    /// the LLM API enforces `prompt + completion <= context_window`.
     /// Call before sending to the LLM API to avoid 400 errors.
     pub fn preflight_check(&self, messages: &[kernel::react::ChatMessage]) -> bool {
         let budget = self.prompt_budget();

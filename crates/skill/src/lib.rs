@@ -38,6 +38,8 @@ struct SkillRegistration {
     concurrency: SkillConcurrencyModel,
     idle_prompts: Vec<String>,
     body: Option<String>,
+    /// Custom event to publish when a background task completes.
+    on_complete: Option<String>,
 }
 
 #[derive(Clone)]
@@ -104,6 +106,7 @@ impl SkillRegistry {
                 concurrency,
                 idle_prompts: vec![],
                 body: None,
+                on_complete: None,
             },
         );
         Ok(())
@@ -125,6 +128,7 @@ impl SkillRegistry {
                 concurrency: loaded.concurrency,
                 idle_prompts: loaded.idle_prompts,
                 body: loaded.body,
+                on_complete: loaded.on_complete,
             },
         );
         Ok(())
@@ -140,6 +144,7 @@ impl SkillRegistry {
             existing.concurrency = loaded.concurrency;
             existing.idle_prompts = loaded.idle_prompts;
             existing.body = loaded.body;
+            existing.on_complete = loaded.on_complete;
             if old_version == new_version {
                 return SkillUpsertOutcome::ReplacedSameVersion {
                     version: new_version,
@@ -159,6 +164,7 @@ impl SkillRegistry {
                 concurrency: loaded.concurrency,
                 idle_prompts: loaded.idle_prompts,
                 body: loaded.body,
+                on_complete: loaded.on_complete,
             },
         );
         SkillUpsertOutcome::Inserted
@@ -278,6 +284,16 @@ impl SkillRegistry {
             .expect("skill registry read lock")
             .get(name)
             .and_then(|entry| entry.body.clone())
+    }
+
+    /// Return the `on_complete` hook event name for a skill, if configured.
+    #[must_use]
+    pub fn on_complete(&self, name: &str) -> Option<String> {
+        self.skills
+            .read()
+            .expect("skill registry read lock")
+            .get(name)
+            .and_then(|entry| entry.on_complete.clone())
     }
 
     #[must_use]
@@ -493,6 +509,8 @@ pub struct LoadedSkill {
     pub idle_prompts: Vec<String>,
     /// Full SKILL.md body with YAML frontmatter stripped (None for pure YAML skills).
     pub body: Option<String>,
+    /// Custom event name to publish when a background task completes.
+    pub on_complete: Option<String>,
 }
 
 fn default_skill_version() -> String {
@@ -512,6 +530,9 @@ struct DeclarativeSkillSpec {
     concurrency: Option<serde_yaml::Value>,
     #[serde(default, alias = "idle_prompt")]
     idle_prompts: Vec<String>,
+    /// Custom event name to publish when a detached background task completes.
+    #[serde(default)]
+    on_complete: Option<String>,
 }
 
 #[derive(Debug)]
@@ -580,6 +601,7 @@ impl SkillLoader {
                 tags: vec![],
                 concurrency: None,
                 idle_prompts: vec![],
+                on_complete: None,
             }, body);
         }
         let spec: DeclarativeSkillSpec = serde_yaml::from_str(&yaml).map_err(|error| {
@@ -632,6 +654,7 @@ impl SkillLoader {
             tags: spec.tags,
             idle_prompts: spec.idle_prompts,
             body,
+            on_complete: spec.on_complete,
         })
     }
 }

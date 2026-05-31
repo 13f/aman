@@ -1099,11 +1099,12 @@ impl AgentHarness {
         skill_name: Option<String>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
+        on_complete: Option<String>,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background)
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background, on_complete.as_deref())
                 .await
             {
                 tracing::error!(
@@ -1128,6 +1129,7 @@ impl AgentHarness {
         skill_name: Option<&str>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
+        on_complete: Option<&str>,
     ) -> AmanResult<String> {
         // 1. Get AgentInstance from registry
         let instance = self
@@ -1351,6 +1353,7 @@ impl AgentHarness {
             let cont_flag = Arc::clone(&interrupt_flag);
             let cont_bg = background;
             let cont_sn = skill_name.map(String::from);
+            let cont_hook = on_complete.map(String::from);
 
             tokio::spawn(async move {
                 harness
@@ -1368,6 +1371,7 @@ impl AgentHarness {
                         cont_flag,
                         cont_bg,
                         cont_sn,
+                        cont_hook,
                     )
                     .await;
             });
@@ -1700,6 +1704,7 @@ impl AgentHarness {
         interrupt_flag: Arc<InterruptFlag>,
         background: bool,
         skill_name: Option<String>,
+        on_complete: Option<String>,
     ) {
         // 1. Wait for detach completion
         let result_event = self
@@ -1707,26 +1712,54 @@ impl AgentHarness {
             .await;
 
         // 2. Update the tool result in history
-        let final_output = match result_event {
-            Some(event) => {
+        let final_output;
+        let hook_stdout;
+        let hook_exit_code;
+        let hook_success;
+        match result_event {
+            Some(ref event) => {
                 let p = &event.payload;
                 let success = p["success"].as_bool().unwrap_or(false);
                 let exit_code = p["exit_code"].as_i64().unwrap_or(-1);
                 let stdout = p["stdout"].as_str().unwrap_or("");
                 let stderr = p["stderr"].as_str().unwrap_or("");
+                hook_stdout = stdout.to_owned();
+                hook_exit_code = exit_code;
+                hook_success = success;
                 if success {
-                    format!("Process exited with code {exit_code}\nstdout:\n{stdout}")
+                    final_output = format!("Process exited with code {exit_code}\nstdout:\n{stdout}");
                 } else {
-                    format!(
+                    final_output = format!(
                         "Process exited with code {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                    )
+                    );
                 }
             }
             None => {
                 kill_process(pid);
-                format!("Process (PID {pid}) was interrupted and terminated")
+                hook_stdout = String::new();
+                hook_exit_code = -1;
+                hook_success = false;
+                final_output = format!("Process (PID {pid}) was interrupted and terminated");
             }
         };
+
+        // Fire on_complete hook event (skill-level custom event)
+        if let Some(ref hook_name) = on_complete {
+            let _ = self.bus.publish(Event::new(
+                "agent:harness",
+                EventType::Custom(hook_name.clone()),
+                json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "skill_name": skill_name,
+                    "pid": pid,
+                    "success": hook_success,
+                    "exit_code": hook_exit_code,
+                    "stdout": hook_stdout,
+                }),
+            )).await;
+        }
+
         let history =
             self.replace_tool_result(history, &tool_call_id, &final_output);
 

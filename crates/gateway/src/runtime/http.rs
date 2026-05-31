@@ -3911,19 +3911,26 @@ async fn idle_run(
         sid
     };
 
+    // Check for skill-level on_complete hook
+    let on_complete = runtime.skills().on_complete(&skill_name);
+
     // Publish MessageReceived event so the agent harness picks it up
+    let mut payload = json!({
+        "session_id": session_id,
+        "agent_id": agent_id,
+        "text": text,
+        "skill_name": skill_name,
+        "tag": tag,
+        "session_type": session_type,
+        "background": background,
+    });
+    if let Some(ref hook) = on_complete {
+        payload["on_complete"] = json!(hook);
+    }
     let event = Event::new(
         "idle.manual",
         EventType::MessageReceived,
-        json!({
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "text": text,
-            "skill_name": skill_name,
-            "tag": tag,
-            "session_type": session_type,
-            "background": background,
-        }),
+        payload,
     );
     if let Err(e) = runtime.publish_event(event).await {
         return (

@@ -42,6 +42,12 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("[AmanExistence] serde json error: {0}")]
     SerdeJson(#[from] serde_json::Error),
+    #[error("[AmanExistence] rate limited: source {source_id}, retry after {retry_after_ms}ms")]
+    RateLimited { source_id: String, retry_after_ms: u64 },
+    #[error("[AmanExistence] security violation: {message}")]
+    SecurityViolation { message: String },
+    #[error("[AmanExistence] sandbox error: {message}")]
+    SandboxError { message: String },
 }
 
 impl Error {

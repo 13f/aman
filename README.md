@@ -10,7 +10,7 @@
 > ⚠️ **WORK IN PROGRESS — USE AT YOUR OWN RISK**
 >
 > - Data structures, storage formats, and policies are **not yet finalized** and may change without notice.
-> - Critical harness features — **sandboxing, input/output sanitization, permission review, content filtering, and audit logging** — are **not yet implemented**. The agent may execute arbitrary actions without guardrails.
+> - Critical harness features — **input/output sanitization, permission review, content filtering, and audit logging** — are **not yet implemented**. The agent may execute arbitrary actions without guardrails.
 
 An event-driven agent framework for building safe, observable, and extensible autonomous systems.
 
@@ -154,16 +154,17 @@ sidebar item because keychain writes would be ignored at runtime.
 
 ## Security
 
-A defense-in-depth architecture covering input, execution, output, and data layers.
-See [docs/security-harness.md](docs/security-harness.md) for the full catalog.
+A defense-in-depth architecture covering input, execution, output, data, and plugin isolation layers.
+See [SECURITY_HARNESS.md](SECURITY_HARNESS.md) for the full security catalog.
 
 | Layer | Mechanisms |
 |-------|-----------|
+| **Plugin Sandbox** | 4-layer isolation: WASM fuel metering (100M instructions) + epoch interruption; OS-level subprocess sandbox (Landlock on Linux, Seatbelt on macOS); capability-based access control with first-time approval + auto-approval on reload; event bus rate limiting + trust-level enforcement (Sandboxed sources blocked from publishing sensitive event types) |
 | **Input** | Three-tier prompt-injection sanitization (block / replace-msg / replace-token); trust-level gates (Trusted / Untrusted / Sandboxed); system prompt hardening |
 | **Execution** | Hardline tool blocks — `rm -rf /`, fork bombs, raw disk writes, permission escalations, `DROP TABLE` — **not approvable**; user auth flow with 60s timeout + per-session cache |
-| **Output** | Fail-closed validation on every LLM reply (secret leak, prompt leak, tool injection); 7-pattern log redaction on every line via `RedactWriter`; `#![forbid(unsafe_code)]` across 21+ crates |
+| **Output** | Fail-closed validation on every LLM reply (secret leak, prompt leak, tool injection); 7-pattern log redaction on every line via `RedactWriter`; `#![deny(unsafe_code)]` across 21+ crates |
 | **Data** | Secrets: AES-256-GCM encrypted at rest, `mlock` + `zeroize` in memory, multi-backend resolution (env / keychain / 1Password / Vault / AWS). WAL with `fsync` + atomic writes, permission-restricted cache files (`0o600`/`0o700`) |
-| **Infra** | 4-level event bus backpressure (DoS protection); event deduplication (Bloom + LRU); Bearer token auth + `x-aman-confirm` for destructive ops; config cross-reference validation at startup |
+| **Infra** | 5-level event bus backpressure (DoS protection); event deduplication (Bloom + LRU); Bearer token auth + `x-aman-confirm` for destructive ops; config cross-reference validation at startup |
 
 Each layer is **fail-closed**: timeouts, validation failures, and unrecognized
 inputs all default to rejecting the action.

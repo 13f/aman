@@ -25,6 +25,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,6 +37,7 @@ use serde::Deserialize;
 
 use kernel::plugin::JsonRpcMethodHandler;
 use kernel::AmanResult;
+use sandbox::{SandboxConfig, apply_sandbox};
 
 use crate::SubprocessPluginConfig;
 
@@ -74,11 +77,21 @@ pub struct SubprocessPluginBridge {
 
 impl SubprocessPluginBridge {
     /// Spawn the plugin process and start the reader loop.
+    ///
+    /// If `sandbox_config` is provided, OS-level sandbox restrictions are applied
+    /// via `pre_exec()` before the plugin process starts.
+    ///
+    /// # Safety
+    ///
+    /// This function uses `unsafe` for `Command::pre_exec()`, which runs in the
+    /// forked child before `exec()`. The sandbox code is async-signal-safe.
+    #[allow(unsafe_code)]
     pub fn spawn(
         plugin_name: &str,
         config: &SubprocessPluginConfig,
         plugin_dir: Option<&PathBuf>,
         method_handler: Arc<dyn JsonRpcMethodHandler>,
+        sandbox_config: Option<SandboxConfig>,
     ) -> AmanResult<Arc<Self>> {
         let mut command = Command::new(&config.command);
         command.args(&config.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
@@ -87,6 +100,28 @@ impl SubprocessPluginBridge {
             command.current_dir(cwd);
         } else if let Some(dir) = plugin_dir {
             command.current_dir(dir);
+        }
+
+        // Apply OS-level sandbox (Landlock on Linux, Seatbelt on macOS)
+        // SAFETY: pre_exec runs in the forked child before exec(). The
+        // landlock syscalls in apply_sandbox are async-signal-safe by design.
+        // On macOS, apply_sandbox sets an env var (no syscalls in child).
+        // Failures are logged but may be treated as non-fatal (fail-open mode).
+        // pre_exec is Unix-only (not available on Windows).
+        #[cfg(unix)]
+        if let Some(ref sb_config) = sandbox_config {
+            let sb = sb_config.clone();
+            unsafe {
+                command.pre_exec(move || {
+                    apply_sandbox(&sb).map_err(|e| {
+                        std::io::Error::other(format!("sandbox: {e}"))
+                    })
+                });
+            }
+        }
+        #[cfg(not(unix))]
+        if sandbox_config.is_some() {
+            tracing::warn!("sandbox requested but not supported on this platform — plugin will run unsandboxed");
         }
 
         let mut child = command.spawn().map_err(|e| kernel::Error::Unrecoverable {

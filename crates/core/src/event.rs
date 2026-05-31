@@ -1,7 +1,7 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-use crate::types::{DedupKey, DeliveryGuarantee, Priority, SourceId, Timestamp, TraceId};
+use crate::types::{DedupKey, DeliveryGuarantee, Priority, SourceId, Timestamp, TraceId, TrustLevel};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use std::fmt;
@@ -73,6 +73,16 @@ impl EventType {
     #[must_use]
     pub fn is_queue_drained(&self) -> bool {
         matches!(self, Self::QueueDrained)
+    }
+
+    /// Returns `true` if this event type is security-sensitive and should not
+    /// be published by sandboxed sources.
+    #[must_use]
+    pub fn is_sensitive(&self) -> bool {
+        matches!(
+            self,
+            Self::ConfigChanged | Self::SecretRotated | Self::InjectionDetected
+        )
     }
 }
 
@@ -185,6 +195,11 @@ pub struct Event {
     pub dedup_key: Option<DedupKey>,
     pub payload: Value,
     pub metadata: EventMetadata,
+    /// Trust level of the event source. Set by the SourceRegistry when events
+    /// are published from external sources. Sandboxed sources are restricted
+    /// from publishing sensitive event types.
+    #[serde(default)]
+    pub trust_level: Option<TrustLevel>,
 }
 
 impl Event {
@@ -206,6 +221,7 @@ impl Event {
             dedup_key: None,
             payload,
             metadata,
+            trust_level: None,
         };
         event.dedup_key = DedupKey::from_event(&event);
         event

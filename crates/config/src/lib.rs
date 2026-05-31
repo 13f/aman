@@ -156,7 +156,7 @@ pub enum SecretsMode {
     OnePassword,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[derive(Default)]
 pub struct SecurityConfig {
     /// Where to read API keys, tokens, and other secrets from.
@@ -164,7 +164,34 @@ pub struct SecurityConfig {
     pub secrets_mode: SecretsMode,
     #[serde(default)]
     pub risky_capabilities_enabled: bool,
+    /// Master switch for sandbox enforcement. When false, plugins run
+    /// without OS-level sandboxing (but other security layers still apply).
+    /// Default: true.
+    #[serde(default = "default_sandbox_enabled")]
+    pub sandbox_enabled: bool,
+    /// When true, sandbox application errors are logged as warnings but do
+    /// not prevent plugin loading. Use for gradual rollout.
+    /// Default: false (fail-closed).
+    #[serde(default)]
+    pub sandbox_fail_open: bool,
+    /// Default maximum memory per plugin, in megabytes.
+    /// Default: 500 MB.
+    #[serde(default = "default_max_plugin_memory_mb")]
+    pub max_plugin_memory_mb: u64,
+    /// Default maximum CPU time per plugin, in seconds.
+    /// Default: 300 seconds (5 minutes).
+    #[serde(default = "default_max_plugin_cpu_seconds")]
+    pub max_plugin_cpu_seconds: u64,
+    /// When true, skip interactive capability approval prompts (auto-approve
+    /// all requested capabilities). Use only in trusted environments.
+    /// Default: false.
+    #[serde(default)]
+    pub auto_approve_plugins: bool,
 }
+
+fn default_sandbox_enabled() -> bool { true }
+fn default_max_plugin_memory_mb() -> u64 { 500 }
+fn default_max_plugin_cpu_seconds() -> u64 { 300 }
 
 // ── Secrets mode helper ──────────────────────────────────────────
 impl SecretsMode {
@@ -1128,9 +1155,14 @@ pub struct PartialWorkflowConfig {
     pub definitions: Option<Vec<WorkflowDefinition>>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartialSecurityConfig {
     pub risky_capabilities_enabled: Option<bool>,
+    pub sandbox_enabled: Option<bool>,
+    pub sandbox_fail_open: Option<bool>,
+    pub max_plugin_memory_mb: Option<u64>,
+    pub max_plugin_cpu_seconds: Option<u64>,
+    pub auto_approve_plugins: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -1349,10 +1381,25 @@ impl AgentConfig {
             self.workflow.definitions = definitions;
         }
 
-        if let Some(security) = patch.security
-            && let Some(value) = security.risky_capabilities_enabled
-        {
-            self.security.risky_capabilities_enabled = value;
+        if let Some(security) = patch.security {
+            if let Some(value) = security.risky_capabilities_enabled {
+                self.security.risky_capabilities_enabled = value;
+            }
+            if let Some(value) = security.sandbox_enabled {
+                self.security.sandbox_enabled = value;
+            }
+            if let Some(value) = security.sandbox_fail_open {
+                self.security.sandbox_fail_open = value;
+            }
+            if let Some(value) = security.max_plugin_memory_mb {
+                self.security.max_plugin_memory_mb = value;
+            }
+            if let Some(value) = security.max_plugin_cpu_seconds {
+                self.security.max_plugin_cpu_seconds = value;
+            }
+            if let Some(value) = security.auto_approve_plugins {
+                self.security.auto_approve_plugins = value;
+            }
         }
 
         if let Some(idle) = patch.idle {

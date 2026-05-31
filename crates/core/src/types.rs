@@ -240,6 +240,47 @@ pub enum ToolMode {
     Sandbox,
 }
 
+/// Trust level for event sources and plugins.
+///
+/// Used to gate sensitive operations — sandboxed sources are restricted
+/// from publishing sensitive event types and their capabilities are
+/// enforced by the security harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustLevel {
+    /// Fully trusted — internal system components, no restrictions.
+    Trusted,
+    /// Untrusted — user-provided but reviewed; moderate restrictions.
+    #[default]
+    Untrusted,
+    /// Sandboxed — isolated plugin/hook; strict resource limits and
+    /// event publishing restrictions enforced by the security harness.
+    Sandboxed,
+}
+
+impl TrustLevel {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::Untrusted => "untrusted",
+            Self::Sandboxed => "sandboxed",
+        }
+    }
+
+    /// Returns `true` if this trust level is allowed to publish sensitive events.
+    #[must_use]
+    pub const fn can_publish_sensitive(self) -> bool {
+        matches!(self, Self::Trusted)
+    }
+
+    /// Returns `true` if this source requires sandbox enforcement.
+    #[must_use]
+    pub const fn requires_sandbox(self) -> bool {
+        matches!(self, Self::Sandboxed)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum BackpressureLevel {
     #[default]

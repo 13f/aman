@@ -21,6 +21,7 @@ members = [
   "crates/tool",
   "crates/source",
   "crates/plugin",
+  "crates/sandbox",
   "crates/hook",
   "crates/soul",
   "crates/persistence",
@@ -63,6 +64,7 @@ default-members = [
   "crates/tool",
   "crates/source",
   "crates/plugin",
+  "crates/sandbox",
   "crates/hook",
   "crates/soul",
   "crates/persistence",
@@ -93,7 +95,6 @@ repository = "https://github.com/jerin/aman"
 rust-version = "1.91"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 # Forbid accidental use of raw print macros — always go through the

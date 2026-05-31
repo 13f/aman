@@ -8,6 +8,7 @@ mod backpressure;
 mod dedup;
 mod ordering;
 mod overflow;
+pub mod rate_limiter;
 mod retry_queue;
 
 use async_trait::async_trait;
@@ -18,8 +19,9 @@ pub use backpressure::{BackpressureEventKind, BackpressureEventRecord};
 use dedup::{DedupOutcome, DedupWindow};
 use kernel::event::{Event, EventType};
 use kernel::retry::RetryBackoff;
-use kernel::types::{BackpressureLevel, Priority, SourceId};
+use kernel::types::{BackpressureLevel, Priority, SourceId, TrustLevel};
 use kernel::{AmanResult, Error};
+use rate_limiter::{EventRateLimiter, RateLimiterConfig};
 use ordering::OrderedQueue;
 use overflow::OverflowDir;
 pub use overflow::OverflowDir as PublicOverflowDir;
@@ -184,6 +186,14 @@ pub struct InMemoryBusConfig {
     /// Maximum bytes the overflow directory may consume before triggering
     /// Level 4B emergency fallback.
     pub overflow_max_bytes: u64,
+    /// Optional per-source rate limiter configuration.
+    /// When set, events from any source are rate-limited using a token-bucket
+    /// algorithm. Default: `None` (no rate limiting).
+    pub rate_limiter: Option<RateLimiterConfig>,
+    /// When true, reject events from sandboxed sources that target sensitive
+    /// event types (ConfigChanged, SecretRotated, InjectionDetected).
+    /// Default: true.
+    pub reject_sandboxed_sensitive_events: bool,
 }
 
 impl Default for InMemoryBusConfig {
@@ -201,6 +211,8 @@ impl Default for InMemoryBusConfig {
             level4_threshold: 0.98110,
             overflow_dir: None,
             overflow_max_bytes: 1_073_741_824, // 1 GB
+            rate_limiter: None,
+            reject_sandboxed_sensitive_events: true,
         }
     }
 }
@@ -433,6 +445,10 @@ pub struct InMemoryBus {
     discard_hook: Option<DiscardHook>,
     /// Notifies `wait_for_event` when the queue transitions from empty → non-empty.
     event_notify: Notify,
+    /// Per-source rate limiter (token bucket). When `None`, rate limiting is disabled.
+    rate_limiter: Mutex<Option<EventRateLimiter>>,
+    /// When true, reject events from sandboxed sources that target sensitive types.
+    reject_sandboxed_sensitive: bool,
 }
 
 impl Default for InMemoryBus {
@@ -456,6 +472,8 @@ impl InMemoryBus {
             OverflowDir::new(dir, config.overflow_max_bytes).ok()
         });
 
+        let rate_limiter_config = config.rate_limiter.clone();
+        let reject_sandboxed_sensitive = config.reject_sandboxed_sensitive_events;
         Self {
             state: Mutex::new(BusState::new(&config)),
             config,
@@ -464,6 +482,8 @@ impl InMemoryBus {
             overflow_dir,
             discard_hook: None,
             event_notify: Notify::new(),
+            rate_limiter: Mutex::new(rate_limiter_config.map(EventRateLimiter::new)),
+            reject_sandboxed_sensitive,
         }
     }
 
@@ -508,6 +528,31 @@ impl InMemoryBus {
     }
 
     fn admit_event(&self, mut event: Event, state: &mut BusState) -> AmanResult<PublishAdmission> {
+        // ── Layer 4: Trust-level enforcement ──────────────────────────
+        // Reject events from sandboxed sources that target sensitive event types.
+        if self.reject_sandboxed_sensitive
+            && event.trust_level == Some(TrustLevel::Sandboxed)
+            && event.event_type.is_sensitive()
+        {
+            tracing::warn!(
+                event_id = %event.id,
+                source = %event.source,
+                event_type = %event.event_type.as_str(),
+                "rejected sensitive event from sandboxed source"
+            );
+            return Err(Error::SecurityViolation {
+                message: format!(
+                    "sandboxed source '{}' cannot publish sensitive event type '{}'",
+                    event.source, event.event_type
+                ),
+            });
+        }
+
+        // ── Layer 4: Rate limiting ────────────────────────────────────
+        if let Some(ref mut limiter) = *self.rate_limiter.lock().expect("rate limiter lock") {
+            limiter.check(&event.source)?;
+        }
+
         self.refresh_signal(state);
         event = self
             .backpressure

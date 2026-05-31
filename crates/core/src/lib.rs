@@ -27,6 +27,7 @@ pub mod prompt;
 pub mod redactor;
 pub mod router;
 pub mod sanitizer;
+pub mod security;
 pub mod session_history;
 pub mod validator;
 pub mod hook;

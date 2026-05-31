@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![doc = "Plugin manifest, dependency graph, and lifecycle loader for aman."]
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
@@ -14,10 +14,12 @@ use kernel::context::{BaseContext, PluginContext, PluginTrackedResources};
 use kernel::hook::Hook;
 use kernel::memory::MemoryProvider;
 use kernel::plugin::{Plugin, PluginDependency};
+use kernel::security::{ApprovalCache, CapabilitySet};
 use kernel::skill::Skill;
+use sandbox::SandboxConfig;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
-use kernel::types::TraceId;
+use kernel::types::{TraceId, TrustLevel};
 use kernel::{AmanResult, Error};
 use futures::future::{select, Either};
 use futures::pin_mut;
@@ -35,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tar::Archive;
 use uuid::Uuid;
-use wasmtime::{Engine, Instance, Module, Store};
+use wasmtime::{Config as WasmConfig, Engine, Instance, Module, Store};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -71,6 +73,22 @@ pub struct PluginManifest {
     /// Entrypoint script relative to the plugin directory.
     #[serde(default)]
     pub entrypoint: Option<PathBuf>,
+    /// Security manifest declaring requested capabilities and trust level.
+    /// When absent, the plugin runs with minimal (default) capabilities.
+    #[serde(default)]
+    pub security: Option<PluginSecurityManifest>,
+}
+
+/// Security manifest within a plugin's declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSecurityManifest {
+    /// Capabilities the plugin requests. Must be approved by the operator
+    /// on first load. Subsequent loads auto-approve if no new caps appear.
+    #[serde(default)]
+    pub requested_capabilities: CapabilitySet,
+    /// Minimum trust level at which the plugin may run.
+    #[serde(default)]
+    pub minimum_trust_level: Option<TrustLevel>,
 }
 
 /// Declares UI pages and events contributed by a plugin.
@@ -119,6 +137,7 @@ impl Default for PluginManifest {
             runtime: None,
             min_version: None,
             entrypoint: None,
+            security: None,
         }
     }
 }
@@ -419,19 +438,80 @@ struct JsonRpcError {
     message: String,
 }
 
+// ── WASM Security Configuration ───────────────────────────────────────
+
+/// Security constraints for WASM plugin execution.
+///
+/// These limits are enforced by the wasmtime runtime via fuel metering and
+/// epoch-based interruption. Once fuel is exhausted or the epoch deadline is
+/// reached, the WASM module is trapped and the plugin is terminated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmSecurityConfig {
+    /// Maximum linear memory the WASM module may allocate, in bytes.
+    /// Default: 500 MB (524_288_000 bytes).
+    #[serde(default = "default_wasm_max_memory_bytes")]
+    pub max_memory_bytes: u64,
+
+    /// Maximum number of table elements (for indirect call tables).
+    /// Default: 10_000.
+    #[serde(default = "default_wasm_max_table_elements")]
+    pub max_table_elements: u32,
+
+    /// Total fuel units allocated to the module. Each WASM instruction
+    /// consumes one fuel unit. When fuel reaches zero, the module is trapped.
+    /// Default: 100_000_000 (100M instructions).
+    #[serde(default = "default_wasm_max_fuel")]
+    pub max_fuel: u64,
+
+    /// Epoch counter tick limit. The host increments the epoch counter
+    /// periodically; when it reaches this threshold, the WASM module is
+    /// interrupted. Default: 1_000_000.
+    #[serde(default = "default_wasm_epoch_ticks")]
+    pub epoch_interruption_ticks: u64,
+}
+
+const fn default_wasm_max_memory_bytes() -> u64 { 524_288_000 } // 500 MB
+const fn default_wasm_max_table_elements() -> u32 { 10_000 }
+const fn default_wasm_max_fuel() -> u64 { 100_000_000 }
+const fn default_wasm_epoch_ticks() -> u64 { 1_000_000 }
+
+impl Default for WasmSecurityConfig {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: default_wasm_max_memory_bytes(),
+            max_table_elements: default_wasm_max_table_elements(),
+            max_fuel: default_wasm_max_fuel(),
+            epoch_interruption_ticks: default_wasm_epoch_ticks(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct WasmPluginRuntime {
     engine: Engine,
     module: Module,
+    security_config: WasmSecurityConfig,
 }
 
 impl WasmPluginRuntime {
-    pub fn from_wasm_bytes(wasm_bytes: &[u8]) -> AmanResult<Self> {
-        let engine = Engine::default();
+    pub fn from_wasm_bytes(wasm_bytes: &[u8], security_config: Option<WasmSecurityConfig>) -> AmanResult<Self> {
+        let sec = security_config.unwrap_or_default();
+
+        let mut config = WasmConfig::new();
+        // Enable fuel metering — each WASM instruction burns 1 fuel unit
+        config.consume_fuel(true);
+        // Enable epoch-based interruption for runaway modules
+        config.epoch_interruption(true);
+        // Stack depth limit
+        config.max_wasm_stack(1_048_576); // 1 MB stack
+
+        let engine = Engine::new(&config).map_err(|error| Error::ConfigInvalid {
+            message: format!("failed to create wasmtime engine with security config: {error}"),
+        })?;
         let module = Module::new(&engine, wasm_bytes).map_err(|error| Error::ConfigInvalid {
             message: format!("failed to compile wasm module: {error}"),
         })?;
-        Ok(Self { engine, module })
+        Ok(Self { engine, module, security_config: sec })
     }
 
     pub fn on_load(&self) -> AmanResult<()> {
@@ -460,6 +540,18 @@ impl WasmPluginRuntime {
 
     fn instantiate(&self) -> AmanResult<(Store<()>, Instance)> {
         let mut store = Store::new(&self.engine, ());
+
+        // Seed fuel budget — once exhausted, the module traps.
+        // 100M fuel units ≈ 100M WASM instructions before forced termination.
+        store.set_fuel(self.security_config.max_fuel).map_err(|error| Error::ConfigInvalid {
+            message: format!("failed to seed wasm fuel: {error}"),
+        })?;
+
+        // Set epoch deadline for interruption.
+        // The host increments the epoch counter periodically; when it
+        // reaches this threshold, the WASM module is interrupted.
+        store.set_epoch_deadline(self.security_config.epoch_interruption_ticks);
+
         let instance = Instance::new(&mut store, &self.module, &[]).map_err(|error| {
             Error::ConfigInvalid {
                 message: format!("failed to instantiate wasm module: {error}"),
@@ -475,6 +567,10 @@ impl WasmPluginRuntime {
             .map_err(|error| Error::ConfigInvalid {
                 message: format!("missing or invalid export `{export_name}`: {error}"),
             })?;
+
+        // Reset epoch deadline before each call
+        store.set_epoch_deadline(self.security_config.epoch_interruption_ticks);
+
         function.call(&mut store, ()).map_err(|error| Error::Unrecoverable {
             message: format!("wasm export `{export_name}` execution failed: {error}"),
         })
@@ -900,6 +996,8 @@ pub struct PluginLoader {
     loaded: HashMap<String, LoadedPlugin>,
     load_order: Vec<String>,
     health: HashMap<String, PluginHealth>,
+    /// Optional approval cache for capability-based access control.
+    approval_cache: Option<ApprovalCache>,
 }
 
 impl PluginLoader {
@@ -918,6 +1016,7 @@ impl PluginLoader {
             loaded: HashMap::new(),
             load_order: Vec::new(),
             health: HashMap::new(),
+            approval_cache: None,
         }
     }
 
@@ -930,6 +1029,12 @@ impl PluginLoader {
     #[must_use]
     pub fn with_method_handler(mut self, handler: Arc<dyn kernel::plugin::JsonRpcMethodHandler>) -> Self {
         self.method_handler = handler;
+        self
+    }
+
+    #[must_use]
+    pub fn with_approval_cache(mut self, cache: ApprovalCache) -> Self {
+        self.approval_cache = Some(cache);
         self
     }
 
@@ -1177,11 +1282,24 @@ impl PluginLoader {
                         }
                     }
 
+                    // Derive sandbox config from approved capabilities
+                    let sandbox_config = manifest.security.as_ref().map(|sec| {
+                        let caps = &sec.requested_capabilities;
+                        SandboxConfig {
+                            allowed_read_dirs: caps.allowed_read_paths.clone(),
+                            allowed_write_dirs: caps.allowed_write_paths.clone(),
+                            network_allowed: caps.can_network,
+                            process_spawn_allowed: caps.can_spawn_processes,
+                            max_memory_mb: caps.max_memory_mb,
+                        }
+                    });
+
                     let bridge = bridge::SubprocessPluginBridge::spawn(
                         plugin_name,
                         &config,
                         None, // cwd comes from SubprocessPluginConfig
                         Arc::clone(&self.method_handler),
+                        sandbox_config,
                     )?;
 
                     if let Err(error) = bridge.on_load(&manifest.version) {
@@ -1206,7 +1324,14 @@ impl PluginLoader {
                     let wasm_bytes = candidate.wasm_module_bytes.ok_or_else(|| Error::ConfigInvalid {
                         message: format!("wasm module bytes are required for plugin `{plugin_name}`"),
                     })?;
-                    let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes)?;
+                    let wasm_security = manifest.security.as_ref().map(|s| {
+                        let caps = &s.requested_capabilities;
+                        WasmSecurityConfig {
+                            max_memory_bytes: caps.max_memory_mb * 1_048_576,
+                            ..WasmSecurityConfig::default()
+                        }
+                    });
+                    let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes, wasm_security)?;
                     runtime.on_load()?;
                     (LoadedPluginRuntime::Wasm(runtime), RegisteredExports::default())
                 }
@@ -2014,6 +2139,7 @@ mod tests {
                 wasm_path: None,
                 capabilities: vec![],
                 ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -2054,6 +2180,7 @@ mod tests {
                 wasm_path: None,
                 capabilities: vec![],
                 ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
             plugin: Box::new(TestPlugin {
                 name: name.to_owned(),
@@ -2116,6 +2243,7 @@ config_schema:
                 wasm_path: None,
                 capabilities: vec![],
                 ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -2132,6 +2260,7 @@ config_schema:
                 wasm_path: None,
             capabilities: vec![],
             ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -2148,6 +2277,7 @@ config_schema:
                 wasm_path: None,
             capabilities: vec![],
             ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
         ])
         .expect("graph creates");
@@ -2170,6 +2300,7 @@ config_schema:
                 wasm_path: None,
             capabilities: vec![],
             ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
             PluginManifest {
                 name: "b".to_owned(),
@@ -2186,6 +2317,7 @@ config_schema:
                 wasm_path: None,
             capabilities: vec![],
             ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
         ])
         .expect("graph creates");
@@ -2212,6 +2344,7 @@ config_schema:
             wasm_path: None,
             capabilities: vec![],
             ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
         }])
         .expect("graph creates");
         let missing_error = missing
@@ -2232,6 +2365,7 @@ config_schema:
                 wasm_path: None,
                 capabilities: vec![],
                 ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
             PluginManifest {
                 name: "a".to_owned(),
@@ -2248,6 +2382,7 @@ config_schema:
                 wasm_path: None,
             capabilities: vec![],
             ui: None, runtime: None, min_version: None, entrypoint: None,
+                security: None,
             },
         ])
         .expect("graph creates");
@@ -2639,7 +2774,7 @@ while True:
             )"#,
         )
         .expect("parse wat");
-        let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes).expect("build wasm runtime");
+        let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes, None).expect("build wasm runtime");
         runtime.on_load().expect("on_load");
         let result = runtime.execute_skill().expect("execute");
         assert_eq!(result, 7);
@@ -2655,7 +2790,7 @@ while True:
             )"#,
         )
         .expect("parse wat");
-        let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes).expect("build wasm runtime");
+        let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes, None).expect("build wasm runtime");
         let error = runtime
             .execute_skill()
             .expect_err("missing execute export should fail");

@@ -23,25 +23,9 @@ pub enum SourceMode {
     Push,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TrustLevel {
-    Trusted,
-    #[default]
-    Untrusted,
-    Sandboxed,
-}
-
-impl TrustLevel {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Trusted => "trusted",
-            Self::Untrusted => "untrusted",
-            Self::Sandboxed => "sandboxed",
-        }
-    }
-}
+// TrustLevel is now defined in kernel::types for universal access.
+// Re-export for backward compatibility.
+pub use kernel::types::TrustLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -368,6 +352,12 @@ async fn poll_loop(bus: Arc<dyn EventBus>, source: Arc<RegisteredSource>) {
 }
 
 fn attach_trust_level(mut event: Event, trust_level: TrustLevel) -> Event {
+    // Set the native trust_level field (primary mechanism — used by the
+    // event bus for enforcement).
+    event.trust_level = Some(trust_level);
+
+    // Also inject into payload for backward compatibility with consumers
+    // that read _aman_trust_level from the payload.
     let value = Value::String(trust_level.as_str().to_owned());
     if let Some(object) = event.payload.as_object_mut() {
         object.insert("_aman_trust_level".to_owned(), value);

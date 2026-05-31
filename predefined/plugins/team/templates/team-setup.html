@@ -126,6 +126,10 @@
       <label>Initial Stage <span class="hint">(the stage new work items start in)</span></label>
       <select id="initialStage"></select>
     </div>
+    <div class="form-group">
+      <label>Working Directory <span class="hint">(required — project files location)</span></label>
+      <input type="text" id="projWorkDir" placeholder="/path/to/project">
+    </div>
 
     <label style="font-size:13px;color:#aaa;margin-bottom:8px;display:block;">
       Stages
@@ -196,6 +200,9 @@ function validateStep(n) {
     }
     if (!document.getElementById("projKey").value.trim()) {
       flash("Please enter a project key", "error"); return false;
+    }
+    if (!document.getElementById("projWorkDir").value.trim()) {
+      flash("Please enter a working directory", "error"); return false;
     }
   }
   return true;
@@ -337,12 +344,14 @@ function refreshReview() {
   var teamDesc = document.getElementById("teamDesc").value.trim();
   var projName = document.getElementById("projName").value.trim();
   var projKey = document.getElementById("projKey").value.trim();
+  var projWorkDir = document.getElementById("projWorkDir").value.trim();
   var html = '<div style="background:#0f1119;border:1px solid #1e2030;border-radius:8px;padding:16px;">';
   html += '<p style="margin-bottom:8px;"><strong>Team:</strong> ' + esc(teamName || "(none)") + '</p>';
   html += '<p style="margin-bottom:8px;color:#888;font-size:12px;">' + esc(teamDesc || "") + '</p>';
   html += '<hr style="border-color:#1e2030;margin:12px 0;">';
   html += '<p style="margin-bottom:8px;"><strong>Project:</strong> ' + esc(projName || "(none)") + '</p>';
   html += '<p style="margin-bottom:8px;color:#666;font-size:12px;">Key: ' + esc(projKey || "") + '</p>';
+  html += '<p style="margin-bottom:8px;color:#666;font-size:12px;">Working Dir: ' + esc(projWorkDir || "") + '</p>';
   html += '<p style="margin-bottom:8px;color:#aaa;font-size:13px;">' + stages.length + ' stage(s): ';
   var snames = [];
   for (var i = 0; i < stages.length; i++) snames.push(stages[i].name || stages[i].id);
@@ -364,8 +373,9 @@ async function saveAll() {
   var teamCreator = document.getElementById("teamCreator").value.trim();
   var projName = document.getElementById("projName").value.trim();
   var projKey = document.getElementById("projKey").value.trim();
+  var projWorkDir = document.getElementById("projWorkDir").value.trim();
 
-  if (!teamName || !projName || !projKey) {
+  if (!teamName || !projName || !projKey || !projWorkDir) {
     flash("Please fill in all required fields", "error");
     btn.disabled = false;
     btn.textContent = "Save & Finish";
@@ -391,6 +401,7 @@ async function saveAll() {
         project_key: projKey,
         project_name: projName,
         description: "",
+        work_dir: projWorkDir,
         stages: stages,
         initial_stage: document.getElementById("initialStage").value
       })

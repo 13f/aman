@@ -1378,8 +1378,13 @@ def _handle_project_create(body: dict) -> dict:
     """Create a new project: write config.yaml, init DB, register routes, compile workflow."""
     project_key = body.get("project_key", "").strip()
     project_name = body.get("project_name", "").strip()
+    work_dir = body.get("work_dir", "").strip()
     if not project_key or not project_name:
         return _json_response({"error": "project_key and project_name are required"}, 400)
+    if not work_dir:
+        return _json_response({"error": "work_dir is required"}, 400)
+    if not os.path.isdir(work_dir):
+        return _json_response({"error": f"work_dir does not exist or is not a directory: {work_dir}"}, 400)
 
     # Validate project key format
     if not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", project_key):
@@ -1408,7 +1413,7 @@ def _handle_project_create(body: dict) -> dict:
             "max_autonomous_actions_without_human": 20,
         }),
         "context_files": body.get("context_files", []),
-        "work_dir": body.get("work_dir", os.getcwd()),
+        "work_dir": work_dir,
     }
 
     import yaml
@@ -1480,9 +1485,14 @@ def _handle_project_update(project_key: str, body: dict) -> dict:
     new_key = body.get("project_key", "").strip()
     project_name = body.get("project_name", "").strip()
     description = body.get("description", "").strip()
+    new_work_dir = body.get("work_dir", "").strip()
 
     if not project_name:
         return _json_response({"error": "project_name is required"}, 400)
+
+    if new_work_dir:
+        if not os.path.isdir(new_work_dir):
+            return _json_response({"error": f"work_dir does not exist or is not a directory: {new_work_dir}"}, 400)
 
     redirect = None
     actual_key = project_key
@@ -1531,9 +1541,11 @@ def _handle_project_update(project_key: str, body: dict) -> dict:
         redirect = f"/api/v1/team/projects/{new_key}"
         _log(f"Project renamed: {project_key} -> {new_key}")
 
-    # Update name/description in config
+    # Update name/description/work_dir in config
     config["project_name"] = project_name
     config["description"] = description
+    if new_work_dir:
+        config["work_dir"] = new_work_dir
 
     import yaml
     config_path = _project_config_path(actual_key)
@@ -1543,7 +1555,7 @@ def _handle_project_update(project_key: str, body: dict) -> dict:
         "initial_stage": config.get("initial_stage", ""),
         "safety_gates": config.get("safety_gates", {}),
         "context_files": config.get("context_files", []),
-        "work_dir": config.get("work_dir", os.getcwd()),
+        "work_dir": config.get("work_dir", ""),
     }
     with open(config_path, "w") as f:
         yaml.safe_dump(full, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -1644,6 +1656,7 @@ def _handle_list_all_projects() -> dict:
             "project_key": key,
             "project_name": config.get("project_name", key),
             "description": config.get("description", ""),
+            "work_dir": config.get("work_dir", ""),
             "stage_count": len(stages),
             "stages": [{"id": s["id"], "name": s.get("name", s["id"])} for s in stages],
         })
@@ -1760,13 +1773,15 @@ def _build_project_card(key: str, proj: dict) -> str:
     config = proj.get("config", {})
     name = _esc(config.get("project_name", key))
     desc = _esc(config.get("description", ""))
+    work_dir = _esc(config.get("work_dir", ""))
     name_js = _esc_js(name)
     desc_js = _esc_js(config.get("description", ""))
+    work_dir_js = _esc_js(work_dir)
     key_esc = _esc(key)
     return (
         f'<div class="project-card" onclick="event.target.closest(\'button\') || (window.location.href=\'/api/v1/team/projects/{key_esc}\')">'
         f'<div class="card-actions">'
-        f'<button title="Edit" onclick="event.stopPropagation();openEditModal(\'{key_esc}\',\'{name_js}\',\'{desc_js}\')">&#9998;</button>'
+        f'<button title="Edit" onclick="event.stopPropagation();openEditModal(\'{key_esc}\',\'{name_js}\',\'{desc_js}\',\'{work_dir_js}\')">&#9998;</button>'
         f'<button class="del" title="Delete" onclick="event.stopPropagation();confirmDelete(\'{key_esc}\',\'{name_js}\')">&times;</button>'
         f'</div>'
         f'<h2>{name}</h2><p>{desc}</p>'

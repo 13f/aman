@@ -136,6 +136,10 @@
       <input type="text" id="editProjKey" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9-]/g,'')">
       <div class="hint">Changing the key renames the project folder. You will be redirected to the new URL.</div>
     </div>
+    <div class="form-group">
+      <label>Working Directory</label>
+      <input type="text" id="editWorkDir" placeholder="/path/to/project">
+    </div>
     <div class="modal-actions">
       <button onclick="closeEditModal()">Cancel</button>
       <button class="primary" onclick="saveProject()">Save</button>
@@ -158,6 +162,10 @@
     <div class="form-group">
       <label>Description</label>
       <textarea id="createProjDesc" rows="2" placeholder="Optional"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Working Directory <span class="hint">(required — project files location)</span></label>
+      <input type="text" id="createWorkDir" placeholder="/path/to/project">
     </div>
     <div class="modal-actions">
       <button onclick="closeCreateModal()">Cancel</button>
@@ -248,6 +256,7 @@ function openCreateModal() {
   document.getElementById("createProjName").value = "";
   document.getElementById("createProjKey").value = "";
   document.getElementById("createProjDesc").value = "";
+  document.getElementById("createWorkDir").value = "";
   document.getElementById("createModal").classList.add("open");
   setTimeout(function(){ document.getElementById("createProjName").focus(); }, 100);
 }
@@ -260,8 +269,10 @@ async function createProject() {
   var name = document.getElementById("createProjName").value.trim();
   var key = document.getElementById("createProjKey").value.trim();
   var desc = document.getElementById("createProjDesc").value.trim();
+  var workDir = document.getElementById("createWorkDir").value.trim();
   if (!name) { flash("Project name is required", "error"); return; }
   if (!key) { flash("Project key is required", "error"); return; }
+  if (!workDir) { flash("Working directory is required", "error"); return; }
 
   try {
     var r = await fetch("/api/v1/team/projects/create", {
@@ -271,6 +282,7 @@ async function createProject() {
         project_key: key,
         project_name: name,
         description: desc,
+        work_dir: workDir,
         stages: [
           {id: "todo", name: "Todo", allowed_next: ["doing"]},
           {id: "doing", name: "Doing", allowed_next: ["done"]},
@@ -288,11 +300,12 @@ async function createProject() {
 
 // ── Project edit ──────────────────────────────────────────────
 
-function openEditModal(key, name, desc) {
+function openEditModal(key, name, desc, workDir) {
   editingProjectKey = key;
   document.getElementById("editProjName").value = name;
   document.getElementById("editProjDesc").value = desc || "";
   document.getElementById("editProjKey").value = key;
+  document.getElementById("editWorkDir").value = workDir || "";
   document.getElementById("editModal").classList.add("open");
 }
 
@@ -305,13 +318,14 @@ async function saveProject() {
   var name = document.getElementById("editProjName").value.trim();
   var desc = document.getElementById("editProjDesc").value.trim();
   var newKey = document.getElementById("editProjKey").value.trim();
+  var workDir = document.getElementById("editWorkDir").value.trim();
   if (!name || !newKey) return;
 
   try {
     var r = await fetch("/api/v1/team/projects/" + encodeURIComponent(editingProjectKey) + "/update", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({project_name: name, description: desc, project_key: newKey})
+      body: JSON.stringify({project_name: name, description: desc, project_key: newKey, work_dir: workDir})
     });
     if (!r.ok) { var e = await r.json(); throw new Error(e.error || "Save failed"); }
     var data = await r.json();

@@ -13,9 +13,9 @@ use std::sync::RwLock;
 /// chat message arrives, and read by [`ChatReplyHandler`](super::ChatReplyHandler)
 /// when an agent reply is ready to be sent back.
 ///
-/// Session IDs are deterministic (`chat:{platform}:{chat_id}`) and stable
-/// across restarts — no persistence is required (the store repopulates on
-/// the next message).
+/// Session IDs are 20-char xids (globally unique, time-sortable), generated
+/// fresh on first message per gateway run — no persistence is required
+/// (the store repopulates on the next message).
 pub struct ChatSessionStore {
     sessions: RwLock<HashMap<String, ChatTarget>>,
 }

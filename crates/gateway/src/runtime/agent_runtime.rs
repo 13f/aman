@@ -909,6 +909,7 @@ impl AgentRuntimeBuilder {
             soul_runtime: Option<SoulRuntime>,
             self_bridge: super::self_bridge::SelfBridge,
             session_manager: Arc<super::session::SessionManager>,
+            agent_registry: Arc<super::agent_registry::AgentRegistry>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for MessageReceivedHandler {
@@ -967,6 +968,33 @@ impl AgentRuntimeBuilder {
                     );
                 }
 
+                // Persist the incoming message to the session JSONL eagerly.
+                // This guards against any gap in the StoreAllEventsHandler path
+                // (e.g. race between ensure_session and StoreAllEvents dispatch)
+                // that could drop the first user message of an IM-chat session.
+                if let Some(store) = self.agent_registry.get_session_store(&agent_id).await {
+                    let entry = serde_json::json!({
+                        "event_id": event.id.to_string(),
+                        "event_type": format!("{:?}", event.event_type),
+                        "source": event.source,
+                        "timestamp_ms": event.timestamp.as_millis(),
+                        "payload": event.payload,
+                    });
+                    if let Err(e) = store.append_session_event(&session_id, &entry) {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            error = %e,
+                            "MessageReceivedHandler: failed to persist message to session JSONL"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        session_id = %session_id,
+                        "MessageReceivedHandler: no session store found for agent"
+                    );
+                }
+
                 // Build SoulSnapshot from pre-built prompt in event payload, or fall back
                 // to current soul (which includes skill instructions from the HTTP handler).
                 let soul_snapshot = event.payload.get("soul_system_prompt")
@@ -1019,6 +1047,7 @@ impl AgentRuntimeBuilder {
                 soul_runtime: soul_runtime.clone(),
                 self_bridge: self_bridge.clone(),
                 session_manager: Arc::clone(&session_manager),
+                agent_registry: Arc::clone(&agent_registry),
             }),
         ));
 
@@ -3121,7 +3150,30 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
                     "timestamp_ms": event.timestamp.as_millis(),
                     "payload": event.payload,
                 });
-                let _ = store.append_session_event(sid, &entry);
+                if let Err(e) = store.append_session_event(sid, &entry) {
+                    tracing::warn!(
+                        session_id = %sid,
+                        event_type = %format!("{:?}", event.event_type),
+                        error = %e,
+                        "StoreAllEvents: failed to append session event to JSONL"
+                    );
+                }
+            } else {
+                // No session store found — log for events that should
+                // always have a store (e.g. MessageReceived, reply_ready).
+                // This helps diagnose IM-channel session-persistence gaps.
+                let etype = format!("{:?}", event.event_type);
+                if etype.contains("MessageReceived")
+                    || etype.contains("reply_ready")
+                    || etype.contains("reply_chunk")
+                {
+                    tracing::warn!(
+                        session_id = %sid,
+                        event_type = %etype,
+                        agent_id = %agent_id.unwrap_or("?"),
+                        "StoreAllEvents: no session store found for conversation event"
+                    );
+                }
             }
         }
 

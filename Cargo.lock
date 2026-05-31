@@ -4196,6 +4196,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "xid",
 ]
 
 [[package]]
@@ -4258,7 +4259,7 @@ dependencies = [
  "teloxide",
  "tokio",
  "tracing",
- "uuid",
+ "xid",
 ]
 
 [[package]]

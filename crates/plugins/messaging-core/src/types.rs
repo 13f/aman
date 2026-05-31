@@ -85,8 +85,8 @@ pub const MESSAGE_RECEIVED_EVENT: &str = "message_received";
 /// Standard event type for agent replies ready to be sent back.
 pub const REPLY_READY_EVENT: &str = "agent:reply_ready";
 
-/// Construct the deterministic session ID for a chat platform + chat ID pair.
+/// Construct a globally-unique, time-sortable session ID (20-char xid).
 #[must_use]
-pub fn make_session_id(platform: PlatformKind, chat_id: &str) -> String {
-    format!("chat:{}:{}", platform.as_str(), chat_id)
+pub fn make_session_id(_platform: PlatformKind, _chat_id: &str) -> String {
+    xid::new().to_string()
 }

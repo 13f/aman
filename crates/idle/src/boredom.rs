@@ -151,7 +151,7 @@ impl BoredomActor {
         // and runs it through the ReAct loop — same path as "/skill name prompt".
         if let Some(ref bus) = self.global_bus {
             let run_id = format!("{:016x}", rand::random::<u64>());
-            let session_id = format!("{agent_id}:idle:{run_id}");
+            let session_id = format!("{agent_id}_idle_{run_id}");
             let event = Event::new(
                 "idle.boredom",
                 EventType::MessageReceived,

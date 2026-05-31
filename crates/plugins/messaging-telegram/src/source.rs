@@ -19,7 +19,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::UpdateKind;
-use uuid::Uuid;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -103,13 +102,13 @@ async fn message_handler(
             .await;
         return Ok(());
     }
-    // Session management: each chat gets a UUID v7 session_id.
+    // Session management: each chat gets an xid session_id (20-char, sortable).
     // `/new` forces a new session; otherwise reuse the active one.
     let is_new_session = user_text.trim() == "/new";
     let session_id = {
         let mut sessions = state.active_sessions.write().unwrap_or_else(|e| e.into_inner());
         if is_new_session || !sessions.contains_key(&chat_id_str) {
-            let id = Uuid::now_v7().to_string();
+            let id = xid::new().to_string();
             sessions.insert(chat_id_str.clone(), id.clone());
             id
         } else {
@@ -133,6 +132,7 @@ async fn message_handler(
         "text": user_text,
         SESSION_ID_KEY: session_id,
         AGENT_ID_KEY: resolution.agent_id,
+        "session_type": "chat",
         "platform": "telegram",
         "source_id": state.source_id,
         "chat_id": chat_id_str,

@@ -48,6 +48,7 @@ fn push_chat_event(
         "text": text,
         SESSION_ID_KEY: session_id,
         AGENT_ID_KEY: resolution.agent_id,
+        "session_type": "chat",
         "platform": "discord",
         "source_id": source_id,
         "chat_id": chat_id,

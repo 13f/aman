@@ -5,10 +5,10 @@
 
 use async_trait::async_trait;
 use kernel::AmanResult;
-use messaging_core::sender::MessageSender;
+use messaging_core::sender::{MessageSender, StreamHandle};
 use messaging_core::types::ChatTarget;
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, ParseMode, Recipient};
+use teloxide::types::{ChatId, MessageId, ParseMode, Recipient};
 
 /// Build a proxy-aware reqwest client for Telegram API calls.
 /// Reads the proxy URL from (in order): `ALL_PROXY`, `HTTPS_PROXY`, `https_proxy`.
@@ -124,6 +124,75 @@ impl MessageSender for TelegramSender {
             .map_err(|e| kernel::Error::Unrecoverable {
                 message: format!("telegram typing indicator failed: {e}"),
             })?;
+        Ok(())
+    }
+
+    // ── Streaming reply support ─────────────────────────────────────────
+
+    async fn begin_stream(&self, target: &ChatTarget) -> AmanResult<StreamHandle> {
+        let chat_id = parse_chat_id(&target.chat_id)
+            .map_err(|e| kernel::Error::config_invalid(e))?;
+        // Send a minimal placeholder so the user sees immediate feedback.
+        // Plain-text only — no parse_mode, to avoid unclosed-marker errors.
+        let msg = self
+            .bot
+            .send_message(Recipient::Id(chat_id), "⏳ …")
+            .await
+            .map_err(|e| kernel::Error::Unrecoverable {
+                message: format!("telegram begin_stream (placeholder) failed: {e}"),
+            })?;
+        Ok(msg.id.0.to_string())
+    }
+
+    async fn update_stream(
+        &self,
+        target: &ChatTarget,
+        handle: &str,
+        text: &str,
+        finalize: bool,
+    ) -> AmanResult<()> {
+        let chat_id = parse_chat_id(&target.chat_id)
+            .map_err(|e| kernel::Error::config_invalid(e))?;
+        let msg_id: i32 = handle
+            .parse()
+            .map_err(|e| kernel::Error::config_invalid(format!("invalid stream handle: {e}")))?;
+
+        let mut req = self
+            .bot
+            .edit_message_text(Recipient::Id(chat_id), MessageId(msg_id), text);
+
+        // Only apply MarkdownV2 on the final edit — during streaming the
+        // accumulated text may contain unclosed tokens (e.g. **bold, ```fence)
+        // that would cause a Telegram 400 parse error.
+        if finalize {
+            req = req.parse_mode(ParseMode::MarkdownV2);
+        }
+
+        req.await.map_err(|e| kernel::Error::Unrecoverable {
+            message: format!("telegram update_stream (edit) failed: {e}"),
+        })?;
+        Ok(())
+    }
+
+    async fn cancel_stream(&self, target: &ChatTarget, handle: &str) -> AmanResult<()> {
+        let chat_id = parse_chat_id(&target.chat_id)
+            .map_err(|e| kernel::Error::config_invalid(e))?;
+        let msg_id: i32 = handle
+            .parse()
+            .map_err(|e| kernel::Error::config_invalid(format!("invalid stream handle: {e}")))?;
+        // Best-effort — don't fail if the message was already deleted.
+        if let Err(e) = self
+            .bot
+            .delete_message(Recipient::Id(chat_id), MessageId(msg_id))
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                chat_id = %target.chat_id,
+                msg_id = %msg_id,
+                "telegram cancel_stream (delete) failed, ignoring"
+            );
+        }
         Ok(())
     }
 }

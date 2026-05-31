@@ -1424,10 +1424,10 @@ impl AgentHarness {
                 let _ = tx.send(event);
             }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
         }
-        // Stream events are agent-internal → publish to local bus.
-        // The AgentHarness uses self.registry (AgentRegistry) to look up
-        // the correct Local Bus for each agent. The closure captures
-        // agent_id so it can route streaming events to the right bus.
+        // Publish streaming events to the global bus so that cross-cutting
+        // subscribers (ChatReplyHandler, SSE, persistence) can see them.
+        // Also publish to the agent's local bus when one exists, for any
+        // agent-internal consumers.
         let aid = ctx.agent_id.clone();
         let sid = ctx.session_id.clone();
         let t = ctx.turn;
@@ -1458,9 +1458,12 @@ impl AgentHarness {
                         "extra": extra,
                     }),
                 );
-                match registry.get_local_bus(&aid).await {
-                    Some(ref local_bus) => { let _ = local_bus.publish(e).await; }
-                    None => { let _ = global_bus.publish(e).await; }
+                // Always publish to the global bus — IM streaming consumers
+                // (StreamingChatReplyHandler) and SSE listen here.
+                let _ = global_bus.publish(e.clone()).await;
+                // Also push to the local bus when available.
+                if let Some(ref local_bus) = registry.get_local_bus(&aid).await {
+                    let _ = local_bus.publish(e).await;
                 }
             }
         });

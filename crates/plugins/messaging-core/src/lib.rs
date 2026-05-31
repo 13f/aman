@@ -12,7 +12,7 @@ pub mod types;
 
 pub use registry::ChannelRegistry;
 pub use router::StickyAgentRouter;
-pub use sender::MessageSender;
+pub use sender::{MessageSender, StreamHandle};
 pub use session::ChatSessionStore;
 pub use types::{
     make_session_id, ChatTarget, IncomingChatMessage, OutgoingReply, PlatformKind, AGENT_ID_KEY,

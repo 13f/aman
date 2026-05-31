@@ -1099,9 +1099,16 @@ impl AgentRuntimeBuilder {
         ));
 
         // ── Subscribe agent:reply_ready → deliver replies via messaging channels ──
+        // Shared set of sessions whose reply was already delivered via
+        // StreamingChatReplyHandler — ChatReplyHandler skips them to avoid
+        // sending a duplicate message.
+        let streamed_sessions: Arc<StdMutex<std::collections::HashSet<String>>> =
+            Arc::new(StdMutex::new(std::collections::HashSet::new()));
+
         struct ChatReplyHandler {
             chat_session_store: Arc<messaging_core::ChatSessionStore>,
             channel_registry: Arc<messaging_core::ChannelRegistry>,
+            streamed_sessions: Arc<StdMutex<std::collections::HashSet<String>>>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for ChatReplyHandler {
@@ -1119,6 +1126,21 @@ impl AgentRuntimeBuilder {
 
                 if session_id.is_empty() || reply.is_empty() {
                     return Ok(());
+                }
+
+                // Skip if this session was already streamed — the final
+                // edit delivered the complete reply.
+                {
+                    let streamed = self.streamed_sessions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if streamed.contains(session_id) {
+                        tracing::debug!(
+                            session_id = %session_id,
+                            "ChatReplyHandler: skipping — reply already delivered via stream"
+                        );
+                        return Ok(());
+                    }
                 }
 
                 // Only act if this session was initiated from a chat platform.
@@ -1159,6 +1181,260 @@ impl AgentRuntimeBuilder {
             Box::new(ChatReplyHandler {
                 chat_session_store: Arc::clone(&chat_session_store),
                 channel_registry: Arc::clone(&channel_registry),
+                streamed_sessions: Arc::clone(&streamed_sessions),
+            }),
+        ));
+
+        // ── Subscribe streaming reply events → progressive message editing ──
+        //
+        // When the LLM streams its response token-by-token, this handler
+        // sends a placeholder message on start, progressively edits it with
+        // each chunk, and applies MarkdownV2 formatting on the final edit.
+        //
+        // Design rules (Telegram-specific, but trait defaults keep other
+        // platforms working):
+        //  • Plain text only during streaming — unclosed markup tokens
+        //    (e.g. `**bold`, ```fence) would cause HTTP 400 parse errors.
+        //  • MarkdownV2 only on the final update, when the text is complete.
+        //  • send_typing is called once on stream start for the typing
+        //    indicator (lasts ~5 s on Telegram).
+        struct StreamingChatReplyHandler {
+            chat_session_store: Arc<messaging_core::ChatSessionStore>,
+            channel_registry: Arc<messaging_core::ChannelRegistry>,
+            streamed_sessions: Arc<StdMutex<std::collections::HashSet<String>>>,
+            // Active streaming sessions: session_id → (handle, target, accumulated_text)
+            // Uses tokio::sync::Mutex because we must not hold a std Mutex
+            // across .await points (update_stream does an HTTP call).
+            active_streams: Mutex<
+                std::collections::HashMap<
+                    String,
+                    (messaging_core::sender::StreamHandle, messaging_core::ChatTarget, String),
+                >,
+            >,
+        }
+
+        #[async_trait::async_trait]
+        impl event_bus::EventHandler for StreamingChatReplyHandler {
+            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                let session_id = event
+                    .payload
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned();
+
+                if session_id.is_empty() {
+                    return Ok(());
+                }
+
+                let etype = match &event.event_type {
+                    EventType::Custom(s) => s.as_str(),
+                    _ => return Ok(()),
+                };
+
+                match etype {
+                    "agent:reply_stream_start" => {
+                        // Only act if this session originated from a chat platform.
+                        let Some(target) = self.chat_session_store.get(&session_id) else {
+                            return Ok(());
+                        };
+                        let Some(sender) = self.channel_registry.get(&target.source_id) else {
+                            return Ok(());
+                        };
+
+                        // Show typing indicator while the LLM warms up.
+                        if let Err(e) = sender.send_typing(&target).await {
+                            tracing::warn!(
+                                error = %e,
+                                session_id = %session_id,
+                                "StreamingChatReply: send_typing failed"
+                            );
+                        }
+
+                        // Send placeholder message, return handle.
+                        match sender.begin_stream(&target).await {
+                            Ok(handle) => {
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    handle = %handle,
+                                    "StreamingChatReply: stream started"
+                                );
+                                let mut streams = self.active_streams.lock().await;
+                                streams.insert(
+                                    session_id.clone(),
+                                    (handle, target, String::new()),
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    error = %e,
+                                    session_id = %session_id,
+                                    "StreamingChatReply: begin_stream failed"
+                                );
+                            }
+                        }
+                    }
+
+                    "agent:reply_chunk" => {
+                        let delta = event
+                            .payload
+                            .get("extra")
+                            .and_then(|v| v.get("delta"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        if delta.is_empty() {
+                            return Ok(());
+                        }
+
+                        // Extract state, update accumulated, release lock
+                        // before the HTTP call.
+                        let (handle, target, accumulated, should_update) = {
+                            let mut streams = self.active_streams.lock().await;
+                            if let Some((handle, target, accumulated)) =
+                                streams.get_mut(&session_id)
+                            {
+                                accumulated.push_str(delta);
+                                // Throttle edits: only update every N chars to
+                                // reduce flicker and API calls. Always update
+                                // early (first 32 chars) for quick feedback.
+                                let char_count = accumulated.chars().count();
+                                let should_update =
+                                    char_count <= 32 || char_count % 16 == 0;
+                                (
+                                    handle.clone(),
+                                    target.clone(),
+                                    accumulated.clone(),
+                                    should_update,
+                                )
+                            } else {
+                                return Ok(());
+                            }
+                        };
+
+                        if should_update {
+                            let Some(sender) =
+                                self.channel_registry.get(&target.source_id)
+                            else {
+                                return Ok(());
+                            };
+                            // Plain-text only — unclosed markup would 400.
+                            if let Err(e) = sender
+                                .update_stream(&target, &handle, &accumulated, false)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    session_id = %session_id,
+                                    "StreamingChatReply: update_stream (chunk) failed"
+                                );
+                            }
+                        }
+                    }
+
+                    "agent:reply_stream_done" => {
+                        // Remove from active streams, release lock, then
+                        // do the final edit outside the lock.
+                        let entry = {
+                            let mut streams = self.active_streams.lock().await;
+                            streams.remove(&session_id)
+                        };
+
+                        if let Some((handle, target, accumulated)) = entry {
+                            let sender = match self.channel_registry.get(&target.source_id) {
+                                Some(s) => s,
+                                None => return Ok(()),
+                            };
+
+                            if accumulated.is_empty() {
+                                // LLM returned no text — clean up the
+                                // placeholder (don't mark as streamed;
+                                // ChatReplyHandler may still have content).
+                                let _ = sender.cancel_stream(&target, &handle).await;
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    "StreamingChatReply: empty reply — placeholder deleted"
+                                );
+                            } else {
+                                // Final edit — safe to apply MarkdownV2 now
+                                // that the text is complete.
+                                if let Err(e) = sender
+                                    .update_stream(&target, &handle, &accumulated, true)
+                                    .await
+                                {
+                                    tracing::error!(
+                                        error = %e,
+                                        session_id = %session_id,
+                                        "StreamingChatReply: final update_stream failed"
+                                    );
+                                    // Fall back to plain text so the user
+                                    // at least sees something.
+                                    let _ = sender.send_text(&target, &accumulated).await;
+                                }
+
+                                // Mark as streamed so ChatReplyHandler
+                                // skips the duplicate send_text.
+                                {
+                                    let mut streamed = self
+                                        .streamed_sessions
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    streamed.insert(session_id.clone());
+                                }
+
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    chars = accumulated.chars().count(),
+                                    "StreamingChatReply: stream completed"
+                                );
+                            }
+                        }
+                    }
+
+                    "agent:reply_stream_error" => {
+                        let entry = {
+                            let mut streams = self.active_streams.lock().await;
+                            streams.remove(&session_id)
+                        };
+
+                        if let Some((handle, target, _accumulated)) = entry {
+                            let sender = match self.channel_registry.get(&target.source_id) {
+                                Some(s) => s,
+                                None => return Ok(()),
+                            };
+                            // Delete the placeholder so it doesn't linger.
+                            let _ = sender.cancel_stream(&target, &handle).await;
+
+                            tracing::warn!(
+                                session_id = %session_id,
+                                "StreamingChatReply: stream errored — placeholder deleted"
+                            );
+                        }
+                    }
+
+                    _ => {}
+                }
+
+                Ok(())
+            }
+        }
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![
+                    EventType::Custom("agent:reply_stream_start".to_owned()),
+                    EventType::Custom("agent:reply_chunk".to_owned()),
+                    EventType::Custom("agent:reply_stream_done".to_owned()),
+                    EventType::Custom("agent:reply_stream_error".to_owned()),
+                ]),
+                sources: None,
+                priorities: None,
+                payload_match: None,
+            },
+            Box::new(StreamingChatReplyHandler {
+                chat_session_store: Arc::clone(&chat_session_store),
+                channel_registry: Arc::clone(&channel_registry),
+                streamed_sessions: Arc::clone(&streamed_sessions),
+                active_streams: Mutex::new(std::collections::HashMap::new()),
             }),
         ));
 

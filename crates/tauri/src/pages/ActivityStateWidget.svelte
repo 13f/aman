@@ -98,6 +98,7 @@
     working:    { outer: "#f59e0b", inner: "#fbbf24" },
     studying:   { outer: "#a78bfa", inner: "#c4b5fd" },
     daily_life: { outer: "#fb923c", inner: "#fdba74" },
+    waiting:    { outer: "#f59e0b", inner: "#fbbf24" },
   };
 
   // --- derived: is the agent in an active lifecycle state? ---

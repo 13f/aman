@@ -758,8 +758,13 @@
     }
     streamingContent = "";
     agentHarnessSessions = new Set([...agentHarnessSessions, data.session_id]);
-    isLoading = false;
-    updateSessionStatus(data.session_id, "idle");
+    // Don't go idle if the LLM produced tool calls — more turns or a
+    // detached process will follow.
+    const finishReason: string = data.extra?.finish_reason ?? "";
+    if (finishReason !== "tool_calls") {
+      isLoading = false;
+      updateSessionStatus(data.session_id, "idle");
+    }
     updateSessionTitleFromMessages(data.session_id);
   }
 
@@ -1119,6 +1124,8 @@
     // Clean up detach tracking
     if (awaitingDetachSessions.has(sid)) {
       awaitingDetachSessions = new Set([...awaitingDetachSessions].filter(s => s !== sid));
+      isLoading = false;
+      updateSessionStatus(sid, "idle");
     }
     // Add a system_event showing the result
     const skillName: string = data.skill_name ?? "background task";

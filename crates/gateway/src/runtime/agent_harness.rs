@@ -795,28 +795,27 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             };
 
             if !block_on_detach {
-                // Non-blocking: record pending info and keep spawn result
+                // Non-blocking: record pending info and keep spawn result.
+                // Publish to local bus only — process_message publishes
+                // a more complete version to the global bus (with
+                // skill_name / background context).
                 pending_detach = Some((pid, result.id.clone()));
-
-                // Publish agent:awaiting_detach to BOTH global and local bus
-                let event = Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:awaiting_detach".to_owned()),
-                    json!({
-                        "agent_id": ctx.agent_id,
-                        "session_id": ctx.session_id,
-                        "tool_call_id": result.id,
-                        "tool_name": result.tool_name,
-                        "pid": pid,
-                    }),
-                );
-                // Local bus (for local subscribers)
                 let _ = self
-                    .publish_to_agent_bus(&ctx.agent_id, event.clone())
+                    .publish_to_agent_bus(
+                        &ctx.agent_id,
+                        Event::new(
+                            "agent:harness",
+                            EventType::Custom("agent:awaiting_detach".to_owned()),
+                            json!({
+                                "agent_id": ctx.agent_id,
+                                "session_id": ctx.session_id,
+                                "tool_call_id": result.id,
+                                "tool_name": result.tool_name,
+                                "pid": pid,
+                            }),
+                        ),
+                    )
                     .await;
-                // Global bus (for SSE → frontend)
-                let _ = self.bus.publish(event).await;
-
                 continue;
             }
 
@@ -1431,14 +1430,12 @@ impl AgentHarness {
         let final_reply = sanitize_api_keys(&final_reply);
 
         // 11. Publish reply event
-        let message = notification_summary(&final_reply, skill_name, background);
         let mut reply_payload = json!({
             "agent_id": agent_id,
             "session_id": session_id,
             "reply": final_reply,
             "turns_processed": ctx.turn,
             "background": background,
-            "message": message,
         });
         if let Some(sn) = skill_name {
             reply_payload["skill_name"] = json!(sn);
@@ -1829,14 +1826,12 @@ impl AgentHarness {
         self.session_history.extend(&session_id, ctx.history);
 
         // 6. Publish agent:reply_ready to global bus
-        let message = notification_summary(&final_reply, skill_name.as_deref(), background);
         let mut reply_payload = json!({
             "agent_id": agent_id,
             "session_id": session_id,
             "reply": final_reply,
             "turns_processed": ctx.turn,
             "background": background,
-            "message": message,
         });
         if let Some(ref sn) = skill_name {
             reply_payload["skill_name"] = json!(sn);
@@ -2247,29 +2242,6 @@ impl AgentHarness {
             payload,
         )).await?;
         Ok(())
-    }
-}
-
-/// Build a notification-friendly summary from the agent reply.
-///
-/// For background tasks this gives the top notification a concise
-/// one-liner; for foreground sessions it falls back to a generic label.
-fn notification_summary(reply: &str, skill_name: Option<&str>, background: bool) -> String {
-    if !background {
-        return String::new();
-    }
-    // Take the first non-empty line of the reply (up to 150 chars).
-    let first_line = reply
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("");
-    let label = skill_name.unwrap_or("background task");
-    if first_line.is_empty() {
-        format!("{label} completed")
-    } else if first_line.len() > 150 {
-        format!("{label}: {}…", &first_line[..150])
-    } else {
-        format!("{label}: {first_line}")
     }
 }
 

@@ -210,6 +210,7 @@
     chatting: "ss-chatting",
     studying: "ss-studying",
     daily_life: "ss-dailylife",
+    waiting: "ss-waiting",
   };
 
   async function selectAgent(agent: AgentEntry) {
@@ -1043,6 +1044,11 @@
     background: var(--yellow-muted);
     color: var(--yellow);
   }
+  .ss-waiting {
+    background: rgba(245, 158, 11, 0.12);
+    color: #f59e0b;
+    animation: waitingPulse 2.5s ease-in-out infinite;
+  }
   .ss-chatting {
     background: rgba(34, 211, 238, 0.12);
     color: #38dff0;
@@ -1052,6 +1058,10 @@
   @keyframes workingPulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.65; }
+  }
+  @keyframes waitingPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
   }
 
   /* State visual — emoji circle for non-idle states */

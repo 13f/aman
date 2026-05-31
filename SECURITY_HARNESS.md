@@ -155,28 +155,31 @@ security:
 
 ### 审批流程
 
-1. **首次加载**: 插件声明 `security.requested_capabilities` → CLI 打印请求的能力列表 → 用户输入 y/N → 批准的能力写入 `~/.aman/plugins/{name}/.approved-caps.yaml`
+1. **首次加载**: 插件声明 `security.requested_capabilities` → CLI 打印请求的能力列表 → 用户输入 y/N → 批准的能力写入 `~/.aman/approvals/plugin__{name}.yaml`（**插件目录之外**，沙箱插件不可访问）
 2. **后续加载**: 检查已批准的能力是否覆盖当前请求 → 若无新增能力，自动放行 → 若有新增能力，重新提示审批
 3. **版本变更**: 插件版本号变化时需要重新审批所有能力
 4. **自动审批**: 配置 `security.auto_approve_plugins: true` 可跳过交互式审批
 
-### 审批文件格式 (`.approved-caps.yaml`)
+### 防篡改签名
 
-```yaml
-plugin_version: "1.0.0"
-capabilities:
-  can_publish_events: true
-  can_network: false
-  allowed_read_paths:
-    - /tmp/my-plugin
-  allowed_write_paths:
-    - /tmp/my-plugin
-  max_memory_mb: 500
-  max_cpu_seconds: 300
-  max_events_per_second: 50.0
-approved_at_ms: 1717171200000
-approved_by: user
+每个审批文件在写入时由运行时密钥进行 BLAKE3 keyed-hash 签名。密钥在首次启动时生成并存储在 `~/.aman/.security-key`（`0o600` 权限）。
+
+- **存储位置**: `~/.aman/approvals/plugin__{name}.yaml` — 在插件目录之外，沙箱插件无法访问
+- **前缀命名**: `plugin__` 前缀防止与未来的扩展（如 hook、workflow 审批）重名
+- **签名文件内容**:
+
+```json
+{
+  "plugin_version": "1.0.0",
+  "capabilities": { ... },
+  "approved_at_ms": 1717171200000,
+  "approved_by": "user",
+  "signature": "a1b2c3d4e5f6...（64字符hex）"
+}
 ```
+
+- **加载时验签**: `ApprovalCache::load()` 重新计算签名并比对 → 不匹配则返回 `Error::SecurityViolation`，拒绝加载该插件
+- **手动篡改防护**: 即使用户或插件直接编辑 JSON 文件（例如把 `can_network` 改成 `true`），签名不匹配会被检测到并拒绝
 
 ### 审批 CLI
 

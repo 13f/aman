@@ -6,7 +6,7 @@
 
 use crate::error::{AmanResult, Error};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Capabilities requested by a plugin. Each field represents a privilege
 /// that must be explicitly approved by the operator before the plugin can
@@ -235,6 +235,11 @@ impl CapabilitySet {
 // ---------------------------------------------------------------------------
 
 /// Record of approved capabilities for a plugin, persisted to disk.
+///
+/// The payload (plugin_version + capabilities + metadata) is signed with
+/// the runtime's secret key. The signature is stored alongside the data.
+/// If the file is tampered with, the signature won't match and the
+/// approval is rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovedCapabilities {
     /// Plugin version at the time capabilities were approved.
@@ -245,64 +250,229 @@ pub struct ApprovedCapabilities {
     pub approved_at_ms: u64,
     /// Who or what granted the approval (e.g., "user", "auto", "admin").
     pub approved_by: String,
+    /// BLAKE3 keyed hash (32 bytes, hex-encoded) of the payload.
+    /// Computed as keyed_hash(secret_key, plugin_version || capabilities_json || approved_at_ms || approved_by).
+    /// Set by `ApprovalCache::save()` and verified by `ApprovalCache::load()`.
+    pub signature: String,
 }
 
-/// Manages persisted capability approvals.
+/// Manages persisted capability approvals with cryptographic integrity.
 ///
-/// Approvals are stored per-plugin at `{plugins_root}/{plugin_name}/.approved-caps.yaml`.
+/// ## Storage location
+/// Approvals are stored at `~/.aman/approvals/{plugin_name}.yaml` —
+/// **outside** any plugin's directory, so sandboxed plugins cannot
+/// modify them even with write access to their own install directory.
+///
+/// ## Integrity protection
+/// Each approval is signed with a BLAKE3 keyed hash using a runtime
+/// secret key. The key is generated once on first startup and stored
+/// at `~/.aman/.security-key` with `0o600` permissions. If a plugin
+/// or user manually edits an approval file, the signature won't match
+/// and the plugin is rejected.
 #[derive(Debug, Clone)]
 pub struct ApprovalCache {
-    root: PathBuf,
+    /// Directory where approval files are stored
+    /// (`~/.aman/approvals/`).
+    approvals_dir: PathBuf,
+    /// Secret key for HMAC signing of approval files (32 bytes).
+    secret_key: [u8; 32],
 }
 
 impl ApprovalCache {
-    /// Create a new approval cache rooted at the given plugins directory.
-    #[must_use]
-    pub fn new(plugins_root: PathBuf) -> Self {
-        Self {
-            root: plugins_root,
-        }
-    }
-
-    /// Returns the path to the approved-caps file for a given plugin.
-    fn caps_path(&self, plugin_name: &str) -> PathBuf {
-        self.root.join(plugin_name).join(".approved-caps.yaml")
-    }
-
-    /// Load previously-approved capabilities for a plugin.
-    /// Returns `None` if no approval file exists (first-time load).
-    pub fn load(&self, plugin_name: &str) -> AmanResult<Option<ApprovedCapabilities>> {
-        let path = self.caps_path(plugin_name);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let content = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&content).map(Some).map_err(|error| {
-            Error::ConfigInvalid {
-                message: format!(
-                    "corrupt approved-caps file for plugin '{}': {}",
-                    plugin_name, error
-                ),
-            }
+    /// Create a new approval cache.
+    ///
+    /// `aman_root` is the aman config directory (`~/.aman/`).
+    /// The secret key is loaded from `{aman_root}/.security-key` or
+    /// generated if it doesn't exist.
+    pub fn new(aman_root: PathBuf) -> AmanResult<Self> {
+        let approvals_dir = aman_root.join("approvals");
+        let secret_key = Self::load_or_create_key(&aman_root)?;
+        Ok(Self {
+            approvals_dir,
+            secret_key,
         })
     }
 
+    // ── Secret key management ──────────────────────────────────
+
+    /// Returns the path to the secret key file.
+    fn key_path(aman_root: &Path) -> PathBuf {
+        aman_root.join(".security-key")
+    }
+
+    /// Load the runtime secret key, or generate and persist a new one.
+    fn load_or_create_key(aman_root: &Path) -> AmanResult<[u8; 32]> {
+        let key_path = Self::key_path(aman_root);
+
+        if key_path.exists() {
+            let key_bytes = std::fs::read(&key_path)?;
+            if key_bytes.len() != 32 {
+                return Err(Error::ConfigInvalid {
+                    message: format!(
+                        "security key at {} is corrupt (expected 32 bytes, got {})",
+                        key_path.display(),
+                        key_bytes.len()
+                    ),
+                });
+            }
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&key_bytes);
+            return Ok(key);
+        }
+
+        // Generate a new random key from the OS CSPRNG
+        let mut key = [0u8; 32];
+        // Use /dev/urandom on Unix, or fall back to UUID-based entropy
+        #[cfg(unix)]
+        {
+            use std::io::Read;
+            let mut f = std::fs::File::open("/dev/urandom").map_err(|e| {
+                Error::Unrecoverable {
+                    message: format!("failed to open /dev/urandom for security key: {e}"),
+                }
+            })?;
+            f.read_exact(&mut key).map_err(|e| Error::Unrecoverable {
+                message: format!("failed to read security key from /dev/urandom: {e}"),
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            // Fallback: derive entropy from multiple UUID v7 + timestamp
+            let mut seed = Vec::new();
+            for _ in 0..4 {
+                seed.extend_from_slice(uuid::Uuid::now_v7().as_bytes());
+            }
+            let hash = blake3::hash(&seed);
+            key.copy_from_slice(&hash.as_bytes()[..32]);
+        }
+
+        // Persist with restrictive permissions
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&key_path, &key)?;
+
+        // Set permissions to owner-only (0o600)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&key_path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&key_path, perms);
+            }
+        }
+
+        tracing::info!(
+            path = %key_path.display(),
+            "generated new runtime security key"
+        );
+
+        Ok(key)
+    }
+
+    // ── Signature helpers ──────────────────────────────────────
+
+    /// Path to the approval file for a given plugin.
+    #[doc(hidden)]
+    pub fn approval_path(&self, plugin_name: &str) -> PathBuf {
+        self.approvals_dir.join(format!("plugin__{plugin_name}.yaml"))
+    }
+
+    /// Compute a keyed hash over the approval payload (everything
+    /// except the signature field itself).
+    fn compute_signature(&self, caps: &ApprovedCapabilities) -> String {
+        let mut hasher = blake3::Hasher::new_keyed(&self.secret_key);
+        hasher.update(caps.plugin_version.as_bytes());
+        hasher.update(b"\x00");
+        // Serialize capabilities deterministically for signing
+        let caps_json =
+            serde_json::to_string(&caps.capabilities).unwrap_or_default();
+        hasher.update(caps_json.as_bytes());
+        hasher.update(b"\x00");
+        hasher.update(&caps.approved_at_ms.to_le_bytes());
+        hasher.update(b"\x00");
+        hasher.update(caps.approved_by.as_bytes());
+        hasher.finalize().to_hex().to_string()
+    }
+
+    // ── Public API ─────────────────────────────────────────────
+
+    /// Load previously-approved capabilities for a plugin.
+    /// Returns `None` if no approval file exists (first-time load).
+    /// Returns an error if the signature is invalid (tampered file).
+    pub fn load(&self, plugin_name: &str) -> AmanResult<Option<ApprovedCapabilities>> {
+        let path = self.approval_path(plugin_name);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let content = std::fs::read_to_string(&path)?;
+        let caps: ApprovedCapabilities =
+            serde_json::from_str(&content).map_err(|error| {
+                Error::ConfigInvalid {
+                    message: format!(
+                        "corrupt approval file for plugin '{}': {}",
+                        plugin_name, error
+                    ),
+                }
+            })?;
+
+        // ── Verify signature ────────────────────────────────
+        let expected = self.compute_signature(&caps);
+        if caps.signature != expected {
+            tracing::error!(
+                plugin = %plugin_name,
+                path = %path.display(),
+                "approval file signature mismatch — file has been tampered with"
+            );
+            return Err(Error::SecurityViolation {
+                message: format!(
+                    "approval file for plugin '{}' has been tampered with (signature mismatch). \
+                     Delete {} and re-approve the plugin to continue.",
+                    plugin_name,
+                    path.display()
+                ),
+            });
+        }
+
+        Ok(Some(caps))
+    }
+
     /// Persist approved capabilities for a plugin.
+    ///
+    /// The signature is computed and set automatically before writing.
+    /// Callers should leave `caps.signature` empty; it will be populated.
     pub fn save(
         &self,
         plugin_name: &str,
-        caps: &ApprovedCapabilities,
+        caps: &mut ApprovedCapabilities,
     ) -> AmanResult<()> {
-        let path = self.caps_path(plugin_name);
+        // Always compute a fresh signature before persisting
+        caps.signature = self.compute_signature(caps);
+
+        let path = self.approval_path(plugin_name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+
         let content = serde_json::to_string_pretty(caps).map_err(|error| {
             Error::ConfigInvalid {
-                message: format!("failed to serialize approved-caps: {}", error),
+                message: format!("failed to serialize approval: {}", error),
             }
         })?;
-        std::fs::write(&path, &content)?;
+
+        // Write atomically: temp file then rename
+        let tmp_path = path.with_extension("tmp");
+        std::fs::write(&tmp_path, &content)?;
+        std::fs::rename(&tmp_path, &path)?;
+
+        tracing::info!(
+            plugin = %plugin_name,
+            path = %path.display(),
+            "capability approval saved with signature"
+        );
+
         Ok(())
     }
 
@@ -417,7 +587,7 @@ mod tests {
             "aman-approval-test-{}",
             uuid::Uuid::now_v7()
         ));
-        let cache = ApprovalCache::new(tmp.clone());
+        let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
         let caps = CapabilitySet {
             can_publish_events: true,
@@ -425,14 +595,15 @@ mod tests {
             ..CapabilitySet::default()
         };
 
-        let approved = ApprovedCapabilities {
+        let mut approved = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: caps.clone(),
             approved_at_ms: 1000,
             approved_by: "test".to_owned(),
+            signature: String::new(),
         };
 
-        cache.save("test-plugin", &approved).expect("save");
+        cache.save("test-plugin", &mut approved).expect("save");
         let loaded = cache.load("test-plugin").expect("load").expect("exists");
         assert_eq!(loaded.plugin_version, "1.0.0");
         assert!(loaded.capabilities.can_publish_events);
@@ -447,9 +618,9 @@ mod tests {
             "aman-approval-auto-{}",
             uuid::Uuid::now_v7()
         ));
-        let cache = ApprovalCache::new(tmp.clone());
+        let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
-        let approved = ApprovedCapabilities {
+        let mut approved = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: CapabilitySet {
                 can_publish_events: true,
@@ -458,8 +629,9 @@ mod tests {
             },
             approved_at_ms: 1000,
             approved_by: "test".to_owned(),
+            signature: String::new(),
         };
-        cache.save("test-plugin", &approved).expect("save");
+        cache.save("test-plugin", &mut approved).expect("save");
 
         // Same requested caps should auto-approve
         let requested = CapabilitySet {
@@ -482,15 +654,16 @@ mod tests {
             "aman-approval-re-{}",
             uuid::Uuid::now_v7()
         ));
-        let cache = ApprovalCache::new(tmp.clone());
+        let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
-        let approved = ApprovedCapabilities {
+        let mut approved = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: CapabilitySet::default(),
             approved_at_ms: 1000,
             approved_by: "test".to_owned(),
+            signature: String::new(),
         };
-        cache.save("test-plugin", &approved).expect("save");
+        cache.save("test-plugin", &mut approved).expect("save");
 
         let requested = CapabilitySet {
             can_network: true,
@@ -511,15 +684,16 @@ mod tests {
             "aman-approval-ver-{}",
             uuid::Uuid::now_v7()
         ));
-        let cache = ApprovalCache::new(tmp.clone());
+        let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
-        let approved = ApprovedCapabilities {
+        let mut approved = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: CapabilitySet::default(),
             approved_at_ms: 1000,
             approved_by: "test".to_owned(),
+            signature: String::new(),
         };
-        cache.save("test-plugin", &approved).expect("save");
+        cache.save("test-plugin", &mut approved).expect("save");
 
         let requested = CapabilitySet::default();
         let version = semver::Version::new(2, 0, 0);
@@ -535,12 +709,66 @@ mod tests {
     }
 
     #[test]
+    fn tampered_approval_file_is_rejected() {
+        let tmp = std::env::temp_dir().join(format!(
+            "aman-approval-tamper-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
+
+        let mut approved = ApprovedCapabilities {
+            plugin_version: "1.0.0".to_owned(),
+            capabilities: CapabilitySet {
+                can_publish_events: true,
+                max_memory_mb: 500,
+                ..CapabilitySet::default()
+            },
+            approved_at_ms: 1000,
+            approved_by: "test".to_owned(),
+            signature: String::new(),
+        };
+        cache.save("test-plugin", &mut approved).expect("save");
+
+        // Verify normal load works
+        assert!(cache.load("test-plugin").expect("load").is_some());
+
+        // Tamper: manually rewrite the file with escalated capabilities
+        // but keep the old (now invalid) signature
+        let tampered = ApprovedCapabilities {
+            plugin_version: "1.0.0".to_owned(),
+            capabilities: CapabilitySet {
+                can_publish_events: true,
+                can_network: true,              // ESCALATED: network access!
+                can_spawn_processes: true,       // ESCALATED: process spawn!
+                max_memory_mb: 99999,           // ESCALATED: unlimited memory!
+                ..CapabilitySet::default()
+            },
+            approved_at_ms: 1000,
+            approved_by: "test".to_owned(),
+            signature: approved.signature.clone(), // old signature
+        };
+
+        let path = cache.approval_path("test-plugin");
+        std::fs::write(&path, serde_json::to_string_pretty(&tampered).unwrap())
+            .expect("write tampered file");
+
+        // Load should reject due to signature mismatch
+        let err = cache.load("test-plugin").expect_err("tampered file should be rejected");
+        assert!(
+            err.to_string().contains("tampered"),
+            "error should mention tampering, got: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn first_time_load_requires_approval() {
         let tmp = std::env::temp_dir().join(format!(
             "aman-approval-first-{}",
             uuid::Uuid::now_v7()
         ));
-        let cache = ApprovalCache::new(tmp.clone());
+        let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
         let requested = CapabilitySet {
             can_publish_events: true,

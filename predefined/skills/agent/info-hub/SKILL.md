@@ -2,7 +2,6 @@
 name: info-hub
 version: "1.0.0"
 category: agent
-react_mode: direct
 description: >
   Use when the user asks about news, recent developments, articles, or information
   retrieval on any topic. Teaches the agent how to search across configured RSS feeds,
@@ -120,7 +119,13 @@ When triggered by boredom, explore freely and share discoveries conversationally
 - Share 3-5 highlights, not 20 raw results. Pick the most interesting ones
 - Be conversational — share what you found like a person browsing the web, not a report
 - **No enrichment by default** — raw results with a personal take are better
-- If nothing interesting comes up, say so and move on. Don't fabricate
+
+**Fallback when interest searches return empty:**
+When your first round of interest-based searches all come back empty, don't give up
+immediately. Fall back to a broad retrieval with an empty or generic query (e.g.
+`info_search(query: "", limit: 20)`) to get whatever is in the sources sorted by
+update time descending.  If even the broad query returns nothing, then honestly
+say nothing interesting came up and move on — don't fabricate.
 
 **Example idle output:**
 
@@ -141,7 +146,7 @@ When triggered by boredom, explore freely and share discoveries conversationally
 4. **Setting `min_score` too high.** No results at 20? Lower to 10. Default is 0
 5. **Over-enriching idle discoveries.** Don't run the full pipeline when browsing; enrich only if the user asks to drill deeper
 6. **Searching the same topics every idle run.** Rotate your interests — the `idle_prompts` suggest different angles for a reason
-7. **Not handling empty results.** If `info_search` returns `[]`, suggest different keywords. The user may not have configured sources — point them to `~/.aman/config.yaml` under the `info_hub` key
+7. **Not handling empty results.** If the first round of `info_search` returns `[]`, fall back to a broad query (`info_search(query: "", limit: 20)`) to pull whatever is in the sources by recency. If that also returns empty, the user may not have configured sources — point them to `~/.aman/config.yaml` under the `info_hub` key
 
 ## Verification Checklist
 
@@ -151,4 +156,4 @@ When triggered by boredom, explore freely and share discoveries conversationally
 - [ ] Added `index` field to articles before passing to enrichment tools
 - [ ] Used `min_score` filter when summarizing (default 15, adjust if needed)
 - [ ] In idle mode: shared 3-5 highlights conversationally, didn't over-enrich
-- [ ] Did not fabricate results when search returned empty
+- [ ] If all searches returned empty (including fallback broad query), honestly said so without fabricating

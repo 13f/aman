@@ -12,8 +12,6 @@ min_version: "3.2"
 # hooks under ~/.aman/hooks/ instead.
 on:
   - session:started
-  - agent:busy
-  - tool:completed
   - tool:failed
-  - llm:call_started
+  - session:closed
 runtime: bash

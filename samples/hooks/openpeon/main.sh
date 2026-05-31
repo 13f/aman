@@ -19,8 +19,10 @@ case "$EVENT_TYPE" in
   *)                               exit 0 ;;
 esac
 
-# pack 优先级：环境变量 > 配置参数（通过 stdin payload 传入）> 默认
-PACK="${OPENPEON_PACK:-peon}"
+# pack 优先级：环境变量 > config.yaml > 默认
+CONFIG_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_PACK=$(grep '^pack:' "$CONFIG_DIR/config.yaml" 2>/dev/null | awk '{print $2}' || true)
+PACK="${OPENPEON_PACK:-${CONFIG_PACK:-peon}}"
 OPENPEON_DIR="${OPENPEON_DIR:-$HOME/.openpeon}"
 PACK_FILE="$OPENPEON_DIR/packs/$PACK/openpeon.json"
 

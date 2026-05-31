@@ -15,7 +15,7 @@ use teloxide::types::{ChatId, ParseMode, Recipient};
 #[must_use]
 pub fn build_telegram_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
-    if let Some(proxy_url) = detect_proxy_url() {
+    if let Some(proxy_url) = kernel::proxy::detect_proxy_url() {
         match reqwest::Proxy::all(&proxy_url) {
             Ok(proxy) => {
                 tracing::info!(%proxy_url, "telegram: using proxy");
@@ -29,25 +29,6 @@ pub fn build_telegram_client() -> reqwest::Client {
         tracing::info!("telegram: no proxy configured (ALL_PROXY/HTTPS_PROXY not set)");
     }
     builder.build().expect("build telegram reqwest client")
-}
-
-/// Detect proxy URL from environment variables.
-/// Converts `socks5://` to `socks5h://` so DNS is resolved by the proxy
-/// (required for `api.telegram.org` behind GFW).
-fn detect_proxy_url() -> Option<String> {
-    std::env::var("ALL_PROXY")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HTTPS_PROXY").ok().filter(|s| !s.is_empty()))
-        .or_else(|| std::env::var("https_proxy").ok().filter(|s| !s.is_empty()))
-        .map(|url| {
-            // reqwest: socks5:// = local DNS, socks5h:// = remote DNS
-            if url.starts_with("socks5://") && !url.starts_with("socks5h://") {
-                url.replacen("socks5://", "socks5h://", 1)
-            } else {
-                url
-            }
-        })
 }
 
 /// Build a teloxide [`Bot`] using the proxy-aware client.

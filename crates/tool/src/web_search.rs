@@ -198,15 +198,23 @@ async fn execute_search(backend: &str, query: &str, count: usize) -> Value {
 
 /// Build a shared async HTTP client (15s timeout).
 ///
-/// Proxy is controlled via the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
-/// environment variables. Set `ALL_PROXY=socks5h://…` (not `socks5://` — the `h`
-/// variant resolves DNS on the proxy side) to route all search requests through a
-/// SOCKS5 proxy.
+/// Proxy is detected from `ALL_PROXY` / `HTTPS_PROXY` / `https_proxy` and
+/// `socks5://` is automatically upgraded to `socks5h://` (remote DNS) via
+/// [`kernel::proxy::detect_proxy_url`].
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .expect("reqwest async client")
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(proxy_url) = kernel::proxy::detect_proxy_url() {
+        match reqwest::Proxy::all(&proxy_url) {
+            Ok(proxy) => {
+                builder = builder.proxy(proxy);
+            }
+            Err(e) => {
+                tracing::warn!(%proxy_url, error = %e, "web_search: invalid proxy URL, connecting directly");
+            }
+        }
+    }
+    builder.build().expect("reqwest async client")
 }
 
 // ── Tavily ──────────────────────────────────────────────────────────────────

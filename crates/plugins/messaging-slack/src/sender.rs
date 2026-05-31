@@ -11,27 +11,12 @@ use messaging_core::types::ChatTarget;
 #[must_use]
 pub fn build_proxy_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
-    if let Some(proxy_url) = detect_proxy_url() {
+    if let Some(proxy_url) = kernel::proxy::detect_proxy_url() {
         if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
             builder = builder.proxy(proxy);
         }
     }
     builder.build().expect("build slack reqwest client")
-}
-
-fn detect_proxy_url() -> Option<String> {
-    std::env::var("ALL_PROXY")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HTTPS_PROXY").ok().filter(|s| !s.is_empty()))
-        .or_else(|| std::env::var("https_proxy").ok().filter(|s| !s.is_empty()))
-        .map(|url| {
-            if url.starts_with("socks5://") && !url.starts_with("socks5h://") {
-                url.replacen("socks5://", "socks5h://", 1)
-            } else {
-                url
-            }
-        })
 }
 
 /// Sends messages back to Slack via the Web API.

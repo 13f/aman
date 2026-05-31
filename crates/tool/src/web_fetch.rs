@@ -14,16 +14,10 @@
 //!
 //! ## Proxy
 //!
-//! The underlying HTTP client respects the standard `HTTP_PROXY` / `HTTPS_PROXY` /
-//! `ALL_PROXY` environment variables. To route fetch requests through a SOCKS5
-//! proxy with remote DNS resolution (recommended), set:
-//!
-//! ```bash
-//! export ALL_PROXY=socks5h://127.0.0.1:1080
-//! ```
-//!
-//! Use `socks5h://` (not `socks5://`) — the `h` variant resolves DNS on the
-//! proxy side, which avoids DNS leaks and works correctly in split-tunnel setups.
+//! The underlying HTTP client reads `ALL_PROXY` / `HTTPS_PROXY` / `https_proxy`
+//! and automatically converts `socks5://` to `socks5h://` so DNS is resolved by
+//! the proxy. Both `socks5://` and `socks5h://` work — just set your usual env
+//! var and the conversion is handled transparently.
 
 use async_trait::async_trait;
 use kernel::context::ToolContext;
@@ -218,15 +212,23 @@ impl Tool for WebFetchTool {
 
 /// Build a shared async HTTP client (30s timeout).
 ///
-/// Proxy is controlled via the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
-/// environment variables. Set `ALL_PROXY=socks5h://…` (not `socks5://` — the `h`
-/// variant resolves DNS on the proxy side) to route all fetch requests through a
-/// SOCKS5 proxy.
+/// Proxy is detected from `ALL_PROXY` / `HTTPS_PROXY` / `https_proxy` and
+/// `socks5://` is automatically upgraded to `socks5h://` (remote DNS) via
+/// [`kernel::proxy::detect_proxy_url`].
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .expect("reqwest async client")
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30));
+    if let Some(proxy_url) = kernel::proxy::detect_proxy_url() {
+        match reqwest::Proxy::all(&proxy_url) {
+            Ok(proxy) => {
+                builder = builder.proxy(proxy);
+            }
+            Err(e) => {
+                tracing::warn!(%proxy_url, error = %e, "web_fetch: invalid proxy URL, connecting directly");
+            }
+        }
+    }
+    builder.build().expect("reqwest async client")
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

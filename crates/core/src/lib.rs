@@ -34,6 +34,7 @@ pub mod hook;
 pub mod pipeline;
 pub mod plugin;
 pub mod prelude;
+pub mod proxy;
 pub mod react;
 pub mod retry;
 pub mod schema;

@@ -88,20 +88,22 @@ pub async fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeCon
     })
 }
 
-/// Find the workspace root by searching upward for a Cargo.toml containing `[workspace]`.
-fn find_workspace_root() -> Result<std::path::PathBuf, String> {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for ancestor in manifest_dir.ancestors() {
-        let candidate = ancestor.join("Cargo.toml");
-        if candidate.exists() {
-            let content = std::fs::read_to_string(&candidate)
-                .map_err(|e| format!("read {candidate:?}: {e}"))?;
-            if content.contains("[workspace]") {
-                return Ok(ancestor.to_owned());
-            }
-        }
+/// Path to the installed gateway binary.
+fn gateway_bin_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
+    let path = std::path::PathBuf::from(&home).join(".aman").join("bin").join("gateway");
+    if path.exists() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "Gateway binary not found at {}\n\n\
+            Build and install it first:\n  \
+            cargo build --release -p gateway\n  \
+            mkdir -p ~/.aman/bin\n  \
+            cp target/release/gateway ~/.aman/bin/gateway",
+            path.display()
+        ))
     }
-    Err("Cannot find workspace root (no Cargo.toml with [workspace] found)".to_owned())
 }
 
 #[tauri::command]
@@ -117,25 +119,33 @@ pub async fn start_runtime(
         }
     }
 
-    let project_root = find_workspace_root()?;
+    // If a gateway is already running (e.g. started manually via CLI), just
+    // connect to it without spawning a second process.
+    let client = GatewayClient::new(&gateway_url);
+    if client.health().await.is_ok() {
+        let mut guard = state.gateway_client.lock().await;
+        *guard = Some(client);
+        // gateway_process stays None — we don't own this process, so we
+        // won't kill it on shutdown.
+        return Ok(format!("Connected to already-running gateway at {gateway_url}"));
+    }
 
-    // Spawn `cargo run --bin gateway` from the workspace root
-    let mut child = tokio::process::Command::new("cargo")
-        .args(["run", "--bin", "gateway"])
-        .current_dir(&project_root)
+    let bin_path = gateway_bin_path()?;
+
+    // Spawn the installed gateway binary
+    let mut child = tokio::process::Command::new(&bin_path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("Failed to spawn gateway process: {e}"))?;
+        .map_err(|e| format!("Failed to spawn gateway at {}: {e}", bin_path.display()))?;
 
     // Poll health endpoint until the gateway is ready (up to 120 s)
-    let client = GatewayClient::new(&gateway_url);
     let max_retries = 120u32;
     let mut last_err = String::new();
 
     for _ in 0..max_retries {
-        // Detect premature exit (e.g. cargo build failure)
+        // Detect premature exit
         if let Ok(Some(status)) = child.try_wait() {
             use tokio::io::AsyncReadExt;
             let stderr = match child.stderr.take() {

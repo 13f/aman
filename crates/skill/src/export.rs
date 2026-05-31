@@ -16,7 +16,7 @@
 use std::path::Path;
 
 use crate::skm_adapter::SkmRegistry;
-use crate::{ReactMode, SkillInfo};
+use crate::SkillInfo;
 
 // ---------------------------------------------------------------------------
 // Types

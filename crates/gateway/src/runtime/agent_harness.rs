@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
+use kernel::interrupt::InterruptFlag;
 use context_manager::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest};
@@ -16,7 +16,7 @@ use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
     SoulSnapshot, StreamEvent, ToolDescriptor,
 };
-use kernel::types::ExecutionModel;
+use kernel::types::{ExecutionModel, SourceId};
 use kernel::router::AgentRouter;
 use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
@@ -40,35 +40,6 @@ impl AgentRouter for FirstEnabledAgentRouter {
     }
 }
 
-/// Thread-safe flag for interrupting the ReAct loop.
-#[derive(Debug, Default)]
-pub struct InterruptFlag {
-    interrupted: AtomicBool,
-}
-
-impl InterruptFlag {
-    pub fn new() -> Self {
-        Self {
-            interrupted: AtomicBool::new(false),
-        }
-    }
-
-    /// Signal interruption.
-    pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::Release);
-    }
-
-    /// Check if interruption was signaled.
-    pub fn is_interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
-    }
-
-    /// Reset the flag.
-    pub fn reset(&self) {
-        self.interrupted.store(false, Ordering::Release);
-    }
-}
-
 /// Outcome of the ReAct loop.
 #[derive(Debug)]
 pub enum ReactOutcome {
@@ -77,6 +48,108 @@ pub enum ReactOutcome {
     /// Loop was interrupted (user /stop), partial content if any.
     Interrupted(String),
 }
+
+// ── Detached process helpers ──────────────────────────────────────────────
+
+/// Captures the completion event from a detached process monitor thread.
+///
+/// The monitor publishes `tool:completed` (source `tool:detached`) when the
+/// child process exits. This struct subscribes to that event on the agent's
+/// local bus and provides a `wait()` method that blocks until the event
+/// arrives or the caller is interrupted.
+struct DetachCapture {
+    result: Arc<Mutex<Option<Event>>>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl DetachCapture {
+    fn new() -> Self {
+        Self {
+            result: Arc::new(Mutex::new(None)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    /// Wait for the completion event, polling the interrupt flag every 200 ms.
+    async fn wait(&self, interrupt_flag: Option<&InterruptFlag>, _pid: u32) -> Option<Event> {
+        loop {
+            // Check interrupt first
+            if let Some(flag) = interrupt_flag
+                && flag.is_interrupted()
+            {
+                return None;
+            }
+
+            // Check if result has arrived
+            {
+                let mut guard = self
+                    .result
+                    .lock()
+                    .expect("DetachCapture lock poisoned");
+                if let Some(event) = guard.take() {
+                    return Some(event);
+                }
+            }
+
+            // Wait with timeout so we can poll the interrupt flag
+            tokio::select! {
+                _ = self.notify.notified() => {
+                    // Woken — loop back to check result
+                    continue;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    // Timeout — loop back to check interrupt
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+/// Event handler that captures a `tool:completed` event in a `DetachCapture`.
+///
+/// Uses `Arc` for the shared state because `EventHandler` requires `'static`.
+struct DetachEventHandler {
+    result: Arc<Mutex<Option<Event>>>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl DetachEventHandler {
+    fn new(capture: &DetachCapture) -> Self {
+        Self {
+            result: Arc::clone(&capture.result),
+            notify: Arc::clone(&capture.notify),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl event_bus::EventHandler for DetachEventHandler {
+    async fn handle(&self, event: Event) -> kernel::AmanResult<()> {
+        let mut guard = self.result.lock().expect("DetachEventHandler lock poisoned");
+        *guard = Some(event);
+        self.notify.notify_one();
+        Ok(())
+    }
+}
+
+/// Kill a process by PID. SIGTERM first, then SIGKILL if it doesn't exit.
+fn kill_process(pid: u32) {
+    let pid_str = pid.to_string();
+    // SIGTERM
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(&pid_str)
+        .status();
+    // Brief wait, then SIGKILL
+    std::thread::sleep(Duration::from_millis(500));
+    let _ = std::process::Command::new("kill")
+        .arg("-KILL")
+        .arg(&pid_str)
+        .status();
+}
+
+// ── ToolExecutor ──────────────────────────────────────────────────────────
 
 /// Wraps tool execution with permission checks and event publishing.
 pub struct ToolExecutor {
@@ -87,6 +160,8 @@ pub struct ToolExecutor {
     security_config: Option<ToolSecurityConfig>,
     /// Per-tool timeout (ms), sourced from `runtime.tool_timeout_sec` config.
     tool_timeout_ms: u64,
+    /// Optional interrupt flag for interrupting detached process execution.
+    interrupt_flag: Option<Arc<InterruptFlag>>,
 }
 
 impl ToolExecutor {
@@ -102,6 +177,7 @@ impl ToolExecutor {
             bus,
             security_config: None,
             tool_timeout_ms,
+            interrupt_flag: None,
         }
     }
 
@@ -110,6 +186,13 @@ impl ToolExecutor {
     #[allow(dead_code)]
     pub fn with_security_config(mut self, config: ToolSecurityConfig) -> Self {
         self.security_config = Some(config);
+        self
+    }
+
+    /// Set an interrupt flag for cancelling long-running tool operations.
+    #[must_use]
+    pub fn with_interrupt_flag(mut self, flag: Arc<InterruptFlag>) -> Self {
+        self.interrupt_flag = Some(flag);
         self
     }
 
@@ -253,23 +336,117 @@ impl ToolExecutor {
 
                     let mut ctx = kernel::context::ToolContext::default();
                     ctx.base.timeout_ms = Some(self.tool_timeout_ms);
-                    // Wire the agent's local event bus (or global fallback) so
-                    // tools can publish progress/completion events (e.g. exec
-                    // in detach mode).
-                    {
-                        let bus: Arc<dyn EventBus> = self
-                            .agent_registry
-                            .get_local_bus(agent_id)
-                            .await
-                            .unwrap_or_else(|| Arc::clone(&self.bus));
-                        ctx.base.event_bus =
-                            Some(Arc::new(event_bus::BusEventPublisher::new(bus)));
-                    }
+                    // Get the monitor bus before executing so we can
+                    // subscribe to detach completion events after the tool
+                    // returns.
+                    let monitor_bus: Arc<dyn EventBus> = self
+                        .agent_registry
+                        .get_local_bus(agent_id)
+                        .await
+                        .unwrap_or_else(|| Arc::clone(&self.bus));
+                    ctx.base.event_bus =
+                        Some(Arc::new(event_bus::BusEventPublisher::new(
+                            Arc::clone(&monitor_bus),
+                        )));
                     ctx.base
                         .extensions
                         .insert("agent_id".to_owned(), serde_json::json!(agent_id));
                     match t.execute(call.args.clone(), ctx).await {
-                        Ok(value) => (true, value.to_string()),
+                        Ok(value) => {
+                            // Detect detach results — the exec tool returns
+                            // {ok, pid, detached:true} immediately when
+                            // spawning a background process. We must wait
+                            // for the real completion instead of returning
+                            // the spawn result to the LLM.
+                            let is_detach = value
+                                .get("detached")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            if is_detach {
+                                let pid = value
+                                    .get("pid")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0) as u32;
+
+                                // Subscribe to the monitor's completion
+                                // event on the agent's local bus.
+                                let capture = Arc::new(DetachCapture::new());
+                                let sub_filter = event_bus::SubscriptionFilter {
+                                    event_types: Some(vec![
+                                        EventType::Custom("tool:completed".to_owned()),
+                                    ]),
+                                    sources: Some(vec![
+                                        SourceId::from("tool:detached"),
+                                    ]),
+                                    ..Default::default()
+                                };
+                                let sub_id = match monitor_bus
+                                    .subscribe(sub_filter, Box::new(DetachEventHandler::new(&capture)))
+                                    .await
+                                {
+                                    Ok(id) => id,
+                                    Err(e) => {
+                                        // Degrade: return spawn result as-is
+                                        tracing::warn!(
+                                            %pid,
+                                            error = %e,
+                                            "failed to subscribe for detach completion; returning spawn result"
+                                        );
+                                        return react::ToolCallResult {
+                                            id: tool_id,
+                                            tool_name,
+                                            success: true,
+                                            output: value.to_string(),
+                                            duration_ms: start.elapsed().as_millis() as u64,
+                                        };
+                                    }
+                                };
+
+                                // Wait for process exit or interrupt
+                                let result_event = capture
+                                    .wait(self.interrupt_flag.as_deref(), pid)
+                                    .await;
+
+                                // Clean up subscription
+                                monitor_bus.unsubscribe(sub_id).await;
+
+                                match result_event {
+                                    Some(event) => {
+                                        let p = &event.payload;
+                                        let real_success =
+                                            p["success"].as_bool().unwrap_or(false);
+                                        let exit_code =
+                                            p["exit_code"].as_i64().unwrap_or(-1);
+                                        let stdout =
+                                            p["stdout"].as_str().unwrap_or("");
+                                        let stderr =
+                                            p["stderr"].as_str().unwrap_or("");
+
+                                        let output = if real_success {
+                                            format!(
+                                                "Process exited with code {exit_code}\nstdout:\n{stdout}"
+                                            )
+                                        } else {
+                                            format!(
+                                                "Process exited with code {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                                            )
+                                        };
+                                        (real_success, output)
+                                    }
+                                    None => {
+                                        // Interrupted — kill the process
+                                        kill_process(pid);
+                                        (
+                                            false,
+                                            format!("Process (PID {pid}) was interrupted and terminated"),
+                                        )
+                                    }
+                                }
+                            } else {
+                                // Normal (non-detach) result
+                                (true, value.to_string())
+                            }
+                        }
                         Err(e) => (false, format!("tool error: {e}")),
                     }
                 }
@@ -542,12 +719,17 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         ctx: &ReActContext,
         calls: &[ParsedToolCall],
     ) -> Result<Vec<ChatMessage>, kernel::react::ReActError> {
-        let executor = Arc::new(ToolExecutor::new(
+        let mut executor_builder = ToolExecutor::new(
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.agent_registry),
             Arc::clone(&self.bus),
             self.tool_timeout_ms,
-        ));
+        );
+        // Pass interrupt flag so detached processes can be cancelled
+        if let Some(ref flag) = ctx.interrupt_flag {
+            executor_builder = executor_builder.with_interrupt_flag(Arc::clone(flag));
+        }
+        let executor = Arc::new(executor_builder);
 
         const TOOL_MAX_RETRIES: u32 = 3;
         const TOOL_RETRY_DELAY_SECS: u64 = 1;
@@ -1027,6 +1209,9 @@ impl AgentHarness {
         // M6: Register interrupt flag for this session
         let interrupt_flag = Arc::new(InterruptFlag::new());
         self.register_interrupt(session_id, Arc::clone(&interrupt_flag));
+        // Also attach to ReActContext so tool executors can cancel
+        // long-running detached processes on /stop.
+        ctx.interrupt_flag = Some(Arc::clone(&interrupt_flag));
 
         // 8. Execute ReAct loop with token budget management
         let result = self

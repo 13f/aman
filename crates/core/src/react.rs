@@ -243,6 +243,9 @@ pub struct ReActContext {
     /// When set, the ReAct engine will call this with `StreamEvent::Chunk`
     /// as each delta arrives from the LLM, enabling real-time output.
     pub stream_cb: Option<Arc<dyn Fn(StreamEvent) + Send + Sync>>,
+    /// Optional interrupt flag, set by the harness to cancel long-running
+    /// operations (e.g. detached process execution).
+    pub interrupt_flag: Option<Arc<crate::interrupt::InterruptFlag>>,
 }
 
 impl std::fmt::Debug for ReActContext {
@@ -289,6 +292,7 @@ impl ReActContext {
             token_budget: TokenBudget::with_output_limit(token_limit, max_output_tokens),
             model: model.into(),
             stream_cb: None,
+            interrupt_flag: None,
         }
     }
 }

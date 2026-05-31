@@ -31,6 +31,7 @@ pub mod security;
 pub mod session_history;
 pub mod validator;
 pub mod hook;
+pub mod interrupt;
 pub mod pipeline;
 pub mod plugin;
 pub mod prelude;

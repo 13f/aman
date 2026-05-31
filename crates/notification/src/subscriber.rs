@@ -217,11 +217,17 @@ impl NotificationSubscriber {
                             ),
                         );
                     } else {
+                        let body = event
+                            .payload
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("Completed");
                         self.store.push(
                             Notification::info(
                                 Category::Idle,
                                 format!("{agent_id} finished {skill_name}"),
-                                format!("Completed in {turns} turns"),
+                                body,
                             ),
                         );
                     }

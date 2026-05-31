@@ -121,13 +121,32 @@ aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
 
 #### exec — 执行 Shell 命令
 
+**同步模式（默认）：**
+
 ```json
 {
   "command": "ls",
   "args": ["-la", "/tmp"]
 }
 ```
-通过 `SubprocessSandbox` 沙箱执行，有超时保护。高危命令（`rm -rf /`、fork 炸弹、关机等）被硬性拦截。
+通过 `SubprocessSandbox` 沙箱执行，有超时保护。超时由 `runtime.tool_timeout_sec` 配置（默认 60s）。
+高危命令（`rm -rf /`、fork 炸弹、关机等）被硬性拦截。
+
+当 LLM 错误地将完整命令行传入 `command` 字段（如 `"/usr/bin/env python3 -c '...'"`），
+工具会自动拆分为 command + args 并剥离 `/usr/bin/env` 前缀。
+
+**detach 模式（长时间运行脚本）：**
+
+```json
+{
+  "command": "python3",
+  "args": ["scripts/luck.py", "--duration", "5~10"],
+  "detach": true
+}
+```
+`detach: true` 时立即返回 `{"ok": true, "pid": <number>, "detached": true}`，不等待进程结束。
+进程的 stdout/stderr 通过事件总线以 `tool:progress` 事件流式推送，
+进程退出后发送 `tool:completed` 事件（含 exit_code 和完整输出）。
 
 #### http — HTTP 请求
 

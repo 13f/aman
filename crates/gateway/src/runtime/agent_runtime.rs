@@ -192,6 +192,7 @@ impl AgentRuntimeBuilder {
         // Extract self-module config before self.config is consumed.
         let self_module_config = config.self_module.clone();
         let predefined_dir = self.predefined_dir.clone();
+        let tool_timeout_ms = config.runtime.tool_timeout_sec * 1000;
 
         let inflight_pipelines = Arc::new(AtomicUsize::new(0));
         let inflight_skills = Arc::new(AtomicUsize::new(0));
@@ -710,6 +711,7 @@ impl AgentRuntimeBuilder {
             Box::new(context_manager::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
             compressor_config,
+            tool_timeout_ms,
         ));
 
         // ── Session manager ──────────────────────────────────────────

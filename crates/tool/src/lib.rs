@@ -16,6 +16,8 @@ pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 
 use kernel::context::ToolContext;
+use kernel::event::{Event, EventType};
+use kernel::hook::EventPublisher;
 use kernel::schema::JsonSchema;
 use kernel::tool::Tool;
 use kernel::types::{ExecutionModel, ToolMode};
@@ -24,9 +26,11 @@ use rusqlite::types::{Value as SqlValue, ValueRef as SqlValueRef};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -631,12 +635,228 @@ pub trait WasmToolAdapter: Send + Sync {
     ) -> AmanResult<Value>;
 }
 
+/// When LLMs mistakenly pass the entire command line as `command` (e.g.
+/// `"/usr/bin/env python3 -c '...'"`), split it into the real executable
+/// and arguments. Also strips the `/usr/bin/env` prefix when present.
+fn normalize_exec_command(raw_command: &str, args: &[String]) -> (String, Vec<String>) {
+    // Only auto-split when the LLM clearly passed a compound command and no
+    // explicit args were provided — never override an explicit args list.
+    if !args.is_empty() || !raw_command.contains(char::is_whitespace) {
+        return (raw_command.to_owned(), args.to_vec());
+    }
+
+    let words = shell_split(raw_command);
+    let mut words_iter = words.into_iter();
+
+    let first = match words_iter.next() {
+        Some(w) => w,
+        None => return (raw_command.to_owned(), args.to_vec()),
+    };
+
+    // Strip `/usr/bin/env` (or bare `env`) — the LLM often prepends it out
+    // of habit, but `execvp` doesn't need an explicit env resolver.
+    let cmd = if first == "/usr/bin/env" || first == "env" {
+        match words_iter.next() {
+            Some(real) => real,
+            None => return (first, Vec::new()),
+        }
+    } else {
+        first
+    };
+
+    let extra_args: Vec<String> = words_iter.collect();
+    (cmd, extra_args)
+}
+
+/// Minimal shell-like word splitter. Handles single quotes, double quotes,
+/// and backslash escapes within double quotes. This covers the most common
+/// patterns LLMs produce when they pass a full command line as `command`.
+fn shell_split(input: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = input.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '\\' if in_double => {
+                // Backslash only escapes special chars inside double quotes.
+                if let Some(&next) = chars.peek() {
+                    if matches!(next, '"' | '\\' | '$' | '`') {
+                        current.push(chars.next().unwrap());
+                        continue;
+                    }
+                }
+                current.push(ch);
+            }
+            ch if ch.is_whitespace() && !in_single && !in_double => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
 struct ExecTool;
+
+/// Background monitor for a detached child process.
+///
+/// Reads stdout/stderr line-by-line, publishes `tool:progress` events, then
+/// publishes a final `tool:completed` or `tool:failed` event when the process
+/// exits. The calling thread blocks until the child exits — call this from a
+/// dedicated `std::thread` so the tool response can return immediately.
+fn monitor_detached_process(
+    mut child: std::process::Child,
+    stdout: Option<std::process::ChildStdout>,
+    stderr: Option<std::process::ChildStderr>,
+    bus: Arc<dyn EventPublisher>,
+    pid: u32,
+    tool_name: String,
+    runtime: tokio::runtime::Handle,
+) {
+    // ── Reader threads ───────────────────────────────────────────────
+    let (line_tx, line_rx) = mpsc::channel::<DetachedLine>();
+
+    // stdout reader
+    if let Some(out) = stdout {
+        let tx = line_tx.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(out);
+            for line in reader.lines() {
+                match line {
+                    Ok(text) => {
+                        if tx.send(DetachedLine::Stdout(text)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    // stderr reader
+    if let Some(err) = stderr {
+        let tx = line_tx.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(err);
+            for line in reader.lines() {
+                match line {
+                    Ok(text) => {
+                        if tx.send(DetachedLine::Stderr(text)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    // Drop the original sender so the channel closes when all readers finish.
+    drop(line_tx);
+
+    // ── Accumulate output, publish progress, wait for exit ──────────
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+
+    loop {
+        // Check if child exited
+        if let Ok(Some(status)) = child.try_wait() {
+            // Drain remaining lines
+            for line in line_rx.try_iter() {
+                match line {
+                    DetachedLine::Stdout(t) => {
+                        stdout_buf.push_str(&t);
+                        stdout_buf.push('\n');
+                    }
+                    DetachedLine::Stderr(t) => {
+                        stderr_buf.push_str(&t);
+                        stderr_buf.push('\n');
+                    }
+                }
+            }
+
+            let exit_code = status.code().unwrap_or(-1);
+            let success = status.success();
+
+            let _ = runtime.block_on(bus.publish(Event::new(
+                "tool:detached",
+                EventType::Custom("tool:completed".to_owned()),
+                json!({
+                    "tool_name": tool_name,
+                    "pid": pid,
+                    "success": success,
+                    "exit_code": exit_code,
+                    "stdout": stdout_buf,
+                    "stderr": stderr_buf,
+                }),
+            )));
+            return;
+        }
+
+        // Publish progress lines
+        for line in line_rx.try_iter() {
+            let (stream, text) = match line {
+                DetachedLine::Stdout(t) => {
+                    stdout_buf.push_str(&t);
+                    stdout_buf.push('\n');
+                    ("stdout", t)
+                }
+                DetachedLine::Stderr(t) => {
+                    stderr_buf.push_str(&t);
+                    stderr_buf.push('\n');
+                    ("stderr", t)
+                }
+            };
+
+            let _ = runtime.block_on(bus.publish(Event::new(
+                "tool:detached",
+                EventType::Custom("tool:progress".to_owned()),
+                json!({
+                    "tool_name": tool_name,
+                    "pid": pid,
+                    "stream": stream,
+                    "line": text,
+                }),
+            )));
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+enum DetachedLine {
+    Stdout(String),
+    Stderr(String),
+}
 
 #[async_trait::async_trait]
 impl Tool for ExecTool {
     fn name(&self) -> &str {
         "exec"
+    }
+
+    fn description(&self) -> &str {
+        concat!(
+            "Execute a command in a sandboxed subprocess. ",
+            "Use `detach: true` for long-running scripts (minutes+) — returns a PID immediately ",
+            "and publishes progress/completion events instead of blocking. ",
+            "Always split `command` (executable name only) and `args` (arguments array).",
+        )
     }
 
     fn mode(&self) -> ToolMode {
@@ -653,9 +873,20 @@ impl Tool for ExecTool {
                 "type": "object",
                 "required": ["command"],
                 "properties": {
-                    "command": {"type": "string"},
-                    "args": {"type": "array"},
-                    "cwd": {"type": "string"}
+                    "command": {
+                        "type": "string",
+                        "description": "The executable name or path (e.g. 'python3', '/usr/bin/git'). Do NOT include arguments — use the `args` array instead."
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Arguments to pass to the command. Each arg is a separate string element."
+                    },
+                    "cwd": {"type": "string", "description": "Working directory for the command."},
+                    "detach": {
+                        "type": "boolean",
+                        "description": "When true, spawn the process and return immediately with a PID. Progress and completion are published as events on the agent's event bus. When false (default), block until the command finishes or times out."
+                    }
                 }
             }))
         });
@@ -671,7 +902,9 @@ impl Tool for ExecTool {
                     "status": {"type": "integer"},
                     "stdout": {"type": "string"},
                     "stderr": {"type": "string"},
-                    "timed_out": {"type": "boolean"}
+                    "timed_out": {"type": "boolean"},
+                    "pid": {"type": "integer", "description": "Process ID (only when detach=true)"},
+                    "detached": {"type": "boolean", "description": "True when the process was spawned in background"}
                 }
             }))
         });
@@ -679,13 +912,13 @@ impl Tool for ExecTool {
     }
 
     async fn execute(&self, params: Value, ctx: ToolContext) -> AmanResult<Value> {
-        let command = params
+        let raw_command = params
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::ConfigInvalid {
                 message: "command must be a string".to_owned(),
             })?;
-        let args = params
+        let explicit_args = params
             .get("args")
             .and_then(Value::as_array)
             .map(|values| {
@@ -696,15 +929,73 @@ impl Tool for ExecTool {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let detach = params
+            .get("detach")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        // Auto-normalize compound command strings (LLMs often pass the full
+        // command line as `command` instead of splitting command / args).
+        let (command, args) = normalize_exec_command(raw_command, &explicit_args);
+
         let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from);
         let timeout_ms = ctx.base.timeout_ms.unwrap_or(5_000);
 
+        // ── Detach path: spawn and return ────────────────────────────
+        if detach {
+            let mut process = Command::new(&command);
+            process
+                .args(&args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(ref cwd) = cwd {
+                process.current_dir(cwd);
+            }
+
+            let mut child = process.spawn().map_err(|error| Error::Unrecoverable {
+                message: format!("failed to spawn command: {error}"),
+            })?;
+            let pid = child.id();
+
+            // If an event bus is available, spawn a background monitor so the
+            // agent receives progress and completion events. Otherwise the
+            // child runs fully detached (fire-and-forget).
+            if let Some(bus) = ctx.base.event_bus.clone() {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+                let tool_name = self.name().to_owned();
+
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    std::thread::spawn(move || {
+                        monitor_detached_process(
+                            child, stdout, stderr, bus, pid, tool_name, handle,
+                        );
+                    });
+                } else {
+                    // No tokio runtime on this thread — process runs detached
+                    // without progress reporting (still returns PID).
+                    drop(child);
+                }
+            } else {
+                // Fully detached: no event bus, no monitoring.
+                drop(child);
+            }
+
+            return Ok(json!({
+                "ok": true,
+                "pid": pid,
+                "detached": true
+            }));
+        }
+
+        // ── Synchronous path ─────────────────────────────────────────
         let sandbox = SubprocessSandbox::new(SandboxConfig {
             allowed_paths: Vec::new(),
             network_allowed: false,
             max_memory_bytes: 256 * 1024 * 1024,
         });
-        let outcome = sandbox.execute_command(command, &args, cwd.as_deref(), timeout_ms)?;
+        let outcome = sandbox.execute_command(&command, &args, cwd.as_deref(), timeout_ms)?;
         if outcome.timed_out {
             return Err(Error::Timeout);
         }
@@ -1371,5 +1662,76 @@ mod tests {
     #[allow(dead_code)]
     fn _assert_result_shape(result: &ToolExecutionResult) {
         let _ = &result.tool_name;
+    }
+
+    // ── shell_split / normalize_exec_command tests ─────────────────
+
+    #[test]
+    fn shell_split_plain_words() {
+        let words = super::shell_split("python3 -c 'print(1)'");
+        assert_eq!(words, vec!["python3", "-c", "print(1)"]);
+    }
+
+    #[test]
+    fn shell_split_double_quotes() {
+        let words = super::shell_split("echo \"hello world\"");
+        assert_eq!(words, vec!["echo", "hello world"]);
+    }
+
+    #[test]
+    fn shell_split_env_prefix() {
+        let words = super::shell_split("/usr/bin/env python3 -c 'import sys'");
+        assert_eq!(words, vec!["/usr/bin/env", "python3", "-c", "import sys"]);
+    }
+
+    #[test]
+    fn shell_split_no_quotes() {
+        let words = super::shell_split("ls -la /tmp");
+        assert_eq!(words, vec!["ls", "-la", "/tmp"]);
+    }
+
+    #[test]
+    fn normalize_strips_env_prefix() {
+        let (cmd, args) = super::normalize_exec_command(
+            "/usr/bin/env python3 -c 'print(1)'",
+            &[],
+        );
+        assert_eq!(cmd, "python3");
+        assert_eq!(args, vec!["-c", "print(1)"]);
+    }
+
+    #[test]
+    fn normalize_leaves_clean_command_alone() {
+        let (cmd, args) = super::normalize_exec_command("python3", &["-c".into(), "print(1)".into()]);
+        assert_eq!(cmd, "python3");
+        assert_eq!(args, vec!["-c", "print(1)"]);
+    }
+
+    #[test]
+    fn normalize_no_args_clean_command() {
+        let (cmd, args) = super::normalize_exec_command("ls", &[]);
+        assert_eq!(cmd, "ls");
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn normalize_respects_explicit_args() {
+        // When explicit args are provided, don't override them.
+        let (cmd, args) = super::normalize_exec_command(
+            "python3 -c 'bad'",
+            &["-c".into(), "good".into()],
+        );
+        assert_eq!(cmd, "python3 -c 'bad'");  // left as-is
+        assert_eq!(args, vec!["-c", "good"]);   // explicit args preserved
+    }
+
+    #[test]
+    fn normalize_bare_env_prefix() {
+        let (cmd, args) = super::normalize_exec_command(
+            "env python3 -c 'hi'",
+            &[],
+        );
+        assert_eq!(cmd, "python3");
+        assert_eq!(args, vec!["-c", "hi"]);
     }
 }

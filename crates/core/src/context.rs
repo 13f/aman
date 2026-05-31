@@ -11,12 +11,27 @@ use std::sync::{Arc, Mutex};
 pub type ContextLabels = BTreeMap<String, String>;
 pub type ContextExtensions = BTreeMap<String, Value>;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BaseContext {
     pub trace_id: TraceId,
     pub timeout_ms: Option<u64>,
     pub labels: ContextLabels,
     pub extensions: ContextExtensions,
+    /// Event bus available for publishing progress/completion events during
+    /// long-running operations (e.g. exec in detach mode). Skipped in serde /
+    /// equality — set by the runtime before dispatching.
+    #[serde(skip, default)]
+    pub event_bus: Option<Arc<dyn EventPublisher>>,
+}
+
+// Manual PartialEq: skip event_bus (dyn trait pointers can't be compared).
+impl PartialEq for BaseContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.trace_id == other.trace_id
+            && self.timeout_ms == other.timeout_ms
+            && self.labels == other.labels
+            && self.extensions == other.extensions
+    }
 }
 
 impl BaseContext {

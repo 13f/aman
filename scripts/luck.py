@@ -461,6 +461,7 @@ def main():
     total_checked = 0
     progress_data = {}
     match_found = None
+    last_progress_print = time.time()
 
     try:
         while True:
@@ -488,6 +489,17 @@ def main():
                 elapsed = time.time() - start_time
                 rate = total_estimated / elapsed if elapsed > 0 else 0
                 total_checked = total_estimated
+
+                # Print progress every ~60s (each line becomes a tool:progress event)
+                now = time.time()
+                if now - last_progress_print >= 60:
+                    elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+                    print(
+                        f"  [progress] Total keys checked: {total_checked:,}"
+                        f"  |  rate: {rate:,.0f} keys/s"
+                        f"  |  elapsed: {elapsed_str}"
+                    )
+                    last_progress_print = now
 
             elif msg["type"] == "match":
                 match_found = msg

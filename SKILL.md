@@ -77,7 +77,7 @@ concurrency:              # Limited to N concurrent executions
 | `find` | Search for files by pattern |
 | `grep` | Search file contents for text |
 | `http` | HTTP requests (REST, GraphQL) |
-| `exec` | Execute external commands (sandboxed) |
+| `exec` | Execute external commands (sandboxed). Supports `detach: true` for long-running background processes with progress events. |
 | `db` | Parameterized database queries (SQLite) |
 | `web_search` | Web search via configured provider |
 | `web_fetch` | Fetch and extract content from a URL |

@@ -85,6 +85,8 @@ pub struct ToolExecutor {
     bus: Arc<dyn EventBus>,
     /// Optional path/network/command allowlist config for the ReAct path.
     security_config: Option<ToolSecurityConfig>,
+    /// Per-tool timeout (ms), sourced from `runtime.tool_timeout_sec` config.
+    tool_timeout_ms: u64,
 }
 
 impl ToolExecutor {
@@ -92,12 +94,14 @@ impl ToolExecutor {
         registry: Arc<ToolRegistry>,
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
+        tool_timeout_ms: u64,
     ) -> Self {
         Self {
             registry,
             agent_registry,
             bus,
             security_config: None,
+            tool_timeout_ms,
         }
     }
 
@@ -248,6 +252,19 @@ impl ToolExecutor {
                     }
 
                     let mut ctx = kernel::context::ToolContext::default();
+                    ctx.base.timeout_ms = Some(self.tool_timeout_ms);
+                    // Wire the agent's local event bus (or global fallback) so
+                    // tools can publish progress/completion events (e.g. exec
+                    // in detach mode).
+                    {
+                        let bus: Arc<dyn EventBus> = self
+                            .agent_registry
+                            .get_local_bus(agent_id)
+                            .await
+                            .unwrap_or_else(|| Arc::clone(&self.bus));
+                        ctx.base.event_bus =
+                            Some(Arc::new(event_bus::BusEventPublisher::new(bus)));
+                    }
                     ctx.base
                         .extensions
                         .insert("agent_id".to_owned(), serde_json::json!(agent_id));
@@ -303,6 +320,8 @@ pub struct LlmReActEngine {
     bus: Arc<dyn EventBus>,
     /// Prompt pipeline for building system prompts.
     prompt_pipeline: Box<dyn PromptPipeline>,
+    /// Per-tool timeout (ms), sourced from runtime.tool_timeout_sec.
+    tool_timeout_ms: u64,
 }
 
 impl LlmReActEngine {
@@ -311,12 +330,14 @@ impl LlmReActEngine {
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
         prompt_pipeline: Box<dyn PromptPipeline>,
+        tool_timeout_ms: u64,
     ) -> Self {
         Self {
             tool_registry,
             agent_registry,
             bus,
             prompt_pipeline,
+            tool_timeout_ms,
         }
     }
 
@@ -525,6 +546,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.agent_registry),
             Arc::clone(&self.bus),
+            self.tool_timeout_ms,
         ));
 
         const TOOL_MAX_RETRIES: u32 = 3;
@@ -688,12 +710,14 @@ impl AgentHarness {
         budget_policy: Box<dyn TokenBudgetPolicy>,
         agent_router: Box<dyn AgentRouter>,
         compression_config: context_manager::CompressorConfig,
+        tool_timeout_ms: u64,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
             Arc::clone(&registry),
             Arc::clone(&bus),
             prompt_pipeline,
+            tool_timeout_ms,
         );
         Self {
             registry,

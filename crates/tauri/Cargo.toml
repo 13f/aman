@@ -22,7 +22,7 @@ tracing.workspace = true
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [[bin]]
-name = "aman-tauri"
+name = "aman-desktop"
 path = "src/main.rs"
 
 [build-dependencies]

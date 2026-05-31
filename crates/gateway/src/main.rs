@@ -10,7 +10,7 @@
 //! of any desktop UI.
 //!
 //! Usage:
-//!   gateway [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]
+//!   aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]
 
 use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig, RedactWriter};
@@ -29,7 +29,7 @@ static _AI_SIGNAL: () = {
 };
 
 const DEFAULT_BIND: &str = "127.0.0.1:9999";
-const PID_FILE: &str = ".aman/gateway.pid";
+const PID_FILE: &str = ".aman/aman.pid";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -99,7 +99,7 @@ async fn run() -> Result<(), i32> {
                 i += 2;
             }
             _ => {
-                eprintln!("Usage: gateway [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]");
+                eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]");
                 return Err(2);
             }
         }

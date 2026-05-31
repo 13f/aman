@@ -68,3 +68,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 tonic.workspace = true
 prost.workspace = true
+
+[[bin]]
+name = "aman"
+path = "src/main.rs"

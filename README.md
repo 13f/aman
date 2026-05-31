@@ -34,8 +34,8 @@ cargo tauri build  # production bundle (.app / .dmg)
 chmod +x scripts/install-gateway.sh
 ```
 
-The script builds `gateway` in release mode and installs it to
-`~/.aman/bin/gateway`. The Tauri app spawns it from that path when you
+The script builds `aman` in release mode and installs it to
+`~/.aman/bin/aman`. The Tauri app spawns it from that path when you
 click "Start" in the Dashboard.
 
 ### Option B: CLI Only (no GUI)
@@ -52,10 +52,10 @@ EOF
 
 # Install and run the gateway directly
 ./scripts/install-gateway.sh --release
-~/.aman/bin/gateway
+~/.aman/bin/aman
 ```
 
-The gateway binary at `~/.aman/bin/gateway` is the same process the
+The gateway binary at `~/.aman/bin/aman` is the same process the
 Tauri app manages — it's the complete agent runtime with HTTP API,
 WebSocket, gRPC, LLM orchestration, and all plugins. You can run it
 standalone without the GUI.

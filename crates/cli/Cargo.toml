@@ -28,5 +28,5 @@ prost.workspace = true
 tonic-build = "0.13"
 
 [[bin]]
-name = "aman"
+name = "aman-cli"
 path = "src/main.rs"

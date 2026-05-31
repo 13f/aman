@@ -1,5 +1,5 @@
 {
-  "productName": "aman",
+  "productName": "aman desktop",
   "version": "0.1.0",
   "identifier": "github.13f.aman",
   "build": {
@@ -11,7 +11,7 @@
   "app": {
     "windows": [
       {
-        "title": "aman",
+        "title": "aman desktop",
         "width": 1200,
         "height": 800,
         "minWidth": 900,

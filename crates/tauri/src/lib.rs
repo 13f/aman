@@ -249,7 +249,7 @@ pub fn run() {
             let handle = app.handle();
             let reload = MenuItem::with_id(handle, "reload_skills", "Reload Skills", true, Some("CmdOrCtrl+R"))?;
             let separator = PredefinedMenuItem::separator(handle)?;
-            let quit = PredefinedMenuItem::quit(handle, Some("Quit aman"))?;
+            let quit = PredefinedMenuItem::quit(handle, Some("Quit aman desktop"))?;
             let file_menu = Submenu::with_items(handle, "File", true, &[&reload, &separator, &quit])?;
             let cut = PredefinedMenuItem::cut(handle, Some("Cut"))?;
             let copy = PredefinedMenuItem::copy(handle, Some("Copy"))?;
@@ -260,7 +260,7 @@ pub fn run() {
                 handle, "Edit", true,
                 &[&cut, &copy, &paste, &edit_sep, &select_all],
             )?;
-            let about = PredefinedMenuItem::about(handle, Some("About aman"), None)?;
+            let about = PredefinedMenuItem::about(handle, Some("About aman desktop"), None)?;
             let devtools = MenuItem::with_id(handle, "devtools", "Toggle DevTools", true, Some("CmdOrCtrl+Shift+I"))?;
             let help_menu = Submenu::with_items(handle, "Help", true, &[&about, &devtools])?;
             let menu = Menu::with_items(handle, &[&file_menu, &edit_menu, &help_menu])?;

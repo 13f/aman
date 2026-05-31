@@ -88,22 +88,58 @@ pub async fn get_runtime_config(state: State<'_, AppState>) -> Result<RuntimeCon
     })
 }
 
-/// Path to the installed gateway binary.
+/// Resolve the path to the gateway binary (`aman`).
+///
+/// Search order (first match wins):
+/// 1. Homebrew-installed `aman` — `brew --prefix aman` then `<prefix>/bin/aman`
+/// 2. User data directory — `~/.aman/bin/aman`
+/// 3. Alongside the Tauri app executable — `<app_exe_dir>/aman`
 fn gateway_bin_path() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
-    let path = std::path::PathBuf::from(&home).join(".aman").join("bin").join("gateway");
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(format!(
-            "Gateway binary not found at {}\n\n\
-            Build and install it first:\n  \
-            cargo build --release -p gateway\n  \
-            mkdir -p ~/.aman/bin\n  \
-            cp target/release/gateway ~/.aman/bin/gateway",
-            path.display()
-        ))
+    // ── Tier 1: Homebrew ──────────────────────────────────────────────
+    if let Ok(output) = std::process::Command::new("brew")
+        .args(["--prefix", "aman"])
+        .output()
+    {
+        if output.status.success() {
+            let prefix = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let bin = std::path::PathBuf::from(&prefix).join("bin").join("aman");
+            if bin.exists() {
+                tracing::info!(path = %bin.display(), "found gateway via brew");
+                return Ok(bin);
+            }
+        }
     }
+
+    // ── Tier 2: User data directory ───────────────────────────────────
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let user_bin = std::path::PathBuf::from(&home).join(".aman").join("bin").join("aman");
+    if user_bin.exists() {
+        tracing::info!(path = %user_bin.display(), "found gateway in user data dir");
+        return Ok(user_bin);
+    }
+
+    // ── Tier 3: Alongside the app executable ──────────────────────────
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let sibling = exe_dir.join("aman");
+            if sibling.exists() {
+                tracing::info!(path = %sibling.display(), "found gateway alongside app");
+                return Ok(sibling);
+            }
+        }
+    }
+
+    Err(format!(
+        "Gateway binary 'aman' not found.\n\n\
+        Search order:\n  \
+        1. brew-installed: brew install aman\n  \
+        2. user data dir: ~/.aman/bin/aman\n  \
+        3. alongside the aman desktop app\n\n\
+        Build and install it first:\n  \
+        cargo build --release -p gateway\n  \
+        mkdir -p ~/.aman/bin\n  \
+        cp target/release/aman ~/.aman/bin/aman"
+    ))
 }
 
 #[tauri::command]

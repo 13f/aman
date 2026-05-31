@@ -29,7 +29,10 @@ cargo clippy --workspace -- -D warnings
 # Docs
 cargo doc --workspace --no-deps
 
-# CLI
+# CLI (aman-cli — gateway client)
+cargo run --release --bin aman-cli -- --help
+
+# Gateway daemon
 cargo run --release --bin aman -- --help
 
 # Fix clippy auto-fixes
@@ -63,10 +66,10 @@ Workspace with 38 crates (30 core + 8 plugins):
 | `persistence` | WAL, StateStore, DLQ, overflow dir |
 | `secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
 | `config` | 4-layer config loader, validation |
-| `gateway` | Agent gateway: HTTP API, lifecycle, runtime management (replaced `runtime`) |
-| `cli` | `aman` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
+| `gateway` | Agent gateway daemon — binary name `aman` |
+| `cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
 | `sdk` | Pub re-export crate for external devs |
-| `tauri` | Tauri v2 desktop app |
+| `tauri` | `aman desktop` — Tauri v2 desktop app |
 | `skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
 
 ### Agent Lifestyle Crates

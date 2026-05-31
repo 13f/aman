@@ -9,9 +9,9 @@ cd "$(dirname "$0")/.."
 PROFILE="${1:-"--release"}"
 PROFILE="${PROFILE#--}"  # strip leading --
 
-SRC="target/${PROFILE}/gateway"
+SRC="target/${PROFILE}/aman"
 DEST_DIR="$HOME/.aman/bin"
-DEST="$DEST_DIR/gateway"
+DEST="$DEST_DIR/aman"
 
 echo "==> Building gateway (${PROFILE})..."
 cargo build --"${PROFILE}" -p gateway

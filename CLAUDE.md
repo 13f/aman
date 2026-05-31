@@ -8,17 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build all
 cargo build --workspace
 
-# Release build (all 21 crates)
+# Release build (all 38 crates)
 cargo build --release --workspace
 
 # Run all tests
 cargo test --workspace
 
 # Run single crate tests
-cargo test -p workflow -p runtime
+cargo test -p workflow -p gateway
 
 # Run a specific test
-cargo test -p runtime --test e2e_integration workflow_error_retry_recovery -- --nocapture
+cargo test -p secret --test rotation_integration -- --nocapture
 
 # Run benchmark
 cargo bench -p pipeline
@@ -41,29 +41,65 @@ cargo test -p info-hub
 
 ## Codebase Architecture
 
-Workspace with 21 crates under `crates/`:
+Workspace with 38 crates (30 core + 8 plugins):
+
+### Core Crates
 
 | Crate | Purpose |
 |---|---|
-| `core` | Kernel types: Event, Error, Pipeline, Schema, Retry, Tool traits |
+| `core` | Kernel types: Event, Error, Pipeline, Schema, Retry, Tool traits, redactor |
 | `macros` | Proc macros |
-| `event-bus` | InMemoryBus w/ 5-level backpressure, overflow-to-disk, dedup |
+| `event-bus` | InMemoryBus w/ 6-level backpressure (L1→L2→L3→L4A→L4B→Critical), overflow-to-disk, dedup |
+| `dispatcher` | Event routing: EventBus → Pipeline/Skill dispatch |
 | `pipeline` | PipelineDefinition, PipelineEngine (Serial/Parallel/Limited) |
 | `workflow` | State machine engine, timeouts, ERROR recovery, retry |
+| `source` | Timer, Cron, FileWatch, Webhook, Signal, Socket |
+| `hook` | Internal hook system |
 | `skill` | YAML/SKILL.md loading, Tantivy search, hot-reload |
 | `tool` | Tool runner, built-in tools (file/http/exec/db) |
-| `source` | Timer, Cron, FileWatch, Webhook, Signal, Socket |
-| `plugin` | WASM/Subprocess/InProcess plugins, dependency graph |
-| `info-hub` | 信息中心插件: unified search across API, CLI, local DB |
+| `plugin` | WASM/Subprocess/InProcess plugin host, dependency graph |
+| `llm-api` | LLM provider abstraction (trait-based, swappable backend) |
+| `soul` | SOUL system prompt management |
 | `persistence` | WAL, StateStore, DLQ, overflow dir |
 | `secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
 | `config` | 4-layer config loader, validation |
-| `soul` | SOUL system prompt management |
-| `runtime` | AgentRuntime, HTTP API (27 endpoints), lifecycle |
-| `cli` | `aman` CLI binary (HTTP REST client to gateway) |
+| `gateway` | Agent gateway: HTTP API, lifecycle, runtime management (replaced `runtime`) |
+| `cli` | `aman` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
 | `sdk` | Pub re-export crate for external devs |
 | `tauri` | Tauri v2 desktop app |
-| `hook`, `dispatcher` | (internal) |
+| `skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
+
+### Agent Lifestyle Crates
+
+| Crate | Purpose |
+|---|---|
+| `lifecycle` | Agent lifecycle state machine (Phases 0→5 startup, 5→0 shutdown) |
+| `idle` | Idle mode: background observation, proactive suggestions |
+| `daily-life` | Daily-life automation: routines, schedules, habits |
+| `work` | Work item processing: task intake, prioritization, execution |
+| `study` | Study/learning system: knowledge acquisition, spaced repetition |
+| `memory` | Agent memory: episodic/semantic storage, retrieval |
+| `notification` | Notification delivery: push, email, messaging channels |
+| `eval` | Evaluation system: LLM output quality, work item assessment |
+
+### Plugin Crates (`crates/plugins/`)
+
+| Crate | Purpose |
+|---|---|
+| `info-hub` | 信息中心: unified search across API, CLI, local DB |
+| `llm-provider-openai` | OpenAI-compatible LLM provider plugin |
+| `memory-store` | Memory storage backend plugin |
+| `messaging-core` | Shared messaging abstractions (routing, @mention, formatting) |
+| `messaging-telegram` | Telegram bot integration |
+| `messaging-slack` | Slack bot integration |
+| `messaging-discord` | Discord bot integration |
+| `messaging-matrix` | Matrix bot integration |
+
+### Dev Tooling
+
+| Crate | Purpose |
+|---|---|
+| `test-utils` | Shared test helpers, fixtures, mock factories |
 
 ## Key Design Rules
 
@@ -72,7 +108,7 @@ Workspace with 21 crates under `crates/`:
 - Events flow: Source → EventBus → Dispatcher → Pipeline/Skill → Workflow
 - Runtime lifecycle: Phase 0→5 (startup), Phase 5→0 (shutdown)
 - Error recovery in workflows: ERROR → RETRY event → last_active_state
-- Backpressure: L1(80%)→L2(90%)→L3(95%)→L4A(98%/overflow)→L4B(critical)
+- Backpressure: L1(~81%)→L2(~90%)→L3(~96%)→L4A(~98%/overflow)→L4B→Critical(100%)
 - API auth: Bearer token, x-aman-operator, x-aman-confirm for destructive ops
 - **Log safety**: NEVER use raw `println!` or `eprintln!` — they are forbidden by
   workspace-level `clippy::print_stdout` / `clippy::print_stderr` lints. Use:

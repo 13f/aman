@@ -161,6 +161,21 @@ impl AgentIdleManager {
                     continue;
                 }
 
+                // Skip if the agent system state indicates it is doing real work
+                // (chatting, working, studying, daily-life, or waiting for detach).
+                // Otherwise the idle detector would fire boredom / sleep while a
+                // detached process is still running.
+                if let Some(ref ss) = system_state {
+                    let state = *ss.lock().expect("system_state lock");
+                    if state != AgentSystemState::Idle {
+                        // Reset idle depth — the agent is busy doing something real.
+                        detector.idle_depth = 0;
+                        detector.last_poll = Some(Instant::now());
+                        sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
+
                 // Check if depth reset is pending (queue was drained)
                 if coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
                     detector.idle_depth = 0;

@@ -1372,10 +1372,16 @@ impl AgentHarness {
             });
 
             // Don't go idle — the continuation task handles cleanup.
-            // Set agent to Waiting so the UI reflects the detach-pending state.
+            // Keep status as Busy so the idle detector doesn't kick in
+            // while the detached process is still running. system_state
+            // shows Waiting so the UI can reflect the detach-pending state.
             let _ = self.registry.set_active_session(agent_id, None).await;
-            let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
             self.registry.set_system_state(agent_id, AgentSystemState::Waiting).await;
+            // Reset the idle signal so the boredom timer doesn't fire
+            // during the detach wait (which can last several minutes).
+            if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {
+                coord.reset_idle_signal().await;
+            }
             return Ok(String::new());
         }
 
@@ -1494,15 +1500,24 @@ impl AgentHarness {
         // Turn 1: LLM parses the methodology and outputs tool calls.
         // The methodology is already in ctx.history from the user message.
         let turn_messages = ctx.history.clone();
-        self.spawn_stream_forwarder(ctx);
+        let stream_handle = self.spawn_stream_forwarder(ctx);
 
-        let turn1 = self.engine.execute_turn(ctx, turn_messages).await
-            .map_err(|e| Error::ConfigInvalid {
-                message: format!("direct act tool-selection failed: {e}"),
-            })?;
+        let turn1 = match self.engine.execute_turn(ctx, turn_messages).await {
+            Ok(t) => t,
+            Err(e) => {
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
+                return Err(Error::ConfigInvalid {
+                    message: format!("direct act tool-selection failed: {e}"),
+                });
+            }
+        };
         match turn1 {
             ReActTurn::ToolCalls { content, calls, reasoning_content } => {
                 ctx.stream_cb = None;
+                // Wait for the forwarder to drain so reply_stream_done
+                // is published before tool execution and Turn 2.
+                let _ = stream_handle.await;
 
                 // Record the assistant message with tool calls
                 let formatted_calls = llm::format_tool_calls_for_history(&calls);
@@ -1556,13 +1571,19 @@ impl AgentHarness {
                 self.direct_act_turn2(ctx).await
             }
             ReActTurn::Finished { content, .. } => {
-                // LLM chose not to use any tools — just return its response
+                // LLM chose not to use any tools — just return its response.
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
                 ctx.history.push(ChatMessage::assistant(content.clone()));
                 Ok(ReactOutcome::Finished(content))
             }
-            ReActTurn::Error(e) => Err(Error::ConfigInvalid {
-                message: format!("direct act failed: {e}"),
-            }),
+            ReActTurn::Error(e) => {
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
+                Err(Error::ConfigInvalid {
+                    message: format!("direct act failed: {e}"),
+                })
+            },
         }
     }
 
@@ -1572,13 +1593,16 @@ impl AgentHarness {
     /// tool results.  Calls the LLM to produce a human-readable summary.
     async fn direct_act_turn2(&self, ctx: &mut ReActContext) -> Result<ReactOutcome, Error> {
         let turn_messages = ctx.history.clone();
-        self.spawn_stream_forwarder(ctx);
+        let stream_handle = self.spawn_stream_forwarder(ctx);
 
-        let turn2 = self.engine.execute_turn(ctx, turn_messages).await
-            .map_err(|e| Error::ConfigInvalid {
-                message: format!("direct act report failed: {e}"),
-            })?;
+        let turn2_result = self.engine.execute_turn(ctx, turn_messages).await;
+        // Clear the streaming callback and await the forwarder so
+        // reply_stream_done is published before reply_ready (on all paths).
         ctx.stream_cb = None;
+        let _ = stream_handle.await;
+        let turn2 = turn2_result.map_err(|e| Error::ConfigInvalid {
+            message: format!("direct act report failed: {e}"),
+        })?;
 
         match turn2 {
             ReActTurn::Finished { content, .. } => {
@@ -1974,12 +1998,14 @@ impl AgentHarness {
             let turn_messages = ctx.history.clone();
 
             // Execute one ReAct turn (T2.4: with streaming support)
-            self.spawn_stream_forwarder(ctx);
+            let stream_handle = self.spawn_stream_forwarder(ctx);
 
             match self.engine.execute_turn(ctx, turn_messages).await {
                 Ok(ReActTurn::Finished { ref content, .. }) => {
-                    // Clear streaming callback so the consumer task drops
+                    // Clear streaming callback then await the forwarder
+                    // so reply_stream_done is published before reply_ready.
                     ctx.stream_cb = None;
+                    let _ = stream_handle.await;
                     ctx.history.push(ChatMessage::assistant(content.clone()));
                     // Track output tokens only — the next iteration re-estimates
                     // history from scratch, so we don't double-count prompt tokens.
@@ -1989,8 +2015,10 @@ impl AgentHarness {
                     return Ok(ReactOutcome::Finished(content.clone()));
                 }
                 Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {
-                    // Clear streaming callback (will be reset next iteration)
+                    // Clear streaming callback and await the forwarder
+                    // so reply_stream_done is published before tool results.
                     ctx.stream_cb = None;
+                    let _ = stream_handle.await;
                     // Publish agent:got_tool_calls to local bus
                     let _ = self
                         .publish_to_agent_bus(
@@ -2090,6 +2118,9 @@ impl AgentHarness {
                     ctx.turn += 1;
                 }
                 Ok(ReActTurn::Error(react_err)) => {
+                    // Clear streaming callback so the forwarder task exits.
+                    ctx.stream_cb = None;
+                    let _ = stream_handle.await;
                     let _ = self
                         .publish_to_agent_bus(
                             &ctx.agent_id,
@@ -2110,6 +2141,9 @@ impl AgentHarness {
                     });
                 }
                 Err(e) => {
+                    // Clear streaming callback so the forwarder task exits.
+                    ctx.stream_cb = None;
+                    let _ = stream_handle.await;
                     // Publish llm:error to local bus
                     let _ = self
                         .publish_to_agent_bus(
@@ -2165,7 +2199,15 @@ impl AgentHarness {
     /// Set up streaming for one ReAct turn: create an mpsc channel, attach it
     /// as the streaming callback on the context, and spawn a task that forwards
     /// each event to the event bus as `agent:reply_*` events.
-    fn spawn_stream_forwarder(&self, ctx: &mut ReActContext) {
+    ///
+    /// Returns a [`JoinHandle`] that resolves once the forwarder has finished
+    /// draining the channel.  Callers MUST await this handle after clearing
+    /// [`ReActContext::stream_cb`] and BEFORE publishing `reply_ready` or `idle`,
+    /// so that `reply_stream_done` is guaranteed to appear first in the event log.
+    fn spawn_stream_forwarder(
+        &self,
+        ctx: &mut ReActContext,
+    ) -> tokio::task::JoinHandle<()> {
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
         {
             let tx = stream_tx.clone();
@@ -2215,7 +2257,7 @@ impl AgentHarness {
                     let _ = local_bus.publish(e).await;
                 }
             }
-        });
+        })
     }
 
     /// Publish an agent-to-agent message to the event bus (M7).

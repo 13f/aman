@@ -2887,12 +2887,36 @@ impl AgentRuntime {
             return Ok(());
         }
         let subscription_filter = event_bus::SubscriptionFilter::default();
+
+        // Subscribe to the global bus — captures MessageReceived, reply_ready,
+        // skill:completed, and streaming events published there.
         let handler = Box::new(StoreAllEventsHandler {
             store: Arc::clone(&self.event_store),
             agent_registry: Arc::clone(&self.agent_registry),
         });
         let id = self.bus.subscribe(subscription_filter, handler).await?;
         *self.observer_subscription.lock().await = Some(id);
+
+        // Also subscribe to each agent's local bus so that per-agent events
+        // (tool:progress, tool:completed, llm:call_started, agent:busy, etc.)
+        // are persisted to the session JSONL file.
+        for (agent_id, local_bus) in self.agent_registry.all_local_buses().await {
+            let h = Box::new(StoreAllEventsHandler {
+                store: Arc::clone(&self.event_store),
+                agent_registry: Arc::clone(&self.agent_registry),
+            });
+            if let Err(e) = local_bus
+                .subscribe(event_bus::SubscriptionFilter::default(), h)
+                .await
+            {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %e,
+                    "ensure_observer_subscribed: failed to subscribe to agent local bus"
+                );
+            }
+        }
+
         Ok(())
     }
 

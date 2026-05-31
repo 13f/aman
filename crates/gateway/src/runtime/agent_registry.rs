@@ -766,6 +766,12 @@ impl AgentRegistry {
         buses.get(agent_id).cloned()
     }
 
+    /// Return all agent_id → local_bus pairs for observer subscriptions.
+    pub async fn all_local_buses(&self) -> Vec<(String, Arc<dyn EventBus>)> {
+        let buses = self.local_buses.read().await;
+        buses.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
+    }
+
     /// 移除 Agent 的 IdleManager。
     pub async fn remove_idle_manager(&self, agent_id: &str) {
         let mut managers = self.idle_managers.write().await;

@@ -235,6 +235,36 @@ pub trait EventBus: Send + Sync {
     fn can_poll(&self) -> bool;
 }
 
+// ── EventPublisher impl ────────────────────────────────────────────
+// Newtype wrapper so we can coerce Arc<BusEventPublisher> → Arc<dyn EventPublisher>.
+// (Rust won't let us cast Arc<dyn EventBus> to Arc<dyn EventPublisher> directly
+// even though Arc<dyn EventBus> implements EventPublisher.)
+
+/// Wraps an `EventBus` so it can be passed as an `Arc<dyn EventPublisher>`.
+pub struct BusEventPublisher {
+    bus: Arc<dyn EventBus>,
+}
+
+impl std::fmt::Debug for BusEventPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BusEventPublisher").finish_non_exhaustive()
+    }
+}
+
+impl BusEventPublisher {
+    /// Wrap an event bus for use as an EventPublisher.
+    pub fn new(bus: Arc<dyn EventBus>) -> Self {
+        Self { bus }
+    }
+}
+
+#[async_trait]
+impl kernel::hook::EventPublisher for BusEventPublisher {
+    async fn publish(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+        self.bus.publish(event).await
+    }
+}
+
 #[derive(Clone)]
 struct Subscription {
     filter: SubscriptionFilter,

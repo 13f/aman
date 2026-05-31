@@ -1,6 +1,7 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+use crate::hook::EventPublisher;
 use crate::types::TraceId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -49,10 +50,22 @@ pub struct ToolContext {
     pub working_directory: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HookContext {
     pub base: BaseContext,
     pub hook_name: Option<String>,
+    /// Event bus available to hooks for publishing events (e.g. progress
+    /// notifications). Skipped in serde/compare — set by the runtime before
+    /// dispatching hooks.
+    #[serde(skip, default)]
+    pub event_bus: Option<Arc<dyn EventPublisher>>,
+}
+
+// Manual PartialEq: skip event_bus (dyn trait pointers can't be compared).
+impl PartialEq for HookContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base && self.hook_name == other.hook_name
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

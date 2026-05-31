@@ -263,6 +263,51 @@ impl NotificationSubscriber {
                 );
             }
 
+            // ── Idle progress heartbeat ──────────────────────────────
+            // Published by plugins/skills that want periodic progress
+            // updates during long-running idle actions (e.g. games,
+            // deep research, batch processing).
+            EventType::Custom(s) if s == "idle.progress" => {
+                let agent_id = event
+                    .payload
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let skill_name = event
+                    .payload
+                    .get("skill_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("background task");
+                let tag = event
+                    .payload
+                    .get("tag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("idle");
+                let elapsed_secs = event
+                    .payload
+                    .get("elapsed_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let custom_message = event
+                    .payload
+                    .get("message")
+                    .and_then(|v| v.as_str());
+
+                let elapsed_min = elapsed_secs as f64 / 60.0;
+                let icon = tag_icon(tag);
+                let title = format!("{icon} {agent_id} — {tag} 进行中");
+
+                let mut message = format!("{skill_name} · 已运行 {elapsed_min:.1} 分钟");
+                if let Some(msg) = custom_message
+                    && !msg.is_empty()
+                {
+                    message.push_str(" · ");
+                    message.push_str(msg);
+                }
+
+                self.store.push(Notification::info(Category::Idle, title, message));
+            }
+
             _ => {}
         }
     }
@@ -273,5 +318,19 @@ impl event_bus::EventHandler for NotificationSubscriber {
     async fn handle(&self, event: Event) -> kernel::AmanResult<()> {
         self.maybe_notify(&event);
         Ok(())
+    }
+}
+
+/// Pick a representative icon for each idle activity tag.
+fn tag_icon(tag: &str) -> &'static str {
+    match tag {
+        "fun" => "🎮",
+        "work" => "📋",
+        "study" => "📖",
+        "exploration" => "🔍",
+        "internet" => "🌐",
+        "entertainment" => "🎬",
+        "game" => "🕹️",
+        _ => "⚡",
     }
 }

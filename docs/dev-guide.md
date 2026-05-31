@@ -299,6 +299,7 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 | `session:closed` | 会话关闭 |
 | `message:dispatch` | 技能分发开始 |
 | `message:completed` | 技能分发完成 |
+| `idle.progress` | 长时间空闲任务进度汇报（由 Hook 发布） |
 | `gateway:ready` | 网关就绪 |
 | `gateway:starting` | 网关启动中 |
 | `gateway:stopping` | 网关关闭中 |
@@ -380,6 +381,150 @@ pub fn check_available(&self) -> amanResult<()> {
 版本号解析兼容多种格式：
 - `3.8.0`, `v18.0.0` — 标准 semver
 - `3.2.57(1)-release` — bash 风格（自动提取 `3.2.57`）
+
+### 3.7 进程内插件 Hook（Rust）
+
+除了脚本 Hook（`ScriptHookRunner`），aman 还支持**进程内插件 Hook**——插件通过实现 Rust `Hook` trait 注册到 `HookRegistry`，在关键生命周期节点被驱动执行。
+
+**与脚本 Hook 的区别：**
+
+| | 脚本 Hook | 进程内插件 Hook |
+|---|---|---|
+| **机制** | `ScriptHookRunner` + stdin/stdout JSON | `Hook` trait + `HookRegistry::execute()` |
+| **语言** | bash / python3 / node / deno | Rust（编译进插件 .so） |
+| **触发方式** | 事件总线 EventHandler 匹配 | `SkillEventDispatcher` 主动调用 |
+| **能力** | 读取事件、阻止冒泡 | 读取事件、**发布新事件到总线** |
+| **典型用途** | 音效、通知、日志 | 进度汇报、状态变更、自定义工作流 |
+
+#### Hook 生命周期点
+
+进程内 Hook 可以监听以下 `HookPoint`：
+
+| HookPoint | 触发时机 | 驱动位置 |
+|---|---|---|
+| `SkillExecuting` | 技能分发器开始匹配执行技能 | `SkillEventDispatcher::handle()` |
+| `SkillExecuted` | 技能分发器完成执行 | `SkillEventDispatcher::handle()` |
+| `ToolExecuting` / `ToolExecuted` | 工具执行前后 | 待接入 |
+| `PipelineStarting` / `PipelineCompleted` | Pipeline 执行前后 | 待接入 |
+| `AgentStarting` / `AgentReady` | Agent 生命周期 | 待接入 |
+
+> **当前实现：** `SkillExecuting` / `SkillExecuted` 已由 `SkillEventDispatcher` 驱动，
+> 每次事件分发到技能前都会触发这两个 hook 点。其余 hook 点待后续接入。
+
+#### HookContext：获取 Event Bus
+
+`HookContext` 中提供了 `event_bus` 字段，Hook 可通过它**主动发布事件**到全局事件总线：
+
+```rust
+// crates/core/src/context.rs
+pub struct HookContext {
+    pub base: BaseContext,
+    pub hook_name: Option<String>,
+    /// 全局事件总线 — Hook 可通过它发布事件
+    /// （如 idle.progress 汇报进度）
+    pub event_bus: Option<Arc<dyn EventPublisher>>,
+}
+```
+
+#### 实现一个进程内 Hook
+
+```rust
+use kernel::hook::{Hook, HookPoint, EventPublisher};
+use kernel::context::HookContext;
+use kernel::event::{Event, EventType};
+use kernel::AmanResult;
+use async_trait::async_trait;
+
+struct ProgressHook {
+    agent_id: String,
+}
+
+#[async_trait]
+impl Hook for ProgressHook {
+    fn name(&self) -> &str { "progress-reporter" }
+    fn priority(&self) -> i32 { 0 }
+    fn hook_points(&self) -> &[HookPoint] {
+        &[HookPoint::SkillExecuting, HookPoint::SkillExecuted]
+    }
+
+    async fn execute(&self, point: HookPoint, ctx: HookContext) -> AmanResult<()> {
+        match point {
+            HookPoint::SkillExecuting => {
+                // 技能开始执行：可以在此启动定时器，周期性汇报进度
+                if let Some(bus) = &ctx.event_bus {
+                    let event = Event::new(
+                        "plugin:progress",
+                        EventType::Custom("idle.progress".into()),
+                        serde_json::json!({
+                            "agent_id": self.agent_id,
+                            "skill_name": "my-skill",
+                            "tag": "fun",
+                            "elapsed_secs": 0,
+                            "message": "开始执行",
+                        }),
+                    );
+                    bus.publish(event).await?;
+                }
+                Ok(())
+            }
+            HookPoint::SkillExecuted => {
+                // 技能执行完毕：停止定时器，汇报最终状态
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+```
+
+#### 注册 Hook
+
+插件通过 `PluginExportRegistrar::register_hook()` 注册：
+
+```rust
+impl Plugin for MyPlugin {
+    fn hooks(&self) -> Vec<Arc<dyn Hook>> {
+        vec![Arc::new(ProgressHook { agent_id: "my-agent".into() })]
+    }
+}
+```
+
+注册后，`SkillEventDispatcher` 每次处理事件时都会调用 `hook_registry.execute()`，
+驱动所有匹配当前 `HookPoint` 的 Hook。
+
+#### idle.progress 事件
+
+Hook 发布 `idle.progress` 事件后，`NotificationSubscriber` 会自动将其转为用户通知：
+
+**事件格式：**
+```json
+{
+  "event_type": "idle.progress",
+  "payload": {
+    "agent_id": "minmax",
+    "skill_name": "lifecycle/luck",
+    "tag": "fun",
+    "elapsed_secs": 180,
+    "message": "lottery round 5 complete"
+  }
+}
+```
+
+**通知效果：**
+```
+🎮 minmax — fun 进行中
+lifecycle/luck · 已运行 3.0 分钟 · lottery round 5 complete
+```
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `agent_id` | 是 | 产生此事件的 Agent ID |
+| `skill_name` | 是 | 正在执行的技能名称 |
+| `tag` | 否 | 活动标签，用于选择通知图标（fun/work/study/exploration…） |
+| `elapsed_secs` | 否 | 已运行秒数，通知中显示为分钟 |
+| `message` | 否 | 自定义进度信息 |
+
+> **Tag 图标映射：** `fun`→🎮, `work`→📋, `study`→📖, `exploration`→🔍, `internet`→🌐, `entertainment`→🎬, `game`→🕹️, 其他→⚡
 
 ---
 

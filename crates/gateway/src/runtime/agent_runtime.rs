@@ -374,12 +374,17 @@ impl AgentRuntimeBuilder {
             wasm_module_bytes: None,
         };
 
+        // ── Hook registry (created early so SkillEventDispatcher can drive it) ─
+        let hook_registry = Arc::new(hook::HookRegistry::new());
+
         // Subscribe a handler that dispatches every event to matching skills.
         use kernel::context::SkillContext;
         use kernel::context::BaseContext;
         struct SkillEventDispatcher {
             executor: skill::SkillExecutor,
             bus: Arc<dyn event_bus::EventBus>,
+            hooks: Arc<hook::HookRegistry>,
+            hook_publisher: Arc<event_bus::BusEventPublisher>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for SkillEventDispatcher {
@@ -391,12 +396,31 @@ impl AgentRuntimeBuilder {
                 }
                 let trace_id = event.metadata.trace_id;
                 let is_idle = event.event_type == EventType::Idle;
+
+                // ── Fire SkillExecuting hooks ──────────────────────────
+                // Build a HookContext that gives hooks access to the event bus
+                // so they can push progress / status events during execution.
+                let hook_ctx = kernel::context::HookContext {
+                    base: BaseContext::new(trace_id),
+                    hook_name: None,
+                    event_bus: Some(Arc::clone(&self.hook_publisher) as Arc<dyn kernel::hook::EventPublisher>),
+                };
+                let _ = self.hooks
+                    .execute(kernel::hook::HookPoint::SkillExecuting, hook_ctx.clone())
+                    .await;
+
                 let ctx = SkillContext {
                     base: BaseContext::new(trace_id),
                     skill_name: None,
                     soul_name: None,
                 };
                 let result = self.executor.execute_matching(event, ctx).await;
+
+                // ── Fire SkillExecuted hooks ───────────────────────────
+                let _ = self.hooks
+                    .execute(kernel::hook::HookPoint::SkillExecuted, hook_ctx)
+                    .await;
+
                 // Only emit dispatch/completed signals for non-idle events.
                 // Idle ticks already flood the event store with triple patterns
                 // (idle → dispatch → completed) and the signals carry no useful
@@ -427,6 +451,8 @@ impl AgentRuntimeBuilder {
             Box::new(SkillEventDispatcher {
                 executor: skill::SkillExecutor::new(Arc::clone(&skills)),
                 bus: Arc::clone(&bus),
+                hooks: Arc::clone(&hook_registry),
+                hook_publisher: Arc::new(event_bus::BusEventPublisher::new(Arc::clone(&bus))),
             }),
         ));
 
@@ -491,7 +517,6 @@ impl AgentRuntimeBuilder {
             tracing::info!(count = discovered.len(), dir = %plugins_dir.display(), "discovered subprocess plugins");
             all_candidates.extend(discovered);
         }
-        let hook_registry = Arc::new(hook::HookRegistry::new());
         let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
         let rpc_handler = Arc::new(RuntimeJsonRpcHandler::new(
             Arc::clone(&agent_registry),
@@ -1680,6 +1705,7 @@ impl AgentRuntimeBuilder {
             shutdown_notify: tokio::sync::Notify::new(),
             self_bridge,
             sse_broadcast: sse_state,
+            hook_registry,
         });
         Ok(runtime)
     }
@@ -2045,6 +2071,9 @@ pub struct AgentRuntime {
     self_bridge: super::self_bridge::SelfBridge,
     /// SSE broadcast state — fans out events and snapshots to connected clients.
     sse_broadcast: Arc<super::sse::SseBroadcastState>,
+    /// Hook registry — in-process hooks registered by plugins. Driven by the
+    /// SkillEventDispatcher so hooks fire at SkillExecuting / SkillExecuted.
+    hook_registry: Arc<hook::HookRegistry>,
 }
 
 impl AgentRuntime {
@@ -2066,6 +2095,12 @@ impl AgentRuntime {
     #[must_use]
     pub fn auth_registry(&self) -> Arc<tool::auth::AuthRegistry> {
         Arc::clone(&self.auth_registry)
+    }
+
+    /// Return the in-process hook registry (plugins register hooks here).
+    #[must_use]
+    pub fn hook_registry(&self) -> Arc<hook::HookRegistry> {
+        Arc::clone(&self.hook_registry)
     }
 
     #[must_use]

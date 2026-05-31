@@ -1069,9 +1069,6 @@ impl AgentRuntimeBuilder {
                 let skill_name: Option<String> = event.payload.get("skill_name")
                     .and_then(|v| v.as_str())
                     .map(String::from);
-                let on_complete: Option<String> = event.payload.get("on_complete")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
 
                 // Resolve the execution mode for this skill (declared or auto-detected)
                 let react_mode = skill_name.as_ref().and_then(|name| {
@@ -1084,7 +1081,7 @@ impl AgentRuntimeBuilder {
                 // Spawn async ReAct processing — do not block the bus drain loop.
                 self.agent_harness.spawn_process_message(
                     agent_id, session_id, text, model, soul_snapshot,
-                    skill_name, react_mode, background, on_complete,
+                    skill_name, react_mode, background,
                 );
 
                 Ok(())
@@ -1578,7 +1575,6 @@ impl AgentRuntimeBuilder {
                     None,  // skill_name
                     None,  // react_mode
                     false, // background
-                    None,  // on_complete
                 );
 
                 Ok(())

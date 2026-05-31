@@ -1099,12 +1099,11 @@ impl AgentHarness {
         skill_name: Option<String>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
-        on_complete: Option<String>,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background, on_complete.as_deref())
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background)
                 .await
             {
                 tracing::error!(
@@ -1129,7 +1128,6 @@ impl AgentHarness {
         skill_name: Option<&str>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
-        on_complete: Option<&str>,
     ) -> AmanResult<String> {
         // 1. Get AgentInstance from registry
         let instance = self
@@ -1353,7 +1351,6 @@ impl AgentHarness {
             let cont_flag = Arc::clone(&interrupt_flag);
             let cont_bg = background;
             let cont_sn = skill_name.map(String::from);
-            let cont_hook = on_complete.map(String::from);
 
             tokio::spawn(async move {
                 harness
@@ -1371,7 +1368,6 @@ impl AgentHarness {
                         cont_flag,
                         cont_bg,
                         cont_sn,
-                        cont_hook,
                     )
                     .await;
             });
@@ -1704,7 +1700,6 @@ impl AgentHarness {
         interrupt_flag: Arc<InterruptFlag>,
         background: bool,
         skill_name: Option<String>,
-        on_complete: Option<String>,
     ) {
         // 1. Wait for detach completion
         let result_event = self
@@ -1743,15 +1738,16 @@ impl AgentHarness {
             }
         };
 
-        // Fire on_complete hook event (skill-level custom event)
-        if let Some(ref hook_name) = on_complete {
+        // Publish skill:completed event so subscribers can react
+        // to any skill's background task completion.
+        if let Some(ref sn) = skill_name {
             let _ = self.bus.publish(Event::new(
                 "agent:harness",
-                EventType::Custom(hook_name.clone()),
+                EventType::Custom("skill:completed".to_owned()),
                 json!({
                     "agent_id": agent_id,
                     "session_id": session_id,
-                    "skill_name": skill_name,
+                    "skill_name": sn,
                     "pid": pid,
                     "success": hook_success,
                     "exit_code": hook_exit_code,

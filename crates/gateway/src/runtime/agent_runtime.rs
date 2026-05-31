@@ -1099,16 +1099,9 @@ impl AgentRuntimeBuilder {
         ));
 
         // ── Subscribe agent:reply_ready → deliver replies via messaging channels ──
-        // Shared set of sessions whose reply was already delivered via
-        // StreamingChatReplyHandler — ChatReplyHandler skips them to avoid
-        // sending a duplicate message.
-        let streamed_sessions: Arc<StdMutex<std::collections::HashSet<String>>> =
-            Arc::new(StdMutex::new(std::collections::HashSet::new()));
-
         struct ChatReplyHandler {
             chat_session_store: Arc<messaging_core::ChatSessionStore>,
             channel_registry: Arc<messaging_core::ChannelRegistry>,
-            streamed_sessions: Arc<StdMutex<std::collections::HashSet<String>>>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for ChatReplyHandler {
@@ -1128,21 +1121,6 @@ impl AgentRuntimeBuilder {
                     return Ok(());
                 }
 
-                // Skip if this session was already streamed — the final
-                // edit delivered the complete reply.
-                {
-                    let streamed = self.streamed_sessions
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    if streamed.contains(session_id) {
-                        tracing::debug!(
-                            session_id = %session_id,
-                            "ChatReplyHandler: skipping — reply already delivered via stream"
-                        );
-                        return Ok(());
-                    }
-                }
-
                 // Only act if this session was initiated from a chat platform.
                 let Some(target) = self.chat_session_store.get(session_id) else {
                     return Ok(());
@@ -1157,6 +1135,9 @@ impl AgentRuntimeBuilder {
                     );
                     return Ok(());
                 };
+
+                // Show typing indicator so the user sees the bot is working.
+                let _ = sender.send_typing(&target).await;
 
                 // Deliver the reply.
                 if let Err(e) = sender.send_text(&target, reply).await {
@@ -1181,7 +1162,6 @@ impl AgentRuntimeBuilder {
             Box::new(ChatReplyHandler {
                 chat_session_store: Arc::clone(&chat_session_store),
                 channel_registry: Arc::clone(&channel_registry),
-                streamed_sessions: Arc::clone(&streamed_sessions),
             }),
         ));
 
@@ -1198,6 +1178,7 @@ impl AgentRuntimeBuilder {
         //  • MarkdownV2 only on the final update, when the text is complete.
         //  • send_typing is called once on stream start for the typing
         //    indicator (lasts ~5 s on Telegram).
+        #[allow(dead_code)]
         struct StreamingChatReplyHandler {
             chat_session_store: Arc<messaging_core::ChatSessionStore>,
             channel_registry: Arc<messaging_core::ChannelRegistry>,
@@ -1418,25 +1399,29 @@ impl AgentRuntimeBuilder {
                 Ok(())
             }
         }
-        let _ = pollster::block_on(bus.subscribe(
-            event_bus::SubscriptionFilter {
-                event_types: Some(vec![
-                    EventType::Custom("agent:reply_stream_start".to_owned()),
-                    EventType::Custom("agent:reply_chunk".to_owned()),
-                    EventType::Custom("agent:reply_stream_done".to_owned()),
-                    EventType::Custom("agent:reply_stream_error".to_owned()),
-                ]),
-                sources: None,
-                priorities: None,
-                payload_match: None,
-            },
-            Box::new(StreamingChatReplyHandler {
-                chat_session_store: Arc::clone(&chat_session_store),
-                channel_registry: Arc::clone(&channel_registry),
-                streamed_sessions: Arc::clone(&streamed_sessions),
-                active_streams: Mutex::new(std::collections::HashMap::new()),
-            }),
-        ));
+        // ── DISABLED: streaming reply handler — progressive message editing
+        // caused flicker on Telegram (message appears, gets edited, appears
+        // as deleted/re-sent). Code kept for future re-enablement.
+        // The typing indicator is now sent from ChatReplyHandler instead.
+        // let _ = pollster::block_on(bus.subscribe(
+        //     event_bus::SubscriptionFilter {
+        //         event_types: Some(vec![
+        //             EventType::Custom("agent:reply_stream_start".to_owned()),
+        //             EventType::Custom("agent:reply_chunk".to_owned()),
+        //             EventType::Custom("agent:reply_stream_done".to_owned()),
+        //             EventType::Custom("agent:reply_stream_error".to_owned()),
+        //         ]),
+        //         sources: None,
+        //         priorities: None,
+        //         payload_match: None,
+        //     },
+        //     Box::new(StreamingChatReplyHandler {
+        //         chat_session_store: Arc::clone(&chat_session_store),
+        //         channel_registry: Arc::clone(&channel_registry),
+        //         streamed_sessions: Arc::clone(&streamed_sessions),
+        //         active_streams: Mutex::new(std::collections::HashMap::new()),
+        //     }),
+        // ));
 
         // ── Subscribe work item event forwarder for dual-write ──
         // Forwards events from work item sessions (session_id matching

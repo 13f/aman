@@ -953,7 +953,6 @@
         return;
       }
       if (
-        eventType === "agent:reply_stream_done" ||
         eventType === "agent:reply_ready" ||
         eventType === "agent:reply_interrupted"
       ) {

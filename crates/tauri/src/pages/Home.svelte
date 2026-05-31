@@ -94,16 +94,19 @@
     working: "\u{1F6E0}\u{FE0F}",   // 🛠️ hammer & wrench
     studying: "\u{1F4DA}",          // 📚 books
     daily_life: "\u{1F3E0}",        // 🏠 house
+    waiting: "\u{23F3}",            // ⏳ hourglass
   };
   const STATE_COLOR: Record<string, string> = {
     working: "#4ade80",
     studying: "#a78bfa",
     daily_life: "#fbbf24",
+    waiting: "#f59e0b",
   };
   const STATE_ANIM: Record<string, string> = {
     working: "anim-spin-slow",
     studying: "anim-float",
     daily_life: "anim-pulse-soft",
+    waiting: "anim-pulse-soft",
   };
 
   const THRESHOLDS = [0, 5, 20, 50, 100, 200];
@@ -198,6 +201,7 @@
     chatting: "Chatting",
     studying: "Studying",
     daily_life: "Daily Life",
+    waiting: "Waiting",
   };
 
   const SYSTEM_STATE_CLASS: Record<string, string> = {

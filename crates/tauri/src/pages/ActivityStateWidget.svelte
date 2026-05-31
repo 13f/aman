@@ -80,6 +80,7 @@
   const SS_LABEL: Record<string, string> = {
     idle: "Idle", working: "Working", chatting: "Chatting",
     studying: "Studying", daily_life: "Daily Life",
+    waiting: "Waiting",
   };
 
   const STATE_EMOJI: Record<string, string> = {
@@ -87,6 +88,7 @@
     working: "\u{1F6E0}\u{FE0F}",  // 🛠️
     studying: "\u{1F4DA}",   // 📚
     daily_life: "\u{1F3E0}", // 🏠
+    waiting: "\u{23F3}",     // ⏳
   };
 
   const COLORS: Record<string, { outer: string; inner: string }> = {

@@ -1373,6 +1373,10 @@ impl AgentHarness {
             });
 
             // Don't go idle — the continuation task handles cleanup.
+            // Set agent to Waiting so the UI reflects the detach-pending state.
+            let _ = self.registry.set_active_session(agent_id, None).await;
+            let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+            self.registry.set_system_state(agent_id, AgentSystemState::Waiting).await;
             return Ok(String::new());
         }
 

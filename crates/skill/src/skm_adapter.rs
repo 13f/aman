@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use skm_core::SkillParser;
 
-use crate::SkillInfo;
+use crate::{ReactMode, SkillInfo};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -68,14 +68,20 @@ impl SkmRegistry {
     #[must_use]
     pub fn parse_one(&self, path: &Path) -> Option<SkillInfo> {
         let meta = self.parser.parse_metadata(path).ok()?;
-        // Extract aman-specific fields (category, array-form triggers) from raw YAML
-        // since skm-core only exposes standard agentskills.io fields.
-        let (category, triggers) = extract_raw_fields(path);
+        // Extract aman-specific fields (category, array-form triggers, react_mode)
+        // from raw YAML since skm-core only exposes standard agentskills.io fields.
+        let (category, triggers, react_mode) = extract_raw_metadata(path);
+        // If not explicitly declared, auto-detect from skill body
+        let react_mode = react_mode.unwrap_or_else(|| {
+            let body = extract_body(path);
+            detect_react_mode_from_body(&body)
+        });
         Some(SkillInfo {
             name: meta.name.as_str().to_owned(),
             description: meta.description,
             category,
             triggers,
+            react_mode,
             path: meta.source_path,
         })
     }
@@ -94,16 +100,21 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<SkillInfo>)
         if path.is_dir() {
             collect_skills(parser, &path, skills);
         } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
-            let (category, triggers) = extract_raw_fields(&path);
+            let (category, triggers, react_mode) = extract_raw_metadata(&path);
+            let react_mode = react_mode.unwrap_or_else(|| {
+                let body = extract_body(&path);
+                detect_react_mode_from_body(&body)
+            });
             if let Ok(meta) = parser.parse_metadata(&path) {
                 skills.push(SkillInfo {
                     name: meta.name.as_str().to_owned(),
                     description: meta.description,
                     category,
                     triggers,
+                    react_mode,
                     path: meta.source_path,
                 });
-            } else if let Some(skill) = fallback_parse_skill(&path, category, triggers) {
+            } else if let Some(skill) = fallback_parse_skill(&path, category, triggers, react_mode) {
                 // skm-core's RawFrontmatter uses HashMap<String, String> for metadata,
                 // which can't parse nested map values (e.g., metadata.hermes.tags).
                 // Fallback to flexible serde_yaml::Value parsing for these cases.
@@ -119,7 +130,7 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<SkillInfo>)
 /// fails when metadata values are maps or arrays (e.g., `metadata.hermes.tags`).
 /// This parser uses flexible `serde_yaml::Value`-based extraction to handle
 /// those files without being strict about the metadata field type.
-fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>) -> Option<SkillInfo> {
+fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>, react_mode: ReactMode) -> Option<SkillInfo> {
     let content = std::fs::read_to_string(path).ok()?;
 
     // Extract YAML frontmatter between --- delimiters
@@ -149,37 +160,41 @@ fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>) ->
         description,
         category,
         triggers,
+        react_mode,
         path: path.to_owned(),
     })
 }
 
-/// Extract aman-specific frontmatter fields (category, array-form triggers)
-/// that skm-core's standard schema doesn't support.
+/// Extract aman-specific frontmatter fields (category, array-form triggers,
+/// react_mode) that skm-core's standard schema doesn't support.
 ///
 /// Checks both top-level `triggers` (aman format) and `metadata.triggers`
 /// (agentskills.io standard format). Falls back from top-level to metadata
 /// for compatibility with skm-core-using tools (e.g. cascade selector).
-fn extract_raw_fields(path: &Path) -> (String, Vec<String>) {
+///
+/// `react_mode` returns `Some(...)` when explicitly declared in frontmatter,
+/// `None` when absent (caller should auto-detect from body).
+fn extract_raw_metadata(path: &Path) -> (String, Vec<String>, Option<ReactMode>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return (String::new(), vec![]),
+        Err(_) => return (String::new(), vec![], None),
     };
     let content = content.trim_start();
     if !content.starts_with("---") {
-        return (String::new(), vec![]);
+        return (String::new(), vec![], None);
     }
     let end = match content[3..].find("\n---") {
         Some(pos) => pos,
-        None => return (String::new(), vec![]),
+        None => return (String::new(), vec![], None),
     };
     let yaml_str = &content[3..3 + end];
     let value: serde_yaml::Value = match serde_yaml::from_str(yaml_str) {
         Ok(v) => v,
-        Err(_) => return (String::new(), vec![]),
+        Err(_) => return (String::new(), vec![], None),
     };
     let mapping = match value.as_mapping() {
         Some(m) => m,
-        None => return (String::new(), vec![]),
+        None => return (String::new(), vec![], None),
     };
 
     let category = mapping
@@ -210,7 +225,85 @@ fn extract_raw_fields(path: &Path) -> (String, Vec<String>) {
     })
     .unwrap_or_default();
 
-    (category, triggers)
+    let react_mode = mapping
+        .get(serde_yaml::Value::String("react_mode".to_owned()))
+        .and_then(|v| v.as_str())
+        .map(|s| match s.trim().to_lowercase().as_str() {
+            "direct" => ReactMode::Direct,
+            _ => ReactMode::Full,
+        });
+
+    (category, triggers, react_mode)
+}
+
+/// Extract the body portion of a SKILL.md file (everything after the YAML
+/// frontmatter `---` delimiter).
+fn extract_body(path: &Path) -> String {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return trimmed.to_owned();
+    }
+    let end = match trimmed[3..].find("\n---") {
+        Some(pos) => pos,
+        None => return trimmed.to_owned(),
+    };
+    // body starts after the closing "---\n"
+    trimmed[3 + end + 4..].to_owned()
+}
+
+/// Auto-detect the execution mode from the skill body content.
+///
+/// Heuristics:
+/// - **Direct**: methodology focuses on running a command/script, has
+///   explicit `detach`/`exec` tool calls, and does NOT mention search,
+///   analysis, research, or multi-step reasoning.
+/// - **Full** (default): anything that involves search, analysis, or
+///   multi-source synthesis.
+fn detect_react_mode_from_body(body: &str) -> ReactMode {
+    let lower = body.to_lowercase();
+
+    // Strong signals for Full mode (analysis/research required)
+    let analysis_signals = [
+        "search", "research", "analyze", "compare ",
+        "web_fetch", "read_skill", "multiple sources",
+        "evaluate", "synthesize", "cross-reference",
+        "investigate", "deep-dive", "survey",
+    ];
+
+    // Strong signals for Direct mode (simple command execution)
+    let direct_signals = [
+        "detach", "direct_act", "run the script",
+        "single call",
+    ];
+
+    let analysis_count = analysis_signals.iter()
+        .filter(|s| lower.contains(*s))
+        .count();
+    let direct_count = direct_signals.iter()
+        .filter(|s| lower.contains(*s))
+        .count();
+
+    // Explicit detach/exec usage with NO analysis → Direct
+    let has_exec_pattern = lower.contains("\"exec\"") || lower.contains("detach: true");
+    if has_exec_pattern && analysis_count == 0 {
+        return ReactMode::Direct;
+    }
+
+    // More analysis signals than direct → Full
+    if analysis_count > direct_count {
+        return ReactMode::Full;
+    }
+
+    // Has any direct signal and no analysis → Direct
+    if direct_count > 0 && analysis_count == 0 {
+        return ReactMode::Direct;
+    }
+
+    // Default: Full ReAct loop
+    ReactMode::Full
 }
 
 /// Extract triggers from a YAML value (array of strings or comma-separated string).

@@ -2,6 +2,7 @@
 name: kanban-worker
 version: "1.0.0"
 category: agent
+react_mode: direct
 description: >
   Background idle-run skill that queries the Team kanban for work items
   assigned to the current agent, executes them if found, or reports idle

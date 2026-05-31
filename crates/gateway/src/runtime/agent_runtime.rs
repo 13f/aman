@@ -229,6 +229,7 @@ impl AgentRuntimeBuilder {
         let skills_dir = super::skill_sync::aman_data_dir().join("skills");
         let _ = std::fs::create_dir_all(&skills_dir);
         let llm_skills = skill::discover_llm_skills(&skills_dir);
+        let llm_skills_arc = Arc::new(StdMutex::new(llm_skills.clone()));
         tracing::info!(count = llm_skills.len(), "discovered LLM instruction skills");
 
         // Build skm-core registry + cascade selector for intelligent skill matching.
@@ -952,6 +953,7 @@ impl AgentRuntimeBuilder {
             self_bridge: super::self_bridge::SelfBridge,
             session_manager: Arc<super::session::SessionManager>,
             agent_registry: Arc<super::agent_registry::AgentRegistry>,
+            llm_skills: Arc<StdMutex<Vec<skill::SkillInfo>>>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for MessageReceivedHandler {
@@ -1064,14 +1066,22 @@ impl AgentRuntimeBuilder {
                 let background = event.payload.get("background")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let skill_name = event.payload.get("skill_name")
+                let skill_name: Option<String> = event.payload.get("skill_name")
                     .and_then(|v| v.as_str())
                     .map(String::from);
+
+                // Resolve the execution mode for this skill (declared or auto-detected)
+                let react_mode = skill_name.as_ref().and_then(|name| {
+                    let skills = self.llm_skills.lock().ok()?;
+                    skills.iter()
+                        .find(|s| s.name == *name)
+                        .map(|s| s.react_mode)
+                });
 
                 // Spawn async ReAct processing — do not block the bus drain loop.
                 self.agent_harness.spawn_process_message(
                     agent_id, session_id, text, model, soul_snapshot,
-                    skill_name, background,
+                    skill_name, react_mode, background,
                 );
 
                 Ok(())
@@ -1090,6 +1100,7 @@ impl AgentRuntimeBuilder {
                 self_bridge: self_bridge.clone(),
                 session_manager: Arc::clone(&session_manager),
                 agent_registry: Arc::clone(&agent_registry),
+                llm_skills: Arc::clone(&llm_skills_arc),
             }),
         ));
 
@@ -1562,6 +1573,7 @@ impl AgentRuntimeBuilder {
                     model,
                     soul_snapshot,
                     None,  // skill_name
+                    None,  // react_mode
                     false, // background
                 );
 
@@ -1709,7 +1721,7 @@ impl AgentRuntimeBuilder {
             inflight_skills,
             metrics,
             capability_registry: Default::default(),
-            llm_skills: StdMutex::new(llm_skills),
+            llm_skills: llm_skills_arc,
             skill_registry,
             cascade_selector,
             notifications,
@@ -2058,7 +2070,7 @@ pub struct AgentRuntime {
     metrics: super::metrics::MetricsRegistry,
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
     /// LLM-instruction skills (SKILL.md frontmatter, Agent Skills standard).
-    llm_skills: StdMutex<Vec<skill::SkillInfo>>,
+    llm_skills: Arc<StdMutex<Vec<skill::SkillInfo>>>,
     /// skm-core registry for cascade selection (None if init failed).
     skill_registry: Option<skm_core::SkillRegistry>,
     /// Cascade selector for skill matching (None if init failed).

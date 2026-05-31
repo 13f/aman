@@ -222,6 +222,7 @@ impl ToolExecutor {
                     "permission_denied: agent '{agent_id}' is not allowed to use tool '{tool_name}'"
                 ),
                 duration_ms: 0,
+                pending_detach: None,
             };
         }
 
@@ -322,12 +323,12 @@ impl ToolExecutor {
 
         // ── Tool execution (or short-circuit if security blocked) ─────
         let tool = self.registry.get(&tool_name);
-        let (success, output) = match tool {
+        let (success, output, pending_detach) = match tool {
             Some(t) => {
                 if let Some(reason) = hardline_blocked {
-                    (false, format!("hardline_blocked: {reason}"))
+                    (false, format!("hardline_blocked: {reason}"), None)
                 } else if let Some(ref reason) = config_blocked {
-                    (false, format!("security_denied: {reason}"))
+                    (false, format!("security_denied: {reason}"), None)
                 } else {
                     // Reset consecutive read tracking when a non-read tool runs.
                     if tool_name != "read" {
@@ -336,9 +337,10 @@ impl ToolExecutor {
 
                     let mut ctx = kernel::context::ToolContext::default();
                     ctx.base.timeout_ms = Some(self.tool_timeout_ms);
-                    // Get the monitor bus before executing so we can
-                    // subscribe to detach completion events after the tool
-                    // returns.
+                    // Wire the agent's local bus so tools can publish
+                    // progress/completion events (e.g. exec in detach mode).
+                    // The actual subscription for detach completion happens
+                    // in execute_tools() below.
                     let monitor_bus: Arc<dyn EventBus> = self
                         .agent_registry
                         .get_local_bus(agent_id)
@@ -355,103 +357,26 @@ impl ToolExecutor {
                         Ok(value) => {
                             // Detect detach results — the exec tool returns
                             // {ok, pid, detached:true} immediately when
-                            // spawning a background process. We must wait
-                            // for the real completion instead of returning
-                            // the spawn result to the LLM.
-                            let is_detach = value
+                            // spawning a background process. Mark as pending
+                            // so the caller (execute_tools) waits for the
+                            // real completion event before feeding to the LLM.
+                            let pending_detach = value
                                 .get("detached")
                                 .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            if is_detach {
-                                let pid = value
-                                    .get("pid")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as u32;
-
-                                // Subscribe to the monitor's completion
-                                // event on the agent's local bus.
-                                let capture = Arc::new(DetachCapture::new());
-                                let sub_filter = event_bus::SubscriptionFilter {
-                                    event_types: Some(vec![
-                                        EventType::Custom("tool:completed".to_owned()),
-                                    ]),
-                                    sources: Some(vec![
-                                        SourceId::from("tool:detached"),
-                                    ]),
-                                    ..Default::default()
-                                };
-                                let sub_id = match monitor_bus
-                                    .subscribe(sub_filter, Box::new(DetachEventHandler::new(&capture)))
-                                    .await
-                                {
-                                    Ok(id) => id,
-                                    Err(e) => {
-                                        // Degrade: return spawn result as-is
-                                        tracing::warn!(
-                                            %pid,
-                                            error = %e,
-                                            "failed to subscribe for detach completion; returning spawn result"
-                                        );
-                                        return react::ToolCallResult {
-                                            id: tool_id,
-                                            tool_name,
-                                            success: true,
-                                            output: value.to_string(),
-                                            duration_ms: start.elapsed().as_millis() as u64,
-                                        };
-                                    }
-                                };
-
-                                // Wait for process exit or interrupt
-                                let result_event = capture
-                                    .wait(self.interrupt_flag.as_deref(), pid)
-                                    .await;
-
-                                // Clean up subscription
-                                monitor_bus.unsubscribe(sub_id).await;
-
-                                match result_event {
-                                    Some(event) => {
-                                        let p = &event.payload;
-                                        let real_success =
-                                            p["success"].as_bool().unwrap_or(false);
-                                        let exit_code =
-                                            p["exit_code"].as_i64().unwrap_or(-1);
-                                        let stdout =
-                                            p["stdout"].as_str().unwrap_or("");
-                                        let stderr =
-                                            p["stderr"].as_str().unwrap_or("");
-
-                                        let output = if real_success {
-                                            format!(
-                                                "Process exited with code {exit_code}\nstdout:\n{stdout}"
-                                            )
-                                        } else {
-                                            format!(
-                                                "Process exited with code {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                                            )
-                                        };
-                                        (real_success, output)
-                                    }
-                                    None => {
-                                        // Interrupted — kill the process
-                                        kill_process(pid);
-                                        (
-                                            false,
-                                            format!("Process (PID {pid}) was interrupted and terminated"),
-                                        )
-                                    }
-                                }
-                            } else {
-                                // Normal (non-detach) result
-                                (true, value.to_string())
-                            }
+                                .unwrap_or(false)
+                                .then(|| {
+                                    value
+                                        .get("pid")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0) as u32
+                                });
+                            (true, value.to_string(), pending_detach)
                         }
-                        Err(e) => (false, format!("tool error: {e}")),
+                        Err(e) => (false, format!("tool error: {e}"), None),
                     }
                 }
             }
-            None => (false, format!("tool not found: {tool_name}")),
+            None => (false, format!("tool not found: {tool_name}"), None),
         };
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -486,6 +411,7 @@ impl ToolExecutor {
             success,
             output,
             duration_ms,
+            pending_detach,
         }
     }
 }
@@ -835,6 +761,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                         success: false,
                         output: format!("tool task panicked or was cancelled: {join_err}"),
                         duration_ms: 0,
+                        pending_detach: None,
                     },
                 )),
             }
@@ -845,6 +772,105 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         all.extend(independent_results);
         all.extend(serial_results);
         all.sort_by_key(|(i, _)| *i);
+
+        // ── Wait for any detached processes to complete ───────────────
+        // Detach results carry pending_detach = Some(pid). Subscribe to
+        // the tool:completed event published by the detached monitor and
+        // block until the process exits (or is interrupted).
+        for (_, result) in &mut all {
+            let Some(pid) = result.pending_detach else {
+                continue;
+            };
+
+            // Publish awaiting event so the UI knows the session is alive
+            let _ = self
+                .publish_to_agent_bus(
+                    &ctx.agent_id,
+                    Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:awaiting_detach".to_owned()),
+                        json!({
+                            "agent_id": ctx.agent_id,
+                            "session_id": ctx.session_id,
+                            "tool_call_id": result.id,
+                            "tool_name": result.tool_name,
+                            "pid": pid,
+                        }),
+                    ),
+                )
+                .await;
+
+            // Get agent's local bus for the completion subscription
+            let monitor_bus: Arc<dyn EventBus> = self
+                .agent_registry
+                .get_local_bus(&ctx.agent_id)
+                .await
+                .unwrap_or_else(|| Arc::clone(&self.bus));
+
+            let capture = Arc::new(DetachCapture::new());
+            let sub_filter = event_bus::SubscriptionFilter {
+                event_types: Some(vec![
+                    EventType::Custom("tool:completed".to_owned()),
+                ]),
+                sources: Some(vec![
+                    SourceId::from("tool:detached"),
+                ]),
+                ..Default::default()
+            };
+            let sub_id = match monitor_bus
+                .subscribe(sub_filter, Box::new(DetachEventHandler::new(&capture)))
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(
+                        %pid,
+                        error = %e,
+                        "failed to subscribe for detach completion; keeping spawn result"
+                    );
+                    continue;
+                }
+            };
+
+            // Wait for process exit or interrupt
+            let interrupt_ref = ctx.interrupt_flag.as_deref();
+            let result_event = capture.wait(interrupt_ref, pid).await;
+
+            // Clean up subscription
+            monitor_bus.unsubscribe(sub_id).await;
+
+            match result_event {
+                Some(event) => {
+                    let p = &event.payload;
+                    let real_success =
+                        p["success"].as_bool().unwrap_or(false);
+                    let exit_code =
+                        p["exit_code"].as_i64().unwrap_or(-1);
+                    let stdout =
+                        p["stdout"].as_str().unwrap_or("");
+                    let stderr =
+                        p["stderr"].as_str().unwrap_or("");
+
+                    result.success = real_success;
+                    if real_success {
+                        result.output = format!(
+                            "Process exited with code {exit_code}\nstdout:\n{stdout}"
+                        );
+                    } else {
+                        result.output = format!(
+                            "Process exited with code {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                        );
+                    }
+                }
+                None => {
+                    // Interrupted — kill the process
+                    kill_process(pid);
+                    result.success = false;
+                    result.output = format!("Process (PID {pid}) was interrupted and terminated");
+                }
+            }
+            result.pending_detach = None;
+        }
 
         let messages: Vec<ChatMessage> = all
             .into_iter()
@@ -1028,12 +1054,13 @@ impl AgentHarness {
         model: String,
         soul_snapshot: SoulSnapshot,
         skill_name: Option<String>,
+        react_mode: Option<skill::ReactMode>,
         background: bool,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), background)
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background)
                 .await
             {
                 tracing::error!(
@@ -1056,6 +1083,7 @@ impl AgentHarness {
         model: &str,
         soul_snapshot: SoulSnapshot,
         skill_name: Option<&str>,
+        react_mode: Option<skill::ReactMode>,
         background: bool,
     ) -> AmanResult<String> {
         // 1. Get AgentInstance from registry
@@ -1213,10 +1241,28 @@ impl AgentHarness {
         // long-running detached processes on /stop.
         ctx.interrupt_flag = Some(Arc::clone(&interrupt_flag));
 
-        // 8. Execute ReAct loop with token budget management
-        let result = self
-            .react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag))
-            .await;
+        // 8. Execute — route to DirectAct or ReAct loop based on skill mode
+        let result = if react_mode == Some(skill::ReactMode::Direct) {
+            let _ = self
+                .publish_to_agent_bus(
+                    agent_id,
+                    Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:direct_act_started".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "skill_name": skill_name,
+                        }),
+                    ),
+                )
+                .await;
+            self.direct_act(&mut ctx, &mut token_budget, Some(&interrupt_flag))
+                .await
+        } else {
+            self.react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag))
+                .await
+        };
 
         // Save conversation history for cross-turn continuity.
         self.session_history.clear(session_id);
@@ -1308,6 +1354,104 @@ impl AgentHarness {
             .await;
 
         Ok(final_reply)
+    }
+
+    /// Direct execution mode for skills that only invoke a fixed script/API.
+    ///
+    /// Unlike the full ReAct loop, this runs exactly 2 turns:
+    /// 1. LLM reads the methodology → outputs tool calls (no reasoning/search)
+    /// 2. Tools execute (blocking for detach) → LLM reports results
+    ///
+    /// No multi-turn exploration, no compression, no token budget tracking.
+    async fn direct_act(
+        &self,
+        ctx: &mut ReActContext,
+        _token_budget: &mut context_manager::TokenBudget,
+        _interrupt: Option<&InterruptFlag>,
+    ) -> Result<ReactOutcome, Error> {
+        // Turn 1: LLM parses the methodology and outputs tool calls.
+        // The methodology is already in ctx.history from the user message.
+        let turn_messages = ctx.history.clone();
+        self.spawn_stream_forwarder(ctx);
+
+        let turn1 = self.engine.execute_turn(ctx, turn_messages).await
+            .map_err(|e| Error::ConfigInvalid {
+                message: format!("direct act tool-selection failed: {e}"),
+            })?;
+        match turn1 {
+            ReActTurn::ToolCalls { content, calls, reasoning_content } => {
+                ctx.stream_cb = None;
+
+                // Record the assistant message with tool calls
+                let formatted_calls = llm::format_tool_calls_for_history(&calls);
+                ctx.history.push(ChatMessage {
+                    role: ChatMessageRole::Assistant,
+                    content,
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: Some(formatted_calls),
+                    reasoning_content,
+                });
+
+                // Publish got_tool_calls for UI consistency
+                let _ = self
+                    .publish_to_agent_bus(
+                        &ctx.agent_id,
+                        Event::new(
+                            "agent:harness",
+                            EventType::Custom("agent:got_tool_calls".to_owned()),
+                            json!({
+                                "agent_id": ctx.agent_id,
+                                "session_id": ctx.session_id,
+                                "turn": ctx.turn,
+                                "tool_calls": calls.iter().map(|c| json!({"name": c.tool_name, "id": c.id})).collect::<Vec<_>>(),
+                            }),
+                        ),
+                    )
+                    .await;
+
+                // Execute tools (blocks here for detached processes)
+                let results = self.engine.execute_tools(ctx, &calls).await.map_err(|e| {
+                    Error::ConfigInvalid {
+                        message: format!("tool execution failed: {e}"),
+                    }
+                })?;
+
+                ctx.history.extend(results);
+                ctx.turn += 1;
+
+                // Turn 2: LLM reports the outcome
+                let turn_messages = ctx.history.clone();
+                let turn2 = self.engine.execute_turn(ctx, turn_messages).await
+                    .map_err(|e| Error::ConfigInvalid {
+                        message: format!("direct act report failed: {e}"),
+                    })?;
+
+                match turn2 {
+                    ReActTurn::Finished { content, .. } => {
+                        ctx.history.push(ChatMessage::assistant(content.clone()));
+                        Ok(ReactOutcome::Finished(content))
+                    }
+                    ReActTurn::ToolCalls { content, .. } => {
+                        // LLM tried to call more tools — unusual for direct mode.
+                        // Accept the partial text and finish.
+                        ctx.history.push(ChatMessage::assistant(content.clone()));
+                        Ok(ReactOutcome::Finished(content))
+                    }
+                    ReActTurn::Error(e) => Err(Error::ConfigInvalid {
+                        message: format!("direct act report failed: {e}"),
+                    }),
+                }
+            }
+            ReActTurn::Finished { content, .. } => {
+                // LLM chose not to use any tools — just return its response
+                ctx.history.push(ChatMessage::assistant(content.clone()));
+                Ok(ReactOutcome::Finished(content))
+            }
+            ReActTurn::Error(e) => Err(Error::ConfigInvalid {
+                message: format!("direct act failed: {e}"),
+            }),
+        }
     }
 
     /// The core think-act-observe loop with M4 token budget management.

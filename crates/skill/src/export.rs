@@ -16,7 +16,7 @@
 use std::path::Path;
 
 use crate::skm_adapter::SkmRegistry;
-use crate::SkillInfo;
+use crate::{ReactMode, SkillInfo};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,6 +119,7 @@ mod tests {
             description: format!("{name} description"),
             category: String::new(),
             triggers: vec![],
+            react_mode: ReactMode::default(),
             path,
         }
     }
@@ -169,6 +170,7 @@ mod tests {
             description: "missing".to_owned(),
             category: String::new(),
             triggers: vec![],
+            react_mode: ReactMode::default(),
             path: tmp.join("nonexistent/SKILL.md"),
         }];
 

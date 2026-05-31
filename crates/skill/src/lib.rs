@@ -644,12 +644,31 @@ impl SkillLoader {
 ///
 /// These are NOT event-driven. The LLM decides when to use them based on
 /// the `name` and `description` injected into its context.
+
+/// The execution mode for a skill — controls how the harness runs it.
+///
+/// Skills that only invoke a fixed script/API (no search, no analysis, no
+/// multi-step reasoning) should use [`Direct`](ReactMode::Direct) to skip the
+/// full ReAct loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReactMode {
+    /// Full ReAct loop — multi-turn think-act-observe (the default).
+    #[default]
+    Full,
+    /// Direct execution — one tool call, wait for completion, one report.
+    Direct,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
     pub category: String,
     pub triggers: Vec<String>,
+    /// How the harness should execute this skill (explicit or auto-detected).
+    #[serde(default)]
+    pub react_mode: ReactMode,
     #[serde(skip)]
     pub path: PathBuf,
 }

@@ -2,6 +2,7 @@
 name: info-hub
 version: "1.0.0"
 category: agent
+react_mode: direct
 description: >
   Use when the user asks about news, recent developments, articles, or information
   retrieval on any topic. Teaches the agent how to search across configured RSS feeds,

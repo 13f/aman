@@ -96,6 +96,10 @@ pub struct ToolCallResult {
     pub success: bool,
     pub output: String,
     pub duration_ms: u64,
+    /// When set, the tool spawned a detached process (PID) that is still
+    /// running. The caller should wait for a `tool:completed` event before
+    /// feeding this result to the LLM.
+    pub pending_detach: Option<u32>,
 }
 
 /// Error types for the ReAct loop.

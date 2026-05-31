@@ -217,20 +217,11 @@ impl NotificationSubscriber {
                             ),
                         );
                     } else {
-                        // Use the LLM's actual reply as the notification body.
-                        // Truncate to avoid overflow in the overlay.
-                        let body = if reply.len() > 200 {
-                            format!("{}…", &reply[..200])
-                        } else if reply.is_empty() {
-                            format!("Completed in {turns} turns")
-                        } else {
-                            reply.to_owned()
-                        };
                         self.store.push(
                             Notification::info(
                                 Category::Idle,
                                 format!("{agent_id} finished {skill_name}"),
-                                body,
+                                format!("Completed in {turns} turns"),
                             ),
                         );
                     }

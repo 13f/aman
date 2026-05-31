@@ -26,6 +26,7 @@
   let sidebarCompact = $state(false);
   let pluginPages = $state<{ id: string; label: string }[]>([]);
   let gatewayPort = $state(9999);
+  let secretsMode = $state("env");
   let hasTeamPlugin = $derived(pluginPages.some(p => p.id === "team"));
   let nonTeamPluginPages = $derived(pluginPages.filter(p => p.id !== "team"));
 
@@ -62,6 +63,14 @@
       ],
     },
   ];
+
+  // Hide Integration when secrets are read from env vars (Keychain unused).
+  let visibleMenuGroups = $derived(
+    menuGroups.map(g => ({
+      ...g,
+      items: g.items.filter(item => !(item.id === "integration" && secretsMode === "env")),
+    })).filter(g => g.items.length > 0)
+  );
 
   let expandedGroups = $state<Record<string, boolean>>({
     apps: true,
@@ -153,6 +162,13 @@
   onMount(async () => {
     await checkOnboarding();
 
+    // Read secrets mode to decide whether to show Integration.
+    try {
+      secretsMode = JSON.parse(await invoke<string>("get_secrets_mode"));
+    } catch {
+      secretsMode = "env";
+    }
+
     // Get gateway port for plugin iframe URLs
     try {
       gatewayPort = await invoke<number>("get_gateway_port");
@@ -192,7 +208,7 @@
     <div class="runtime-dot-row" class:live={runtimeRunning}>
       <span class="runtime-mini-dot"></span>
     </div>
-    {#each menuGroups as group}
+    {#each visibleMenuGroups as group}
       {#each group.items as page}
         {@const isDisabled = !runtimeRunning || page.id === "settings"}
         {#if isDisabled}
@@ -237,7 +253,7 @@
       <span class="runtime-status-dot"></span>
       <span class="runtime-status-label">{runtimeRunning ? "Runtime Online" : "Runtime Offline"}</span>
     </div>
-    {#each menuGroups as group}
+    {#each visibleMenuGroups as group}
       <button class="menu-header" onclick={() => toggleGroup(group.name)}>
         <span class="menu-arrow">{expandedGroups[group.name] ? "▾" : "▸"}</span>
         {group.label}

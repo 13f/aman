@@ -199,6 +199,7 @@ pub fn run() {
             commands::get_active_agent,
             // Multi-agent config/status (P2)
             commands::get_aman_config,
+            commands::get_secrets_mode,
             commands::has_any_provider,
             commands::has_any_agent,
             commands::get_default_model,

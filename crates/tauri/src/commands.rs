@@ -2155,6 +2155,14 @@ pub async fn get_aman_config() -> Result<config::AmanConfig, String> {
 }
 
 #[tauri::command]
+pub async fn get_secrets_mode() -> Result<String, String> {
+    let cfg = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    Ok(serde_json::to_string(&cfg.runtime.security.secrets_mode)
+        .unwrap_or_else(|_| "\"env\"".to_owned()))
+}
+
+#[tauri::command]
 pub async fn has_any_provider() -> Result<bool, String> {
     let config = config::AmanConfig::from_default_path()
         .map_err(|e| format!("读取配置失败: {e}"))?;

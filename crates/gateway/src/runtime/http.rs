@@ -55,7 +55,7 @@ impl HttpServerHandle {
 }
 
 pub async fn serve(runtime: Arc<AgentRuntime>, config: HttpServerConfig) -> kernel::AmanResult<HttpServerHandle> {
-    super::sse::start_sse_tasks(&runtime);
+    super::sse::start_sse_tasks(&runtime).await;
     let router = build_router(runtime);
     let listener = TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;

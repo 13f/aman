@@ -29,8 +29,14 @@ pub(crate) struct SseMessage {
 /// Shared state for the SSE route handler.
 ///
 /// The inner `broadcast::Sender` fans out to all connected SSE clients.
+/// Background task handles are stored so they can be aborted during shutdown
+/// — otherwise Tokio's multi-threaded `Runtime::drop()` blocks indefinitely
+/// waiting for these never-ending tasks to complete.
 pub(crate) struct SseBroadcastState {
     tx: broadcast::Sender<SseMessage>,
+    /// Handles for the background broadcast tasks (A/B/C). Stored so we can
+    /// abort them during shutdown and let the Tokio runtime drop cleanly.
+    tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl SseBroadcastState {
@@ -38,28 +44,45 @@ impl SseBroadcastState {
     pub fn subscribe(&self) -> broadcast::Receiver<SseMessage> {
         self.tx.subscribe()
     }
+
+    /// Abort all background SSE tasks so the Tokio runtime can shut down.
+    pub(crate) async fn stop_background_tasks(&self) {
+        let handles: Vec<tokio::task::JoinHandle<()>> =
+            self.tasks.lock().await.drain(..).collect();
+        for h in handles {
+            h.abort();
+        }
+    }
 }
 
 /// Create an empty SSE broadcast state (no background tasks yet).
 pub(crate) fn new_sse_state() -> Arc<SseBroadcastState> {
     let (tx, _rx) = broadcast::channel::<SseMessage>(256);
-    Arc::new(SseBroadcastState { tx })
+    Arc::new(SseBroadcastState {
+        tx,
+        tasks: tokio::sync::Mutex::new(Vec::new()),
+    })
 }
 
 /// Start the SSE background tasks.
 ///
-/// Two tasks are spawned:
+/// Three tasks are spawned:
 ///  - **Task A**: subscribes to the global EventBus and forwards every event
 ///    as an `event:processed` SSE message.
 ///  - **Task B**: every 2s, emits snapshot messages for metrics, runtime status,
 ///    agent states, and notification unread count.
-pub(crate) fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
-    let tx = runtime.sse_broadcast().tx.clone();
+///  - **Task C**: every 1s, emits the `runtime:updated` heartbeat.
+///
+/// Each task handle is stored in `SseBroadcastState` so that
+/// `stop_background_tasks()` can abort them during shutdown.
+pub(crate) async fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
+    let sse_state = runtime.sse_broadcast();
+    let tx = sse_state.tx.clone();
 
     // Task A — EventBus subscription
     let bus_tx = tx.clone();
     let bus = runtime.bus_cloned();
-    tokio::spawn(async move {
+    let handle_a = tokio::spawn(async move {
         let handler = Box::new(SseBusHandler { tx: bus_tx });
         match bus
             .subscribe(event_bus::SubscriptionFilter::default(), handler)
@@ -78,7 +101,7 @@ pub(crate) fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
     // Task B — periodic snapshots (metrics, agent states, notifications every 2s).
     let snapshot_tx = tx.clone();
     let snapshot_runtime = Arc::clone(runtime);
-    tokio::spawn(async move {
+    let handle_b = tokio::spawn(async move {
         // Emit first snapshot immediately so the UI sees state on connect.
         emit_snapshots(&snapshot_runtime, &snapshot_tx).await;
         let mut interval = tokio::time::interval(Duration::from_secs(2));
@@ -92,7 +115,7 @@ pub(crate) fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
     // Task C — runtime:updated at 1s (faster, per previous polling behaviour).
     let runtime_tx = tx;
     let runtime_clone = Arc::clone(runtime);
-    tokio::spawn(async move {
+    let handle_c = tokio::spawn(async move {
         loop {
             let rt = serde_json::json!({
                 "phase": runtime_clone.phase() as u8,
@@ -106,6 +129,8 @@ pub(crate) fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     });
+
+    sse_state.tasks.lock().await.extend([handle_a, handle_b, handle_c]);
 }
 
 // ── EventBus handler ──────────────────────────────────────────────────────

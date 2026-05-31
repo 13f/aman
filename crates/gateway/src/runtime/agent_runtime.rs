@@ -3172,6 +3172,10 @@ impl AgentRuntime {
 
         match phase {
             RuntimePhase::Phase5 => {
+                // Stop SSE background tasks first — they hold Arc<AgentRuntime>
+                // refs and their never-ending loops would prevent Tokio's
+                // multi-threaded Runtime::drop() from ever returning.
+                self.sse_broadcast.stop_background_tasks().await;
                 self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {

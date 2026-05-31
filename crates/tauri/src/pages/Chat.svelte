@@ -105,6 +105,8 @@
   // Track background idle-run sessions for toast-only notifications
   let backgroundIdleSessions = $state<Set<string>>(new Set());
   let backgroundSessionTags = $state<Map<string, string>>(new Map());
+  // Track sessions that have a detached process running (awaiting detach completion)
+  let awaitingDetachSessions = $state<Set<string>>(new Set());
 
   const paginatedSessions = $derived(
     sessions.slice((currentPage - 1) * sessionsPerPage, currentPage * sessionsPerPage)
@@ -763,6 +765,10 @@
 
   function handleAgentReplyReady(data: any) {
     const sid: string = data.session_id;
+    // Clean up detach tracking if present
+    if (awaitingDetachSessions.has(sid)) {
+      awaitingDetachSessions = new Set([...awaitingDetachSessions].filter(s => s !== sid));
+    }
     // Dedup: if streaming already delivered the reply, skip the fallback
     if (agentHarnessSessions.has(sid)) return;
     // Find existing streaming message for this session and replace its content.
@@ -825,12 +831,16 @@
   }
 
   function handleAgentStreamError(data: any) {
+    const sid: string = data.session_id;
+    if (awaitingDetachSessions.has(sid)) {
+      awaitingDetachSessions = new Set([...awaitingDetachSessions].filter(s => s !== sid));
+    }
     if (activeStreamingMessageId) {
       updateMessage(activeStreamingMessageId, { status: "error" });
       activeStreamingMessageId = null;
     }
     isLoading = false;
-    updateSessionStatus(data.session_id, "idle");
+    updateSessionStatus(sid, "idle");
   }
 
   function handleAgentHistoryCompressed(data: any) {
@@ -936,11 +946,21 @@
     // Completion / error events for any tracked background session.
     if (backgroundIdleSessions.has(data.session_id)) {
       const tagLabel = backgroundSessionTags.get(data.session_id) ?? "Idle";
+      if (eventType === "agent:awaiting_detach") {
+        // Detached process is running — session is still alive, do NOT mark as completed
+        awaitingDetachSessions = new Set([...awaitingDetachSessions, data.session_id]);
+        showToast("info", `DailyLife ${tagLabel} running in background... (PID ${data.pid ?? "?"})`, 6000);
+        return;
+      }
       if (
         eventType === "agent:reply_stream_done" ||
         eventType === "agent:reply_ready" ||
         eventType === "agent:reply_interrupted"
       ) {
+        // If we were awaiting detach, this is the final completion
+        if (awaitingDetachSessions.has(data.session_id)) {
+          awaitingDetachSessions = new Set([...awaitingDetachSessions].filter(s => s !== data.session_id));
+        }
         backgroundIdleSessions.delete(data.session_id);
         backgroundSessionTags.delete(data.session_id);
         showToast("success", `DailyLife ${tagLabel} completed`, 5000);
@@ -1031,6 +1051,9 @@
       case "agent:history_compressed":
         handleAgentHistoryCompressed(data);
         break;
+      case "agent:awaiting_detach":
+        handleAgentAwaitingDetach(data);
+        break;
     }
   }
 
@@ -1072,6 +1095,23 @@
     }];
   }
 
+  function handleAgentAwaitingDetach(data: any) {
+    const sid: string = data.session_id;
+    awaitingDetachSessions = new Set([...awaitingDetachSessions, sid]);
+    // Keep session in "processing" state — do NOT go idle
+    updateSessionStatus(sid, "processing");
+    isLoading = true;
+    // Add a system_event message so the user knows a background process is running
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event",
+      content: `**Running in background...** Process PID ${data.pid ?? "?"} is executing.`,
+      timestamp: new Date().toISOString(),
+      sessionId: sid,
+      status: "completed",
+    }];
+  }
+
   async function handleToolAuthRequired(data: any) {
     // data = { session_id, auth_id, tool_name, arguments_summary, call_id }
     const { auth_id, tool_name, arguments_summary } = data;
@@ -1090,9 +1130,13 @@
 
   function handleLlmError(data: any) {
     // data = { session_id, original_message_id, error, soul_name }
+    const sid: string = data.session_id;
+    if (awaitingDetachSessions.has(sid)) {
+      awaitingDetachSessions = new Set([...awaitingDetachSessions].filter(s => s !== sid));
+    }
     isLoading = false;
     updateMessage(data.original_message_id, { status: "error" });
-    updateSessionStatus(data.session_id, "idle");
+    updateSessionStatus(sid, "idle");
     messages = [...messages, {
       id: crypto.randomUUID(),
       type: "system_event",

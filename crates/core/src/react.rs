@@ -102,6 +102,17 @@ pub struct ToolCallResult {
     pub pending_detach: Option<u32>,
 }
 
+/// Result of executing tool calls via `ReActEngine::execute_tools`.
+#[derive(Debug, Clone)]
+pub struct ToolExecutionResult {
+    /// Chat messages representing the tool results (ready for LLM history).
+    pub messages: Vec<ChatMessage>,
+    /// When `block_on_detach = false` and a tool spawned a detached process,
+    /// this holds the (pid, tool_call_id) so the caller can wait for
+    /// completion later.
+    pub pending_detach: Option<(u32, String)>,
+}
+
 /// Error types for the ReAct loop.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReActError {
@@ -329,10 +340,17 @@ pub trait ReActEngine: Send + Sync {
         messages: Vec<ChatMessage>,
     ) -> Result<ReActTurn, ReActError>;
 
-    /// Execute tool calls and return result messages.
+    /// Execute tool calls and return result messages plus optional
+    /// detach-tracking info.
+    ///
+    /// When `block_on_detach` is `false`, detached processes are spawned and
+    /// their spawn result is returned immediately.  The caller is responsible
+    /// for waiting for the real completion (via the `tool:completed` event
+    /// from `tool:detached`) before feeding the results to the LLM.
     async fn execute_tools(
         &self,
         ctx: &ReActContext,
         calls: &[ParsedToolCall],
-    ) -> Result<Vec<ChatMessage>, ReActError>;
+        block_on_detach: bool,
+    ) -> Result<ToolExecutionResult, ReActError>;
 }

@@ -47,6 +47,13 @@ pub enum ReactOutcome {
     Finished(String),
     /// Loop was interrupted (user /stop), partial content if any.
     Interrupted(String),
+    /// Turn 1 completed and a tool spawned a detached process.
+    /// The harness must run Turn 2 when the process exits.
+    AwaitingDetach {
+        session_id: String,
+        pid: u32,
+        tool_call_id: String,
+    },
 }
 
 // ── Detached process helpers ──────────────────────────────────────────────
@@ -644,7 +651,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         &self,
         ctx: &ReActContext,
         calls: &[ParsedToolCall],
-    ) -> Result<Vec<ChatMessage>, kernel::react::ReActError> {
+        block_on_detach: bool,
+    ) -> Result<kernel::react::ToolExecutionResult, kernel::react::ReActError> {
         let mut executor_builder = ToolExecutor::new(
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.agent_registry),
@@ -774,13 +782,45 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         all.sort_by_key(|(i, _)| *i);
 
         // ── Wait for any detached processes to complete ───────────────
-        // Detach results carry pending_detach = Some(pid). Subscribe to
-        // the tool:completed event published by the detached monitor and
-        // block until the process exits (or is interrupted).
+        // Detach results carry pending_detach = Some(pid).
+        // When block_on_detach is true (react_loop): subscribe to the
+        //   tool:completed event and block until the process exits.
+        // When block_on_detach is false (direct_act): skip the wait,
+        //   publish agent:awaiting_detach, and return the pending info
+        //   so the caller can continue asynchronously.
+        let mut pending_detach: Option<(u32, String)> = None;
         for (_, result) in &mut all {
             let Some(pid) = result.pending_detach else {
                 continue;
             };
+
+            if !block_on_detach {
+                // Non-blocking: record pending info and keep spawn result
+                pending_detach = Some((pid, result.id.clone()));
+
+                // Publish agent:awaiting_detach to BOTH global and local bus
+                let event = Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:awaiting_detach".to_owned()),
+                    json!({
+                        "agent_id": ctx.agent_id,
+                        "session_id": ctx.session_id,
+                        "tool_call_id": result.id,
+                        "tool_name": result.tool_name,
+                        "pid": pid,
+                    }),
+                );
+                // Local bus (for local subscribers)
+                let _ = self
+                    .publish_to_agent_bus(&ctx.agent_id, event.clone())
+                    .await;
+                // Global bus (for SSE → frontend)
+                let _ = self.bus.publish(event).await;
+
+                continue;
+            }
+
+            // ── Blocking path (react_loop) ────────────────────────
 
             // Publish awaiting event so the UI knows the session is alive
             let _ = self
@@ -879,7 +919,10 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             })
             .collect();
 
-        Ok(messages)
+        Ok(kernel::react::ToolExecutionResult {
+            messages,
+            pending_detach,
+        })
     }
 }
 
@@ -1076,7 +1119,7 @@ impl AgentHarness {
     /// This is the main entry point called when a `MESSAGE_RECEIVED` event arrives.
     #[allow(clippy::too_many_lines)]
     pub async fn process_message(
-        &self,
+        self: &Arc<Self>,
         agent_id: &str,
         session_id: &str,
         user_text: &str,
@@ -1224,7 +1267,7 @@ impl AgentHarness {
         let mut ctx = ReActContext::new(
             agent_id.to_owned(),
             session_id.to_owned(),
-            soul_snapshot,
+            soul_snapshot.clone(),
             history,
             available_tools,
             model,
@@ -1264,6 +1307,75 @@ impl AgentHarness {
                 .await
         };
 
+        // ── Handle AwaitingDetach (non-blocking detach path) ──────────
+        // Must be checked BEFORE saving history / unregistering interrupt,
+        // because the continuation task needs both to survive the async gap.
+        if let Ok(ReactOutcome::AwaitingDetach {
+            session_id: ref detach_sid,
+            pid,
+            tool_call_id: ref tcid,
+        }) = result
+        {
+            // Save Turn 1 history for cross-turn continuity
+            self.session_history.clear(session_id);
+            self.session_history.extend(session_id, ctx.history.clone());
+
+            // Publish agent:awaiting_detach to GLOBAL bus for SSE → frontend
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:awaiting_detach".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": detach_sid,
+                        "pid": pid,
+                        "tool_call_id": tcid,
+                        "skill_name": skill_name,
+                        "background": background,
+                    }),
+                ))
+                .await;
+
+            // Spawn continuation — runs Turn 2 after detach completes
+            let harness = Arc::clone(self);
+            let cont_aid = agent_id.to_owned();
+            let cont_sid = detach_sid.clone();
+            let cont_tcid = tcid.clone();
+            let cont_soul = soul_snapshot.clone();
+            let cont_tools = ctx.agent_tools.clone();
+            let cont_model = model.to_owned();
+            let cont_max_out = ctx.token_budget.max_output_tokens;
+            let cont_hist = ctx.history.clone();
+            let cont_turn = ctx.turn;
+            let cont_flag = Arc::clone(&interrupt_flag);
+            let cont_bg = background;
+            let cont_sn = skill_name.map(String::from);
+
+            tokio::spawn(async move {
+                harness
+                    .run_direct_act_continuation(
+                        cont_aid,
+                        cont_sid,
+                        pid,
+                        cont_tcid,
+                        cont_soul,
+                        cont_tools,
+                        cont_model,
+                        cont_max_out,
+                        cont_hist,
+                        cont_turn,
+                        cont_flag,
+                        cont_bg,
+                        cont_sn,
+                    )
+                    .await;
+            });
+
+            // Don't go idle — the continuation task handles cleanup.
+            return Ok(String::new());
+        }
+
         // Save conversation history for cross-turn continuity.
         self.session_history.clear(session_id);
         self.session_history.extend(session_id, ctx.history.clone());
@@ -1293,6 +1405,11 @@ impl AgentHarness {
                 let _ = self.registry.set_active_session(agent_id, None).await;
                 let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
                 return Err(e);
+            }
+            _ => {
+                // AwaitingDetach is handled above — this arm is unreachable
+                // but required for exhaustiveness.
+                unreachable!("AwaitingDetach handled before this point");
             }
         };
 
@@ -1360,8 +1477,10 @@ impl AgentHarness {
     ///
     /// Unlike the full ReAct loop, this runs exactly 2 turns:
     /// 1. LLM reads the methodology → outputs tool calls (no reasoning/search)
-    /// 2. Tools execute (blocking for detach) → LLM reports results
+    /// 2. Tools execute → LLM reports results
     ///
+    /// When a tool spawns a detached process, Turn 1 returns immediately with
+    /// `AwaitingDetach`; a continuation task runs Turn 2 after the process exits.
     /// No multi-turn exploration, no compression, no token budget tracking.
     async fn direct_act(
         &self,
@@ -1410,38 +1529,28 @@ impl AgentHarness {
                     )
                     .await;
 
-                // Execute tools (blocks here for detached processes)
-                let results = self.engine.execute_tools(ctx, &calls).await.map_err(|e| {
+                // Execute tools — non-blocking for detach (direct_act)
+                let exec_result = self.engine.execute_tools(ctx, &calls, false).await.map_err(|e| {
                     Error::ConfigInvalid {
                         message: format!("tool execution failed: {e}"),
                     }
                 })?;
 
-                ctx.history.extend(results);
+                ctx.history.extend(exec_result.messages);
                 ctx.turn += 1;
 
-                // Turn 2: LLM reports the outcome
-                let turn_messages = ctx.history.clone();
-                let turn2 = self.engine.execute_turn(ctx, turn_messages).await
-                    .map_err(|e| Error::ConfigInvalid {
-                        message: format!("direct act report failed: {e}"),
-                    })?;
-
-                match turn2 {
-                    ReActTurn::Finished { content, .. } => {
-                        ctx.history.push(ChatMessage::assistant(content.clone()));
-                        Ok(ReactOutcome::Finished(content))
-                    }
-                    ReActTurn::ToolCalls { content, .. } => {
-                        // LLM tried to call more tools — unusual for direct mode.
-                        // Accept the partial text and finish.
-                        ctx.history.push(ChatMessage::assistant(content.clone()));
-                        Ok(ReactOutcome::Finished(content))
-                    }
-                    ReActTurn::Error(e) => Err(Error::ConfigInvalid {
-                        message: format!("direct act report failed: {e}"),
-                    }),
+                // If a tool spawned a detached process, return early —
+                // the caller spawns a continuation to run Turn 2 later.
+                if let Some((pid, tool_call_id)) = exec_result.pending_detach {
+                    return Ok(ReactOutcome::AwaitingDetach {
+                        session_id: ctx.session_id.clone(),
+                        pid,
+                        tool_call_id,
+                    });
                 }
+
+                // No detach — run Turn 2 immediately
+                self.direct_act_turn2(ctx).await
             }
             ReActTurn::Finished { content, .. } => {
                 // LLM chose not to use any tools — just return its response
@@ -1452,6 +1561,251 @@ impl AgentHarness {
                 message: format!("direct act failed: {e}"),
             }),
         }
+    }
+
+    /// Run the Turn 2 LLM report phase for `direct_act`.
+    ///
+    /// Assumes `ctx.history` already contains Turn 1 assistant message and
+    /// tool results.  Calls the LLM to produce a human-readable summary.
+    async fn direct_act_turn2(&self, ctx: &mut ReActContext) -> Result<ReactOutcome, Error> {
+        let turn_messages = ctx.history.clone();
+        self.spawn_stream_forwarder(ctx);
+
+        let turn2 = self.engine.execute_turn(ctx, turn_messages).await
+            .map_err(|e| Error::ConfigInvalid {
+                message: format!("direct act report failed: {e}"),
+            })?;
+        ctx.stream_cb = None;
+
+        match turn2 {
+            ReActTurn::Finished { content, .. } => {
+                ctx.history.push(ChatMessage::assistant(content.clone()));
+                Ok(ReactOutcome::Finished(content))
+            }
+            ReActTurn::ToolCalls { content, .. } => {
+                // LLM tried to call more tools — unusual for direct mode.
+                // Accept the partial text and finish.
+                ctx.history.push(ChatMessage::assistant(content.clone()));
+                Ok(ReactOutcome::Finished(content))
+            }
+            ReActTurn::Error(e) => Err(Error::ConfigInvalid {
+                message: format!("direct act report failed: {e}"),
+            }),
+        }
+    }
+
+    /// Wait for a detached process to complete, returning the
+    /// `tool:completed` event (or `None` if interrupted).
+    async fn wait_for_detach(
+        &self,
+        agent_id: &str,
+        pid: u32,
+        interrupt_flag: &InterruptFlag,
+    ) -> Option<Event> {
+        let monitor_bus: Arc<dyn EventBus> = self
+            .registry
+            .get_local_bus(agent_id)
+            .await
+            .unwrap_or_else(|| Arc::clone(&self.bus));
+
+        let capture = Arc::new(DetachCapture::new());
+        let sub_filter = event_bus::SubscriptionFilter {
+            event_types: Some(vec![EventType::Custom("tool:completed".to_owned())]),
+            sources: Some(vec![SourceId::from("tool:detached")]),
+            ..Default::default()
+        };
+        let sub_id = match monitor_bus
+            .subscribe(sub_filter, Box::new(DetachEventHandler::new(&capture)))
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    %pid,
+                    error = %e,
+                    "wait_for_detach: failed to subscribe"
+                );
+                return None;
+            }
+        };
+
+        let result = capture.wait(Some(interrupt_flag), pid).await;
+        monitor_bus.unsubscribe(sub_id).await;
+        result
+    }
+
+    /// Replace the tool result for `tool_call_id` in the conversation history
+    /// with the final output (after process exit).
+    fn replace_tool_result(
+        &self,
+        mut history: Vec<ChatMessage>,
+        tool_call_id: &str,
+        final_output: &str,
+    ) -> Vec<ChatMessage> {
+        for msg in &mut history {
+            if msg.tool_call_id.as_deref() == Some(tool_call_id)
+                && msg.role == ChatMessageRole::Tool
+            {
+                msg.content = final_output.to_owned();
+                break;
+            }
+        }
+        history
+    }
+
+    /// Publish final reply and set agent to idle.
+    async fn cleanup_session(&self, agent_id: &str, session_id: &str) {
+        self.unregister_interrupt(session_id);
+        let _ = self.registry.set_active_session(agent_id, None).await;
+        let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+        self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+        let _ = self
+            .publish_to_agent_bus(
+                agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:idle".to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                    }),
+                ),
+            )
+            .await;
+    }
+
+    /// Continuation for `direct_act` after a detached process completes.
+    ///
+    /// Spawned by `process_message` when `direct_act` returns `AwaitingDetach`.
+    /// Waits for the process, updates the tool result in history, runs Turn 2,
+    /// and publishes the final reply.
+    async fn run_direct_act_continuation(
+        self: Arc<Self>,
+        agent_id: String,
+        session_id: String,
+        pid: u32,
+        tool_call_id: String,
+        soul_snapshot: SoulSnapshot,
+        agent_tools: Vec<ToolDescriptor>,
+        model: String,
+        max_output_tokens: u64,
+        history: Vec<ChatMessage>,
+        turn: u32,
+        interrupt_flag: Arc<InterruptFlag>,
+        background: bool,
+        skill_name: Option<String>,
+    ) {
+        // 1. Wait for detach completion
+        let result_event = self
+            .wait_for_detach(&agent_id, pid, &interrupt_flag)
+            .await;
+
+        // 2. Update the tool result in history
+        let final_output = match result_event {
+            Some(event) => {
+                let p = &event.payload;
+                let success = p["success"].as_bool().unwrap_or(false);
+                let exit_code = p["exit_code"].as_i64().unwrap_or(-1);
+                let stdout = p["stdout"].as_str().unwrap_or("");
+                let stderr = p["stderr"].as_str().unwrap_or("");
+                if success {
+                    format!("Process exited with code {exit_code}\nstdout:\n{stdout}")
+                } else {
+                    format!(
+                        "Process exited with code {exit_code}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                    )
+                }
+            }
+            None => {
+                kill_process(pid);
+                format!("Process (PID {pid}) was interrupted and terminated")
+            }
+        };
+        let history =
+            self.replace_tool_result(history, &tool_call_id, &final_output);
+
+        // 3. Rebuild ReActContext and run Turn 2
+        let mut ctx = ReActContext::new(
+            agent_id.clone(),
+            session_id.clone(),
+            soul_snapshot,
+            history,
+            agent_tools,
+            model,
+            self.max_react_turns,
+            self.budget_policy.session_token_limit(),
+            max_output_tokens,
+        );
+        ctx.turn = turn;
+
+        let reply = match self.direct_act_turn2(&mut ctx).await {
+            Ok(ReactOutcome::Finished(reply)) => reply,
+            Ok(ReactOutcome::Interrupted(reply)) => {
+                // Should not happen for direct_act, but handle gracefully
+                reply
+            }
+            Ok(ReactOutcome::AwaitingDetach { .. }) => {
+                // Nested detach — unexpected, treat as error
+                tracing::error!(
+                    agent_id = %agent_id,
+                    session_id = %session_id,
+                    "nested AwaitingDetach in continuation — this is unexpected"
+                );
+                String::new()
+            }
+            Err(e) => {
+                let _ = self
+                    .bus
+                    .publish(Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:reply_stream_error".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "error": e.to_string(),
+                        }),
+                    ))
+                    .await;
+                self.cleanup_session(&agent_id, &session_id).await;
+                return;
+            }
+        };
+
+        // 4. Sanitize and remember
+        let (final_reply, remembered) = process_remember_commands(&reply);
+        for content in &remembered {
+            if let Some(provider) = self.registry.get_memory_provider(&agent_id).await {
+                provider.store(&agent_id, content, vec!["auto".to_owned()]);
+            }
+        }
+        let final_reply = sanitize_api_keys(&final_reply);
+
+        // 5. Save final history
+        self.session_history.clear(&session_id);
+        self.session_history.extend(&session_id, ctx.history);
+
+        // 6. Publish agent:reply_ready to global bus
+        let mut reply_payload = json!({
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "reply": final_reply,
+            "turns_processed": ctx.turn,
+            "background": background,
+        });
+        if let Some(ref sn) = skill_name {
+            reply_payload["skill_name"] = json!(sn);
+        }
+        let _ = self
+            .bus
+            .publish(Event::new(
+                "agent:harness",
+                EventType::Custom("agent:reply_ready".to_owned()),
+                reply_payload,
+            ))
+            .await;
+
+        // 7. Clean up and go idle
+        self.cleanup_session(&agent_id, &session_id).await;
     }
 
     /// The core think-act-observe loop with M4 token budget management.
@@ -1625,11 +1979,12 @@ impl AgentHarness {
                     });
 
                     // Execute tools
-                    let results = self.engine.execute_tools(ctx, &calls).await.map_err(|e| {
+                    let exec_result = self.engine.execute_tools(ctx, &calls, true).await.map_err(|e| {
                         Error::ConfigInvalid {
                             message: format!("tool execution failed: {e}"),
                         }
                     })?;
+                    let results = exec_result.messages;
 
                     // Publish agent:tool_results_fed_back to local bus
                     let _ = self

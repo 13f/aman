@@ -13,6 +13,7 @@ use info_hub::InfoHubPlugin;
 use messaging_core;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
+use kernel::security::ApprovalCache;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
@@ -510,11 +511,19 @@ impl AgentRuntimeBuilder {
         let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
         all_candidates.extend(self.extra_plugins);
 
+        // Initialize the approval cache — generates ~/.aman/.security-key
+        // on first startup and creates ~/.aman/approvals/ as needed.
+        let aman_root = super::skill_sync::aman_data_dir();
+        let approval_cache = match ApprovalCache::new(aman_root.clone()) {
+            Ok(cache) => Some(cache),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to initialize approval cache — plugin capability approvals will not be persisted");
+                None
+            }
+        };
+
         // Discover subprocess plugins from ~/.aman/plugins/
-        let home_for_plugins = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| "/tmp".to_owned());
-        let plugins_dir = PathBuf::from(&home_for_plugins).join(".aman").join("plugins");
+        let plugins_dir = aman_root.join("plugins");
         let discovered = plugin::discover_subprocess_plugins(&plugins_dir);
         if !discovered.is_empty() {
             tracing::info!(count = discovered.len(), dir = %plugins_dir.display(), "discovered subprocess plugins");
@@ -525,12 +534,16 @@ impl AgentRuntimeBuilder {
             Arc::clone(&agent_registry),
             Arc::clone(&bus),
         ));
-        let mut plugin_loader = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
+        let mut plugin_loader_builder = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
             Arc::clone(&hook_registry),
             Arc::clone(&memory_provider_registry),
         ))).with_method_handler(rpc_handler);
+        if let Some(cache) = approval_cache {
+            plugin_loader_builder = plugin_loader_builder.with_approval_cache(cache);
+        }
+        let mut plugin_loader = plugin_loader_builder;
         if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
             tracing::error!(error = %e, "failed to load built-in plugins");
         }

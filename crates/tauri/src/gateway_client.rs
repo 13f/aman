@@ -878,8 +878,8 @@ impl GatewayClient {
             Err(status_error("explore_start", resp.status()).await)
         }
     }
-    pub async fn idle_run(&self, tag: &str, agent_key: Option<&str>) -> Result<Value, String> {
-        let mut body = serde_json::json!({ "tag": tag });
+    pub async fn idle_run(&self, tag: &str, agent_key: Option<&str>, background: bool) -> Result<Value, String> {
+        let mut body = serde_json::json!({ "tag": tag, "background": background });
         if let Some(k) = agent_key {
             body["agent_key"] = serde_json::json!(k);
         }

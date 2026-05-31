@@ -102,6 +102,9 @@
   let dailyLifeOpen = $state(false);
   let deletingSessionId = $state<string | null>(null);
   let idleAvailability = $state<Record<string, { work: boolean; study: boolean; fun: boolean }>>({});
+  // Track background idle-run sessions for toast-only notifications
+  let backgroundIdleSessions = $state<Set<string>>(new Set());
+  let backgroundSessionTags = $state<Map<string, string>>(new Map());
 
   const paginatedSessions = $derived(
     sessions.slice((currentPage - 1) * sessionsPerPage, currentPage * sessionsPerPage)
@@ -502,12 +505,13 @@
       const result = await invoke<{ session_id: string; skill_name: string; tag: string }>("idle_run", {
         tag,
         agentKey: activeAgentKey || null,
+        background: true,
       });
-      const count = sessions.length + 1;
       const label = tag.charAt(0).toUpperCase() + tag.slice(1);
-      sessions = [{ id: result.session_id, title: `${label} ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
-      activeSessionId = result.session_id;
-      currentPage = 1;
+      // Track as background session — don't switch activeSessionId or create local session
+      backgroundIdleSessions.add(result.session_id);
+      backgroundSessionTags.set(result.session_id, label);
+      showToast("info", `DailyLife ${label} started`, 4000);
     } catch (e) {
       const err = String(e);
       if (err.includes("执行失败")) {
@@ -515,7 +519,6 @@
       } else {
         showToast("error", `${tag} run failed: ${err}`);
       }
-    } finally {
       idleRunningTag = null;
     }
   }
@@ -912,6 +915,54 @@
         currentSoulName = data.soul_name;
         showToast("info", `SOUL switched to "${data.soul_name}"`);
       }
+      return;
+    }
+
+    // ── Background idle-run session events ──
+    // Intercept before active-session guard so we can toast without
+    // switching the chat view. Covers both manual (dropdown) and
+    // automatic (boredom-driven) idle runs in one unified path.
+
+    // Automatic boredom runs: MessageReceived event carries background=true.
+    if (eventType === "MessageReceived" && data?.background === true) {
+      backgroundIdleSessions.add(data.session_id);
+      const rawTag: string = data.tag ?? "";
+      const tagLabel = rawTag ? rawTag.charAt(0).toUpperCase() + rawTag.slice(1) : "Idle";
+      backgroundSessionTags.set(data.session_id, tagLabel);
+      showToast("info", `DailyLife ${tagLabel} started`, 4000);
+      return;
+    }
+
+    // Completion / error events for any tracked background session.
+    if (backgroundIdleSessions.has(data.session_id)) {
+      const tagLabel = backgroundSessionTags.get(data.session_id) ?? "Idle";
+      if (
+        eventType === "agent:reply_stream_done" ||
+        eventType === "agent:reply_ready" ||
+        eventType === "agent:reply_interrupted"
+      ) {
+        backgroundIdleSessions.delete(data.session_id);
+        backgroundSessionTags.delete(data.session_id);
+        showToast("success", `DailyLife ${tagLabel} completed`, 5000);
+        // Release the manual-trigger button if no other background runs active
+        if (idleRunningTag && backgroundIdleSessions.size === 0) {
+          idleRunningTag = null;
+        }
+        return;
+      }
+      if (
+        eventType === "agent:reply_stream_error" ||
+        eventType === "llm_error"
+      ) {
+        backgroundIdleSessions.delete(data.session_id);
+        backgroundSessionTags.delete(data.session_id);
+        showToast("error", `DailyLife ${tagLabel} failed`, 5000);
+        if (idleRunningTag && backgroundIdleSessions.size === 0) {
+          idleRunningTag = null;
+        }
+        return;
+      }
+      // Drop all other events for background sessions (tool calls, chunks, etc.)
       return;
     }
 

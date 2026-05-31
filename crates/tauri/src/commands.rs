@@ -878,9 +878,10 @@ pub async fn idle_run(
     state: State<'_, AppState>,
     tag: String,
     agent_key: Option<String>,
+    background: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let client = require_gateway(&state).await?;
-    client.idle_run(&tag, agent_key.as_deref()).await
+    client.idle_run(&tag, agent_key.as_deref(), background.unwrap_or(false)).await
 }
 
 /// Fetch per-agent work/study/fun idle-run button availability.

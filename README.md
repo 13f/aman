@@ -152,6 +152,22 @@ sidebar item because keychain writes would be ignored at runtime.
 - **DLQ & Retry** — failed events go to a dead-letter queue for manual
   or automated retry with full trace context.
 
+## Security
+
+A defense-in-depth architecture covering input, execution, output, and data layers.
+See [docs/security-harness.md](docs/security-harness.md) for the full catalog.
+
+| Layer | Mechanisms |
+|-------|-----------|
+| **Input** | Three-tier prompt-injection sanitization (block / replace-msg / replace-token); trust-level gates (Trusted / Untrusted / Sandboxed); system prompt hardening |
+| **Execution** | Hardline tool blocks — `rm -rf /`, fork bombs, raw disk writes, permission escalations, `DROP TABLE` — **not approvable**; user auth flow with 60s timeout + per-session cache |
+| **Output** | Fail-closed validation on every LLM reply (secret leak, prompt leak, tool injection); 7-pattern log redaction on every line via `RedactWriter`; `#![forbid(unsafe_code)]` across 21+ crates |
+| **Data** | Secrets: AES-256-GCM encrypted at rest, `mlock` + `zeroize` in memory, multi-backend resolution (env / keychain / 1Password / Vault / AWS). WAL with `fsync` + atomic writes, permission-restricted cache files (`0o600`/`0o700`) |
+| **Infra** | 4-level event bus backpressure (DoS protection); event deduplication (Bloom + LRU); Bearer token auth + `x-aman-confirm` for destructive ops; config cross-reference validation at startup |
+
+Each layer is **fail-closed**: timeouts, validation failures, and unrecognized
+inputs all default to rejecting the action.
+
 ## Architecture Overview
 
 ```

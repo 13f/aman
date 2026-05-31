@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
@@ -30,7 +28,6 @@ fn known_context_windows() -> HashMap<&'static str, usize> {
     m.insert("mistral-large", 32_768);
     m.insert("mistral-medium", 32_768);
     m.insert("qwen-max", 32_768);
-    // Default for unknown models
     m
 }
 
@@ -60,6 +57,66 @@ pub fn context_window_for_model(model: &str) -> usize {
     32_768
 }
 
+// ── TokenBudgetPolicy (migrated from kernel::budget) ──
+
+/// Pluggable token budget policy for ReAct sessions.
+///
+/// Determines the session-level token budget, model context window,
+/// and output token limit. The default implementation mirrors the
+/// original hardcoded behavior with known model mappings.
+pub trait TokenBudgetPolicy: Send + Sync {
+    /// Maximum tokens allowed across the entire session.
+    fn session_token_limit(&self) -> u64;
+
+    /// Look up the context window size for a given model name.
+    fn context_window(&self, model: &str) -> usize;
+
+    /// Maximum output tokens per LLM call.
+    /// `agent_value` is the agent config's max_output_tokens, if set.
+    fn max_output_tokens(&self, model: &str, agent_value: Option<usize>) -> usize;
+}
+
+/// Default policy matching the original hardcoded behavior.
+pub struct DefaultTokenBudgetPolicy {
+    session_token_limit: u64,
+}
+
+impl DefaultTokenBudgetPolicy {
+    pub fn new() -> Self {
+        Self {
+            session_token_limit: 100_000,
+        }
+    }
+
+    pub fn with_session_limit(limit: u64) -> Self {
+        Self {
+            session_token_limit: limit,
+        }
+    }
+}
+
+impl Default for DefaultTokenBudgetPolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TokenBudgetPolicy for DefaultTokenBudgetPolicy {
+    fn session_token_limit(&self) -> u64 {
+        self.session_token_limit
+    }
+
+    fn context_window(&self, model: &str) -> usize {
+        context_window_for_model(model)
+    }
+
+    fn max_output_tokens(&self, _model: &str, agent_value: Option<usize>) -> usize {
+        agent_value.unwrap_or(0)
+    }
+}
+
+// ── TokenBudget (migrated from gateway::token_budget) ──
+
 /// Token budget tracker with model-aware context window management.
 ///
 /// Tracks per-component token usage (system, tool schemas, history, outputs)
@@ -67,7 +124,6 @@ pub fn context_window_for_model(model: &str) -> usize {
 /// trigger (e.g. 80% of context window) with anti-thrashing to prevent
 /// repeated ineffective compressions.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct TokenBudget {
     /// Model name used for context window lookup.
     pub model: String,
@@ -124,7 +180,11 @@ impl TokenBudget {
     }
 
     /// Create with explicit context window (bypasses model lookup).
-    pub fn with_window(model: impl Into<String>, context_window: usize, max_output_tokens: usize) -> Self {
+    pub fn with_window(
+        model: impl Into<String>,
+        context_window: usize,
+        max_output_tokens: usize,
+    ) -> Self {
         let model = model.into();
         let max_prompt_tokens = context_window.saturating_sub(max_output_tokens);
         Self {
@@ -179,7 +239,8 @@ impl TokenBudget {
             let hard_limit = (self.context_window as f64 * 0.95) as usize;
             return self.total_prompt_tokens() > hard_limit;
         }
-        let threshold_tokens = (self.context_window as f64 * self.compression_threshold) as usize;
+        let threshold_tokens =
+            (self.context_window as f64 * self.compression_threshold) as usize;
         self.total_prompt_tokens() >= threshold_tokens
     }
 
@@ -218,7 +279,8 @@ impl TokenBudget {
     /// pauses compression after 2 consecutive ineffective runs.
     pub fn record_compression(&mut self, tokens_saved: usize) {
         if self.pre_compression_total > 0 {
-            let savings_pct = (tokens_saved as f64 / self.pre_compression_total as f64) * 100.0;
+            let savings_pct =
+                (tokens_saved as f64 / self.pre_compression_total as f64) * 100.0;
             if savings_pct < 10.0 {
                 self.ineffective_compression_count += 1;
             } else {
@@ -340,10 +402,8 @@ mod tests {
         let mut budget = TokenBudget::with_window("test", 1000, 0);
         budget.set_system_tokens(100);
         // 100 (system) + estimated tokens from messages
-        let messages = vec![
-            kernel::react::ChatMessage::user("a".repeat(3000)), // ~1000 est tokens
-        ];
-        // 100 system + 1000 history = 1100 >= 800 → true
+        let messages = vec![kernel::react::ChatMessage::user("a".repeat(3000))]; // ~1000 est tokens
+                                                                                 // 100 system + 1000 history = 1100 >= 800 → true
         assert!(budget.preflight_check(&messages));
         let empty: Vec<kernel::react::ChatMessage> = vec![];
         assert!(!budget.preflight_check(&empty));
@@ -387,5 +447,14 @@ mod tests {
         assert_eq!(budget.current_history_tokens, 150);
         budget.record_usage(200, 30);
         assert_eq!(budget.current_history_tokens, 380);
+    }
+
+    #[test]
+    fn test_default_policy() {
+        let policy = DefaultTokenBudgetPolicy::new();
+        assert_eq!(policy.session_token_limit(), 100_000);
+        assert_eq!(policy.context_window("gpt-4o"), 128_000);
+        assert_eq!(policy.max_output_tokens("any", Some(4096)), 4096);
+        assert_eq!(policy.max_output_tokens("any", None), 0);
     }
 }

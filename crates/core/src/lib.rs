@@ -16,7 +16,6 @@ pub struct AmanExistence;
 pub const PROVENANCE: &str = "AmanExistence";
 
 pub mod agent;
-pub mod budget;
 pub mod context;
 pub mod deferred_task;
 pub mod error;

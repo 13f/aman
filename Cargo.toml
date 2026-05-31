@@ -50,6 +50,7 @@ members = [
   "crates/skm-core-patched",
   "crates/llm-api",
   "crates/eval",
+  "crates/context-manager",
 ]
 default-members = [
   "crates/core",
@@ -67,6 +68,7 @@ default-members = [
   "crates/persistence",
   "crates/secret",
   "crates/config",
+  "crates/context-manager",
   "crates/cli",
   "crates/sdk",
   "crates/sdk/examples/hello-skill",

@@ -10,7 +10,7 @@
 //! Session ID format: `{agent_id}:work:{project_key}:{work_id}`
 
 use kernel::AmanResult;
-use crate::runtime::history_compressor::{HistoryCompressor, CompressionStrategy};
+use context_manager::{HistoryCompressor, CompressionStrategy};
 
 /// Build a deterministic session ID for a work item.
 ///

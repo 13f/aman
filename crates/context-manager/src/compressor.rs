@@ -1,15 +1,12 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-#![allow(dead_code)]
-
 use kernel::react::ChatMessage;
 
-use crate::runtime::token_budget::TokenBudget;
+use crate::token_budget::TokenBudget;
 
 /// Compression strategy for reducing conversation history when token budget is exceeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum CompressionStrategy {
     /// Drop the oldest messages until under threshold.
     Truncate,
@@ -483,6 +480,7 @@ impl HistoryCompressor {
 
 /// Identified segment boundaries for three-segment compression.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ThreeSegments {
     /// Index where HEAD ends and MIDDLE begins.
     head_len: usize,
@@ -552,7 +550,12 @@ mod tests {
             .collect()
     }
 
-    fn make_tool_pair(user_idx: usize, tool_name: &str, content: &str, call_id: &str) -> [ChatMessage; 2] {
+    fn make_tool_pair(
+        _user_idx: usize,
+        tool_name: &str,
+        content: &str,
+        call_id: &str,
+    ) -> [ChatMessage; 2] {
         use serde_json::json;
         let assistant = ChatMessage {
             role: kernel::react::ChatMessageRole::Assistant,
@@ -650,9 +653,11 @@ mod tests {
         let [a2, t2] = make_tool_pair(1, "read", &long_content, "call_2");
         let mut history = vec![
             ChatMessage::user("read the file"),
-            a1, t1,
+            a1,
+            t1,
             ChatMessage::user("read it again"),
-            a2, t2,
+            a2,
+            t2,
         ];
 
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
@@ -660,7 +665,6 @@ mod tests {
 
         assert_eq!(replaced, 1);
         assert!(saved > 0);
-        // The second tool result is at index 5 (user at 3, assistant at 4, tool at 5)
         assert!(history[5].content.starts_with("[Duplicate tool output:"));
     }
 
@@ -668,10 +672,7 @@ mod tests {
     fn test_dedup_different_outputs_preserved() {
         let [a1, t1] = make_tool_pair(0, "read", "file A contents", "call_1");
         let [a2, t2] = make_tool_pair(1, "read", "file B contents", "call_2");
-        let mut history = vec![
-            ChatMessage::user("read"),
-            a1, t1, a2, t2,
-        ];
+        let mut history = vec![ChatMessage::user("read"), a1, t1, a2, t2];
 
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
         let (replaced, _) = compressor.dedup_tool_outputs(&mut history);
@@ -745,31 +746,31 @@ mod tests {
         }
         content.push_str("Process exited with code 0\n");
         let [a1, t1] = make_tool_pair(0, "terminal", &content, "call_1");
-        let mut history = vec![
-            ChatMessage::user("run command"),
-            a1, t1,
-        ];
+        let mut history = vec![ChatMessage::user("run command"), a1, t1];
 
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
         let (summarized, saved) = compressor.summarize_tool_results(&mut history, 0, 3);
 
         assert_eq!(summarized, 1, "should have summarized 1 tool result");
         assert!(saved > 0);
-        assert!(history[2].content.contains("→ exit 0"),
-            "summary should contain exit code: {}", history[2].content);
+        assert!(
+            history[2].content.contains("→ exit 0"),
+            "summary should contain exit code: {}",
+            history[2].content
+        );
         assert!(history[2].content.contains("lines output"));
     }
 
     #[test]
     fn test_summarize_skips_tail() {
-        let [a1, t1] = make_tool_pair(0, "terminal",
+        let [a1, t1] = make_tool_pair(
+            0,
+            "terminal",
             &("line ".to_string().repeat(100)),
-            "call_1");
+            "call_1",
+        );
         let original = t1.content.clone();
-        let mut history = vec![
-            ChatMessage::user("run"),
-            a1, t1,
-        ];
+        let mut history = vec![ChatMessage::user("run"), a1, t1];
 
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
         // tail_start = 2 → skips the tool result at index 2
@@ -788,16 +789,17 @@ mod tests {
         budget.current_history_tokens = 5000;
         budget.set_history_tokens(5000);
 
-        let threshold_tokens = (budget.context_window as f64 * budget.compression_threshold) as usize;
+        let threshold_tokens =
+            (budget.context_window as f64 * budget.compression_threshold) as usize;
         let config = CompressorConfig {
             protect_head_messages: 2,
             ..Default::default()
         };
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
-        let segments = compressor.identify_segments(&history, &budget, threshold_tokens, &config);
+        let segments =
+            compressor.identify_segments(&history, &budget, threshold_tokens, &config);
 
         assert_eq!(segments.head_len, 2);
-        // The first 2 messages should survive
     }
 
     #[test]
@@ -816,20 +818,27 @@ mod tests {
 
         let mut budget = TokenBudget::with_window("test", 5000, 0);
         budget.compression_threshold = 0.80;
-        let total: usize = history.iter()
+        let total: usize = history
+            .iter()
             .map(|m| TokenBudget::estimate_tokens(&m.content))
             .sum();
         budget.set_history_tokens(total);
 
-        let threshold_tokens = (budget.context_window as f64 * budget.compression_threshold) as usize;
+        let threshold_tokens =
+            (budget.context_window as f64 * budget.compression_threshold) as usize;
         let config = CompressorConfig::default();
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
-        let segments = compressor.identify_segments(&history, &budget, threshold_tokens, &config);
+        let segments =
+            compressor.identify_segments(&history, &budget, threshold_tokens, &config);
 
         // Tail should include the last few messages
         assert!(segments.tail_start < history.len());
-        assert!(segments.tail_start > segments.head_len,
-            "tail_start={} should be > head_len={}", segments.tail_start, segments.head_len);
+        assert!(
+            segments.tail_start > segments.head_len,
+            "tail_start={} should be > head_len={}",
+            segments.tail_start,
+            segments.head_len
+        );
         assert!(history.len() - segments.tail_start >= config.min_tail_messages);
     }
 
@@ -842,7 +851,8 @@ mod tests {
             ChatMessage::user("msg 2"),
             ChatMessage::assistant("reply 3".to_owned()),
             ChatMessage::user("msg 4"),
-            a1, t1,  // tool pair at indices 6, 7
+            a1,
+            t1, // tool pair at indices 6, 7
             ChatMessage::user("final user msg 8"),
         ];
 
@@ -850,14 +860,16 @@ mod tests {
         budget.current_history_tokens = 3000;
         budget.set_history_tokens(3000);
 
-        let threshold_tokens = (budget.context_window as f64 * budget.compression_threshold) as usize;
+        let threshold_tokens =
+            (budget.context_window as f64 * budget.compression_threshold) as usize;
         let config = CompressorConfig {
             protect_head_messages: 2,
             min_tail_messages: 3,
             ..Default::default()
         };
         let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
-        let mut segments = compressor.identify_segments(&history, &budget, threshold_tokens, &config);
+        let mut segments =
+            compressor.identify_segments(&history, &budget, threshold_tokens, &config);
 
         let original_tail_start = segments.tail_start;
         compressor.align_boundaries(&history, &mut segments);

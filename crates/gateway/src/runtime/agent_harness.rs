@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
-use kernel::budget::TokenBudgetPolicy;
+use context_manager::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest};
 use kernel::prompt::PromptPipeline;
@@ -674,7 +674,7 @@ pub struct AgentHarness {
     /// Pluggable agent routing strategy.
     agent_router: Box<dyn AgentRouter>,
     /// Compression configuration.
-    compression_config: crate::runtime::history_compressor::CompressorConfig,
+    compression_config: context_manager::CompressorConfig,
 }
 
 impl AgentHarness {
@@ -687,7 +687,7 @@ impl AgentHarness {
         session_history: Box<dyn SessionHistoryStore>,
         budget_policy: Box<dyn TokenBudgetPolicy>,
         agent_router: Box<dyn AgentRouter>,
-        compression_config: crate::runtime::history_compressor::CompressorConfig,
+        compression_config: context_manager::CompressorConfig,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
@@ -911,15 +911,15 @@ impl AgentHarness {
         // Values must come from config, never silently defaulted.
         let mut token_budget = match (instance.descriptor.max_context_tokens, instance.descriptor.max_output_tokens) {
             (Some(ctx), Some(out)) => {
-                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, out)
+                context_manager::TokenBudget::with_window(model, ctx, out)
             }
             (Some(ctx), None) => {
-                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, self.budget_policy.max_output_tokens(model, instance.descriptor.max_output_tokens))
+                context_manager::TokenBudget::with_window(model, ctx, self.budget_policy.max_output_tokens(model, instance.descriptor.max_output_tokens))
             }
             _ => {
                 let ctx = self.budget_policy.context_window(model);
                 let out = self.budget_policy.max_output_tokens(model, None);
-                crate::runtime::token_budget::TokenBudget::with_window(model, ctx, out)
+                context_manager::TokenBudget::with_window(model, ctx, out)
             }
         };
         // Emit config warning events when token budget values are 0 (not configured).
@@ -954,19 +954,19 @@ impl AgentHarness {
                 .await;
         }
         // Estimate system prompt tokens
-        token_budget.set_system_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
+        token_budget.set_system_tokens(context_manager::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
         // Estimate tool schema tokens
         let tool_schema_text: String = available_tools
             .iter()
             .map(|t| format!("{}: {}", t.name, t.parameters))
             .collect::<Vec<_>>()
             .join("\n");
-        token_budget.set_tool_schema_tokens(crate::runtime::token_budget::TokenBudget::estimate_tokens(&tool_schema_text));
+        token_budget.set_tool_schema_tokens(context_manager::TokenBudget::estimate_tokens(&tool_schema_text));
         // Estimate history tokens from loaded session history so the budget
         // check in react_loop triggers compression before the first LLM call.
         let initial_history_tokens: usize = history
             .iter()
-            .map(|m| crate::runtime::token_budget::TokenBudget::estimate_tokens(&m.content))
+            .map(|m| context_manager::TokenBudget::estimate_tokens(&m.content))
             .sum();
         token_budget.set_history_tokens(initial_history_tokens);
 
@@ -1105,11 +1105,11 @@ impl AgentHarness {
     async fn react_loop(
         &self,
         ctx: &mut ReActContext,
-        token_budget: &mut crate::runtime::token_budget::TokenBudget,
+        token_budget: &mut context_manager::TokenBudget,
         interrupt: Option<&InterruptFlag>,
     ) -> Result<ReactOutcome, Error> {
-        let compressor = crate::runtime::history_compressor::HistoryCompressor::new(
-            crate::runtime::history_compressor::CompressionStrategy::Truncate,
+        let compressor = context_manager::HistoryCompressor::new(
+            context_manager::CompressionStrategy::Truncate,
         );
 
         // Track skill body so we can re-inject scoring methodology later (Task #18).
@@ -1149,7 +1149,7 @@ impl AgentHarness {
             let history_tokens: usize = ctx
                 .history
                 .iter()
-                .map(|m| crate::runtime::token_budget::TokenBudget::estimate_tokens(&m.content))
+                .map(|m| context_manager::TokenBudget::estimate_tokens(&m.content))
                 .sum();
             token_budget.set_history_tokens(history_tokens);
 
@@ -1236,7 +1236,7 @@ impl AgentHarness {
                     // Track output tokens only — the next iteration re-estimates
                     // history from scratch, so we don't double-count prompt tokens.
                     let completion_tokens =
-                        crate::runtime::token_budget::TokenBudget::estimate_tokens(content);
+                        context_manager::TokenBudget::estimate_tokens(content);
                     token_budget.record_usage(0, completion_tokens);
                     return Ok(ReactOutcome::Finished(content.clone()));
                 }

@@ -1142,6 +1142,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
+name = "context-manager"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "kernel",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2511,6 +2522,7 @@ dependencies = [
  "axum",
  "blake3",
  "config",
+ "context-manager",
  "daily-life",
  "eval",
  "event-bus",

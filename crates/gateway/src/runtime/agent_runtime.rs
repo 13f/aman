@@ -665,7 +665,7 @@ impl AgentRuntimeBuilder {
         }
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
-        let compressor_config = super::history_compressor::CompressorConfig {
+        let compressor_config = context_manager::CompressorConfig {
             tail_budget_ratio: config.compression.tail_budget_ratio,
             protect_head_messages: config.compression.protect_head_messages,
             min_tail_messages: config.compression.min_tail_messages,
@@ -680,7 +680,7 @@ impl AgentRuntimeBuilder {
             Arc::clone(&bus),
             Box::new(self_bridge.prompt_pipeline()),
             Box::new(InMemorySessionHistory::new()),
-            Box::new(kernel::budget::DefaultTokenBudgetPolicy::new()),
+            Box::new(context_manager::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
             compressor_config,
         ));

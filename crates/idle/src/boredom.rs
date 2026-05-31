@@ -269,6 +269,7 @@ mod tests {
             activities: vec![
                 BoredomActivity { tag: "idle".into(), weight: 7.5 },
                 BoredomActivity { tag: "work".into(), weight: 1.0 },
+                BoredomActivity { tag: "exploration".into(), weight: 0.3 },
             ],
             work_pressure: None,
         }

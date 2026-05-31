@@ -397,7 +397,7 @@ impl Default for IdleConfig {
             enabled: true,
             reflection: ReflectionConfig::default(),
             personality: IdlePersonality::default(),
-            boredom: None,
+            boredom: Some(BoredomConfig::default()),
             arousal: ArousalConfig::default(),
             context: IdleContextConfig::default(),
             sleep: SleepConfig::default(),

@@ -368,6 +368,22 @@ pub struct BoredomActivity {
     pub weight: f64,
 }
 
+impl Default for BoredomConfig {
+    fn default() -> Self {
+        Self {
+            trigger_poll: 3,
+            activities: vec![
+                BoredomActivity { tag: "idle".into(), weight: 7.5 },
+                BoredomActivity { tag: "work".into(), weight: 1.0 },
+                BoredomActivity { tag: "study".into(), weight: 0.5 },
+                BoredomActivity { tag: "fun".into(), weight: 0.3 },
+                BoredomActivity { tag: "exploration".into(), weight: 0.3 },
+            ],
+            work_pressure: None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Work pressure — dynamic weight adjustment based on queue depth
 // ---------------------------------------------------------------------------

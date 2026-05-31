@@ -8,9 +8,11 @@ pub mod auth;
 pub mod code_agent;
 pub mod fs_tools;
 pub mod security;
+pub mod web_fetch;
 pub mod web_search;
 
 pub use auth::AuthRegistry;
+pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 
 use kernel::context::ToolContext;
@@ -403,7 +405,8 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     registry.register(Arc::new(HttpTool))?;
     registry.register(Arc::new(ExecTool))?;
     registry.register(Arc::new(DbTool))?;
-    registry.register(Arc::new(WebSearchTool))
+    registry.register(Arc::new(WebSearchTool))?;
+    registry.register(Arc::new(WebFetchTool))
 }
 
 /// Register all code agent CLI tools that are available on PATH.

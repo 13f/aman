@@ -51,6 +51,10 @@ or any time-sensitive information, use the web_search tool first rather than \
 relying on your training data. For example, search for "recent" or "today" \
 queries instead of answering from memory."""
 
+WEB_FETCH_REMINDER = """To read the full content of a web page, fetch a specific URL, or download raw \
+data from an API endpoint, use the web_fetch tool. Typical flow: find URLs \
+via web_search, then read them via web_fetch."""
+
 MEMORY_HEADER = "\n## Retrieved Memories\n"
 
 
@@ -80,10 +84,12 @@ def build_full_system_prompt(
     date_str: str | None = None,
     include_file_ops: bool = True,
     include_web_reminder: bool = True,
+    include_web_fetch_reminder: bool = True,
 ) -> str:
     """Assemble the complete system prompt sent to the LLM.
 
-    Order: soul prompt → date → tools → file ops → tool format → web reminder → memories
+    Order: soul prompt → date → tools → file ops → tool format →
+           web search reminder → web fetch reminder → memories
     """
     if date_str is None:
         date_str = current_date_string()
@@ -98,6 +104,8 @@ def build_full_system_prompt(
         parts.append(TOOL_CALL_FORMAT)
         if include_web_reminder:
             parts.append(WEB_SEARCH_REMINDER)
+        if include_web_fetch_reminder:
+            parts.append(WEB_FETCH_REMINDER)
 
     if memory and memory.strip():
         parts.append(f"{MEMORY_HEADER}{memory.strip()}")

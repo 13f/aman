@@ -196,11 +196,15 @@ async fn execute_search(backend: &str, query: &str, count: usize) -> Value {
     }
 }
 
-/// Build a shared async HTTP client (15s timeout, no proxy).
+/// Build a shared async HTTP client (15s timeout).
+///
+/// Proxy is controlled via the standard `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`
+/// environment variables. Set `ALL_PROXY=socks5h://…` (not `socks5://` — the `h`
+/// variant resolves DNS on the proxy side) to route all search requests through a
+/// SOCKS5 proxy.
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .no_proxy()
         .build()
         .expect("reqwest async client")
 }

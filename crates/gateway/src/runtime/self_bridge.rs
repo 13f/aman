@@ -232,6 +232,12 @@ impl PromptPipeline for SelfBridgePromptPipeline {
                  queries instead of answering from memory."
                     .to_owned(),
             );
+            parts.push(
+                "\nTo read the full content of a web page, fetch a specific URL, or download raw \
+                 data from an API endpoint, use the web_fetch tool. Typical flow: find URLs \
+                 via web_search, then read them via web_fetch."
+                    .to_owned(),
+            );
         }
         if let Some(mem) = memory
             && !mem.is_empty()

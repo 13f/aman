@@ -279,6 +279,7 @@ Writing to these paths is unconditionally blocked:
 - **Shell:** `.bashrc`, `.zshrc`, `.profile`, `.bash_profile`
 - **Credentials:** `.env`, `.netrc`, `.pgpass`, `.npmrc`, `.pypirc`
 - **System:** `/etc/sudoers`, `/etc/passwd`, `/etc/shadow`
+- **aman Security:** `.aman/.security-key`, `.aman/approvals/`
 
 ### 6.3 File Read Blocks
 
@@ -287,6 +288,10 @@ the process):
 
 `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/stdin`, `/dev/tty`,
 `/dev/console`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/{0,1,2}`
+
+Additionally, reading these sensitive aman security paths is blocked:
+
+`.aman/.security-key`, `.aman/approvals/`
 
 ### 6.4 Database Blocks
 

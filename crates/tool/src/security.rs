@@ -79,6 +79,9 @@ static DENIED_WRITE_PATHS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "/etc/sudoers",
         "/etc/passwd",
         "/etc/shadow",
+        // aman security harness
+        ".aman/.security-key",
+        ".aman/approvals/",
     ]
 });
 
@@ -100,6 +103,16 @@ static DENIED_READ_DEVICES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "/dev/fd/0",
         "/dev/fd/1",
         "/dev/fd/2",
+    ]
+});
+
+/// Sensitive paths that should never be read — these contain secrets or
+/// integrity-protected data (approval signatures) that must not be leaked.
+static DENIED_READ_PATHS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    vec![
+        // aman security harness — secret key and approval storage
+        ".aman/.security-key",
+        ".aman/approvals/",
     ]
 });
 
@@ -203,9 +216,17 @@ fn check_write_hardline(args: &Value) -> Option<&'static str> {
 fn check_read_hardline(args: &Value) -> Option<&'static str> {
     let path = args.get("path").and_then(Value::as_str)?;
 
+    // Check device files (would hang the process)
     for denied in DENIED_READ_DEVICES.iter() {
         if path.contains(denied) {
             return Some("reading device file is blocked (would hang the process)");
+        }
+    }
+
+    // Check sensitive aman security paths (secrets, approval storage)
+    for denied in DENIED_READ_PATHS.iter() {
+        if path.contains(denied) {
+            return Some("reading aman security path is blocked");
         }
     }
 
@@ -359,5 +380,63 @@ mod tests {
     fn block_kill_minus_one() {
         let result = check_hardline_block("exec", &json!({"command": "kill -9 -1"}));
         assert!(result.is_some(), "kill -9 -1 should be blocked");
+    }
+
+    #[test]
+    fn block_write_to_aman_security_key() {
+        let result = check_hardline_block(
+            "write",
+            &json!({"path": "/Users/test/.aman/.security-key"}),
+        );
+        assert!(
+            result.is_some(),
+            "write to .aman/.security-key should be blocked"
+        );
+    }
+
+    #[test]
+    fn block_write_to_aman_approvals() {
+        let result = check_hardline_block(
+            "write",
+            &json!({"path": "/home/user/.aman/approvals/plugin__evil.yaml"}),
+        );
+        assert!(
+            result.is_some(),
+            "write to .aman/approvals/ should be blocked"
+        );
+    }
+
+    #[test]
+    fn block_read_aman_security_key() {
+        let result = check_hardline_block(
+            "read",
+            &json!({"path": "/Users/test/.aman/.security-key"}),
+        );
+        assert!(
+            result.is_some(),
+            "read from .aman/.security-key should be blocked"
+        );
+    }
+
+    #[test]
+    fn block_read_aman_approvals() {
+        let result = check_hardline_block(
+            "read",
+            &json!({"path": "/home/user/.aman/approvals/plugin__test.yaml"}),
+        );
+        assert!(
+            result.is_some(),
+            "read from .aman/approvals/ should be blocked"
+        );
+    }
+
+    #[test]
+    fn allow_read_unrelated_aman_path() {
+        // Reading other .aman files (config, logs, etc.) should still be allowed
+        let result = check_hardline_block(
+            "read",
+            &json!({"path": "/Users/test/.aman/config.yaml"}),
+        );
+        assert!(result.is_none(), "read from config.yaml should be allowed");
     }
 }

@@ -1053,6 +1053,9 @@
       case "agent:awaiting_detach":
         handleAgentAwaitingDetach(data);
         break;
+      case "skill:completed":
+        handleSkillCompleted(data);
+        break;
     }
   }
 
@@ -1105,6 +1108,25 @@
       id: crypto.randomUUID(),
       type: "system_event",
       content: `**Running in background...** Process PID ${data.pid ?? "?"} is executing.`,
+      timestamp: new Date().toISOString(),
+      sessionId: sid,
+      status: "completed",
+    }];
+  }
+
+  function handleSkillCompleted(data: any) {
+    const sid: string = data.session_id;
+    // Clean up detach tracking
+    if (awaitingDetachSessions.has(sid)) {
+      awaitingDetachSessions = new Set([...awaitingDetachSessions].filter(s => s !== sid));
+    }
+    // Add a system_event showing the result
+    const skillName: string = data.skill_name ?? "background task";
+    const message: string = data.message ?? "Completed";
+    messages = [...messages, {
+      id: crypto.randomUUID(),
+      type: "system_event",
+      content: `**${skillName}** ${message}`,
       timestamp: new Date().toISOString(),
       sessionId: sid,
       status: "completed",

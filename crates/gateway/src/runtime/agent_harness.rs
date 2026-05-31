@@ -1741,6 +1741,14 @@ impl AgentHarness {
         // Publish skill:completed event so subscribers can react
         // to any skill's background task completion.
         if let Some(ref sn) = skill_name {
+            let message = if hook_success {
+                let kb = hook_stdout.len() / 1024;
+                format!("{sn} completed — exit 0, {kb} KB output")
+            } else if hook_stdout.is_empty() {
+                format!("{sn} was interrupted (PID {pid})")
+            } else {
+                format!("{sn} failed — exit {hook_exit_code}")
+            };
             let _ = self.bus.publish(Event::new(
                 "agent:harness",
                 EventType::Custom("skill:completed".to_owned()),
@@ -1752,6 +1760,7 @@ impl AgentHarness {
                     "success": hook_success,
                     "exit_code": hook_exit_code,
                     "stdout": hook_stdout,
+                    "message": message,
                 }),
             )).await;
         }

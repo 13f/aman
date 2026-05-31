@@ -170,7 +170,7 @@ impl NotificationSubscriber {
                 // Queues draining is normal, not actionable
             }
 
-            // ── Background task completed ────────────────────────────
+            // ── Background: agent idle (no work found) ────────────────
             EventType::Custom(s) if s == "agent:reply_ready" => {
                 let background = event
                     .payload
@@ -183,11 +183,6 @@ impl NotificationSubscriber {
                         .get("agent_id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown");
-                    let skill_name = event
-                        .payload
-                        .get("skill_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("background task");
                     let turns = event
                         .payload
                         .get("turns_processed")
@@ -208,7 +203,6 @@ impl NotificationSubscriber {
                         || reply_lower.contains("空闲");
 
                     if is_idle && turns <= 2 {
-                        // Agent checked and found nothing — quick idle report
                         self.store.push(
                             Notification::info(
                                 Category::Idle,
@@ -216,22 +210,35 @@ impl NotificationSubscriber {
                                 String::new(),
                             ),
                         );
-                    } else {
-                        let body = event
-                            .payload
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("Completed");
-                        self.store.push(
-                            Notification::info(
-                                Category::Idle,
-                                format!("{agent_id} finished {skill_name}"),
-                                body,
-                            ),
-                        );
                     }
                 }
+            }
+
+            // ── Background task completed (detached process) ───────────
+            EventType::Custom(s) if s == "skill:completed" => {
+                let agent_id = event
+                    .payload
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let skill_name = event
+                    .payload
+                    .get("skill_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("background task");
+                let message = event
+                    .payload
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Completed");
+
+                self.store.push(
+                    Notification::info(
+                        Category::Idle,
+                        format!("{agent_id} finished {skill_name}"),
+                        message,
+                    ),
+                );
             }
 
             // ── Idle cycle completed ────────────────────────────────

@@ -25,6 +25,10 @@
     { "name": "kimi",                  "files": ["code/kimi/SKILL.md"] },
     { "name": "create-skill",         "files": ["agent/create-skill/SKILL.md"] },
     { "name": "kanban-worker",        "files": ["agent/kanban-worker/SKILL.md"] },
-    { "name": "info-hub",             "files": ["agent/info-hub/SKILL.md"] }
+    { "name": "info-hub",             "files": ["agent/info-hub/SKILL.md"] },
+    { "name": "arxiv",                "files": [
+      "research/arxiv/SKILL.md",
+      "research/arxiv/scripts/arxiv_search.py"
+    ]}
   ]
 }

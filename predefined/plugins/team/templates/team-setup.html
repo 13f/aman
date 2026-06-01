@@ -86,8 +86,8 @@
 
   <div class="steps">
     <div class="step-tab active" data-step="1" onclick="goToStep(1)">1. Team</div>
-    <div class="step-tab" data-step="2" onclick="goToStep(2)">2. Kanban</div>
-    <div class="step-tab" data-step="3" onclick="goToStep(3)">3. Import</div>
+    <div class="step-tab" data-step="2" onclick="goToStep(2)">2. Project</div>
+    <div class="step-tab" data-step="3" onclick="goToStep(3)">3. Kanban</div>
     <div class="step-tab" data-step="4" onclick="goToStep(4)">4. Review</div>
   </div>
 
@@ -112,7 +112,7 @@
     </div>
   </div>
 
-  <!-- Step 2: Kanban Stages -->
+  <!-- Step 2: Project Setup -->
   <div class="step-panel" data-step="2">
     <div class="form-group">
       <label>Project Name</label>
@@ -123,12 +123,20 @@
       <input type="text" id="projKey" placeholder="e.g. aman-core" oninput="this.value=this.value.toLowerCase().replace(/[^a-z0-9-]/g,'')">
     </div>
     <div class="form-group">
-      <label>Initial Stage <span class="hint">(the stage new work items start in)</span></label>
-      <select id="initialStage"></select>
-    </div>
-    <div class="form-group">
       <label>Working Directory <span class="hint">(required — project files location)</span></label>
       <input type="text" id="projWorkDir" placeholder="/path/to/project">
+    </div>
+    <div class="actions">
+      <button onclick="goToStep(1)">&larr; Back</button>
+      <button class="primary" onclick="goToStep(3)">Next &rarr;</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Kanban Stages -->
+  <div class="step-panel" data-step="3">
+    <div class="form-group">
+      <label>Initial Stage <span class="hint">(the stage new work items start in)</span></label>
+      <select id="initialStage"></select>
     </div>
 
     <label style="font-size:13px;color:#aaa;margin-bottom:8px;display:block;">
@@ -142,20 +150,15 @@
     </div>
     <div id="stageList"></div>
     <button class="add-stage-btn" onclick="addStage()">+ Add Stage</button>
-    <div class="actions">
-      <button onclick="goToStep(1)">&larr; Back</button>
-      <button class="primary" onclick="goToStep(3)">Next &rarr;</button>
-    </div>
-  </div>
 
-  <!-- Step 3: Import from Existing -->
-  <div class="step-panel" data-step="3">
-    <p style="color:#888;font-size:13px;margin-bottom:16px;">
-      Import kanban configuration from an existing project, or skip to use what you configured in Step 2.
+    <hr style="border-color:#1e2030;margin:20px 0;">
+    <p style="color:#888;font-size:13px;margin-bottom:12px;">
+      Or import kanban configuration from an existing project:
     </p>
     <div id="importList">
       <div class="no-imports">No existing projects found to import from</div>
     </div>
+
     <div class="actions">
       <button onclick="goToStep(2)">&larr; Back</button>
       <button class="primary" onclick="goToStep(4)">Next &rarr;</button>
@@ -203,6 +206,11 @@ function validateStep(n) {
     }
     if (!document.getElementById("projWorkDir").value.trim()) {
       flash("Please enter a working directory", "error"); return false;
+    }
+  }
+  if (n === 3) {
+    if (stages.length === 0) {
+      flash("Please define at least one stage or choose a preset", "error"); return false;
     }
   }
   return true;
@@ -330,10 +338,6 @@ function importFrom(key) {
   stages = JSON.parse(JSON.stringify(importedStages));
   stageCounter = stages.length;
   renderStages();
-  var projNameEl = document.getElementById("projName");
-  var projKeyEl = document.getElementById("projKey");
-  if (!projNameEl.value.trim()) projNameEl.value = p.project_name || "";
-  if (!projKeyEl.value.trim()) projKeyEl.value = key + "-copy";
   flash("Imported " + stages.length + " stages from " + key, "success");
 }
 
@@ -377,6 +381,12 @@ async function saveAll() {
 
   if (!teamName || !projName || !projKey || !projWorkDir) {
     flash("Please fill in all required fields", "error");
+    btn.disabled = false;
+    btn.textContent = "Save & Finish";
+    return;
+  }
+  if (stages.length === 0) {
+    flash("Please define at least one kanban stage", "error");
     btn.disabled = false;
     btn.textContent = "Save & Finish";
     return;

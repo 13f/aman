@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import path from "path";
 
 export default defineConfig({
   plugins: [
@@ -11,7 +12,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      "@shared/frontend": "/Users/jerin/projects/aman/shared/frontend",
+      "@shared/frontend": path.resolve(__dirname, "../shared/frontend"),
     },
   },
   clearScreen: false,
@@ -22,7 +23,7 @@ export default defineConfig({
       ignored: ["**/src-tauri/**"],
     },
     fs: {
-      allow: ["..", "../..", "../../shared"],
+      allow: ["..", "../shared"],
     },
   },
 });

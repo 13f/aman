@@ -33,7 +33,7 @@ struct FinanceCardsFile {
 }
 
 /// Embedded built-in cards — fallback when the gateway hasn't synced yet.
-const BUILTIN_JSON: &str = include_str!("../../../predefined/cards.json");
+const BUILTIN_JSON: &str = include_str!("../../predefined/cards.json");
 
 // ---------------------------------------------------------------------------
 // Paths

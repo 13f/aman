@@ -34,7 +34,7 @@ struct CodeAgentsFile {
 }
 
 /// Embedded built-in code agents, kept current with each release.
-const BUILTIN_JSON: &str = include_str!("../../../predefined/agents/code-agents.json");
+const BUILTIN_JSON: &str = include_str!("../../predefined/agents/code-agents.json");
 
 // ---------------------------------------------------------------------------
 // Paths

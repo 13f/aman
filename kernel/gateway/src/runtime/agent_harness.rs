@@ -1148,7 +1148,12 @@ impl AgentHarness {
             .set_active_session(agent_id, Some(session_id.to_owned()))
             .await?;
         self.registry.set_status(agent_id, AgentStatus::Busy).await?;
-        self.registry.set_system_state(agent_id, AgentSystemState::Chatting).await;
+        // Only set Chatting for foreground (user-initiated) messages.
+        // Background messages (idle_run) already have their system state set by the
+        // boredom actor (Working/Studying/DailyLife/Idle based on the activity tag).
+        if !background {
+            self.registry.set_system_state(agent_id, AgentSystemState::Chatting).await;
+        }
 
         // Cancel any running idle workflows for this agent and boost arousal
         if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {

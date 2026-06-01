@@ -455,7 +455,7 @@ impl AgentIdleManager {
                                         "internet" | "entertainment" | "fun" => {
                                             AgentSystemState::DailyLife
                                         }
-                                        _ => AgentSystemState::Idle,
+                                        _ => AgentSystemState::Waiting,
                                     };
                                     *ss.lock().expect("system_state lock") = state;
                                 }

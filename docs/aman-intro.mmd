@@ -1,0 +1,64 @@
+graph TB
+    %% ═══════════════════════════════════════════
+    %% STYLES
+    %% ═══════════════════════════════════════════
+    classDef external fill:#1a1a2e,stroke:#e94560,color:#eee,stroke-width:2px,rx:12,ry:12
+    classDef harness  fill:#16213e,stroke:#533483,color:#eee,stroke-width:3px,rx:12,ry:12
+    classDef llm      fill:#0f3460,stroke:#06d6a0,color:#eee,stroke-width:2px,rx:12,ry:12
+    classDef human    fill:#2d2d44,stroke:#f77f00,color:#eee,stroke-width:2px
+    classDef idle     fill:#2d2d44,stroke:#fcbf49,color:#eee,stroke-width:2px
+    classDef event    fill:#1a1a2e,stroke:#00b4d8,color:#eee,stroke-width:2px,rx:12,ry:12
+
+    %% ═══════════════════════════════════════════
+    %% NODES
+    %% ═══════════════════════════════════════════
+
+    INPUT["🌐 外部输入
+    IM Channels · Chat · Cron · Webhook · FileWatch"]:::external
+
+    HARNESS["🏗 Agent Harness
+    智能体运行时
+    ReAct 推理循环 · 工具执行 · 会话管理"]:::harness
+
+    LLM["🤖 LLM Client
+    大模型抽象层 · 多 Provider 可插拔"]:::llm
+
+    EVENTS["⚡ Event Bus · 底层 — 事件驱动基础
+    发布订阅 · 背压控制 · WAL 持久化"]:::event
+
+    %% ── 拟人系统子图 ──
+    subgraph ANTHRO["🧠 拟人机制 · 核心 — Anthropomorphic Core"]
+        direction TB
+        IDLE["😴 Idle System
+        空闲感知 · 主动观察 · 无聊触发"]:::idle
+        LIFECYCLE["🔄 Lifecycle System
+        生命周期执行引擎"]:::human
+        WORK["💼 Work
+        工作执行"]:::human
+        STUDY["📚 Study
+        学习成长"]:::human
+        DAILY["🌅 Daily Life
+        日常节律"]:::human
+
+        LIFECYCLE --> WORK
+        LIFECYCLE --> STUDY
+        LIFECYCLE --> DAILY
+        IDLE -.->|"空闲时触发"| LIFECYCLE
+    end
+
+    %% ═══════════════════════════════════════════
+    %% CONNECTIONS
+    %% ═══════════════════════════════════════════
+
+    INPUT --> HARNESS
+    HARNESS -->|"chat_completion"| LLM
+    LLM -->|"response"| HARNESS
+
+    HARNESS -->|"发布事件"| EVENTS
+    EVENTS -->|"驱动"| IDLE
+    EVENTS -->|"驱动"| LIFECYCLE
+
+    IDLE -->|"空闲信号反馈"| EVENTS
+    WORK -->|"完成/失败事件"| EVENTS
+    STUDY -->|"完成/失败事件"| EVENTS
+    DAILY -->|"完成/失败事件"| EVENTS

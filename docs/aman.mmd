@@ -1,0 +1,388 @@
+graph TB
+    %% ═══════════════════════════════════════════
+    %% STYLE CLASSES
+    %% ═══════════════════════════════════════════
+    classDef external fill:#1a1a2e,stroke:#e94560,color:#eee,stroke-width:2px
+    classDef gateway fill:#16213e,stroke:#0f3460,color:#eee,stroke-width:2px
+    classDef harness fill:#0f3460,stroke:#533483,color:#eee,stroke-width:2px
+    classDef event fill:#1a1a2e,stroke:#00b4d8,color:#eee,stroke-width:2px
+    classDef dispatch fill:#1a1a2e,stroke:#0096c7,color:#eee,stroke-width:2px
+    classDef idle fill:#2d2d44,stroke:#f77f00,color:#eee,stroke-width:2px
+    classDef lifecycle fill:#2d2d44,stroke:#fcbf49,color:#eee,stroke-width:2px
+    classDef worksys fill:#2d2d44,stroke:#e07a5f,color:#eee,stroke-width:2px
+    classDef llm fill:#1a1a2e,stroke:#06d6a0,color:#eee,stroke-width:2px
+    classDef infra fill:#1a1a2e,stroke:#adb5bd,color:#eee,stroke-width:1px
+
+    %% ═══════════════════════════════════════════
+    %% EXTERNAL LAYER — Inputs & Interfaces
+    %% ═══════════════════════════════════════════
+    subgraph EXTERNAL["🌐 External Layer"]
+        direction LR
+        CHAT["💬 Chat
+        Slack/Telegram/Discord/Matrix"]
+        CRON["⏰ Cron
+        Scheduled Triggers"]
+        WEBHOOK["🪝 Webhook
+        HTTP Callbacks"]
+        FILEWATCH["📁 FileWatch
+        FS Events"]
+        SIGNAL["📡 Signal
+        OS Signals"]
+        SOCKET["🔌 Socket
+        TCP/Unix"]
+        CLI["🖥 CLI Client
+        aman-cli"]
+        HTTP["🌍 REST API
+        :9999"]
+        SSE["📡 SSE Stream
+        Real-time Events"]
+        GRPC["⚡ gRPC
+        Protobuf API"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% GATEWAY — Agent Runtime (Harness)
+    %% ═══════════════════════════════════════════
+    subgraph GATEWAY["🏗 Agent Runtime — Gateway Daemon (aman)"]
+        direction TB
+        AR["AgentRuntime
+        Central Orchestrator"]
+        PHASES["Runtime Phases
+        Phase0 → Phase5 (startup)
+        Phase5 → Phase0 (shutdown)"]
+        REGISTRY["AgentRegistry
+        Per-agent state / providers"]
+        SM["SessionManager
+        Chat sessions & history"]
+        ES["EventStore
+        Circular buffer (2000 entries)"]
+        AL["AuditLogger
+        Audit trail"]
+        ARB["AgentRuntimeBuilder
+        --config, --bind, --token, --soul"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% AGENT HARNESS — ReAct Loop
+    %% ═══════════════════════════════════════════
+    subgraph HARNESS["🧠 Agent Harness — ReAct Loop"]
+        direction TB
+        AH["AgentHarness
+        handle_message() → ReAct loop"]
+        RE["ReActEngine
+        LLM ⇄ Tool loop"]
+        TE["ToolExecutor
+        Permission checks + detach mode"]
+        SOUL["SoulRuntime
+        Personality / system prompt
+        Hot-reload on change"]
+        REFL["ReflectionRunner
+        QueueDrained → memory consolidation"]
+        SLEEP["SleepRunner
+        Idle → sleep mode"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% EVENT SYSTEM — Foundation
+    %% ═══════════════════════════════════════════
+    subgraph EVENTS["⚡ Event System — Foundation (事件驱动底层)"]
+        direction TB
+        EB["InMemoryBus
+        publish / subscribe / dequeue"]
+        BP["BackpressureController
+        6 Levels: L1→L2→L3→L4A→L4B→Critical
+        Overflow-to-disk at L4A"]
+        DEDUP["DedupWindow
+        Bloom filter + LRU cache"]
+        RETRYQ["RetryQueue
+        Binary heap, Exp/Fixed/Seq backoff"]
+        OQ["OrderedQueue
+        Per-source FIFO + priority heap"]
+        EVTYPES["Event Types
+        MessageReceived / Idle / QueueDrained
+        AgentMessage / FileCreated / WebhookReceived"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% DISPATCHER — Event Routing
+    %% ═══════════════════════════════════════════
+    subgraph DISPATCH["🚦 Dispatcher — Event Routing"]
+        direction TB
+        DISP["Dispatcher
+        run_loop() — 3-way classification"]
+        RR["RouteRule
+        MatchCondition → DispatchTarget"]
+        MATCH["MatchCondition
+        Type / Source / Priority
+        All / Any composition"]
+        TARGET["DispatchTarget
+        Pipeline / Skill / Workflow
+        Hook / FanOut"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% IDLE SYSTEM — Anthropomorphic
+    %% ═══════════════════════════════════════════
+    subgraph IDLE["😴 Idle System (拟人机制 · 空闲)"]
+        direction TB
+        AIM["AgentIdleManager
+        Per-agent background task"]
+        ID["IdleDetector
+        Depth-driven idle event producer"]
+        DEPTH["Idle Depth Progression
+        Daze(0) → Boredom(5) → Sleep(20)
+        → Exploration(50) → Meditation(100) → Incubation(200)"]
+        AT["ArousalTracker
+        Exponential decay + boost on real events"]
+        BA["BoredomActor
+        Weighted random skill selection
+        work_pressure scales probability"]
+        IM["IncubationManager
+        Background threads (max 1 concurrent)"]
+        IC["IdleCoordination
+        Cross-component shared state
+        Cancel tokens, cooldowns"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% LIFECYCLE ENGINE
+    %% ═══════════════════════════════════════════
+    subgraph LIFECYCLE["🔄 Lifecycle Engine (拟人机制 · 生命周期)"]
+        direction TB
+        LE["LifecycleEngine⟨S: SystemSpec⟩
+        Generic passive queue consumer"]
+        LS["LifecycleState
+        Idle ↔ Busy"]
+        LC["LifecycleContext
+        Queue + Current item + Steps"]
+        IS["IdleSignal
+        Satisfaction / Frustration
+        → feeds back to idle depth"]
+        HOOKS["Lifecycle Hooks
+        before/after execution/step
+        on_success / on_failure"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% WORK SYSTEM
+    %% ═══════════════════════════════════════════
+    subgraph WORK["💼 Work System (拟人机制 · 工作)"]
+        direction TB
+        WS["WorkSystem
+        LifecycleEngine⟨WorkSpec⟩"]
+        WI["WorkItem
+        title, steps, priority, timeout
+        source: CLI/API/Kanban/Todo/Seek"]
+        WSPEC["WorkSpec
+        Step decomposition + execution"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% STUDY SYSTEM
+    %% ═══════════════════════════════════════════
+    subgraph STUDY["📚 Study System (拟人机制 · 学习)"]
+        direction TB
+        SSYS["StudySystem
+        LifecycleEngine⟨StudySpec⟩"]
+        SI["StudyItem
+        topic, materials, depth
+        Skim / Read / Deep"]
+        SSPEC["StudySpec
+        Phases: Gather → Plan → Learn
+        → Practice → Consolidate"]
+        SPACED["Spaced Repetition
+        + Knowledge Graph"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% DAILY LIFE SYSTEM
+    %% ═══════════════════════════════════════════
+    subgraph DAILY["🌅 Daily Life System (拟人机制 · 日常)"]
+        direction TB
+        DL["DailyLifeSystem
+        LifecycleEngine⟨DailySpec⟩"]
+        DI["DailyItem
+        TimeWindow + Routines"]
+        TW["TimeWindow
+        Morning / Midday / Afternoon
+        Evening / Night"]
+        ROUTINE["Routine Actions
+        CheckCalendar / CheckWeather
+        CheckHabits / DailyBrief / Reflection"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% LLM LAYER
+    %% ═══════════════════════════════════════════
+    subgraph LLM["🤖 LLM Client Layer"]
+        direction TB
+        LP["LlmProvider (trait)
+        chat_completion(req, stream_cb)"]
+        LAPI["LlmApiProvider
+        Lightweight HTTP client
+        (info-hub, eval)"]
+        LPROV["llm-provider-openai
+        OpenAI-compatible plugin"]
+        REACTCTX["ReActContext
+        session, conversation, turn_count
+        context_compressor, token_budget"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% SUPPORTING INFRASTRUCTURE
+    %% ═══════════════════════════════════════════
+    subgraph INFRA["🔧 Supporting Infrastructure"]
+        direction LR
+        PIPELINE["PipelineEngine
+        Serial/Parallel/Limited"]
+        SKILL["SkillRegistry
+        YAML/SKILL.md + Tantivy search
+        Hot-reload"]
+        TOOL["ToolRegistry
+        file/http/exec/db tools"]
+        PLUGIN["PluginLoader
+        WASM / Subprocess / InProcess"]
+        WAL["WAL + StateStore
+        Write-Ahead Log + DLQ"]
+        SECRET["SecretManager
+        Multi-backend + AES-256-GCM"]
+        CONFIG["AgentConfig
+        4-layer config + validate()"]
+        MEMORY["MemoryProvider
+        Episodic / Semantic storage"]
+        NOTIF["Notification
+        Push / Email / Messaging"]
+        EVAL["Eval System
+        LLM-as-Judge"]
+    end
+
+    %% ═══════════════════════════════════════════
+    %% CONNECTIONS — Data Flow
+    %% ═══════════════════════════════════════════
+
+    %% External → Gateway
+    CHAT -->|"MessageReceived"| HTTP
+    CRON -->|"scheduled events"| EB
+    WEBHOOK -->|"WebhookReceived"| EB
+    FILEWATCH -->|"FileCreated"| EB
+    SIGNAL -->|"SignalReceived"| EB
+    SOCKET -->|"data"| EB
+    CLI -->|"HTTP/JSON-RPC/gRPC"| HTTP
+    CLI -->|"gRPC"| GRPC
+    HTTP --> AR
+    SSE --> AR
+    GRPC --> AR
+
+    %% Gateway internals
+    AR --> REGISTRY
+    AR --> SM
+    AR --> ES
+    AR --> AL
+    ARB --> AR
+    AR --> PHASES
+
+    %% Gateway → Event Bus
+    AR -->|"publish events"| EB
+    ES -.->|"buffers all events"| EB
+
+    %% Event Bus internals
+    EB --> OQ
+    EB --> DEDUP
+    EB --> RETRYQ
+    EB --> BP
+    EB --> EVTYPES
+
+    %% Event Bus → Dispatcher
+    EB -->|"dequeue events"| DISP
+
+    %% Dispatcher internals
+    DISP --> RR
+    RR --> MATCH
+    RR -->|"routes to"| TARGET
+
+    %% Dispatcher → Pipelines & Skills
+    TARGET -->|"Pipeline"| PIPELINE
+    TARGET -->|"Skill"| SKILL
+    TARGET -->|"Workflow"| LE
+    TARGET -->|"Hook"| HOOKS
+
+    %% Dispatcher → Agent Harness
+    DISP -->|"MessageReceived → ReAct"| AH
+    DISP -->|"QueueDrained → reflection"| REFL
+    DISP -->|"Idle → sleep"| SLEEP
+
+    %% Agent Harness internals
+    AH --> RE
+    RE --> TE
+    AH --> SOUL
+
+    %% Harness → LLM
+    RE -->|"chat_completion()"| LP
+    LP --> LPROV
+    LAPI -.->|"lightweight (info-hub, eval)"| LP
+
+    %% Harness → Tools
+    TE -->|"execute"| TOOL
+
+    %% Harness → Idle System
+    AH -.->|"arousal boost on activity"| AT
+    AH -.->|"arousal boost on activity"| IC
+
+    %% Idle System wiring
+    AR -->|"start_all_idle_loops()"| AIM
+    AIM --> ID
+    ID --> DEPTH
+    ID --> AT
+    AT -->|"decay behavior"| DEPTH
+    DEPTH -->|"Boredom threshold"| BA
+    DEPTH -->|"Incubation threshold"| IM
+    AIM --> IC
+    IC -->|"shared state"| DISP
+    BA -->|"random skill"| SKILL
+    BA -->|"publish MessageReceived"| EB
+    ID -->|"idle events"| EB
+
+    %% Lifecycle Engine → Work/Study/Daily
+    LE --> WS
+    LE --> SSYS
+    LE --> DL
+    WS --> WSPEC
+    WS --> WI
+    SSYS --> SSPEC
+    SSYS --> SI
+    DL --> DI
+    DI --> TW
+    DI --> ROUTINE
+
+    %% Idle ↔ Lifecycle feedback
+    IS -.->|"Satisfaction → reduced depth"| ID
+    IS -.->|"Frustration → increased depth"| ID
+    LE --> IS
+
+    %% Lifecycle systems → Event Bus
+    WS -->|"work:item_completed/failed"| EB
+    SSYS -->|"study:item_completed/failed"| EB
+    DL -->|"daily:item_completed/failed"| EB
+
+    %% Supporting infra connections
+    EB -->|"WAL persistence"| WAL
+    EB -->|"overflow to disk"| BP
+    AR -->|"load plugins"| PLUGIN
+    AR -->|"load config"| CONFIG
+    AR -->|"secrets"| SECRET
+    RE -->|"memory retrieval"| MEMORY
+    AR -->|"notifications"| NOTIF
+    RE -->|"evaluation"| EVAL
+    REGISTRY -->|"per-agent"| LP
+    REGISTRY -->|"per-agent"| MEMORY
+    REGISTRY -->|"per-agent"| AIM
+
+    %% Phase 4 startup: idle loops + sources
+    PHASES -->|"Phase4"| AIM
+    PHASES -->|"Phase4"| CRON
+
+    %% Reflection → Memory
+    REFL -->|"session extraction"| MEMORY
+
+    %% Idle Signal feedback loop
+    LE -->|"idle_signal_tx"| IS

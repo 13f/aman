@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Aman Architecture Viewer</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { background: #0d1117; overflow: hidden; height: 100%; width: 100%; font-family: -apple-system, sans-serif; color: #c9d1d9; }
+
+/* ── drop zone (idle state) ── */
+#dropzone {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 20px;
+  transition: opacity 0.3s;
+}
+#dropzone.hidden { opacity: 0; pointer-events: none; }
+#dropzone.dragover { background: rgba(46,160,67,0.08); }
+#dropzone.dragover .drop-box { border-color: #2ea043; }
+
+.drop-box {
+  border: 2px dashed #30363d; border-radius: 16px;
+  padding: 60px 80px; text-align: center;
+  transition: border-color 0.2s;
+}
+.drop-box h2 { font-size: 20px; color: #e6edf3; margin-bottom: 8px; }
+.drop-box p { font-size: 14px; color: #8b949e; }
+.drop-box .big { font-size: 48px; margin-bottom: 12px; }
+
+.actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+.actions button, .actions label {
+  background: #21262d; border: 1px solid #30363d;
+  color: #c9d1d9; padding: 10px 20px; border-radius: 8px;
+  font-size: 14px; cursor: pointer; transition: background 0.15s;
+}
+.actions button:hover, .actions label:hover { background: #30363d; }
+#fileInput { display: none; }
+
+.paste-area {
+  display: flex; flex-direction: column; gap: 8px;
+  width: min(600px, 90vw);
+}
+.paste-area textarea {
+  width: 100%; height: 120px; resize: vertical;
+  background: #161b22; border: 1px solid #30363d;
+  border-radius: 8px; padding: 12px;
+  color: #c9d1d9; font-family: 'SF Mono', monospace; font-size: 13px;
+}
+.paste-area button {
+  background: #238636; border: none; color: #fff;
+  padding: 10px; border-radius: 8px; font-size: 14px;
+  cursor: pointer; transition: background 0.15s;
+}
+.paste-area button:hover { background: #2ea043; }
+
+/* ── canvas (viewing state) ── */
+#canvas {
+  width: 100%; height: 100%;
+  cursor: grab; position: relative; overflow: hidden;
+}
+#canvas:active { cursor: grabbing; }
+#canvas svg {
+  position: absolute;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* ── controls ── */
+.controls {
+  position: fixed; bottom: 20px; right: 20px; z-index: 100;
+  display: flex; gap: 6px; align-items: center;
+  background: rgba(22,27,34,0.92); border: 1px solid #30363d;
+  border-radius: 10px; padding: 8px 12px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.controls button {
+  width: 36px; height: 36px; border: 1px solid #30363d;
+  background: #21262d; color: #c9d1d9; border-radius: 6px;
+  font-size: 18px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center;
+  transition: background 0.15s; user-select: none;
+}
+.controls button:hover { background: #30363d; }
+.controls .pct {
+  color: #8b949e; font-size: 13px; min-width: 52px;
+  text-align: center; user-select: none; font-variant-numeric: tabular-nums;
+}
+
+/* ── title bar ── */
+.titlebar {
+  position: fixed; top: 16px; right: 16px; z-index: 100;
+  background: rgba(22,27,34,0.92); border: 1px solid #30363d;
+  border-radius: 10px; padding: 8px 14px;
+  backdrop-filter: blur(8px); font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  display: flex; align-items: center; gap: 10px;
+}
+.titlebar .fname { color: #e6edf3; font-weight: 600; }
+.titlebar button {
+  background: #21262d; border: 1px solid #30363d;
+  color: #8b949e; padding: 4px 10px; border-radius: 6px;
+  font-size: 12px; cursor: pointer; transition: background 0.15s;
+}
+.titlebar button:hover { background: #30363d; color: #c9d1d9; }
+
+.hint {
+  position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%);
+  color: #484f58; font-size: 12px; z-index: 99;
+  pointer-events: none; user-select: none; transition: opacity 2s;
+}
+
+.diagram-switcher {
+  position: fixed; top: 52px; right: 16px; z-index: 100;
+  background: rgba(22,27,34,0.92); border: 1px solid #30363d;
+  border-radius: 10px; padding: 8px 12px;
+  backdrop-filter: blur(8px); font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.diagram-switcher button {
+  background: #21262d; border: 1px solid #30363d;
+  color: #c9d1d9; padding: 6px 12px; border-radius: 6px;
+  font-size: 12px; cursor: pointer; text-align: left;
+  transition: background 0.15s; white-space: nowrap;
+}
+.diagram-switcher button:hover { background: #30363d; }
+.diagram-switcher button.active { border-color: #2ea043; color: #2ea043; }
+</style>
+</head>
+<body>
+
+<!-- ═══ idle: drop zone ═══ -->
+<div id="dropzone">
+  <div class="drop-box">
+    <div class="big">📊</div>
+    <h2>Aman Architecture Viewer</h2>
+    <p>自动加载 aman.mmd · 也可拖放其他 .mmd 文件</p>
+  </div>
+  <div class="actions">
+    <label for="fileInput">📂 选择 .mmd 文件</label>
+    <input type="file" id="fileInput" accept=".mmd,.mermaid,.txt">
+  </div>
+  <div class="paste-area">
+    <textarea id="pasteInput" placeholder="或直接粘贴 Mermaid 代码..."></textarea>
+    <button id="pasteBtn">渲染</button>
+  </div>
+</div>
+
+<!-- ═══ viewing: canvas + controls ═══ -->
+<div id="canvas"></div>
+
+<div class="titlebar" id="titlebar">
+  <span class="fname" id="fname"></span>
+  <button id="closeBtn">✕ 关闭</button>
+</div>
+
+<div class="diagram-switcher" id="diagramSwitcher">
+  <button data-diagram="0">1 · EventType 层次</button>
+  <button data-diagram="1">2 · 双层 Bus 架构</button>
+  <button data-diagram="2">3 · 完整事件流</button>
+  <button data-diagram="3">4 · 路由决策树</button>
+  <button data-diagram="4">5 · 会话状态机</button>
+  <button data-diagram="5">6 · ReAct Turn 事件</button>
+  <button data-diagram="6">7 · Trace 链</button>
+  <button data-diagram="7">8 · 背压等级</button>
+  <button data-diagram="8">9 · 事件总线总览</button>
+  <button data-diagram="9">10 · 启动序列</button>
+</div>
+
+<div class="controls">
+  <button id="zin" title="放大 (滚轮上)">＋</button>
+  <button id="zout" title="缩小 (滚轮下)">－</button>
+  <span class="pct" id="pct">100%</span>
+  <button id="zfit" title="适应窗口 (F)">⊞</button>
+  <button id="z11" title="原始大小 (0)">1:1</button>
+</div>
+
+<div class="hint" id="hint">拖拽平移 · 滚轮缩放 · 双击适应窗口 · 右上角切换图</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: 'dark' });
+
+// ── state ──
+const dropzone = document.getElementById('dropzone');
+const canvas   = document.getElementById('canvas');
+const titlebar = document.getElementById('titlebar');
+const switcher = document.getElementById('diagramSwitcher');
+let svg = null, svgW = 0, svgH = 0;
+let sc = 1, ox = 0, oy = 0;
+let dragging = false, dragX = 0, dragY = 0;
+let currentName = '';
+
+// Parse multi-diagram mermaid file into separate diagrams.
+// Skips YAML frontmatter (--- ... ---) and comment-only lead before the first diagram.
+function splitDiagrams(code) {
+  const diagrams = [];
+  let current = '';
+  let foundFirst = false;
+  const lines = code.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isDiagramStart = /^(mindmap|flowchart\s+(TD|LR|TB)|stateDiagram-v2|block-beta|sequenceDiagram)/i.test(trimmed);
+    if (isDiagramStart && foundFirst) {
+      diagrams.push(current.trim());
+      current = line + '\n';
+    } else {
+      if (isDiagramStart) foundFirst = true;
+      current += line + '\n';
+    }
+  }
+  const last = current.trim();
+  if (last.length > 0) diagrams.push(last);
+  return diagrams;
+}
+
+// ── transform ──
+function tf() {
+  if (!svg) return;
+  svg.style.transform = `translate(${ox}px,${oy}px) scale(${sc})`;
+  document.getElementById('pct').textContent = Math.round(sc * 100) + '%';
+}
+
+function fit() {
+  if (!svg) return;
+  const cw = canvas.clientWidth, ch = canvas.clientHeight;
+  const s = Math.min(cw / svgW, ch / svgH) * 0.95;
+  sc = s;
+  ox = (cw - svgW * s) / 2;
+  oy = (ch - svgH * s) / 2;
+  tf();
+}
+
+function zoomAt(cx, cy, factor) {
+  const ns = Math.min(Math.max(sc * factor, 0.02), 20);
+  ox = cx - (cx - ox) * (ns / sc);
+  oy = cy - (cy - oy) * (ns / sc);
+  sc = ns; tf();
+}
+
+// ── mouse ──
+canvas.onmousedown = e => { dragging = true; dragX = e.clientX - ox; dragY = e.clientY - oy; };
+window.onmousemove = e => { if (!dragging) return; ox = e.clientX - dragX; oy = e.clientY - dragY; tf(); };
+window.onmouseup = () => dragging = false;
+canvas.onwheel = e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY > 0 ? 0.88 : 1.14);
+};
+canvas.ondblclick = fit;
+
+// ── touch ──
+let tDist = 0, tMid = null;
+canvas.ontouchstart = e => {
+  if (e.touches.length === 1) {
+    dragging = true;
+    dragX = e.touches[0].clientX - ox; dragY = e.touches[0].clientY - oy;
+  } else {
+    dragging = false;
+    const [a, b] = e.touches;
+    tDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    tMid = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+  }
+};
+canvas.ontouchmove = e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && dragging) {
+    ox = e.touches[0].clientX - dragX; oy = e.touches[0].clientY - dragY; tf();
+  } else if (e.touches.length === 2 && tMid) {
+    const [a, b] = e.touches;
+    const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    const m = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+    const r = canvas.getBoundingClientRect();
+    zoomAt(m.x - r.left, m.y - r.top, d / tDist);
+    ox += m.x - tMid.x; oy += m.y - tMid.y;
+    tDist = d; tMid = m; tf();
+  }
+};
+canvas.ontouchend = () => { dragging = false; tMid = null; };
+
+// ── buttons ──
+document.getElementById('zin').onclick  = () => zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.4);
+document.getElementById('zout').onclick = () => zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1 / 1.4);
+document.getElementById('zfit').onclick = fit;
+document.getElementById('z11').onclick  = () => { sc = 1; ox = 0; oy = 0; tf(); };
+
+// ── keyboard ──
+window.onkeydown = e => {
+  if (e.key === 'f' || e.key === 'F') fit();
+  if (e.key === '0') { sc = 1; ox = 0; oy = 0; tf(); }
+  if (e.key === '+' || e.key === '=') zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1.3);
+  if (e.key === '-') zoomAt(canvas.clientWidth / 2, canvas.clientHeight / 2, 1 / 1.3);
+};
+
+// ── diagrams cache ──
+let diagrams = [];
+let currentDiagramIdx = 0;
+
+function activateDiagramButton(idx) {
+  document.querySelectorAll('.diagram-switcher button').forEach((btn, i) => {
+    btn.classList.toggle('active', i === idx);
+  });
+}
+
+// ── render engine ──
+async function renderMermaid(code, name) {
+  try {
+    // Detect multi-diagram file
+    diagrams = splitDiagrams(code);
+    if (diagrams.length > 1) {
+      switcher.style.display = '';
+      activateDiagramButton(0);
+      currentDiagramIdx = 0;
+      code = diagrams[0];
+    } else {
+      switcher.style.display = 'none';
+    }
+
+    const id = 'chart-' + Date.now();
+    const { svg: svgStr } = await mermaid.render(id, code);
+    canvas.innerHTML = svgStr;
+    svg = canvas.querySelector('svg');
+    svg.style.transformOrigin = '0 0';
+    svg.style.overflow = 'visible';
+    const vb = (svg.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+    if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+      svgW = vb[2]; svgH = vb[3];
+    } else {
+      const r = svg.getBoundingClientRect();
+      svgW = r.width; svgH = r.height;
+    }
+    svg.setAttribute('width', svgW);
+    svg.setAttribute('height', svgH);
+    svg.style.maxWidth = 'none';
+
+    currentName = name || '未命名';
+    document.getElementById('fname').textContent = currentName;
+    document.title = (diagrams.length > 1 ? '#' + (currentDiagramIdx + 1) + ' ' : '') + currentName + ' — Aman Viewer';
+
+    dropzone.classList.add('hidden');
+    fit();
+
+    setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 4000);
+  } catch (err) {
+    alert('Mermaid 渲染失败:\n' + err.message);
+  }
+}
+
+// ── diagram switcher ──
+document.querySelectorAll('.diagram-switcher button').forEach(btn => {
+  btn.onclick = async () => {
+    const idx = parseInt(btn.dataset.diagram);
+    if (idx === currentDiagramIdx || idx >= diagrams.length) return;
+    currentDiagramIdx = idx;
+    activateDiagramButton(idx);
+    const code = diagrams[idx];
+    // Re-render current diagram
+    try {
+      const id = 'chart-' + Date.now();
+      const { svg: svgStr } = await mermaid.render(id, code);
+      canvas.innerHTML = svgStr;
+      svg = canvas.querySelector('svg');
+      svg.style.transformOrigin = '0 0';
+      svg.style.overflow = 'visible';
+      const vb = (svg.getAttribute('viewBox') || '').split(/\s+/).map(Number);
+      if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+        svgW = vb[2]; svgH = vb[3];
+      } else {
+        const r = svg.getBoundingClientRect();
+        svgW = r.width; svgH = r.height;
+      }
+      svg.setAttribute('width', svgW);
+      svg.setAttribute('height', svgH);
+      svg.style.maxWidth = 'none';
+      document.title = '#' + (idx + 1) + ' ' + currentName + ' — Aman Viewer';
+      fit();
+    } catch (err) {
+      alert('渲染图 #' + (idx + 1) + ' 失败:\n' + err.message);
+    }
+  };
+});
+
+// ── show/hide ──
+function showViewer() {
+  dropzone.classList.add('hidden');
+  canvas.style.display = 'block';
+  titlebar.style.display = '';
+}
+function showDropzone() {
+  dropzone.classList.remove('hidden');
+  canvas.innerHTML = '';
+  svg = null;
+  titlebar.style.display = 'none';
+  switcher.style.display = 'none';
+  document.title = 'Aman Architecture Viewer';
+}
+
+// ── file loading ──
+function loadFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => renderMermaid(e.target.result, file.name);
+  reader.readAsText(file);
+}
+
+// drag & drop
+document.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragover'); });
+document.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) loadFile(file);
+});
+
+// file picker
+document.getElementById('fileInput').addEventListener('change', e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+// paste
+document.getElementById('pasteBtn').onclick = () => {
+  const code = document.getElementById('pasteInput').value.trim();
+  if (code) renderMermaid(code, '粘贴内容');
+};
+
+// close
+document.getElementById('closeBtn').onclick = loadAmanMmd;
+
+	// ── load aman.mmd from same directory ──
+	async function loadAmanMmd() {
+	  try {
+	    const resp = await fetch('aman.mmd');
+	    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+	    const code = await resp.text();
+	    await renderMermaid(code, 'aman.mmd');
+	  } catch (err) {
+	    dropzone.classList.remove('hidden');
+	    document.querySelector('.drop-box h2').textContent = '⚠ 加载失败';
+	    document.querySelector('.drop-box p').textContent =
+	      '无法加载 aman.mmd: ' + err.message + ' — 请拖放文件或粘贴代码';
+	  }
+	}
+
+	// ── init ──
+	switcher.style.display = 'none';
+	titlebar.style.display = 'none';
+	loadAmanMmd();
+</script>
+</body>
+</html>

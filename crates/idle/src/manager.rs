@@ -240,12 +240,14 @@ impl AgentIdleManager {
                         if let Some(ref global) = global_bus {
                             let _ = global.publish(qd_event).await;
                         }
-                        // Agent has entered idle domain
-                        if let Some(ref ss) = system_state {
-                            let mut guard: std::sync::MutexGuard<'_, AgentSystemState> =
-                                ss.lock().expect("system_state lock");
-                            *guard = AgentSystemState::Idle;
-                        }
+                        // NOTE: Do NOT write AgentSystemState::Idle here.
+                        // The system_state is managed by the agent harness
+                        // (Chatting → Idle) and the boredom actor
+                        // (Working/Studying/DailyLife). Unconditionally
+                        // writing Idle here races with the harness because
+                        // the publish().await points above yield to the
+                        // Tokio runtime, allowing process_message to set
+                        // Chatting before we overwrite it.
                     } else {
                         info!(
                             agent_id = %agent_id,
@@ -296,12 +298,9 @@ impl AgentIdleManager {
                         if let Some(ref global) = global_bus {
                             let _ = global.publish(qd_event).await;
                         }
-                        // Agent has entered idle domain
-                        if let Some(ref ss) = system_state {
-                            let mut guard: std::sync::MutexGuard<'_, AgentSystemState> =
-                                ss.lock().expect("system_state lock");
-                            *guard = AgentSystemState::Idle;
-                        }
+                        // NOTE: Do NOT write AgentSystemState::Idle here
+                        // (same reasoning as the busy→empty QueueDrained
+                        // path above — it races with the agent harness).
                     }
                     sleep(Duration::from_millis(100)).await;
                     continue;

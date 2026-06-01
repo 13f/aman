@@ -50,6 +50,10 @@ mindmap
         agent:reply_interrupted
         agent:message
         agent:config_warning
+      Cross_Agent_["Cross-Agent (Global Bus)"]
+        AgentMessage
+      Evaluation_["Evaluation (Global Bus)"]
+        EvaluationCompleted
       LLM_Plugin_["LLM & Agent (Local Bus)"]
         llm:call_started
         llm:call_ended
@@ -115,7 +119,7 @@ flowchart TB
     end
 
     subgraph GLOBAL["🌐 Global Event Bus"]
-        G1["max_queue_size: 10000<br/>5-level backpressure<br/>PersistentBus (WAL-backed)"]:::global
+        G1["max_queue_size: 10000<br/>7-level backpressure<br/>Trust-level enforcement<br/>Per-source rate limiter"]:::global
     end
 
     subgraph CORE["Core Subscribers (Global Bus)"]
@@ -127,6 +131,8 @@ flowchart TB
         C5["StopGenerationHandler → STOP_GENERATION"]:::subscriber
         C6["MessageReceivedHandler → AgentHarness"]:::subscriber
         C7["AgentMessageHandler → agent:message routing"]:::subscriber
+        C8["TrustEnforcement → reject sandboxed sensitive"]:::subscriber
+        C9["RateLimiter → per-source token bucket"]:::subscriber
     end
 
     subgraph AGENTS[" "]
@@ -495,13 +501,13 @@ flowchart LR
 %% ============================================================================
 
 flowchart LR
-    NORMAL["Normal<br/>(0%-80%)"]:::bp0 -->
-    L1["L1: Warning<br/>(80%-90%)"]:::bp1 -->
-    L2["L2: Throttle<br/>(90%-95%)"]:::bp2 -->
-    L3["L3: Block GD<br/>(95%-98%)"]:::bp3 -->
-    L4A["L4A: Overflow<br/>(98%+)"]:::bp4 -->
-    L4B["L4B: Emergency<br/>(≥80% overflow)"]:::bp5 -->
-    CRITICAL["Critical<br/>(stop low-priority)"]:::bp5
+    NORMAL["Normal<br/>(0%-80.97%)<br/>All events processed"]:::bp0 -->
+    L1["L1: Warning<br/>(80.97%-90.11%)<br/>Priority degradation<br/>Idle events discarded"]:::bp1 -->
+    L2["L2: Throttle<br/>(90.11%-95.97%)<br/>AtMostOnce dropped<br/>Idle events discarded"]:::bp2 -->
+    L3["L3: Block GD<br/>(95.97%-98.11%)<br/>Guaranteed delivery blocked<br/>Publishers paused"]:::bp3 -->
+    L4A["L4A: Overflow<br/>(98.11%-99.99%)<br/>Guaranteed events→disk<br/>Trust-level enforced"]:::bp4 -->
+    L4B["L4B: Emergency<br/>(≥80% overflow dir)<br/>Fallback to block<br/>OverflowDirEmergency"]:::bp5 -->
+    CRITICAL["Critical<br/>(100%)<br/>Low-priority dropped<br/>BusFull for all"]:::bp5
 
     NORMAL -.->|"queue drains"| NORMAL
     L1 -.->|"queue drains"| NORMAL
@@ -547,6 +553,8 @@ block-beta
     GD3("soul_changed")
     GD4("capability_*")
     GD5("SkillReloaded")
+    GD6("AgentMessage")
+    GD7("EvaluationCompleted")
   end
   block:Local_events:1
     columns 1
@@ -564,7 +572,35 @@ block-beta
   end
 
 %% ============================================================================
-%% 10. Startup Sequence — Bus & Agent Initialization
+%% 10. Admission Pipeline — Trust & Rate Limiting → Backpressure → Dedup
+%% ============================================================================
+
+flowchart TD
+    PUBLISH(["publish(event)"]):::start --> TL{"Layer 4a: Trust<br/>Sandboxed source +<br/>sensitive type?"}
+    TL -->|"Yes"| REJECT["❌ Reject<br/>SecurityViolation"]:::reject
+    TL -->|"No"| RL{"Layer 4b: Rate Limit<br/>Per-source token bucket<br/>exceeded?"}
+    RL -->|"Yes"| RATE_ERR["❌ RateLimited"]:::reject
+    RL -->|"No"| BP{"Backpressure<br/>7-level check"}
+    BP -->|"Idle event + L1+"| DROP_IDLE["Drop (silent)<br/>idle_events_discarded++"]:::drop
+    BP -->|"Critical + Low"| DROP_LOW["Drop Low Priority"]:::drop
+    BP -->|"L2+ AtMostOnce"| DROP_AMO["Drop AtMostOnce"]:::drop
+    BP -->|"L3+ Guaranteed"| BLOCK["Block<br/>RetryLater(L3)"]:::block
+    BP -->|"L4A Guaranteed"| OFLOW["Overflow to Disk<br/>.json files"]:::overflow
+    BP -->|"L4A + ≥80% overflow"| EMERG["OverflowDirEmergency<br/>→ RetryLater(L3)"]:::block
+    BP -->|"Normal / accepted"| DEDUP{"Dedup Window<br/>Bloom + LRU<br/>30s window"}
+    DEDUP -->|"Duplicate"| DUP["Drop (silent)<br/>duplicate_count++"]:::drop
+    DEDUP -->|"Accepted"| QUEUE["Enqueue<br/>OrderedQueue<br/>notify waiters"]:::accept
+    QUEUE --> DISPATCH["Dispatch to<br/>matching subscribers"]:::accept
+
+    classDef start fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
+    classDef reject fill:#ffcdd2,stroke:#b71c1c,stroke-width:2px
+    classDef drop fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    classDef block fill:#ffe0b2,stroke:#ef6c00,stroke-width:2px
+    classDef overflow fill:#e1bee7,stroke:#6a1b9a,stroke-width:2px
+    classDef accept fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+
+%% ============================================================================
+%% 11. Startup Sequence — Bus & Agent Initialization
 %% ============================================================================
 
 sequenceDiagram

@@ -2,7 +2,7 @@
 
 ## EventType Enum
 
-Defined in `crates/core/src/event.rs:9-26`:
+Defined in `crates/core/src/event.rs:11-37`:
 
 ```rust
 pub enum EventType {
@@ -25,16 +25,37 @@ pub enum EventType {
     // Security events
     InjectionDetected,
     // Idle/Work system events
-    Idle,
-    QueueDrained,
+    Idle,              // produced by IdleDetector
+    QueueDrained,      // produced by Dispatcher
+    // Multi-agent
+    AgentMessage,      // M7 cross-agent messaging
+    // Evaluation
+    EvaluationCompleted, // produced by Eval system
     // Dynamic events
     Custom(String),
 }
 ```
 
+### Wire Format (`as_str()`)
+
+| Variant | Wire String | Variant | Wire String |
+|---------|------------|---------|------------|
+| `FileCreated` | `file_created` | `FileChanged` | `file_changed` |
+| `FileDeleted` | `file_deleted` | `CronTick` | `cron_tick` |
+| `TimerTick` | `timer_tick` | `Heartbeat` | `heartbeat` |
+| `MessageReceived` | `message_received` | `WebhookReceived` | `webhook_received` |
+| `SystemSignal` | `system_signal` | `WorkflowStateChanged` | `workflow_state_changed` |
+| `SkillLoaded` | `skill_loaded` | `SkillReloaded` | `skill_reloaded` |
+| `ConfigChanged` | `config_changed` | `SecretRotated` | `secret_rotated` |
+| `InjectionDetected` | `injection_detected` | `Idle` | `idle` |
+| `QueueDrained` | `system.queue_drained` | `AgentMessage` | `agent:message` |
+| `EvaluationCompleted` | `eval:evaluation_completed` | `Custom(s)` | `s` (verbatim) |
+
+Unrecognized strings deserialize as `Custom(value)`. Empty strings are rejected at parse time.
+
 ## Event Struct
 
-Defined in `crates/core/src/event.rs:146-158`:
+Defined in `crates/core/src/event.rs:187-203`:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -42,11 +63,77 @@ Defined in `crates/core/src/event.rs:146-158`:
 | `source` | `SourceId` | Origin identifier (e.g. `"timer:heartbeat"`, `"chat-platform:tauri-desktop"`) |
 | `event_type` | `EventType` | The event type |
 | `timestamp` | `Timestamp` | Millisecond-precision timestamp |
-| `priority` | `Priority` | Queue priority (normal, high, critical) |
-| `delivery` | `DeliveryGuarantee` | AtMostOnce or AtLeastOnce |
-| `dedup_key` | `Option<DedupKey>` | Deduplication key for AtLeastOnce events |
+| `priority` | `Priority` | Queue priority (`High`, `Normal`, `Low`) |
+| `delivery` | `DeliveryGuarantee` | `AtMostOnce`, `AtLeastOnce`, or `ExactlyOnce` |
+| `dedup_key` | `Option<DedupKey>` | Deduplication key for `AtLeastOnce` and `ExactlyOnce` events |
 | `payload` | `Value` (serde_json) | Event data |
-| `metadata` | `EventMetadata` | trace_id, parent_event_id, retry_count, max_retries, ttl_ms, lifespan_ms, created_at |
+| `metadata` | `EventMetadata` | `trace_id`, `parent_event_id`, `retry_count`, `max_retries`, `ttl_ms`, `lifespan_ms`, `created_at` |
+| `trust_level` | `Option<TrustLevel>` | Security sandbox: restricts sandboxed sources from publishing sensitive event types (see [Trust Level Enforcement](#trust-level-enforcement)) |
+
+### Priority
+
+`High` → `Normal` → `Low`. Under backpressure L1, `AtMostOnce` events are downgraded one level (`High`→`Normal`, `Normal`/`Low`→`Low`).
+
+### Delivery Guarantee
+
+| Value | Dedup | Description |
+|-------|-------|-------------|
+| `AtMostOnce` | None | Fire-and-forget; no dedup key generated |
+| `AtLeastOnce` | Yes | Guaranteed delivery with retry; dedup key from UUID v7 or content hash |
+| `ExactlyOnce` | Yes | Strongest guarantee; same dedup strategy as `AtLeastOnce` |
+
+### Dedup Key Generation
+
+- `AtMostOnce` events → no dedup key (`None`)
+- UUID v7 events → key is the UUID string itself
+- Other events → `source:event_type:blake3(payload)`
+
+---
+
+## Trust Level Enforcement
+
+Introduced in Layer 4 security hardening (commit `0f73170`). The `Event` struct carries an optional `trust_level: Option<TrustLevel>` field, set by `SourceRegistry` when events are published from external sources.
+
+### Trust Levels
+
+| Level | Description | Can Publish Sensitive Events? |
+|-------|-------------|------------------------------|
+| `Trusted` | Internal system components, no restrictions | ✅ Yes |
+| `Untrusted` | User-provided but reviewed; moderate restrictions | ❌ No (default) |
+| `Sandboxed` | Isolated plugin/hook; strict resource limits, event publishing restrictions | ❌ No (rejected with `SecurityViolation` error) |
+
+### Sensitive Event Types
+
+`EventType::is_sensitive()` returns `true` for: `ConfigChanged`, `SecretRotated`, `InjectionDetected`.
+
+### Admission Flow (in order)
+
+When `InMemoryBus::publish()` is called, the following checks run in sequence:
+
+1. **Trust enforcement** — events from sandboxed sources targeting sensitive types are rejected with `Error::SecurityViolation`
+2. **Rate limiting** — per-source token bucket (`EventRateLimiter`, default disabled); `max_per_second` / `burst`
+3. **Backpressure signal refresh** — recalculates queue usage and backpressure level
+4. **Priority degradation** — `AtMostOnce` events downgraded at L1
+5. **Idle event discard** — idle events silently dropped at any level above Normal
+6. **Critical low-priority stop** — `Low` priority events dropped at Critical level
+7. **AtMostOnce drop** — `AtMostOnce` events dropped at L2 and above
+8. **Overflow to disk** — guaranteed-delivery events overflow to disk at L4A; if overflow dir is ≥80% full → L4B emergency → block
+9. **Block** — guaranteed-delivery events blocked at L3+
+10. **Queue full** — `BusFull` error when queue is completely full
+11. **Dedup** — duplicate events silently dropped
+
+### Configuration
+
+```yaml
+event_bus:
+  reject_sandboxed_sensitive_events: true
+  # Optional rate limiter (disabled by default)
+  rate_limiter:
+    max_per_second: 100
+    burst: 200
+```
+
+Sources can set `InMemoryBusConfig::reject_sandboxed_sensitive_events = false` to disable trust-level enforcement (for testing).
 
 ---
 
@@ -261,10 +348,12 @@ Produced by the config loader when config is modified. Lists the exact fields th
 
 ### Reserved But Unused Event Types
 
-The following EventType variants are defined in the enum but have no production publisher:
+The following EventType variants are defined in the enum but currently have no production publisher:
 - `SkillLoaded` — defined, not published (skill loading uses `SkillReloaded` instead)
 - `SecretRotated` — defined, not yet published (reserved for future secret rotation)
 - `InjectionDetected` — defined, not yet published (reserved for future prompt injection detection)
+- `AgentMessage` — defined (M7 multi-agent coordination), not yet published (producers pending)
+- `EvaluationCompleted` — defined (eval system), not yet published (producers pending)
 
 ---
 
@@ -615,14 +704,15 @@ The chat-session workflow (`crates/gateway/src/runtime/agent_runtime.rs:202-352`
 
 | Component | File | Purpose |
 |---|---|---|
-| `EventBus` trait | `crates/event-bus/src/lib.rs:211` | `publish()`, `subscribe()`, `unsubscribe()`, `metrics()`, `try_dequeue()`, `wait_for_event()` |
-| `InMemoryBus` | `crates/event-bus/src/lib.rs:394` | In-memory implementation with priority queues, used for both Global and Local buses |
-| `InMemoryBusConfig` | `crates/event-bus/src/lib.rs:167` | Backpressure thresholds (L1:80%, L2:90%, L3:95%, L4A:98%, L4B:Critical) |
-| `SubscriptionFilter` | `crates/event-bus/src/lib.rs:57` | Filter by `event_types`, `sources`, `priorities`, `payload_match` |
+| `EventBus` trait | `crates/event-bus/src/lib.rs:226` | `publish()`, `subscribe()`, `unsubscribe()`, `try_dequeue()`, `wait_for_event()`, `metrics()`, `backpressure_level()`, `can_poll()` |
+| `InMemoryBus` | `crates/event-bus/src/lib.rs:439` | In-memory implementation with priority queues, used for both Global and Local buses |
+| `InMemoryBusConfig` | `crates/event-bus/src/lib.rs:171` | Backpressure thresholds (L1:80.97%, L2:90.11%, L3:95.97%, L4A:98.11%), retry, dedup, overflow, rate limiting |
+| `SubscriptionFilter` | `crates/event-bus/src/lib.rs:62` | Filter by `event_types`, `sources`, `priorities`, `payload_match` |
 | `OverflowDir` | `crates/event-bus/src/overflow.rs` | Disk overflow when queue is full (Level 4A) |
-| `BackpressureController` | `crates/event-bus/src/backpressure.rs` | 5-level backpressure (Normal → L1 → L2 → L3 → L4A → L4B → Critical) |
-| `DedupWindow` | `crates/event-bus/src/dedup.rs` | Deduplication by `dedup_key` (30s window default) |
-| `RetryQueue` | `crates/event-bus/src/retry_queue.rs` | Retry for AtLeastOnce delivery with exponential backoff |
+| `BackpressureController` | `crates/event-bus/src/backpressure.rs` | 7-level backpressure (Normal → L1 → L2 → L3 → L4A → L4B → Critical) |
+| `DedupWindow` | `crates/event-bus/src/dedup.rs` | Two-level dedup: Bloom filter + LRU cache (30s window default) |
+| `RetryQueue` | `crates/event-bus/src/retry_queue.rs` | Retry for AtLeastOnce delivery with exponential/sequence backoff |
+| `EventRateLimiter` | `crates/event-bus/src/rate_limiter.rs` | Per-source token-bucket rate limiter |
 | `PersistentBus` | `crates/persistence/src/persistent_bus.rs` | WAL-backed persistent event bus (Global Bus only) |
 
 ### Dual-Layer Configuration
@@ -632,7 +722,25 @@ The chat-session workflow (`crates/gateway/src/runtime/agent_runtime.rs:202-352`
 | **Global Bus** | 10,000 | System-wide (all agents + sources share one queue) | `event_bus.max_queue_size` in `aman.yaml` |
 | **Local Bus** (per-agent) | 1,000 | Per-agent (agent's own events only) | `agents.<id>.event_bus.max_queue_size` in `aman.yaml` |
 
-Both buses use the same 5-level backpressure mechanism. When an agent's Local Bus queue fills, only that agent's publishers are affected — other agents continue unaffected. The Global Bus backpressure affects all sources and cross-agent communication.
+Both buses use the same 7-level backpressure mechanism. When an agent's Local Bus queue fills, only that agent's publishers are affected — other agents continue unaffected. The Global Bus backpressure affects all sources and cross-agent communication.
+
+### Backpressure Levels (7-Level Hierarchy)
+
+| Level | Queue Usage | Default Threshold | Behavior |
+|-------|-------------|-------------------|----------|
+| **Normal** | 0–80.97% | `< 0.8097` | All events processed normally |
+| **L1** | 80.97–90.11% | `≥ 0.8097` | Priority degradation: `AtMostOnce` events downgraded one level (High→Normal, Normal/Low→Low). Idle events silently discarded above Normal. |
+| **L2** | 90.11–95.97% | `≥ 0.90109` | `AtMostOnce` events dropped. Idle events discarded. |
+| **L3** | 95.97–98.11% | `≥ 0.9597` | Guaranteed-delivery events blocked (`Error::BackpressureBlocked(L3)`). `pause_publishers = true`. `can_poll()` returns `false`. |
+| **L4A** | 98.11–99.99% | `≥ 0.98110` | Guaranteed-delivery events overflow to disk (`OverflowDir`). Non-guaranteed events still blocked. |
+| **L4B** | L4A + overflow dir ≥ 80% full | — | Emergency fallback: instead of overflowing, return `RetryLater(L3)` error. `OverflowDirEmergency` event logged. |
+| **Critical** | 100% | `≥ 1.0` | All `Low` priority events dropped. Queue-full → `BusFull` error rejects all publishes. `pause_publishers = true`. `can_poll()` = `false`. |
+
+Key implementation details:
+- **Idle events** (`Idle`, `QueueDrained`) are silently discarded at any level above Normal — they never consume queue capacity under pressure
+- **L4A → L4B transition** is dynamic: when the overflow directory usage exceeds 80%, new overflow attempts are rejected
+- **Recovery** is automatic: as the queue drains below each threshold, backpressure eases back to Normal
+- **Backpressure events** (`BackpressureEventLog`) record level transitions, drops, blocks, overflows, and emergency states; bounded at `backpressure_event_limit` (default: 128)
 
 ### AgentRegistry Bus Management
 

@@ -1,0 +1,23 @@
+[package]
+name = "cognitive-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "LLM-based CognitiveEngine — ReAct loop, OpenAI provider, context management, and prompt pipeline"
+
+[lints]
+workspace = true
+
+[dependencies]
+cognitive-engine = { path = "../engine" }
+kernel = { path = "../../kernel/core" }
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+uuid.workspace = true

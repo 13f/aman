@@ -42,7 +42,7 @@ click "Start" in the Dashboard.
 
 ```bash
 # Install the CLI
-cargo install --path crates/cli
+cargo install --path kernel/cli
 
 # Create a minimal config at ~/.aman/config.yaml
 cat > ~/.aman/config.yaml << 'EOF'
@@ -223,12 +223,15 @@ inputs all default to rejecting the action.
                                                               └──────────────┘
 ```
 
-## Agent Harness
+## Cognitive Engine
 
-The ReAct loop (Think → Act → Observe) orchestrates LLM calls, tool execution,
-and streaming responses. See [docs/harness.md](docs/harness.md) for the full
-architecture — context assembly, token budgeting, SSE streaming, tool dispatch,
-interrupt handling, and event lifecycle.
+The `CognitiveEngine` trait (`cognitive/engine/`) defines the agent's "brain" contract:
+Observation → Decision. The current LLM-based implementation (`cognitive/llm/`)
+wraps a ReAct loop (Think → Act → Observe) orchestrating LLM calls, tool execution,
+streaming responses, and token budget management. Future engines (world model, hybrid)
+implement the same trait.
+
+See [docs/harness.md](docs/harness.md) for the full ReAct loop architecture.
 
 
 ## License

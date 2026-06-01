@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 kernel = { path = "../../core" }
-llm-api = { path = "../../llm-api" }
+cognitive-llm = { path = "../../../cognitive/llm" }
 async-trait = "0.1"
 semver = "1"
 serde = { version = "1", features = ["derive"] }

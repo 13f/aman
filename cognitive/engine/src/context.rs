@@ -1,0 +1,139 @@
+// Copyright (c) 2026 13F
+// SPDX-License-Identifier: AGPL-3.0
+
+//! Cognitive context — the environment in which a cognitive engine operates.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Context for a cognitive engine processing cycle.
+///
+/// This provides the engine with everything it needs to know about the
+/// agent, the session, and the available capabilities — without assuming
+/// any specific model architecture.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CognitiveContext {
+    /// The agent's unique identifier.
+    pub agent_id: String,
+    /// The session identifier.
+    pub session_id: String,
+    /// The agent's identity and boundaries (engine-agnostic).
+    pub identity: CognitiveIdentity,
+    /// Available capabilities (tools, skills) this agent can use.
+    pub capabilities: Vec<Capability>,
+    /// Recent context / retrieved memories (engine-agnostic representation).
+    pub memory_context: Vec<MemoryItem>,
+    /// Engine-specific configuration blob.
+    ///
+    /// For LLM engines this might contain model name, temperature, etc.
+    /// For world-model engines this might contain latent dimension config.
+    pub engine_config: Value,
+}
+
+/// Engine-agnostic agent identity.
+///
+/// Derived from the agent's SOUL.md but rendered in an engine-neutral form.
+/// Each engine decides how to translate this into its internal representation
+/// (e.g., an LLM engine converts it to a system prompt; a world-model engine
+/// converts it to a goal vector).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CognitiveIdentity {
+    /// The agent's display name.
+    pub name: String,
+    /// Core identity statement — who the agent is.
+    pub identity: String,
+    /// Behavioral boundaries — what the agent must not do.
+    pub boundaries: Vec<String>,
+    /// Areas of expertise.
+    pub expertise: Vec<String>,
+    /// Communication style preferences.
+    pub vibe: Option<String>,
+    /// Raw configuration for engine-specific interpretation.
+    pub raw: String,
+}
+
+/// A capability available to the agent (tool or skill).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Capability {
+    /// Unique name of the capability.
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// JSON Schema for the capability's parameters.
+    pub parameters: Value,
+    /// Capability type hint.
+    pub cap_type: CapabilityType,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CapabilityType {
+    Tool,
+    Skill,
+    Other(String),
+}
+
+/// A retrieved memory item.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryItem {
+    pub key: String,
+    pub content: String,
+    pub importance: f64,
+    pub timestamp: Option<String>,
+}
+
+/// Errors that can occur during cognitive processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CognitiveError {
+    /// The engine encountered an internal error.
+    EngineError {
+        engine_name: String,
+        message: String,
+    },
+    /// A requested tool is not available.
+    ToolNotFound {
+        tool_name: String,
+    },
+    /// A tool execution failed.
+    ToolError {
+        tool_name: String,
+        reason: String,
+    },
+    /// Resource budget exceeded (tokens, compute, memory, etc.).
+    BudgetExceeded {
+        resource: String,
+        used: u64,
+        limit: u64,
+    },
+    /// Processing was interrupted.
+    Interrupted,
+    /// Maximum processing depth reached.
+    MaxDepthReached {
+        depth: u32,
+    },
+    /// Invalid observation or context.
+    InvalidInput {
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for CognitiveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EngineError { engine_name, message } => {
+                write!(f, "engine '{engine_name}' error: {message}")
+            }
+            Self::ToolNotFound { tool_name } => write!(f, "tool '{tool_name}' not found"),
+            Self::ToolError { tool_name, reason } => {
+                write!(f, "tool '{tool_name}' failed: {reason}")
+            }
+            Self::BudgetExceeded { resource, used, limit } => {
+                write!(f, "{resource} budget exceeded: {used}/{limit}")
+            }
+            Self::Interrupted => write!(f, "cognitive processing interrupted"),
+            Self::MaxDepthReached { depth } => write!(f, "max depth reached: {depth}"),
+            Self::InvalidInput { reason } => write!(f, "invalid input: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for CognitiveError {}

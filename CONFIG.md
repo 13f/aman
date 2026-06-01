@@ -3,7 +3,7 @@
 aman uses a layered configuration system with YAML files (`~/.aman/config.yaml`) and
 environment variable overrides.
 
-The top-level config struct is `AmanConfig` (`crates/config/src/lib.rs`), which
+The top-level config struct is `AmanConfig` (`kernel/config/src/lib.rs`), which
 flattens the `AgentConfig` runtime config alongside multi-agent, provider, memory,
 evaluation, and hook sections.
 

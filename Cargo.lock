@@ -1052,6 +1052,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cognitive-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "cognitive-llm"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cognitive-engine",
+ "futures-util",
+ "kernel",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2072,8 +2098,8 @@ name = "eval"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cognitive-llm",
  "kernel",
- "llm-api",
  "regex",
  "semver",
  "serde",
@@ -3478,9 +3504,9 @@ name = "info-hub"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cognitive-llm",
  "futures",
  "kernel",
- "llm-api",
  "reqwest 0.12.28",
  "rusqlite",
  "semver",

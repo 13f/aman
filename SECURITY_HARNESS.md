@@ -52,7 +52,7 @@ WASM 插件通过 wasmtime 的 fuel metering 和 epoch interruption 机制，
 
 ### 代码位置
 
-- `crates/plugin/src/lib.rs` — `WasmSecurityConfig`, `WasmPluginRuntime`
+- `kernel/plugin/src/lib.rs` — `WasmSecurityConfig`, `WasmPluginRuntime`
 
 ---
 
@@ -95,10 +95,10 @@ pub struct SandboxConfig {
 
 ### 代码位置
 
-- `crates/sandbox/src/lib.rs` — `SandboxConfig`, `apply_sandbox()`
-- `crates/sandbox/src/linux.rs` — Landlock 实现
-- `crates/sandbox/src/macos.rs` — Seatbelt profile 生成器
-- `crates/plugin/src/bridge.rs` — `SubprocessPluginBridge::spawn()` 接收 sandbox_config
+- `kernel/sandbox/src/lib.rs` — `SandboxConfig`, `apply_sandbox()`
+- `kernel/sandbox/src/linux.rs` — Landlock 实现
+- `kernel/sandbox/src/macos.rs` — Seatbelt profile 生成器
+- `kernel/plugin/src/bridge.rs` — `SubprocessPluginBridge::spawn()` 接收 sandbox_config
 
 ### 平台支持
 
@@ -213,9 +213,9 @@ security:
 
 ### 代码位置
 
-- `crates/core/src/security.rs` — `CapabilitySet`, `ApprovalCache`, `ApprovedCapabilities`
-- `crates/plugin/src/lib.rs` — `PluginSecurityManifest`, `PluginLoader` 能力检查
-- `crates/config/src/lib.rs` — `SecurityConfig` 新字段
+- `kernel/core/src/security.rs` — `CapabilitySet`, `ApprovalCache`, `ApprovedCapabilities`
+- `kernel/plugin/src/lib.rs` — `PluginSecurityManifest`, `PluginLoader` 能力检查
+- `kernel/config/src/lib.rs` — `SecurityConfig` 新字段
 
 ---
 
@@ -226,7 +226,7 @@ security:
 
 ### TrustLevel 执行
 
-`TrustLevel` 从 `crates/source/src/registry.rs` 移至 `crates/core/src/types.rs`，
+`TrustLevel` 从 `kernel/source/src/registry.rs` 移至 `kernel/core/src/types.rs`，
 成为事件核心类型的一部分。每个事件携带 `trust_level` 字段：
 
 ```rust
@@ -261,11 +261,11 @@ pub struct RateLimiterConfig {
 
 ### 代码位置
 
-- `crates/core/src/types.rs` — `TrustLevel` 枚举
-- `crates/core/src/event.rs` — `Event.trust_level` 字段, `EventType::is_sensitive()`
-- `crates/event-bus/src/lib.rs` — `InMemoryBus` trust-level 和 rate-limit 检查
-- `crates/event-bus/src/rate_limiter.rs` — Token bucket 实现
-- `crates/source/src/registry.rs` — `attach_trust_level()` 设置事件字段
+- `kernel/core/src/types.rs` — `TrustLevel` 枚举
+- `kernel/core/src/event.rs` — `Event.trust_level` 字段, `EventType::is_sensitive()`
+- `kernel/event-bus/src/lib.rs` — `InMemoryBus` trust-level 和 rate-limit 检查
+- `kernel/event-bus/src/rate_limiter.rs` — Token bucket 实现
+- `kernel/source/src/registry.rs` — `attach_trust_level()` 设置事件字段
 
 ---
 
@@ -288,7 +288,7 @@ pub struct RateLimiterConfig {
 ## 新增 Crate
 
 ```
-crates/sandbox/                     # 操作系统级沙箱
+kernel/sandbox/                     # 操作系统级沙箱
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs                      # SandboxConfig, apply_sandbox()
@@ -301,35 +301,35 @@ crates/sandbox/                     # 操作系统级沙箱
 ## 新增/修改的文件
 
 ### 核心类型
-- `crates/core/src/types.rs` — 新增 `TrustLevel` 枚举
-- `crates/core/src/event.rs` — `Event` 新增 `trust_level` 字段；`EventType` 新增 `is_sensitive()` 方法
-- `crates/core/src/security.rs` — **新文件**: `CapabilitySet`, `ApprovalCache`, `ApprovedCapabilities`
-- `crates/core/src/error.rs` — 新增 `RateLimited`, `SecurityViolation`, `SandboxError` 错误变体
-- `crates/core/src/lib.rs` — 导出 `security` 模块
+- `kernel/core/src/types.rs` — 新增 `TrustLevel` 枚举
+- `kernel/core/src/event.rs` — `Event` 新增 `trust_level` 字段；`EventType` 新增 `is_sensitive()` 方法
+- `kernel/core/src/security.rs` — **新文件**: `CapabilitySet`, `ApprovalCache`, `ApprovedCapabilities`
+- `kernel/core/src/error.rs` — 新增 `RateLimited`, `SecurityViolation`, `SandboxError` 错误变体
+- `kernel/core/src/lib.rs` — 导出 `security` 模块
 
 ### 沙箱
-- `crates/sandbox/Cargo.toml` — **新 crate**
-- `crates/sandbox/src/lib.rs` — **新文件**: 平台无关的沙箱接口
-- `crates/sandbox/src/linux.rs` — **新文件**: Linux Landlock 实现
-- `crates/sandbox/src/macos.rs` — **新文件**: macOS Seatbelt 实现
+- `kernel/sandbox/Cargo.toml` — **新 crate**
+- `kernel/sandbox/src/lib.rs` — **新文件**: 平台无关的沙箱接口
+- `kernel/sandbox/src/linux.rs` — **新文件**: Linux Landlock 实现
+- `kernel/sandbox/src/macos.rs` — **新文件**: macOS Seatbelt 实现
 
 ### 插件加载
-- `crates/plugin/src/lib.rs` — `WasmSecurityConfig`, `PluginSecurityManifest`, `PluginLoader` 能力检查, `PluginManifest` 新增 `security` 字段
-- `crates/plugin/src/bridge.rs` — `SubprocessPluginBridge::spawn()` 新增 `sandbox_config` 参数
-- `crates/plugin/Cargo.toml` — 新增 `sandbox` 依赖
+- `kernel/plugin/src/lib.rs` — `WasmSecurityConfig`, `PluginSecurityManifest`, `PluginLoader` 能力检查, `PluginManifest` 新增 `security` 字段
+- `kernel/plugin/src/bridge.rs` — `SubprocessPluginBridge::spawn()` 新增 `sandbox_config` 参数
+- `kernel/plugin/Cargo.toml` — 新增 `sandbox` 依赖
 
 ### 事件总线
-- `crates/event-bus/src/lib.rs` — `InMemoryBus` 新增 rate limiter 和 trust-level 执行
-- `crates/event-bus/src/rate_limiter.rs` — **新文件**: Token bucket 速率限制器
+- `kernel/event-bus/src/lib.rs` — `InMemoryBus` 新增 rate limiter 和 trust-level 执行
+- `kernel/event-bus/src/rate_limiter.rs` — **新文件**: Token bucket 速率限制器
 
 ### 配置
-- `crates/config/src/lib.rs` — `SecurityConfig` 新增 sandbox_enabled, sandbox_fail_open, max_plugin_memory_mb, max_plugin_cpu_seconds, auto_approve_plugins 字段
+- `kernel/config/src/lib.rs` — `SecurityConfig` 新增 sandbox_enabled, sandbox_fail_open, max_plugin_memory_mb, max_plugin_cpu_seconds, auto_approve_plugins 字段
 
 ### 来源注册
-- `crates/source/src/registry.rs` — `TrustLevel` 移至 core；`attach_trust_level()` 更新为新机制
+- `kernel/source/src/registry.rs` — `TrustLevel` 移至 core；`attach_trust_level()` 更新为新机制
 
 ### 工作空间
-- `Cargo.toml` — 新增 `crates/sandbox`; `unsafe_code` 改为 `deny` (非 `forbid`)
+- `Cargo.toml` — 新增 `kernel/sandbox`; `unsafe_code` 改为 `deny` (非 `forbid`)
 
 ---
 
@@ -405,5 +405,5 @@ Plugin "xxx" requests capabilities but no approval cache configured
 1. **gVisor/Firecracker 集成**: 对高风险插件使用微虚拟机级隔离
 2. **Landlock 网络规则**: 当 kernel 6.7+ 普及后，添加 `LANDLOCK_ACCESS_NET_BIND_TCP` 等网络限制
 3. **Plugin Catalog**: 集中管理的已审核插件目录，预审批已知插件的能力
-4. **Hook 脚本沙箱**: 将 `ScriptHook` (`crates/hook/src/lib.rs`) 也纳入沙箱保护
+4. **Hook 脚本沙箱**: 将 `ScriptHook` (`kernel/hook/src/lib.rs`) 也纳入沙箱保护
 5. **Seccomp-BPF**: 对子进程插件添加系统调用过滤

@@ -21,7 +21,7 @@ exports:
   memory_providers: []
 ```
 
-Additional optional fields (see example plugins in `crates/plugins/` and `predefined/plugins/`):
+Additional optional fields (see example plugins in `kernel/plugins/` and `predefined/plugins/`):
 
 ```yaml
 description: "Human-readable description"

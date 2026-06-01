@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Build all
 cargo build --workspace
 
-# Release build (all 38 crates)
+# Release build (all ~40 crates)
 cargo build --release --workspace
 
 # Run all tests
@@ -38,59 +38,85 @@ cargo run --release --bin aman -- --help
 # Fix clippy auto-fixes
 cargo clippy --fix --workspace -- -D warnings
 
+# New cognitive engine crates
+cargo test -p cognitive-engine -p cognitive-llm
+
 # Info-hub plugin
 cargo test -p info-hub
 ```
 
+## Directory Structure
+
+```
+aman/
+├── kernel/              ← infrastructure crates (event bus, dispatcher, pipeline, …)
+│   ├── core/            ← package: kernel — core types, traits, error types, redactor
+│   ├── event-bus/       ← InMemoryBus w/ backpressure
+│   ├── gateway/         ← agent gateway daemon (binary: aman)
+│   ├── plugins/         ← messaging, memory-store, info-hub
+│   └── ...
+├── cognitive/           ← cognitive engine abstraction (NEW)
+│   ├── engine/          ← CognitiveEngine trait (engine-agnostic)
+│   └── llm/             ← LlmCognitiveEngine (LLM-based implementation)
+├── desktop/             ← Tauri v2 desktop app
+└── docs/                ← design docs, architecture diagrams
+```
+
 ## Codebase Architecture
 
-Workspace with 38 crates (30 core + 8 plugins):
+Workspace with ~40 crates:
 
-### Core Crates
+### Infrastructure Crates (`kernel/`)
 
-| Crate | Purpose |
-|---|---|
-| `core` | Kernel types: Event, Error, Pipeline, Schema, Retry, Tool traits, redactor |
-| `macros` | Proc macros |
-| `event-bus` | InMemoryBus w/ 6-level backpressure (L1→L2→L3→L4A→L4B→Critical), overflow-to-disk, dedup |
-| `dispatcher` | Event routing: EventBus → Pipeline/Skill dispatch |
-| `pipeline` | PipelineDefinition, PipelineEngine (Serial/Parallel/Limited) |
-| `workflow` | State machine engine, timeouts, ERROR recovery, retry |
-| `source` | Timer, Cron, FileWatch, Webhook, Signal, Socket |
-| `hook` | Internal hook system |
-| `skill` | YAML/SKILL.md loading, Tantivy search, hot-reload |
-| `tool` | Tool runner, built-in tools (file/http/exec/db) |
-| `plugin` | WASM/Subprocess/InProcess plugin host, dependency graph |
-| `llm-api` | LLM provider abstraction (trait-based, swappable backend) |
-| `soul` | SOUL system prompt management |
-| `persistence` | WAL, StateStore, DLQ, overflow dir |
-| `secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
-| `config` | 4-layer config loader, validation |
-| `gateway` | Agent gateway daemon — binary name `aman` |
-| `cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
-| `sdk` | Pub re-export crate for external devs |
-| `tauri` | `aman desktop` — Tauri v2 desktop app |
-| `skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
+| Crate | Path | Purpose |
+|---|---|---|
+| `kernel` | `kernel/core` | Kernel types: Event, Error, Pipeline, Schema, Retry, Tool traits, redactor |
+| `macros` | `kernel/macros` | Proc macros |
+| `event-bus` | `kernel/event-bus` | InMemoryBus w/ 6-level backpressure (L1→L2→L3→L4A→L4B→Critical), overflow-to-disk, dedup |
+| `dispatcher` | `kernel/dispatcher` | Event routing: EventBus → Pipeline/Skill dispatch |
+| `pipeline` | `kernel/pipeline` | PipelineDefinition, PipelineEngine (Serial/Parallel/Limited) |
+| `workflow` | `kernel/workflow` | State machine engine, timeouts, ERROR recovery, retry |
+| `source` | `kernel/source` | Timer, Cron, FileWatch, Webhook, Signal, Socket |
+| `hook` | `kernel/hook` | Internal hook system |
+| `skill` | `kernel/skill` | YAML/SKILL.md loading, Tantivy search, hot-reload |
+| `tool` | `kernel/tool` | Tool runner, built-in tools (file/http/exec/db) |
+| `plugin` | `kernel/plugin` | WASM/Subprocess/InProcess plugin host, dependency graph |
+| `soul` | `kernel/soul` | SOUL identity system (SOUL.md parsing, boundary checks) |
+| `persistence` | `kernel/persistence` | WAL, StateStore, DLQ, overflow dir |
+| `secret` | `kernel/secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
+| `config` | `kernel/config` | 4-layer config loader, validation |
+| `context-manager` | `kernel/context-manager` | Token budgeting, context compression/rotation (LLM-specific) |
+| `gateway` | `kernel/gateway` | Agent gateway daemon — binary name `aman` |
+| `cli` | `kernel/cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
+| `sdk` | `kernel/sdk` | Pub re-export crate for external devs |
+| `skm-core-patched` | `kernel/skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
+| `sandbox` | `kernel/sandbox` | Execution sandbox for tool isolation |
+
+### Cognitive Engine Crates (`cognitive/`)
+
+| Crate | Path | Purpose |
+|---|---|---|
+| `cognitive-engine` | `cognitive/engine` | **CognitiveEngine trait** — engine-agnostic abstraction: Observation → Decision. No LLM dependencies. |
+| `cognitive-llm` | `cognitive/llm` | **LlmCognitiveEngine** — LLM-based implementation. Consolidates: LlmProvider trait, ReAct engine, OpenAI provider, prompt pipeline, token budgeting, context management, simple HTTP client. Implements `CognitiveEngine`. |
 
 ### Agent Lifestyle Crates
 
+| Crate | Path | Purpose |
+|---|---|---|
+| `lifecycle` | `kernel/lifecycle` | Agent lifecycle state machine (Phases 0→5 startup, 5→0 shutdown) |
+| `idle` | `kernel/idle` | Idle mode: background observation, proactive suggestions |
+| `daily-life` | `kernel/daily-life` | Daily-life automation: routines, schedules, habits |
+| `work` | `kernel/work` | Work item processing: task intake, prioritization, execution |
+| `study` | `kernel/study` | Study/learning system: knowledge acquisition, spaced repetition |
+| `memory` | `kernel/memory` | Agent memory: episodic/semantic storage, retrieval |
+| `notification` | `kernel/notification` | Notification delivery: push, email, messaging channels |
+| `eval` | `kernel/eval` | Evaluation system: LLM output quality, work item assessment. Uses `cognitive-llm::simple` for LLM-as-Judge. |
+
+### Plugin Crates (`kernel/plugins/`)
+
 | Crate | Purpose |
 |---|---|
-| `lifecycle` | Agent lifecycle state machine (Phases 0→5 startup, 5→0 shutdown) |
-| `idle` | Idle mode: background observation, proactive suggestions |
-| `daily-life` | Daily-life automation: routines, schedules, habits |
-| `work` | Work item processing: task intake, prioritization, execution |
-| `study` | Study/learning system: knowledge acquisition, spaced repetition |
-| `memory` | Agent memory: episodic/semantic storage, retrieval |
-| `notification` | Notification delivery: push, email, messaging channels |
-| `eval` | Evaluation system: LLM output quality, work item assessment |
-
-### Plugin Crates (`crates/plugins/`)
-
-| Crate | Purpose |
-|---|---|
-| `info-hub` | 信息中心: unified search across API, CLI, local DB |
-| `llm-provider-openai` | OpenAI-compatible LLM provider plugin |
+| `info-hub` | 信息中心: unified search across API, CLI, local DB. Uses `cognitive-llm::simple` for AI features. |
 | `memory-store` | Memory storage backend plugin |
 | `messaging-core` | Shared messaging abstractions (routing, @mention, formatting) |
 | `messaging-telegram` | Telegram bot integration |
@@ -100,15 +126,16 @@ Workspace with 38 crates (30 core + 8 plugins):
 
 ### Dev Tooling
 
-| Crate | Purpose |
-|---|---|
-| `test-utils` | Shared test helpers, fixtures, mock factories |
+| Crate | Path | Purpose |
+|---|---|---|
+| `test-utils` | `kernel/test-utils` | Shared test helpers, fixtures, mock factories |
 
 ## Key Design Rules
 
 - No unsafe code (`#![forbid(unsafe_code)]` in every crate)
 - All config validation in `config::AgentConfig::validate()`
 - Events flow: Source → EventBus → Dispatcher → Pipeline/Skill → Workflow
+- **Cognitive flow**: EventBus → Observation → CognitiveEngine::process() → Decision → EventBus
 - Runtime lifecycle: Phase 0→5 (startup), Phase 5→0 (shutdown)
 - Error recovery in workflows: ERROR → RETRY event → last_active_state
 - Backpressure: L1(~81%)→L2(~90%)→L3(~96%)→L4A(~98%/overflow)→L4B→Critical(100%)
@@ -125,7 +152,7 @@ Workspace with 38 crates (30 core + 8 plugins):
 
 ## Redaction Module
 
-`kernel::redactor` (crates/core/src/redactor.rs) provides:
+`kernel::redactor` (`kernel/core/src/redactor.rs`) provides:
 - `redact_sensitive_data(input: &str) -> Cow<str>` — redacts API keys, tokens,
   passwords, JWTs, and Bearer headers from arbitrary text.
 - `contains_sensitive_data(input: &str) -> bool` — fast-path pre-check.
@@ -134,9 +161,31 @@ Workspace with 38 crates (30 core + 8 plugins):
   JSON field secrets, and env-var-style tokens.
 - Tests in the same file serve as the canonical list of what gets redacted.
 
+## Cognitive Engine Architecture
+
+The `CognitiveEngine` trait decouples the agent gateway from any specific model type:
+
+```rust
+// cognitive/engine/src/lib.rs
+pub trait CognitiveEngine: Send + Sync {
+    fn name(&self) -> &str;
+    async fn process(&self, ctx: &CognitiveContext, observations: Vec<Observation>)
+        -> Result<Vec<Decision>, CognitiveError>;
+    fn subscribe(&self, listener: Arc<dyn CognitiveListener>);
+    fn unsubscribe(&self, listener: &Arc<dyn CognitiveListener>);
+    async fn reset_session(&self, session_id: &str) -> Result<(), CognitiveError>;
+}
+```
+
+- **`Observation`** — input from the event bus (user message, tool result, timer, system event…)
+- **`Decision`** — output action (reply text, call tool, delegate, wait…)
+- **`CognitiveContext`** — agent identity, capabilities, memory (engine-agnostic)
+- **`LlmCognitiveEngine`** (`cognitive/llm/`) — current implementation: ReAct loop + OpenAI API
+- Future engines (world model, hybrid) implement the same trait
+
 ## CLI Architecture
 
-The `aman` CLI (`crates/cli/`) supports three protocols for communicating with the gateway:
+The `aman` CLI (`kernel/cli/`) supports three protocols for communicating with the gateway:
 
 - **HTTP REST** (default) — via `reqwest`. Every subcommand talks to the gateway's HTTP API.
 - **stdio JSON-RPC** — `aman serve` reads JSON-RPC 2.0 requests from stdin, writes responses to stdout. Used for MCP integration and subprocess invocation by AI hosts.

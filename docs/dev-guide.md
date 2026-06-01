@@ -197,7 +197,7 @@ aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
 
 ### 2.6 工具注册与扩展
 
-工具注册点在 `crates/tool/src/lib.rs`：
+工具注册点在 `kernel/tool/src/lib.rs`：
 
 ```rust
 pub fn install_builtin_tools(registry: &ToolRegistry) -> amanResult<()> {
@@ -389,7 +389,7 @@ cp -r samples/hooks/openpeon ~/.aman/agents/minmax/hooks/
 `ScriptRuntime` 会检查解释器是否可用及版本是否满足要求：
 
 ```rust
-// crates/core/src/script.rs
+// kernel/core/src/script.rs
 pub fn check_available(&self) -> amanResult<()> {
     // 1. which bash（检查 PATH）
     // 2. bash --version（获取版本）
@@ -435,7 +435,7 @@ pub fn check_available(&self) -> amanResult<()> {
 `HookContext` 中提供了 `event_bus` 字段，Hook 可通过它**主动发布事件**到全局事件总线：
 
 ```rust
-// crates/core/src/context.rs
+// kernel/core/src/context.rs
 pub struct HookContext {
     pub base: BaseContext,
     pub hook_name: Option<String>,
@@ -552,7 +552,7 @@ lifecycle/luck · 已运行 3.0 分钟 · lottery round 5 complete
 ### 4.1 事件结构
 
 ```rust
-// crates/core/src/event.rs
+// kernel/core/src/event.rs
 pub struct Event {
     pub id: Uuid,                    // UUID v7
     pub source: SourceId,            // 来源标识
@@ -641,12 +641,12 @@ pub trait EventSource: Send + Sync {
 
 | 类型 | 文件 | 模式 | 说明 |
 |------|------|------|------|
-| `TimerSource` | `crates/source/src/timer.rs` | Pull | 定时触发 |
-| `CronSource` | `crates/source/src/cron.rs` | Pull | Cron 表达式触发 |
-| `FileWatchSource` | `crates/source/src/file_watch.rs` | Pull | 文件变化监控 |
-| `WebhookSource` | `crates/source/src/webhook.rs` | Push | HTTP Webhook |
-| `SocketSource` | `crates/source/src/socket.rs` | Push | TCP/UDP/Unix Socket |
-| `SignalSource` | `crates/source/src/signal.rs` | Pull | Unix 信号处理 |
+| `TimerSource` | `kernel/source/src/timer.rs` | Pull | 定时触发 |
+| `CronSource` | `kernel/source/src/cron.rs` | Pull | Cron 表达式触发 |
+| `FileWatchSource` | `kernel/source/src/file_watch.rs` | Pull | 文件变化监控 |
+| `WebhookSource` | `kernel/source/src/webhook.rs` | Push | HTTP Webhook |
+| `SocketSource` | `kernel/source/src/socket.rs` | Push | TCP/UDP/Unix Socket |
+| `SignalSource` | `kernel/source/src/signal.rs` | Pull | Unix 信号处理 |
 
 ### 4.5 背压系统
 
@@ -772,7 +772,7 @@ tags: [work, idle_run]
 所有 Plugin 必须实现的核心 trait：
 
 ```rust
-// crates/core/src/plugin.rs
+// kernel/core/src/plugin.rs
 #[async_trait]
 pub trait Plugin: Send + Sync {
     fn name(&self) -> &str;

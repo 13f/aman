@@ -1,7 +1,7 @@
 //! AI processing: scoring, summarization, and highlights generation.
 //!
 //! Uses the LLM configured via `memory.llm` in aman config. Makes
-//! OpenAI-compatible chat completion calls via `llm_api`. No provider-specific logic.
+//! OpenAI-compatible chat completion calls via `cognitive_llm`. No provider-specific logic.
 
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -9,9 +9,9 @@ use serde_json::Value;
 use tracing::debug;
 
 // Re-export LLM API primitives from the shared crate.
-pub use llm_api::LlmApiConfig as LlmConfig;
-pub use llm_api::parse_json_response;
-use llm_api::LlmApiProvider;
+pub use cognitive_llm::simple::LlmApiConfig as LlmConfig;
+pub use cognitive_llm::simple::parse_json_response;
+use cognitive_llm::simple::SimpleLlmClient;
 
 const DESCRIPTION_MAX_LEN: usize = 384;
 
@@ -74,9 +74,9 @@ pub struct SummaryResult {
     pub reason: String,
 }
 
-// ── LLM Client (delegates to llm-api) ──────────────────────────────
+// ── LLM Client (delegates to cognitive-llm) ─────────────────────────
 
-/// One-shot chat completion via the shared `LlmApiProvider`.
+/// One-shot chat completion via the shared `SimpleLlmClient`.
 pub async fn chat_completion(
     config: &LlmConfig,
     system_prompt: &str,
@@ -85,10 +85,10 @@ pub async fn chat_completion(
     max_tokens: u64,
     timeout_secs: u64,
 ) -> Result<String, String> {
-    LlmApiProvider::new().chat_completion(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs).await
+    SimpleLlmClient::new().chat_completion(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs).await
 }
 
-/// Chat completion with retries via the shared `LlmApiProvider`.
+/// Chat completion with retries via the shared `SimpleLlmClient`.
 pub async fn chat_completion_with_retries(
     config: &LlmConfig,
     system_prompt: &str,
@@ -98,7 +98,7 @@ pub async fn chat_completion_with_retries(
     timeout_secs: u64,
     retries: u32,
 ) -> Result<String, String> {
-    LlmApiProvider::new().chat_completion_with_retries(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs, retries).await
+    SimpleLlmClient::new().chat_completion_with_retries(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs, retries).await
 }
 
 // ── Prompt Templates ────────────────────────────────────────────────

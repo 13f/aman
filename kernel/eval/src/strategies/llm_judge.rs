@@ -70,27 +70,27 @@ pub trait LlmJudgeExecutor: Send + Sync {
     ) -> AmanResult<String>;
 }
 
-// ── Built-in executor: uses llm-api ─────────────────────────────────
+// ── Built-in executor: uses cognitive-llm ───────────────────────────
 
-/// An [`LlmJudgeExecutor`] backed by [`llm_api::LlmApiProvider`].
+/// An [`LlmJudgeExecutor`] backed by [`cognitive_llm::simple::SimpleLlmClient`].
 ///
 /// This is the default executor used in production. It takes an
-/// [`llm_api::LlmApiConfig`] describing the judge endpoint and delegates
-/// to [`LlmApiProvider::chat_completion_with_retries`].
+/// [`cognitive_llm::simple::LlmApiConfig`] describing the judge endpoint and delegates
+/// to [`SimpleLlmClient::chat_completion_with_retries`].
 pub struct LlmApiJudgeExecutor {
-    provider: llm_api::LlmApiProvider,
-    config: llm_api::LlmApiConfig,
+    provider: cognitive_llm::simple::SimpleLlmClient,
+    config: cognitive_llm::simple::LlmApiConfig,
     max_tokens: u64,
     timeout_secs: u64,
     retries: u32,
 }
 
 impl LlmApiJudgeExecutor {
-    /// Create a new executor from an [`llm_api::LlmApiConfig`].
+    /// Create a new executor from a [`cognitive_llm::simple::LlmApiConfig`].
     #[must_use]
-    pub fn new(config: llm_api::LlmApiConfig) -> Self {
+    pub fn new(config: cognitive_llm::simple::LlmApiConfig) -> Self {
         Self {
-            provider: llm_api::LlmApiProvider::new(),
+            provider: cognitive_llm::simple::SimpleLlmClient::new(),
             config,
             max_tokens: 1024,
             timeout_secs: 60,
@@ -99,14 +99,14 @@ impl LlmApiJudgeExecutor {
     }
 
     /// Create a new executor from individual fields — avoids the caller
-    /// needing to depend on `llm_api` directly.
+    /// needing to depend on `cognitive_llm` directly.
     #[must_use]
     pub fn from_parts(
         base_url: String,
         api_key: Option<String>,
         model: String,
     ) -> Self {
-        Self::new(llm_api::LlmApiConfig {
+        Self::new(cognitive_llm::simple::LlmApiConfig {
             base_url,
             api_key,
             model,

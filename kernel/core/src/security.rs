@@ -350,7 +350,7 @@ impl ApprovalCache {
         if let Some(parent) = key_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&key_path, &key)?;
+        std::fs::write(&key_path, key)?;
 
         // Set permissions to owner-only (0o600)
         #[cfg(unix)]

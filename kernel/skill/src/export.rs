@@ -104,6 +104,7 @@ pub fn export_skills(skills: &[SkillInfo], out_dir: &Path) -> ExportReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ReactMode;
     use std::fs;
 
     fn create_test_skill(dir: &Path, name: &str) -> SkillInfo {

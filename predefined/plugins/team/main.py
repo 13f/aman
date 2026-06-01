@@ -395,6 +395,8 @@ def init_db(project_key: str) -> sqlite3.Connection:
             current_stage TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL DEFAULT 'normal',
             tags TEXT NOT NULL DEFAULT '[]',
+            output_type TEXT NOT NULL DEFAULT '',
+            output_description TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )"""
@@ -415,6 +417,7 @@ def init_db(project_key: str) -> sqlite3.Connection:
 
     # ── Schema migrations (add columns that may be missing from older DBs) ──
     _migrate_stage_history(db)
+    _migrate_works_output(db)
 
     db.commit()
     return db
@@ -431,6 +434,15 @@ def _migrate_stage_history(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE stage_history ADD COLUMN completed_at TEXT")
     if "confidence" not in cols:
         db.execute("ALTER TABLE stage_history ADD COLUMN confidence REAL")
+
+
+def _migrate_works_output(db: sqlite3.Connection) -> None:
+    """Add output_type / output_description columns if missing (old DB compat)."""
+    cols = {row[1] for row in db.execute("PRAGMA table_info(works)")}
+    if "output_type" not in cols:
+        db.execute("ALTER TABLE works ADD COLUMN output_type TEXT NOT NULL DEFAULT ''")
+    if "output_description" not in cols:
+        db.execute("ALTER TABLE works ADD COLUMN output_description TEXT NOT NULL DEFAULT ''")
 
 
 def get_db(project_key: str) -> sqlite3.Connection:
@@ -481,12 +493,13 @@ def insert_work(project_key: str, work: dict) -> dict:
     db = get_db(project_key)
     db.execute(
         """INSERT OR REPLACE INTO works (id, title, description, source_type, source_ref,
-           creator, current_stage, priority, tags, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+           creator, current_stage, priority, tags, output_type, output_description, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
         (work["id"], work["title"], work.get("description", ""),
          work.get("source_type", "manual"), work.get("source_ref", ""),
          work.get("creator", ""), work.get("current_stage", ""),
-         work.get("priority", "normal"), work.get("tags", "[]")),
+         work.get("priority", "normal"), work.get("tags", "[]"),
+         work.get("output_type", ""), work.get("output_description", "")),
     )
     # Record initial stage
     db.execute(
@@ -494,6 +507,8 @@ def insert_work(project_key: str, work: dict) -> dict:
         (work["id"], work.get("current_stage", "")),
     )
     db.commit()
+    # Ensure output directory exists
+    _ensure_output_dir(project_key, work["id"])
     row = db.execute("SELECT * FROM works WHERE id=?", (work["id"],)).fetchone()
     return dict(row) if row else work
 
@@ -552,6 +567,69 @@ def complete_work_stage(project_key: str, work_id: str, confidence: float) -> No
         (confidence, work_id),
     )
     db.commit()
+
+
+def update_work_output(project_key: str, work_id: str, output_type: str,
+                       output_description: str) -> Optional[dict]:
+    """Update the output type and description for a work item."""
+    db = get_db(project_key)
+    cur = db.execute("SELECT id FROM works WHERE id=?", (work_id,))
+    if cur.fetchone() is None:
+        return None
+    db.execute(
+        """UPDATE works SET output_type=?, output_description=?, updated_at=datetime('now')
+           WHERE id=?""",
+        (output_type, output_description, work_id),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM works WHERE id=?", (work_id,)).fetchone()
+    return dict(row) if row else None
+
+
+# ── Output directory management ──────────────────────────────────────
+
+# Standard output type options shown in the UI
+OUTPUT_TYPES = [
+    "report", "code", "ppt", "image", "video", "audio", "3d_model",
+    "document", "spreadsheet", "design", "prototype", "data", "other",
+]
+
+
+def _output_dir(project_key: str, work_id: str) -> str:
+    """Get the aman_team/{work_id}/ directory path under the project work_dir."""
+    proj = _projects.get(project_key, {}).get("config", {})
+    work_dir = proj.get("work_dir", os.getcwd())
+    return os.path.join(work_dir, "aman_team", work_id)
+
+
+def _ensure_output_dir(project_key: str, work_id: str) -> str:
+    """Create the aman_team/{work_id}/ directory if it doesn't exist."""
+    path = _output_dir(project_key, work_id)
+    os.makedirs(path, exist_ok=True)
+    # Create a .gitkeep so the directory is not empty (easier to see in file tree)
+    gitkeep = os.path.join(path, ".gitkeep")
+    if not os.path.exists(gitkeep):
+        with open(gitkeep, "w") as f:
+            f.write("")
+    return path
+
+
+def list_output_files(project_key: str, work_id: str) -> list:
+    """List files in the output directory (excluding .gitkeep)."""
+    path = _output_dir(project_key, work_id)
+    if not os.path.isdir(path):
+        return []
+    files = []
+    for name in sorted(os.listdir(path)):
+        if name == ".gitkeep":
+            continue
+        full = os.path.join(path, name)
+        files.append({
+            "name": name,
+            "size": os.path.getsize(full) if os.path.isfile(full) else 0,
+            "is_dir": os.path.isdir(full),
+        })
+    return files
 
 
 # ── Context ─────────────────────────────────────────────────────────────
@@ -1003,6 +1081,24 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
     if method == "GET" and rel_path == "":
         return _handle_get_project(project_key)
 
+    # ── Open project / output directory ─────────────────────────────
+    if method == "POST" and rel_path == "open-dir":
+        return _handle_open_project_dir(project_key)
+
+    m_open_output = re.match(r"works/([^/]+)/open-output-dir$", rel_path)
+    if m_open_output and method == "POST":
+        return _handle_open_output_dir(project_key, m_open_output.group(1))
+
+    # ── Update output type / description ────────────────────────────
+    m_output = re.match(r"works/([^/]+)/output$", rel_path)
+    if m_output and method == "POST":
+        return _handle_update_work_output(project_key, m_output.group(1), body_json)
+
+    # ── List output files ───────────────────────────────────────────
+    m_output_files = re.match(r"works/([^/]+)/output-files$", rel_path)
+    if m_output_files and method == "GET":
+        return _handle_list_output_files(project_key, m_output_files.group(1))
+
     return {"status": 404, "body": json.dumps({"error": "not found"})}
 
 
@@ -1016,6 +1112,7 @@ def _handle_get_project(project_key: str) -> dict:
             "project_name": proj.get("project_name", project_key),
             "description": proj.get("description", ""),
             "stages": proj.get("stages", []),
+            "work_dir": proj.get("work_dir", ""),
         }),
     }
 
@@ -1031,6 +1128,7 @@ def _handle_list_works(project_key: str, query: Optional[str]) -> dict:
             "project_name": proj.get("project_name", project_key),
             "stages": proj.get("stages", []),
             "works": works,
+            "work_dir": proj.get("work_dir", ""),
         }),
     }
 
@@ -1058,6 +1156,8 @@ def _handle_create_work(project_key: str, body: dict) -> dict:
         "source_type": "manual",
         "creator": body.get("creator", ""),
         "tags": tags,
+        "output_type": body.get("output_type", ""),
+        "output_description": body.get("output_description", ""),
     }
 
     # Persist to the project database
@@ -1074,6 +1174,8 @@ def _handle_create_work(project_key: str, body: dict) -> dict:
         creator=work.get("creator", ""),
         stage=initial_stage,
         priority=priority,
+        output_type=work.get("output_type", ""),
+        output_description=work.get("output_description", ""),
     ))
 
     send_notification("aman.emit_event", {
@@ -1344,6 +1446,64 @@ def _handle_list_project_agents(project_key: str) -> dict:
         "headers": {"content-type": "application/json"},
         "body": json.dumps(agent_list),
     }
+
+
+def _handle_open_project_dir(project_key: str) -> dict:
+    """Return the project work_dir and attempt to open it in the OS file manager."""
+    proj = _projects.get(project_key, {}).get("config", {})
+    work_dir = proj.get("work_dir", os.getcwd())
+    _open_in_os(work_dir)
+    return _json_response({"ok": True, "path": work_dir})
+
+
+def _handle_open_output_dir(project_key: str, work_id: str) -> dict:
+    """Open the aman_team/{work_id}/ output directory for a work item."""
+    path = _ensure_output_dir(project_key, work_id)
+    _open_in_os(path)
+    files = list_output_files(project_key, work_id)
+    return _json_response({"ok": True, "path": path, "files": files})
+
+
+def _open_in_os(path: str) -> None:
+    """Open a path in the OS file manager (best-effort, non-blocking)."""
+    import subprocess
+    import platform
+    try:
+        system = platform.system()
+        if system == "Darwin":
+            subprocess.Popen(["open", path])
+        elif system == "Linux":
+            subprocess.Popen(["xdg-open", path])
+        elif system == "Windows":
+            subprocess.Popen(["explorer", path])
+    except Exception:
+        # Best-effort — the frontend can still show the path
+        pass
+
+
+def _handle_update_work_output(project_key: str, work_id: str, body: dict) -> dict:
+    """Update output type and/or description for a work item."""
+    output_type = body.get("output_type", "")
+    output_description = body.get("output_description", "")
+
+    result = update_work_output(project_key, work_id, output_type, output_description)
+    if result is None:
+        return _json_response({"error": f"work '{work_id}' not found"}, 404)
+
+    append_event(project_key, work_id, make_event(
+        "output_updated",
+        output_type=output_type,
+        output_description=output_description,
+    ))
+
+    return _json_response({"ok": True, "work": result})
+
+
+def _handle_list_output_files(project_key: str, work_id: str) -> dict:
+    """List files in the work item's output directory."""
+    files = list_output_files(project_key, work_id)
+    path = _output_dir(project_key, work_id)
+    return _json_response({"path": path, "files": files})
 
 
 # ── Setup / Config API ─────────────────────────────────────────────────
@@ -1942,6 +2102,7 @@ def handle_on_load(params: Any) -> dict:
             {"method": "POST", "path": f"{api_prefix}/stages/update"},
             {"method": "POST", "path": f"{api_prefix}/boards/import"},
             {"method": "DELETE", "path": api_prefix},
+            {"method": "POST", "path": f"{api_prefix}/open-dir"},
             {"method": "GET", "path": f"{api_prefix}/works"},
             {"method": "POST", "path": f"{api_prefix}/works/create"},
             {"method": "GET", "path": f"{api_prefix}/safety/pending"},

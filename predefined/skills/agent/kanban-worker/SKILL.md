@@ -33,6 +33,65 @@ for work items assigned to the current agent and execute them. It is designed
 to be called without user interaction — the agent checks its queue, picks up
 work, and reports progress.
 
+## Output Directory & Deliverables
+
+Every work item has a dedicated output directory for storing deliverables:
+
+```
+{work_dir}/aman_team/{work_id}/
+```
+
+This directory is created automatically when the work item is created. **All
+output files (code, reports, assets, etc.) must be placed in this directory.**
+Do NOT scatter output files across the project or leave them in temporary
+locations.
+
+### Reading the Output Type
+
+When you pick up a work item, check its `output_type` and `output_description`
+fields in the work item response. These tell you what kind of deliverable is
+expected:
+
+- `code` → produce source code files. The `output_description` will specify
+  language, framework, and target modules.
+- `report` → produce a report document. The `output_description` gives the
+  expected scope.
+- `ppt` / `image` / `video` / `audio` / `3d_model` / `design` / `prototype` →
+  produce the corresponding media/asset files.
+- `data` → produce a dataset (CSV, JSON, etc.).
+- `document` / `spreadsheet` → produce documents or spreadsheets.
+- If empty → the work item doesn't have a specified output type yet. You can
+  infer it from the work description and set it when you finish.
+
+### Writing Output Files
+
+```
+{work_dir}/aman_team/{work_id}/{filename}
+```
+
+Examples:
+- `aman_team/work-1716900000000/fix_backpressure.patch`
+- `aman_team/work-1716900000000/q2_analysis_report.md`
+- `aman_team/work-1716900000000/sales_data_q2.csv`
+
+### Updating Output Info
+
+When you complete (or make significant progress on) the work item, update its
+output type and description so the kanban board reflects what was produced:
+
+```
+POST /api/v1/team/projects/{project_key}/works/{work_id}/output
+Content-Type: application/json
+
+{
+  "output_type": "code",
+  "output_description": "Rust — fix event-bus crate backpressure.rs L4B threshold, add 3 unit tests"
+}
+```
+
+If the work item already had output_type set, verify it's still accurate and
+update `output_description` with what was actually delivered.
+
 ## Core Rule: Exit Early If No Work
 
 **Before doing anything else**, query your assigned work items. If the

@@ -33,6 +33,9 @@
   .card:hover { border-color: #333; }
   .card-title { font-weight: 500; margin-bottom: 4px; }
   .card-meta { font-size: 11px; color: #666; }
+  .card-output-badge { display: inline-block; font-size: 10px; padding: 1px 6px;
+    border-radius: 8px; background: rgba(99, 102, 241, 0.12); color: #818cf8;
+    margin-top: 4px; }
   .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
              color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
   .add-btn:hover { color: #aaa; border-color: #555; }
@@ -340,6 +343,94 @@
     color: #e0e0e0;
   }
 
+  .wd-output-section {
+    padding: 12px 20px;
+    border-top: 1px solid #1e2030;
+    background: #0f1119;
+    flex-shrink: 0;
+  }
+
+  .wd-output-section summary {
+    font-size: 12px;
+    color: #aaa;
+    cursor: pointer;
+    user-select: none;
+    margin-bottom: 8px;
+  }
+
+  .wd-output-section summary:hover {
+    color: #e0e0e0;
+  }
+
+  .wd-output-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .wd-output-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .wd-output-select {
+    padding: 6px 10px;
+    background: #0b0d13;
+    border: 1px solid #2a2d3a;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 12px;
+    max-width: 160px;
+  }
+
+  .wd-output-desc {
+    flex: 1;
+    min-width: 200px;
+    padding: 6px 10px;
+    background: #0b0d13;
+    border: 1px solid #2a2d3a;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 12px;
+    font-family: inherit;
+    resize: vertical;
+    min-height: 36px;
+  }
+
+  .wd-output-save {
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid #6366f1;
+    background: transparent;
+    color: #6366f1;
+  }
+
+  .wd-output-save:hover {
+    background: rgba(99, 102, 241, 0.15);
+  }
+
+  .wd-open-dir-btn {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid #2a2d3a;
+    background: #1a1d2b;
+    color: #888;
+    margin-left: 8px;
+  }
+
+  .wd-open-dir-btn:hover {
+    border-color: #6366f1;
+    color: #818cf8;
+  }
+
 </style>
 </head>
 <body>
@@ -347,6 +438,7 @@
   <a href="/api/v1/team">&larr; Projects</a>
   <h1>$project_name</h1>
   <span class="spacer"></span>
+  <button class="bar-btn" onclick="openProjectDir()" title="Open project directory in file manager">📂 Open Dir</button>
   <button class="bar-btn" onclick="openEditProject()">Edit Project</button>
   <button class="bar-btn" onclick="openEditBoard()">Edit Board</button>
 </div>
@@ -363,6 +455,29 @@
     <div class="form-group">
       <label>Description</label>
       <textarea id="newDesc" placeholder="Description (optional)"></textarea>
+    </div>
+    <div class="form-group">
+      <label>产出类型 (Output Type)</label>
+      <select id="newOutputType" style="width:100%;padding:8px 10px;background:#0b0d13;border:1px solid #2a2d3a;border-radius:6px;color:#e0e0e0;font-size:13px;">
+        <option value="">-- Select output type --</option>
+        <option value="report">report</option>
+        <option value="code">code</option>
+        <option value="ppt">ppt</option>
+        <option value="image">image</option>
+        <option value="video">video</option>
+        <option value="audio">audio</option>
+        <option value="3d_model">3d_model</option>
+        <option value="document">document</option>
+        <option value="spreadsheet">spreadsheet</option>
+        <option value="design">design</option>
+        <option value="prototype">prototype</option>
+        <option value="data">data</option>
+        <option value="other">other</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>产出说明 (Output Description)</label>
+      <textarea id="newOutputDesc" placeholder="e.g. 代码：Python + FastAPI, PostgreSQL；报告：摘要200-300字" rows="3"></textarea>
     </div>
     <input type="hidden" id="newStage">
     <div class="modal-actions">
@@ -446,6 +561,35 @@
     <div class="wd-messages" id="wdMessages">
       <div class="wd-empty">Loading work context...</div>
     </div>
+    <div class="wd-output-section">
+      <details id="wdOutputDetails">
+        <summary>📦 产出信息 (Output)</summary>
+        <div class="wd-output-form" id="wdOutputForm">
+          <div class="wd-output-row">
+            <select class="wd-output-select" id="wdOutputType">
+              <option value="">-- Output type --</option>
+              <option value="report">report</option>
+              <option value="code">code</option>
+              <option value="ppt">ppt</option>
+              <option value="image">image</option>
+              <option value="video">video</option>
+              <option value="audio">audio</option>
+              <option value="3d_model">3d_model</option>
+              <option value="document">document</option>
+              <option value="spreadsheet">spreadsheet</option>
+              <option value="design">design</option>
+              <option value="prototype">prototype</option>
+              <option value="data">data</option>
+              <option value="other">other</option>
+            </select>
+            <button class="wd-output-save" onclick="saveWorkOutput()">保存产出信息</button>
+            <button class="wd-open-dir-btn" onclick="openOutputDir()" title="Open output directory">📂 产出目录</button>
+          </div>
+          <textarea class="wd-output-desc" id="wdOutputDesc" rows="2"
+            placeholder="Output description — code: language/framework; report: 200-300 word summary"></textarea>
+        </div>
+      </details>
+    </div>
     <div class="wd-input-area">
       <chat-input id="wdCommentInput" placeholder="Add a comment... (Ctrl+Enter to send)" rows="1" buttontext="Comment"></chat-input>
       <div class="wd-input-actions">
@@ -501,6 +645,7 @@ function render(stages, works) {
                 'onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
                 '<div class="card-title">' + esc(w.title) + '</div>' +
                 '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
+                (w.output_type ? '<span class="card-output-badge">' + esc(w.output_type) + '</span>' : '') +
                 '</div>';
       }
       list.innerHTML = html;
@@ -514,6 +659,8 @@ function openCreate(stageId) {
   document.getElementById("newStage").value = stageId;
   document.getElementById("newTitle").value = "";
   document.getElementById("newDesc").value = "";
+  document.getElementById("newOutputType").value = "";
+  document.getElementById("newOutputDesc").value = "";
   document.getElementById("createModal").classList.add("open");
   setTimeout(function(){ document.getElementById("newTitle").focus(); }, 100);
 }
@@ -530,7 +677,12 @@ async function createWork() {
     await fetch(BASE + "/works/create", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({title: title, description: document.getElementById("newDesc").value})
+      body: JSON.stringify({
+        title: title,
+        description: document.getElementById("newDesc").value,
+        output_type: document.getElementById("newOutputType").value,
+        output_description: document.getElementById("newOutputDesc").value
+      })
     });
     closeCreate();
     load();
@@ -594,6 +746,13 @@ function openWorkDetail(workId) {
   }
   sel.innerHTML = opts;
   sel.disabled = false;
+
+  // Populate output type and description
+  document.getElementById("wdOutputType").value = _detailWork.output_type || "";
+  document.getElementById("wdOutputDesc").value = _detailWork.output_description || "";
+  // Collapse output details by default (unless output is set)
+  var outputDetails = document.getElementById("wdOutputDetails");
+  outputDetails.open = !!(_detailWork.output_type || _detailWork.output_description);
 
   var ci = document.getElementById("wdCommentInput");
   ci.value = "";
@@ -692,6 +851,10 @@ function renderWorkContext(events) {
       cls = "wd-msg-human";
       label = esc(ev.author || "User");
       body = esc(ev.content || "");
+    } else if (t === "output_updated") {
+      cls = "wd-msg-system";
+      body = "Output updated: " + esc(ev.output_type || "type cleared") +
+             (ev.output_description ? " — " + esc(ev.output_description.substring(0, 80)) : "");
     } else {
       cls = "wd-msg-system";
       body = "[" + esc(t) + "] " + esc(JSON.stringify(ev).substring(0, 200));
@@ -1010,6 +1173,46 @@ async function executeImport() {
     _selectedImportName = "";
     window.location.reload();
   } catch(e) { flash(e.message, "error"); }
+}
+
+// ── Project / Output Directory ────────────────────────────────
+
+async function openProjectDir() {
+  try {
+    var r = await fetch(BASE + "/open-dir", { method: "POST" });
+    var data = await r.json();
+    flash("Opened: " + data.path, "success");
+  } catch(e) { flash("Failed: " + e.message, "error"); }
+}
+
+async function openOutputDir() {
+  if (!_detailWorkId) return;
+  try {
+    var r = await fetch(BASE + "/works/" + _detailWorkId + "/open-output-dir", { method: "POST" });
+    var data = await r.json();
+    flash("Opened: " + data.path + (data.files ? " (" + data.files.length + " files)" : ""), "success");
+  } catch(e) { flash("Failed: " + e.message, "error"); }
+}
+
+async function saveWorkOutput() {
+  if (!_detailWorkId) return;
+  var outputType = document.getElementById("wdOutputType").value;
+  var outputDesc = document.getElementById("wdOutputDesc").value.trim();
+  try {
+    var r = await fetch(BASE + "/works/" + _detailWorkId + "/output", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({output_type: outputType, output_description: outputDesc})
+    });
+    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Save failed: " + (e.error || r.statusText), "error"); return; }
+    var data = await r.json();
+    if (_detailWork) {
+      _detailWork.output_type = outputType;
+      _detailWork.output_description = outputDesc;
+    }
+    flash("Output info saved", "success");
+    load();
+  } catch(e) { flash("Network error: " + e.message, "error"); }
 }
 
 // ── Helpers ───────────────────────────────────────────────────

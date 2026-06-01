@@ -1,6 +1,11 @@
 <svelte:options customElement="chat-input" />
 
 <script lang="ts">
+  interface Skill {
+    name: string;
+    description: string;
+  }
+
   interface Props {
     placeholder?: string;
     disabled?: boolean;
@@ -10,6 +15,7 @@
     processing?: string | undefined;
     rateLimit?: number;
     value?: string;
+    skills?: Skill[];
     onsend?: (text: string) => void;
     onstop?: () => void;
     oninput?: (text: string) => void;
@@ -25,6 +31,7 @@
     processing = undefined,
     rateLimit = 0,
     value = $bindable(""),
+    skills = [],
     onsend,
     onstop,
     oninput,
@@ -32,6 +39,12 @@
   }: Props = $props();
 
   let textareaEl: HTMLTextAreaElement | undefined = $state();
+
+  // ── Skill picker state ───────────────────────────────────────────────
+  let showSkillPicker = $state(false);
+  let skillPickerResults = $state<Skill[]>([]);
+  let skillPickerIndex = $state(0);
+  let pickerListEl: HTMLUListElement | undefined = $state();
 
   function autoGrow() {
     if (!textareaEl) return;
@@ -53,21 +66,112 @@
     );
   }
 
+  // ── Skill picker logic ───────────────────────────────────────────────
+
+  function updateSkillPicker(text: string) {
+    if (!text.startsWith("/skill")) {
+      showSkillPicker = false;
+      return;
+    }
+
+    const afterCommand = text.slice("/skill".length);
+    // If user typed a space after "/skill", they're entering args — close picker
+    if (afterCommand.startsWith(" ")) {
+      showSkillPicker = false;
+      return;
+    }
+
+    const prefix = afterCommand.trim().toLowerCase();
+
+    if (prefix) {
+      skillPickerResults = skills.filter(
+        s => s.name.toLowerCase().includes(prefix) ||
+             s.description.toLowerCase().includes(prefix)
+      );
+    } else {
+      skillPickerResults = [...skills];
+    }
+
+    showSkillPicker = skillPickerResults.length > 0;
+    skillPickerIndex = 0;
+  }
+
+  function selectSkill(skillName: string) {
+    value = "/skill " + skillName + " ";
+    if (textareaEl) {
+      textareaEl.value = value;
+      textareaEl.focus();
+      autoGrow();
+    }
+    showSkillPicker = false;
+    oninput?.(value);
+    dispatch("input", { text: value });
+  }
+
+  function closeSkillPicker() {
+    showSkillPicker = false;
+  }
+
+  function scrollSkillIntoView(index: number) {
+    if (!pickerListEl) return;
+    const item = pickerListEl.children[index] as HTMLElement | undefined;
+    item?.scrollIntoView({ block: "nearest" });
+  }
+
+  // ── Input handlers ───────────────────────────────────────────────────
+
   function handleInput(e: Event) {
     const text = (e.target as HTMLTextAreaElement).value;
     value = text;
     autoGrow();
+    updateSkillPicker(text);
     oninput?.(text);
     dispatch("input", { text });
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // Skill picker keyboard navigation
+    if (showSkillPicker) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        skillPickerIndex = Math.min(skillPickerIndex + 1, skillPickerResults.length - 1);
+        scrollSkillIntoView(skillPickerIndex);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        skillPickerIndex = Math.max(skillPickerIndex - 1, 0);
+        scrollSkillIntoView(skillPickerIndex);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if (skillPickerResults[skillPickerIndex]) {
+          selectSkill(skillPickerResults[skillPickerIndex].name);
+        }
+        return;
+      }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        if (skillPickerResults[skillPickerIndex]) {
+          selectSkill(skillPickerResults[skillPickerIndex].name);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeSkillPicker();
+        return;
+      }
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       doSend();
       return;
     }
     onkeydown?.(e);
+    dispatch("keydown", e);
   }
 
   function handleButtonClick() {
@@ -83,6 +187,8 @@
   function doSend() {
     const text = value.trim();
     if (!text) return;
+    // Close picker on send in case it was open
+    showSkillPicker = false;
     onsend?.(text);
     dispatch("send", { text });
   }
@@ -92,29 +198,67 @@
   }
 </script>
 
-<textarea
-  bind:this={textareaEl}
-  {placeholder}
-  {disabled}
-  rows={rows}
-  oninput={handleInput}
-  onkeydown={handleKeydown}
-></textarea>
+<div class="input-row">
+  <textarea
+    bind:this={textareaEl}
+    {placeholder}
+    {disabled}
+    rows={rows}
+    oninput={handleInput}
+    onkeydown={handleKeydown}
+  ></textarea>
 
-{#if rateLimit > 0}
-  <button class="rate-limited-btn" disabled>{rateLimit}s</button>
-{:else if processing !== undefined}
-  <button class="stop-btn" onclick={handleButtonClick}>{stopText}</button>
-{:else}
-  <button
-    class="send-btn"
-    disabled={!value.trim()}
-    onclick={handleButtonClick}
-  >{buttonText}</button>
+  {#if rateLimit > 0}
+    <button class="rate-limited-btn" disabled>{rateLimit}s</button>
+  {:else if processing !== undefined}
+    <button class="stop-btn" onclick={handleButtonClick}>{stopText}</button>
+  {:else}
+    <button
+      class="send-btn"
+      disabled={!value.trim()}
+      onclick={handleButtonClick}
+    >{buttonText}</button>
+  {/if}
+</div>
+
+{#if showSkillPicker}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <ul
+    class="skill-picker"
+    bind:this={pickerListEl}
+    role="listbox"
+    onkeydown={(e: KeyboardEvent) => e.stopPropagation()}
+  >
+    {#each skillPickerResults as skill, i}
+      <li
+        class="skill-picker-item"
+        class:selected={i === skillPickerIndex}
+        role="option"
+        aria-selected={i === skillPickerIndex}
+        onclick={() => selectSkill(skill.name)}
+        onkeydown={(e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSkill(skill.name); } }}
+        onmouseenter={() => skillPickerIndex = i}
+      >
+        <span class="skill-picker-name">/{skill.name}</span>
+        <span class="skill-picker-desc">{skill.description}</span>
+      </li>
+    {/each}
+    {#if skillPickerResults.length === 0}
+      <li class="skill-picker-empty">No matching skills</li>
+    {/if}
+  </ul>
 {/if}
 
 <style>
   :host {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: 100%;
+    position: relative;
+  }
+
+  .input-row {
     display: flex;
     gap: 8px;
     align-items: flex-end;
@@ -192,5 +336,67 @@
     color: var(--chat-input-yellow, #eab308);
     font-weight: 600;
     cursor: not-allowed;
+  }
+
+  /* ── Skill picker ─────────────────────────────────────────────────── */
+
+  .skill-picker {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 260px;
+    overflow-y: auto;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    background: var(--chat-input-picker-bg, #1e1e2e);
+    border: 1px solid var(--chat-input-picker-border, #2a2d3a);
+    border-radius: 8px;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
+    z-index: 100;
+  }
+
+  .skill-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--chat-input-picker-border, #2a2d3a);
+    transition: background 0.1s;
+  }
+
+  .skill-picker-item:last-child {
+    border-bottom: none;
+  }
+
+  .skill-picker-item:hover,
+  .skill-picker-item.selected {
+    background: var(--chat-input-picker-hover, rgba(99, 102, 241, 0.15));
+  }
+
+  .skill-picker-name {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--chat-input-accent, #3b82f6);
+    white-space: nowrap;
+    min-width: fit-content;
+  }
+
+  .skill-picker-desc {
+    font-size: 12px;
+    color: var(--chat-input-picker-desc, #a0a0b0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .skill-picker-empty {
+    padding: 12px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--chat-input-picker-desc, #a0a0b0);
   }
 </style>

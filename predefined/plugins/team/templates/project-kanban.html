@@ -303,6 +303,10 @@
     --chat-input-red: #ef4444;
     --chat-input-yellow: #eab308;
     --chat-input-disabled-bg: #1a1d2b;
+    --chat-input-picker-bg: #0f1119;
+    --chat-input-picker-border: #2a2d3a;
+    --chat-input-picker-hover: rgba(99, 102, 241, 0.15);
+    --chat-input-picker-desc: #888;
   }
 
   .wd-input-actions {
@@ -1242,10 +1246,24 @@ document.addEventListener("keydown", function(e) {
   }
 });
 
-// Wire chat-input send event to comment function
+// Wire chat-input send event to comment function and load skills for autocomplete
 (function() {
   var ci = document.getElementById("wdCommentInput");
-  if (ci) ci.addEventListener("send", function() { addWorkComment(); });
+  if (!ci) return;
+  ci.addEventListener("send", function() { addWorkComment(); });
+
+  // Load skills for /skill autocomplete dropdown
+  fetch("/api/v1/llm-skills")
+    .then(function(r) {
+      if (!r.ok) return;
+      return r.json();
+    })
+    .then(function(data) {
+      var items = (data && data.items) || [];
+      var skills = items.filter(function(s) { return s.name && s.description; });
+      ci.skills = skills;
+    })
+    .catch(function() { /* Skills unavailable — picker stays empty */ });
 })();
 
 load();

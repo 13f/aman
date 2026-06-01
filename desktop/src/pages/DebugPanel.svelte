@@ -229,9 +229,9 @@
     width: 480px;
     max-width: 90vw;
     height: 100%;
-    background: #1a1a2e;
-    color: #e0e0e0;
-    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    background: var(--bg-elevated);
+    color: var(--fg);
+    font-family: var(--font-mono);
     font-size: 12px;
     display: flex;
     flex-direction: column;
@@ -243,8 +243,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 10px 14px;
-    border-bottom: 1px solid #333;
-    background: #16162a;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
     flex-shrink: 0;
   }
 
@@ -252,7 +252,7 @@
     margin: 0;
     font-size: 13px;
     font-weight: 600;
-    color: #fff;
+    color: var(--fg);
   }
 
   .dp-header-actions {
@@ -262,18 +262,18 @@
 
   .dp-btn {
     padding: 3px 10px;
-    border: 1px solid #444;
+    border: 1px solid var(--border-strong);
     border-radius: 4px;
     background: transparent;
-    color: #ccc;
+    color: var(--fg-dim);
     font-size: 11px;
     font-family: inherit;
     cursor: pointer;
   }
 
   .dp-btn:hover {
-    background: #333;
-    color: #fff;
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   .dp-close {
@@ -289,15 +289,15 @@
   }
 
   .dp-section {
-    border-bottom: 1px solid #2a2a3e;
+    border-bottom: 1px solid var(--border);
   }
 
   .dp-section-header {
     width: 100%;
     padding: 8px 14px;
     border: none;
-    background: #1e1e34;
-    color: #aaa;
+    background: var(--bg-hover);
+    color: var(--fg-dim);
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
@@ -310,7 +310,7 @@
   }
 
   .dp-section-header:hover {
-    background: #252542;
+    background: var(--bg-active);
   }
 
   .dp-section-body {
@@ -331,7 +331,7 @@
 
   .dp-metric-label {
     font-size: 10px;
-    color: #888;
+    color: var(--fg-dim);
     text-transform: uppercase;
     letter-spacing: 0.3px;
   }
@@ -339,24 +339,24 @@
   .dp-metric-value {
     font-size: 16px;
     font-weight: 700;
-    color: #4ade80;
+    color: var(--green);
   }
 
   .dp-metric-value.bp-critical {
-    color: #ef4444;
+    color: var(--red);
   }
 
   .dp-metric-value.bp-warn {
-    color: #f59e0b;
+    color: var(--yellow);
   }
 
   .dp-count {
-    color: #666;
+    color: var(--fg-dim);
     font-weight: 400;
   }
 
   .dp-empty {
-    color: #666;
+    color: var(--fg-dim);
     font-style: italic;
     padding: 12px;
     text-align: center;
@@ -379,26 +379,26 @@
   }
 
   .dp-event-row:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--bg-hover);
   }
 
   .dp-event-row.selected {
-    background: rgba(96, 165, 250, 0.1);
-    border-left: 2px solid #60a5fa;
+    background: var(--accent-muted);
+    border-left: 2px solid var(--accent);
     padding-left: 12px;
   }
 
   .dp-event-row.even {
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--bg-hover);
   }
 
   .dp-event-row.even:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--bg-active);
   }
 
   .dp-event-row.even.selected {
-    background: rgba(96, 165, 250, 0.1);
-    border-left: 2px solid #60a5fa;
+    background: var(--accent-muted);
+    border-left: 2px solid var(--accent);
     padding-left: 12px;
   }
 
@@ -413,65 +413,44 @@
     border-radius: 4px;
     font-size: 10px;
     line-height: 1.5;
-    color: #bbb;
+    color: var(--fg-secondary);
     overflow-x: auto;
     white-space: pre-wrap;
     word-break: break-all;
   }
 
   .dp-event-time {
-    color: #666;
+    color: var(--fg-dim);
     flex-shrink: 0;
     width: 80px;
   }
 
-  .dp-event-type {
-    color: #93c5fd;
-    font-weight: 500;
-    flex-shrink: 0;
-  }
-
-  .dp-event-type.llm {
-    color: #a78bfa;
-  }
-
-  .dp-event-type.tool {
-    color: #34d399;
-  }
-
-  .dp-event-type.msg {
-    color: #fbbf24;
-  }
-
-  .dp-event-type.cap {
-    color: #60a5fa;
-  }
-
-  .dp-event-type.warn {
-    color: #fb923c;
-  }
-
-  .dp-event-type.error {
-    color: #ef4444;
-  }
+  /* Event type colors — categorical data viz palette (kept as specific colors per spec) */
+  .dp-event-type { color: #93c5fd; font-weight: 500; flex-shrink: 0; }
+  .dp-event-type.llm  { color: #a78bfa; }
+  .dp-event-type.tool { color: #34d399; }
+  .dp-event-type.msg  { color: #fbbf24; }
+  .dp-event-type.cap  { color: #60a5fa; }
+  .dp-event-type.warn { color: #fb923c; }
+  .dp-event-type.error { color: var(--red); }
 
   .dp-channel-tag {
     font-size: 9px;
     padding: 1px 5px;
     border-radius: 3px;
-    background: #2a2a4a;
-    color: #888;
+    background: var(--bg-active);
+    color: var(--fg-dim);
     text-transform: uppercase;
     flex-shrink: 0;
   }
 
   .dp-event-sid {
-    color: #555;
+    color: var(--fg-dim);
     flex-shrink: 0;
   }
 
   .dp-event-trace {
-    color: #555;
+    color: var(--fg-dim);
     font-size: 10px;
     flex-shrink: 0;
   }

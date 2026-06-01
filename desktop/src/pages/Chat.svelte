@@ -2164,7 +2164,7 @@
     left: 0;
     z-index: 10;
     min-width: 130px;
-    background: var(--bg-card, var(--bg));
+    background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 4px;
@@ -2252,13 +2252,13 @@
     cursor: pointer;
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-secondary);
+    color: var(--fg-dim);
     border-bottom: 2px solid transparent;
     transition: color 0.15s, border-color 0.15s;
   }
 
   .tab-btn:hover {
-    color: var(--text-primary);
+    color: var(--fg);
     background: var(--bg-hover);
   }
 
@@ -2351,8 +2351,8 @@
 
   .session-delete-btn:hover {
     opacity: 1 !important;
-    background: rgba(239, 68, 68, 0.12);
-    color: var(--red, #ef4444);
+    background: var(--red-muted);
+    color: var(--red);
   }
 
   .session-delete-btn:disabled {
@@ -2414,12 +2414,12 @@
   }
 
   .confirm-dialog {
-    background: var(--bg-card, #1e1e2e);
+    background: var(--bg-card);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius-xl);
     padding: 20px 24px;
     min-width: 240px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-lg);
   }
 
   .confirm-dialog p {
@@ -2452,8 +2452,8 @@
   .confirm-delete {
     padding: 6px 16px;
     border: none;
-    border-radius: 6px;
-    background: var(--red, #ef4444);
+    border-radius: var(--radius-md);
+    background: var(--red);
     color: #fff;
     font-size: 13px;
     font-weight: 500;
@@ -2461,7 +2461,8 @@
   }
 
   .confirm-delete:hover {
-    background: #dc2626;
+    background: var(--red);
+    opacity: 0.85;
   }
 
   .session-title {
@@ -2515,7 +2516,7 @@
     font-size: 15px;
     font-weight: 600;
     font-family: inherit;
-    border: 1px solid var(--accent, #3b82f6);
+    border: 1px solid var(--accent);
     border-radius: 4px;
     padding: 2px 6px;
     background: var(--bg);
@@ -2542,7 +2543,7 @@
   }
 
   .chat-status.loading {
-    color: var(--accent, #3b82f6);
+    color: var(--accent);
   }
 
   .message-area {
@@ -2604,7 +2605,7 @@
   }
 
   .message.user .msg-bubble {
-    background: var(--accent, #3b82f6);
+    background: var(--accent);
     color: #fff;
     border-bottom-right-radius: 4px;
   }
@@ -2651,11 +2652,11 @@
   }
 
   .msg-status.pending {
-    color: var(--accent, #3b82f6);
+    color: var(--accent);
   }
 
   .msg-status.error {
-    color: var(--red, #ef4444);
+    color: var(--red);
   }
 
   .interrupted .msg-bubble {
@@ -2783,7 +2784,7 @@
     border-radius: var(--radius-sm);
     background: var(--bg-hover);
     color: var(--fg-dim);
-    font-family: "SF Mono", "Fira Code", monospace;
+    font-family: var(--font-mono);
     cursor: help;
   }
 
@@ -2803,40 +2804,35 @@
     align-items: center;
     gap: 8px;
     padding: 10px 14px;
-    border-radius: 8px;
+    border-radius: var(--radius-lg);
     font-size: 12px;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    animation: toast-in 0.25s ease-out;
+    box-shadow: var(--shadow-md);
+    animation: slideInRight 0.2s ease-out;
     line-height: 1.4;
   }
 
-  @keyframes toast-in {
-    from { opacity: 0; transform: translateX(20px); }
-    to { opacity: 1; transform: translateX(0); }
-  }
-
   .toast-info {
-    background: rgba(108, 140, 255, 0.12);
-    border: 1px solid rgba(108, 140, 255, 0.25);
+    background: var(--accent-muted);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
     color: var(--accent);
   }
 
   .toast-success {
     background: var(--green-muted);
-    border: 1px solid rgba(74, 222, 128, 0.25);
+    border: 1px solid color-mix(in srgb, var(--green) 25%, transparent);
     color: var(--green);
   }
 
   .toast-warn {
     background: var(--yellow-muted);
-    border: 1px solid rgba(250, 204, 21, 0.25);
+    border: 1px solid color-mix(in srgb, var(--yellow) 25%, transparent);
     color: var(--yellow);
   }
 
   .toast-error {
     background: var(--red-muted);
-    border: 1px solid rgba(248, 113, 113, 0.25);
+    border: 1px solid color-mix(in srgb, var(--red) 25%, transparent);
     color: var(--red);
   }
 
@@ -2865,35 +2861,35 @@
   :global(.markdown-body ol) { margin: 0.25em 0; padding-left: 1.5em; }
   :global(.markdown-body li) { margin: 0.15em 0; }
   :global(.markdown-body code) {
-    background: rgba(128,128,128,0.12);
-    border-radius: 3px;
+    background: var(--bg-hover);
+    border-radius: var(--radius-sm);
     padding: 0.15em 0.35em;
     font-size: 0.88em;
-    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    font-family: var(--font-mono);
   }
   :global(.markdown-body pre) {
-    background: rgba(128,128,128,0.08);
-    border: 1px solid rgba(128,128,128,0.18);
-    border-radius: 6px;
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
     padding: 0.75em 1em;
     overflow-x: auto;
     margin: 0.5em 0;
   }
   :global(.markdown-body pre code) { background: none; padding: 0; border-radius: 0; font-size: 0.85em; }
   :global(.markdown-body blockquote) {
-    border-left: 3px solid rgba(128,128,128,0.3);
+    border-left: 3px solid var(--border-strong);
     margin: 0.5em 0;
     padding: 0.25em 0.75em;
-    color: #666;
+    color: var(--fg-dim);
   }
   :global(.markdown-body table) { border-collapse: collapse; margin: 0.5em 0; font-size: 0.92em; }
   :global(.markdown-body th),
   :global(.markdown-body td) {
-    border: 1px solid rgba(128,128,128,0.25);
+    border: 1px solid var(--border);
     padding: 0.4em 0.6em;
     text-align: left;
   }
-  :global(.markdown-body th) { background: rgba(128,128,128,0.08); font-weight: 600; }
+  :global(.markdown-body th) { background: var(--bg-hover); font-weight: 600; }
   :global(.markdown-body a) { color: var(--accent-hover); text-decoration: none; }
   :global(.markdown-body a:hover) { text-decoration: underline; }
   :global(.markdown-body hr) { border: none; border-top: 1px solid rgba(128,128,128,0.2); margin: 0.75em 0; }

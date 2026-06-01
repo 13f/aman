@@ -179,7 +179,7 @@
   }
 
   .bell-btn:hover {
-    background: var(--hover-bg, rgba(255, 255, 255, 0.08));
+    background: var(--bg-hover);
   }
 
   .bell-icon {
@@ -203,12 +203,12 @@
   }
 
   .badge.severity-critical {
-    background: #dc2626;
+    background: var(--red);
     animation: pulse 1.5s ease-in-out infinite;
   }
 
   .badge.severity-warning {
-    background: #eab308;
+    background: var(--yellow);
     color: #1a1a1a;
   }
 
@@ -216,8 +216,8 @@
     position: absolute;
     bottom: calc(100% + 8px);
     right: 0;
-    background: var(--sidebar-bg, #1a1d2e);
-    border: 1px solid var(--border, #2a2d3a);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
     border-radius: 12px;
     box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.4);
     max-height: 400px;
@@ -231,19 +231,19 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    border-bottom: 1px solid var(--border, #2a2d3a);
+    border-bottom: 1px solid var(--border);
   }
 
   .dropdown-title {
     font-weight: 700;
     font-size: 13px;
-    color: var(--fg, #e0e0e0);
+    color: var(--fg);
   }
 
   .dismiss-all-btn {
     background: none;
     border: none;
-    color: var(--accent, #6c8cff);
+    color: var(--accent);
     font-size: 11px;
     cursor: pointer;
     padding: 2px 6px;
@@ -251,7 +251,7 @@
   }
 
   .dismiss-all-btn:hover {
-    background: rgba(108, 140, 255, 0.15);
+    background: var(--accent-muted);
   }
 
   .dropdown-list {
@@ -261,7 +261,7 @@
   .empty-state {
     padding: 24px 16px;
     text-align: center;
-    color: var(--fg-dim, #888);
+    color: var(--fg-dim);
     font-size: 12px;
   }
 
@@ -269,7 +269,7 @@
     display: flex;
     gap: 10px;
     padding: 10px 16px;
-    border-bottom: 1px solid var(--border, #2a2d3a);
+    border-bottom: 1px solid var(--border);
   }
 
   .notif-item:last-child {
@@ -285,11 +285,11 @@
   }
 
   .notif-item.severity-critical .notif-indicator {
-    background: #dc2626;
+    background: var(--red);
   }
 
   .notif-item.severity-warning .notif-indicator {
-    background: #eab308;
+    background: var(--yellow);
   }
 
   .notif-content {
@@ -307,18 +307,18 @@
   .notif-item-title {
     font-weight: 600;
     font-size: 12px;
-    color: var(--fg, #e0e0e0);
+    color: var(--fg);
   }
 
   .notif-time {
     font-size: 10px;
-    color: var(--fg-dim, #888);
+    color: var(--fg-dim);
     white-space: nowrap;
   }
 
   .notif-item-message {
     font-size: 11px;
-    color: var(--fg-dim, #888);
+    color: var(--fg-dim);
     margin-top: 2px;
     line-height: 1.3;
   }
@@ -332,7 +332,7 @@
   .notif-action-link {
     background: none;
     border: none;
-    color: var(--accent, #6c8cff);
+    color: var(--accent);
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
@@ -346,14 +346,14 @@
   .notif-dismiss-link {
     background: none;
     border: none;
-    color: var(--fg-dim, #888);
+    color: var(--fg-dim);
     font-size: 11px;
     cursor: pointer;
     padding: 0;
   }
 
   .notif-dismiss-link:hover {
-    color: var(--fg, #e0e0e0);
+    color: var(--fg);
   }
 
   @keyframes pulse {

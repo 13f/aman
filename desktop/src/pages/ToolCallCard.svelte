@@ -83,15 +83,15 @@
   }
 
   .tool-card.running {
-    border-color: var(--accent, #3b82f6);
+    border-color: var(--accent);
   }
 
   .tool-card.success {
-    border-color: var(--green, #22c55e);
+    border-color: var(--green);
   }
 
   .tool-card.failed {
-    border-color: var(--red, #ef4444);
+    border-color: var(--red);
   }
 
   .tool-header {
@@ -106,11 +106,11 @@
     text-align: left;
     font-family: inherit;
     font-size: 13px;
-    color: var(--text-primary, #111);
+    color: var(--fg);
   }
 
   .tool-header:hover {
-    background: rgba(0,0,0,0.03);
+    background: var(--bg-hover);
   }
 
   .tool-icon {
@@ -128,18 +128,13 @@
     display: inline-block;
   }
 
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
   .check {
-    color: var(--green, #22c55e);
+    color: var(--green);
     font-weight: bold;
   }
 
   .cross {
-    color: var(--red, #ef4444);
+    color: var(--red);
     font-weight: bold;
   }
 
@@ -153,19 +148,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--text-secondary, #666);
+    color: var(--fg-dim);
     font-size: 12px;
   }
 
   .expand-icon {
     flex-shrink: 0;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
     font-size: 10px;
   }
 
   .tool-body {
     padding: 8px 12px;
-    border-top: 1px solid var(--border, #e0e0e0);
+    border-top: 1px solid var(--border);
   }
 
   .tool-section {
@@ -179,7 +174,7 @@
   .section-label {
     font-size: 11px;
     font-weight: 600;
-    color: var(--text-secondary, #666);
+    color: var(--fg-dim);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     display: block;
@@ -187,20 +182,20 @@
   }
 
   .result-label {
-    color: var(--green, #22c55e);
+    color: var(--green);
   }
 
   .error-label {
-    color: var(--red, #ef4444);
+    color: var(--red);
   }
 
   .args-json {
     margin: 0;
     font-size: 12px;
-    font-family: monospace;
+    font-family: var(--font-mono);
     white-space: pre-wrap;
     word-break: break-all;
-    color: var(--text-primary, #333);
+    color: var(--fg);
     line-height: 1.4;
   }
 
@@ -209,7 +204,7 @@
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-word;
-    color: var(--text-primary, #333);
+    color: var(--fg);
     line-height: 1.4;
   }
 
@@ -218,7 +213,7 @@
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-word;
-    color: var(--red, #ef4444);
+    color: var(--red);
     line-height: 1.4;
   }
 </style>

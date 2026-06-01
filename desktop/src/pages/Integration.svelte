@@ -463,7 +463,7 @@
   .tabs {
     display: flex;
     gap: 0;
-    border-bottom: 1px solid var(--border-color, #333);
+    border-bottom: 1px solid var(--border);
     margin-bottom: 24px;
   }
   .tab {
@@ -472,13 +472,13 @@
     background: none;
     cursor: pointer;
     font-size: 0.9rem;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
     border-bottom: 2px solid transparent;
   }
-  .tab:hover { color: var(--text-primary, #fff); }
+  .tab:hover { color: var(--fg); }
   .tab.active {
-    color: var(--text-primary, #fff);
-    border-bottom-color: var(--accent, #4a9eff);
+    color: var(--fg);
+    border-bottom-color: var(--accent);
   }
 
   /* ── Cards ───────────────────────────────────────────────── */
@@ -498,7 +498,7 @@
 
   /* ── Instances ────────────────────────────────────────────── */
   .instance-block {
-    border: 1px solid var(--border-color, #333);
+    border: 1px solid var(--border);
     border-radius: 6px;
     padding: 12px;
     display: flex;
@@ -514,24 +514,24 @@
 
   .btn-refresh {
     padding: 3px 12px;
-    border: 1px solid #4caf50;
+    border: 1px solid var(--green);
     border-radius: 4px;
     background: transparent;
-    color: #4caf50;
+    color: var(--green);
     cursor: pointer;
     font-size: 0.75rem;
     white-space: nowrap;
     transition: background 0.2s, color 0.2s;
   }
-  .btn-refresh:hover { background: #4caf50; color: #fff; }
+  .btn-refresh:hover { background: var(--green); color: #fff; }
 
   .btn-refresh.shake {
     animation: shake 0.6s ease-in-out infinite;
-    border-color: #ff9800;
-    color: #ff9800;
+    border-color: var(--yellow);
+    color: var(--yellow);
     font-weight: 600;
   }
-  .btn-refresh.shake:hover { background: #ff9800; color: #fff; }
+  .btn-refresh.shake:hover { background: var(--yellow); color: #fff; }
 
   @keyframes shake {
     0%, 100% { transform: translateX(0); }
@@ -542,14 +542,14 @@
   .btn-delete-instance {
     margin-left: auto;
     padding: 3px 10px;
-    border: 1px solid #f44336;
+    border: 1px solid var(--red);
     border-radius: 4px;
     background: transparent;
-    color: #f44336;
+    color: var(--red);
     cursor: pointer;
     font-size: 0.75rem;
   }
-  .btn-delete-instance:hover { background: #f44336; color: #fff; }
+  .btn-delete-instance:hover { background: var(--red); color: #fff; }
 
   .add-instance-row {
     display: flex; gap: 8px; align-items: stretch;
@@ -557,7 +557,7 @@
   }
   .add-instance-row input {
     flex: 1; padding: 6px 10px;
-    border: 1px dashed var(--border-color, #444);
+    border: 1px dashed var(--border);
     border-radius: 4px;
     background: var(--bg); color: var(--fg);
     font-size: 0.85rem;
@@ -600,19 +600,19 @@
 
   .btn-clear {
     padding: 6px 10px !important;
-    border: 1px solid #f44336 !important;
+    border: 1px solid var(--red) !important;
     background: transparent !important;
-    color: #f44336 !important;
+    color: var(--red) !important;
     font-size: 0.85rem;
   }
-  .btn-clear:hover { background: #f44336 !important; color: #fff !important; }
+  .btn-clear:hover { background: var(--red) !important; color: #fff !important; }
 
   /* ── Tags ───────────────────────────────────────────────── */
   .tag-list { display: flex; gap: 4px; margin-left: auto; }
   .tag {
     font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.03em; padding: 2px 8px; border-radius: 10px;
-    background: #1a3a5a; color: #6ab0ff;
+    background: var(--accent-muted); color: var(--accent);
   }
 
   /* ── Status ──────────────────────────────────────────────── */
@@ -621,13 +621,13 @@
     display: inline-block; width: fit-content;
   }
   .status-badge.small { font-size: 0.65rem; padding: 1px 6px; }
-  .status-badge.configured { background: #1a3a1a; color: #4caf50; }
-  .status-badge.unconfigured { background: #3a1a1a; color: #f44336; }
+  .status-badge.configured { background: var(--green-muted); color: var(--green); }
+  .status-badge.unconfigured { background: var(--red-muted); color: var(--red); }
 
   /* ── Messages ────────────────────────────────────────────── */
   .msg { font-size: 0.8rem; }
-  .msg.success { color: #4caf50; }
-  .msg.error { color: #f44336; }
+  .msg.success { color: var(--green); }
+  .msg.error { color: var(--red); }
 
   .note {
     font-size: 0.8rem; color: var(--fg-dim);

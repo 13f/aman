@@ -223,7 +223,7 @@
   .dim { color: var(--fg-dim); }
   .empty-state { text-align: center; padding: 40px; }
   .toast-error {
-    background: rgba(248,113,113,0.15);
+    background: var(--red-muted);
     color: var(--red);
     padding: 10px 16px;
     border-radius: 6px;

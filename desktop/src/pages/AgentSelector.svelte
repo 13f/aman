@@ -249,7 +249,7 @@
     border-color: var(--accent);
   }
   .agent-card.needs-config {
-    border-color: var(--warn, #f59e0b);
+    border-color: var(--yellow);
     background: linear-gradient(135deg,
       rgba(245,158,11,0.06) 0%,
       var(--bg-card) 40%
@@ -263,14 +263,14 @@
     left: 0;
     width: 4px;
     height: 100%;
-    background: var(--warn, #f59e0b);
+    background: var(--yellow);
     border-radius: 12px 0 0 12px;
   }
   .needs-config-badge {
     display: inline-block;
     padding: 3px 10px;
-    background: rgba(245,158,11,0.15);
-    color: var(--warn, #f59e0b);
+    background: var(--yellow-muted);
+    color: var(--yellow);
     border-radius: 4px;
     font-size: 12px;
     font-weight: 600;
@@ -378,7 +378,7 @@
     gap: 2px;
   }
   .model-entry:hover {
-    background: var(--accent-light, rgba(108,140,255,0.1));
+    background: var(--accent-muted);
   }
   .model-name {
     font-weight: 600;

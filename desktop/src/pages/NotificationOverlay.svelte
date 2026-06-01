@@ -152,19 +152,19 @@
   }
 
   .severity-critical {
-    background: rgba(220, 38, 38, 0.96);
+    background: color-mix(in srgb, var(--red) 96%, transparent);
     color: white;
     border: 1px solid rgba(255, 255, 255, 0.2);
   }
 
   .severity-warning {
-    background: rgba(234, 179, 8, 0.95);
+    background: color-mix(in srgb, var(--yellow) 95%, transparent);
     color: #1a1a1a;
     border: 1px solid rgba(255, 255, 255, 0.3);
   }
 
   .severity-info {
-    background: rgba(16, 185, 129, 0.94);
+    background: color-mix(in srgb, var(--green) 94%, transparent);
     color: white;
     border: 1px solid rgba(255, 255, 255, 0.2);
   }

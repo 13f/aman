@@ -31,7 +31,7 @@
     padding: 8px 20px;
     border: none;
     border-radius: 8px;
-    background: var(--accent, #3b82f6);
+    background: var(--accent);
     color: #fff;
     font-size: 13px;
     font-weight: 500;
@@ -45,15 +45,15 @@
   }
 
   .send-btn:hover:not(:disabled) {
-    background: var(--accent-hover, #2563eb);
+    background: var(--accent-hover);
   }
 
   .stop-btn {
     padding: 8px 20px;
-    border: 1px solid var(--red, #ef4444);
+    border: 1px solid var(--red);
     border-radius: 8px;
     background: transparent;
-    color: var(--red, #ef4444);
+    color: var(--red);
     font-size: 13px;
     font-weight: 500;
     cursor: pointer;
@@ -61,14 +61,14 @@
   }
 
   .stop-btn:hover {
-    background: rgba(248, 113, 113, 0.15);
+    background: var(--red-muted);
   }
 
   .rate-limited-btn {
     padding: 8px 20px;
     border: 1px solid var(--yellow);
     border-radius: 8px;
-    background: rgba(250, 204, 21, 0.15);
+    background: var(--yellow-muted);
     color: var(--yellow);
     font-size: 13px;
     font-weight: 600;

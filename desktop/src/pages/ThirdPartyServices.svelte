@@ -220,8 +220,8 @@
     letter-spacing: 0.03em;
     padding: 2px 8px;
     border-radius: 10px;
-    background: #1a3a5a;
-    color: #6ab0ff;
+    background: var(--accent-muted);
+    color: var(--accent);
   }
 
   .service-config {
@@ -282,21 +282,21 @@
   }
 
   .status-badge.configured {
-    background: #1a3a1a;
-    color: #4caf50;
+    background: var(--green-muted);
+    color: var(--green);
   }
 
   .status-badge.unconfigured {
-    background: #3a1a1a;
-    color: #f44336;
+    background: var(--red-muted);
+    color: var(--red);
   }
 
   .msg {
     font-size: 0.8rem;
   }
 
-  .msg.success { color: #4caf50; }
-  .msg.error { color: #f44336; }
+  .msg.success { color: var(--green); }
+  .msg.error { color: var(--red); }
 
   .note {
     font-size: 0.8rem;

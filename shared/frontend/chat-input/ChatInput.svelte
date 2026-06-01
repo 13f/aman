@@ -269,13 +269,13 @@
     flex: 1;
     resize: none;
     padding: 10px 14px;
-    border: 1px solid var(--chat-input-border, #e2e8f0);
+    border: 1px solid var(--chat-input-border, #1e2130);
     border-radius: 10px;
     font-size: 14px;
     line-height: 1.5;
     font-family: inherit;
-    background: var(--chat-input-bg, #fff);
-    color: var(--chat-input-fg, #1e293b);
+    background: var(--chat-input-bg, #161923);
+    color: var(--chat-input-fg, #e4e6f0);
     outline: none;
     transition: border-color 0.15s;
     min-height: 42px;
@@ -284,14 +284,14 @@
   }
 
   textarea:focus {
-    border-color: var(--chat-input-accent, #3b82f6);
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+    border-color: var(--chat-input-accent, #5b7df5);
+    box-shadow: 0 0 0 3px var(--chat-input-accent-muted, rgba(91,125,245,0.15));
   }
 
   textarea:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-    background: var(--chat-input-disabled-bg, #f8fafc);
+    background: var(--chat-input-disabled-bg, #0b0d13);
   }
 
   button {
@@ -307,12 +307,12 @@
   }
 
   .send-btn {
-    background: var(--chat-input-accent, #3b82f6);
+    background: var(--chat-input-accent, #5b7df5);
     color: #fff;
   }
 
   .send-btn:hover:not(:disabled) {
-    background: var(--chat-input-accent-hover, #2563eb);
+    background: var(--chat-input-accent-hover, #7b98ff);
   }
 
   .send-btn:disabled {
@@ -321,19 +321,19 @@
   }
 
   .stop-btn {
-    border: 1px solid var(--chat-input-red, #ef4444);
+    border: 1px solid var(--chat-input-red, #e55555);
     background: transparent;
-    color: var(--chat-input-red, #ef4444);
+    color: var(--chat-input-red, #e55555);
   }
 
   .stop-btn:hover {
-    background: rgba(248, 113, 113, 0.15);
+    background: var(--chat-input-red-muted, rgba(229,85,85,0.12));
   }
 
   .rate-limited-btn {
-    background: rgba(250, 204, 21, 0.15);
-    border: 1px solid var(--chat-input-yellow, #eab308);
-    color: var(--chat-input-yellow, #eab308);
+    background: var(--chat-input-yellow-muted, rgba(229,184,11,0.12));
+    border: 1px solid var(--chat-input-yellow, #e5b80b);
+    color: var(--chat-input-yellow, #e5b80b);
     font-weight: 600;
     cursor: not-allowed;
   }
@@ -350,8 +350,8 @@
     margin: 0;
     padding: 0;
     list-style: none;
-    background: var(--chat-input-picker-bg, #1e1e2e);
-    border: 1px solid var(--chat-input-picker-border, #2a2d3a);
+    background: var(--chat-input-picker-bg, #161923);
+    border: 1px solid var(--chat-input-picker-border, #1e2130);
     border-radius: 8px;
     box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.3);
     z-index: 100;
@@ -363,7 +363,7 @@
     gap: 12px;
     padding: 8px 12px;
     cursor: pointer;
-    border-bottom: 1px solid var(--chat-input-picker-border, #2a2d3a);
+    border-bottom: 1px solid var(--chat-input-picker-border, #1e2130);
     transition: background 0.1s;
   }
 
@@ -373,21 +373,21 @@
 
   .skill-picker-item:hover,
   .skill-picker-item.selected {
-    background: var(--chat-input-picker-hover, rgba(99, 102, 241, 0.15));
+    background: var(--chat-input-picker-hover, rgba(91,125,245,0.12));
   }
 
   .skill-picker-name {
-    font-family: "SF Mono", "Fira Code", monospace;
+    font-family: var(--font-mono, "SF Mono", "Fira Code", monospace);
     font-size: 13px;
     font-weight: 600;
-    color: var(--chat-input-accent, #3b82f6);
+    color: var(--chat-input-accent, #5b7df5);
     white-space: nowrap;
     min-width: fit-content;
   }
 
   .skill-picker-desc {
     font-size: 12px;
-    color: var(--chat-input-picker-desc, #a0a0b0);
+    color: var(--chat-input-picker-desc, #9a9db5);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -397,6 +397,6 @@
     padding: 12px;
     text-align: center;
     font-size: 12px;
-    color: var(--chat-input-picker-desc, #a0a0b0);
+    color: var(--chat-input-picker-desc, #9a9db5);
   }
 </style>

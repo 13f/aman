@@ -190,7 +190,7 @@
   .tabs {
     display: flex;
     gap: 0;
-    border-bottom: 1px solid var(--border-color, #333);
+    border-bottom: 1px solid var(--border);
     margin-bottom: 24px;
   }
 
@@ -200,17 +200,17 @@
     background: none;
     cursor: pointer;
     font-size: 0.9rem;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
     border-bottom: 2px solid transparent;
   }
 
   .tab.active {
-    color: var(--text-primary, #fff);
-    border-bottom-color: var(--accent, #4a9eff);
+    color: var(--fg);
+    border-bottom-color: var(--accent);
   }
 
   .loading {
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
   }
 
   .service-list {
@@ -220,10 +220,10 @@
   }
 
   .service-card {
-    border: 1px solid var(--border-color, #333);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 16px;
-    background: var(--bg-secondary, #1a1a2e);
+    background: var(--bg-card);
   }
 
   .service-card.disabled {
@@ -246,8 +246,8 @@
 
   .service-id {
     font-size: 0.75rem;
-    color: var(--text-secondary, #999);
-    background: var(--bg-tertiary, #2a2a3e);
+    color: var(--fg-dim);
+    background: var(--bg-hover);
     padding: 2px 6px;
     border-radius: 4px;
   }
@@ -265,8 +265,8 @@
     letter-spacing: 0.03em;
     padding: 2px 8px;
     border-radius: 10px;
-    background: #1a3a5a;
-    color: #6ab0ff;
+    background: var(--accent-muted);
+    color: var(--accent);
   }
 
   .service-config {
@@ -283,7 +283,7 @@
 
   .config-row label {
     font-size: 0.8rem;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
   }
 
   .input-row {
@@ -295,18 +295,18 @@
   .input-row input {
     flex: 1;
     padding: 6px 10px;
-    border: 1px solid var(--border-color, #444);
+    border: 1px solid var(--border);
     border-radius: 4px;
-    background: var(--bg-input, #111);
-    color: var(--text-primary, #fff);
+    background: var(--bg-input);
+    color: var(--fg);
     font-size: 0.9rem;
   }
 
   .input-row button {
     padding: 6px 16px;
-    border: 1px solid var(--accent, #4a9eff);
+    border: 1px solid var(--accent);
     border-radius: 4px;
-    background: var(--accent, #4a9eff);
+    background: var(--accent);
     color: #fff;
     cursor: pointer;
     font-size: 0.85rem;
@@ -327,13 +327,13 @@
   }
 
   .status-badge.configured {
-    background: #1a3a1a;
-    color: #4caf50;
+    background: var(--green-muted);
+    color: var(--green);
   }
 
   .status-badge.unconfigured {
-    background: #3a1a1a;
-    color: #f44336;
+    background: var(--red-muted);
+    color: var(--red);
   }
 
   .msg {
@@ -341,16 +341,16 @@
   }
 
   .msg.success {
-    color: #4caf50;
+    color: var(--green);
   }
 
   .msg.error {
-    color: #f44336;
+    color: var(--red);
   }
 
   .note {
     font-size: 0.8rem;
-    color: var(--text-secondary, #999);
+    color: var(--fg-dim);
     margin: 8px 0 0 0;
     font-style: italic;
   }

@@ -371,7 +371,7 @@
 <style>
   .maintenance {
     padding: 0;
-    font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+    font-family: var(--font-mono);
     font-size: 12px;
   }
 
@@ -470,11 +470,11 @@
   }
 
   .dp-metric-value.bp-critical {
-    color: #ef4444;
+    color: var(--red);
   }
 
   .dp-metric-value.bp-warn {
-    color: #f59e0b;
+    color: var(--yellow);
   }
 
   /* ── event log ── */
@@ -508,8 +508,8 @@
   }
 
   .dp-event-row.selected {
-    background: rgba(96, 165, 250, 0.12);
-    border-left: 2px solid #60a5fa;
+    background: var(--accent-muted);
+    border-left: 2px solid var(--accent);
     padding-left: 12px;
   }
 
@@ -548,7 +548,7 @@
   .dp-event-type.msg  { color: #fbbf24; }
   .dp-event-type.cap  { color: #60a5fa; }
   .dp-event-type.warn { color: #fb923c; }
-  .dp-event-type.error { color: #ef4444; }
+  .dp-event-type.error { color: var(--red); }
 
   .dp-channel-tag {
     font-size: 9px;
@@ -584,7 +584,7 @@
     font-weight: 600;
     margin: 0 0 8px 0;
     color: var(--fg);
-    font-family: -apple-system, sans-serif;
+    font-family: var(--font-ui);
   }
 
   input, textarea {
@@ -611,7 +611,7 @@
   }
 
   .action-result.error {
-    color: #ef4444;
+    color: var(--red);
   }
 
   /* ── DLQ table ── */
@@ -650,8 +650,8 @@
   }
 
   .badge.warn {
-    background: rgba(245, 158, 11, 0.15);
-    color: #f59e0b;
+    background: var(--yellow-muted);
+    color: var(--yellow);
   }
 
   button {
@@ -661,7 +661,7 @@
     background: var(--bg-card);
     color: var(--fg);
     font-size: 12px;
-    font-family: -apple-system, sans-serif;
+    font-family: var(--font-ui);
     cursor: pointer;
     transition: background 0.15s;
   }
@@ -671,12 +671,12 @@
   }
 
   button.danger {
-    border-color: rgba(239, 68, 68, 0.3);
-    color: #ef4444;
+    border-color: color-mix(in srgb, var(--red) 30%, transparent);
+    color: var(--red);
   }
 
   button.danger:hover {
-    background: rgba(239, 68, 68, 0.1);
+    background: var(--red-muted);
   }
 
   button:disabled {

@@ -733,7 +733,7 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     font-size: 11px;
-    font-family: "SF Mono", "Fira Code", monospace;
+    font-family: var(--font-mono);
     color: var(--fg-dim);
   }
   .finance-card-arrow {
@@ -753,12 +753,16 @@
     position: fixed;
     inset: 0;
     z-index: 2000;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
     display: flex;
     align-items: center;
     justify-content: center;
+    animation: fadeIn 0.15s ease-out;
   }
   .modal-content {
+    animation: scaleIn 0.15s ease-out;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -908,8 +912,8 @@
     opacity: 1;
   }
   .finance-card-remove:hover {
-    color: var(--red, #f87171);
-    background: rgba(248,113,113,0.12);
+    color: var(--red);
+    background: var(--red-muted);
   }
 
   /* Add card button */

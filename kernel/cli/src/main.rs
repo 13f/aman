@@ -1316,6 +1316,60 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
                 Err(1)
             }
         }
+        "approve" | "deny" => {
+            let mut name: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--name" => {
+                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        i += 2;
+                    }
+                    _ => return Err(2),
+                }
+            }
+            let name = name.ok_or(2)?;
+            let approved = sub == "approve";
+            let body = serde_json::json!({
+                "plugin_name": name,
+                "approved": approved,
+            });
+            let res = opts
+                .apply_headers(client.post(opts.url("/plugin-auth/respond")).json(&body))
+                .send()
+                .await
+                .map_err(|_| 1)?;
+            let status = res.status();
+            let text = res.text().await.map_err(|_| 1)?;
+            if status.is_success() {
+                let label = if approved { "approved" } else { "denied" };
+                safe_println!("plugin '{name}' {label}");
+                Ok(())
+            } else {
+                safe_eprintln!("{text}");
+                Err(1)
+            }
+        }
+        "pending" => {
+            let res = opts
+                .apply_headers(client.get(opts.url("/plugin-auth/pending")))
+                .send()
+                .await
+                .map_err(|_| 1)?;
+            let status = res.status();
+            let text = res.text().await.map_err(|_| 1)?;
+            if status.is_success() {
+                if text == "[]" || text == "null" {
+                    safe_println!("No pending plugin approvals.");
+                } else {
+                    print!("{text}");
+                }
+                Ok(())
+            } else {
+                safe_eprintln!("{text}");
+                Err(1)
+            }
+        }
         "install" => {
             let mut file: Option<PathBuf> = None;
             let mut i = 0;
@@ -1406,6 +1460,10 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             print!("{json}");
             Ok(())
+        }
+        "approve" | "deny" | "pending" => {
+            safe_eprintln!("plugin approval commands are only available via HTTP REST (omit --grpc)");
+            Err(2)
         }
         _ => Err(2),
     }
@@ -2081,7 +2139,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 
 fn print_usage() {
     safe_eprintln!(
-        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
+        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }
 

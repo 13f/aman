@@ -10,7 +10,7 @@
 //! of any desktop UI.
 //!
 //! Usage:
-//!   aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]
+//!   aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--tui]
 
 use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig, RedactWriter};
@@ -33,34 +33,69 @@ const PID_FILE: &str = ".aman/aman.pid";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    // Log to file + stdout. File is truncated on each gateway start so it
-    // corresponds to the current run and always append to it.
+    // Check for --tui before setting up tracing so we can install the
+    // TuiLogLayer instead of the plain stdout layer.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let tui_mode = args.iter().any(|a| a == "--tui");
+
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let log_dir = PathBuf::from(&home).join(".aman");
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("gateway.log");
-    let log_file = File::create(&log_path).expect("failed to create gateway log file");
 
-    // Wrap writers with RedactWriter to strip secrets (API keys, tokens,
-    // passwords) before they reach disk or the terminal.
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(Mutex::new(RedactWriter::new(log_file)));
-    let stdout_layer = tracing_subscriber::fmt::layer()
-        .with_writer(|| RedactWriter::new(std::io::stdout()));
+    if tui_mode {
+        let log_file = File::create(&log_path).expect("failed to create gateway log file");
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(Mutex::new(RedactWriter::new(log_file)));
+        let env_filter = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+            .from_env_lossy();
 
-    let env_filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-        .from_env_lossy();
+        // In TUI mode: log to file + TUI ring buffer, NOT stdout.
+        // The TUI renders logs in its left panel instead.
+        let log_buffer = Arc::new(gateway::tui::LogBuffer::default());
+        let tui_layer = gateway::tui::TuiLogLayer::new(Arc::clone(&log_buffer));
 
-    tracing_subscriber::registry()
-        .with(env_filter)
-        .with(stdout_layer)
-        .with(file_layer)
-        .init();
+        // Order: fmt::Layer (file) must come before TuiLogLayer because
+        // fmt::Layer requires LookupSpan on the inner subscriber.
+        tracing_subscriber::registry()
+            .with(file_layer)
+            .with(env_filter)
+            .with(tui_layer)
+            .init();
 
-    if let Err(code) = run().await {
-        std::process::exit(code);
+        // Filter out --tui from args for the arg parser.
+        let filtered_args: Vec<String> = args
+            .into_iter()
+            .filter(|a| a != "--tui")
+            .collect();
+
+        if let Err(code) = run_tui_mode(filtered_args, log_buffer).await {
+            std::process::exit(code);
+        }
+    } else {
+        let log_file = File::create(&log_path).expect("failed to create gateway log file");
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(Mutex::new(RedactWriter::new(log_file)));
+        let env_filter = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        // Normal mode: log to stdout + file.
+        let stdout_layer = tracing_subscriber::fmt::layer()
+            .with_writer(|| RedactWriter::new(std::io::stdout()));
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stdout_layer)
+            .with(file_layer)
+            .init();
+
+        if let Err(code) = run().await {
+            std::process::exit(code);
+        }
     }
 }
 
@@ -70,40 +105,7 @@ async fn main() {
 #[allow(clippy::print_stderr)]
 async fn run() -> Result<(), i32> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let mut config_path: Option<PathBuf> = None;
-    let mut bind: SocketAddr = DEFAULT_BIND.parse().expect("default bind");
-    let mut api_token: Option<String> = std::env::var("AMAN_API_TOKEN").ok();
-    let mut soul_path: Option<PathBuf> = None;
-
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--config" => {
-                let path = args.get(i + 1).ok_or(2)?;
-                config_path = Some(PathBuf::from(path));
-                i += 2;
-            }
-            "--bind" => {
-                let raw = args.get(i + 1).ok_or(2)?;
-                bind = raw.parse::<SocketAddr>().map_err(|_| 2)?;
-                i += 2;
-            }
-            "--token" => {
-                let raw = args.get(i + 1).ok_or(2)?;
-                api_token = Some(raw.to_owned());
-                i += 2;
-            }
-            "--soul" => {
-                let path = args.get(i + 1).ok_or(2)?;
-                soul_path = Some(PathBuf::from(path));
-                i += 2;
-            }
-            _ => {
-                eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH]");
-                return Err(2);
-            }
-        }
-    }
+    let (config_path, bind, api_token, soul_path) = parse_args(&args)?;
 
     // Load config from file or default path.
     let config = ConfigLoader::load(config_path.as_deref(), None)
@@ -113,23 +115,7 @@ async fn run() -> Result<(), i32> {
         })?
         .config;
 
-    let mut builder = AgentRuntimeBuilder::new(config)
-        .with_bind_addr(bind)
-        .with_api_token(api_token);
-    if let Some(path) = soul_path {
-        builder = builder.with_soul(path);
-    }
-
-    let runtime = Arc::new(
-        std::thread::spawn(move || {
-            builder.build().map_err(|e| {
-                eprintln!("Runtime build error: {e}");
-                1
-            })
-        })
-        .join()
-        .expect("build thread panicked")?,
-    );
+    let runtime = build_runtime(config, bind, api_token, soul_path)?;
 
     tracing::info!(bind = %bind, "starting gateway");
 
@@ -143,15 +129,7 @@ async fn run() -> Result<(), i32> {
         1
     })?;
 
-    // Write PID file for lifecycle management.
-    if let Ok(home) = std::env::var("HOME") {
-        let pid_path = PathBuf::from(&home).join(PID_FILE);
-        if let Some(parent) = pid_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&pid_path, std::process::id().to_string());
-        tracing::info!(pid_path = %pid_path.display(), "pid file written");
-    }
+    write_pid_file();
 
     // Publish gateway lifecycle event before starting runtime.
     let _ = runtime.publish_event(Event::new(
@@ -264,14 +242,186 @@ async fn run() -> Result<(), i32> {
         }
     }
 
+    do_shutdown(&runtime, server).await;
+    Ok(())
+}
+
+/// TUI mode: gateway runs in the background, TUI renders on the main thread.
+/// When the user presses `q` in the TUI, the gateway shuts down.
+async fn run_tui_mode(
+    args: Vec<String>,
+    log_buffer: Arc<gateway::tui::LogBuffer>,
+) -> Result<(), i32> {
+    let (config_path, bind, api_token, soul_path) = parse_args(&args)?;
+
+    let config = ConfigLoader::load(config_path.as_deref(), None)
+        .map_err(|e| {
+            tracing::error!(error = %e, "config load error");
+            1
+        })?
+        .config;
+
+    let runtime = build_runtime(config, bind, api_token, soul_path)?;
+
+    tracing::info!(bind = %bind, "starting gateway (TUI mode)");
+
+    let server = serve(
+        Arc::clone(&runtime),
+        HttpServerConfig { bind },
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, "HTTP server error");
+        1
+    })?;
+
+    write_pid_file();
+
+    let _ = runtime.publish_event(Event::new(
+        "gateway:lifecycle",
+        EventType::Custom("gateway:starting".to_owned()),
+        serde_json::json!({"bind": bind.to_string()}),
+    )).await;
+
+    // Start the runtime in the background — it races against Ctrl+C.
+    let startup_runtime = Arc::clone(&runtime);
+    let startup_handle = tokio::spawn(async move {
+        tokio::select! {
+            r = tokio::time::timeout(Duration::from_secs(30), startup_runtime.start()) => {
+                match r {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "runtime start error");
+                    }
+                    Err(_) => {
+                        let phase = startup_runtime.phase();
+                        tracing::error!(phase = ?phase, "runtime start timed out after 30s");
+                    }
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT during TUI startup");
+            }
+        }
+    });
+
+    // Wait for startup to complete (or timeout).
+    let _ = tokio::time::timeout(Duration::from_secs(35), startup_handle).await;
+
+    let addr = server.local_addr();
+    tracing::info!(%addr, "gateway ready (TUI mode)");
+
+    // Run the TUI on the current (main) thread. This blocks until the user
+    // presses `q`. Worker threads continue running the tokio runtime.
+    let tui_runtime = Arc::clone(&runtime);
+    let tui_log_buffer = Arc::clone(&log_buffer);
+
+    // Spawn the TUI on a dedicated thread (since the main thread is the tokio
+    // runtime thread and we need it responsive for signal handling).
+    let tui_result = tokio::task::spawn_blocking(move || {
+        gateway::tui::run_tui(tui_log_buffer, tui_runtime)
+    })
+    .await;
+
+    match tui_result {
+        Ok(Ok(())) => tracing::info!("TUI exited normally"),
+        Ok(Err(e)) => tracing::error!(error = %e, "TUI error"),
+        Err(e) => tracing::error!(error = %e, "TUI spawn_blocking error"),
+    }
+
+    tracing::info!("shutting down (TUI exited)");
+    do_shutdown(&runtime, server).await;
+    Ok(())
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+#[allow(clippy::print_stderr)]
+fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<String>, Option<PathBuf>), i32> {
+    let mut config_path: Option<PathBuf> = None;
+    let mut bind: SocketAddr = DEFAULT_BIND.parse().expect("default bind");
+    let mut api_token: Option<String> = std::env::var("AMAN_API_TOKEN").ok();
+    let mut soul_path: Option<PathBuf> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" => {
+                let path = args.get(i + 1).ok_or(2)?;
+                config_path = Some(PathBuf::from(path));
+                i += 2;
+            }
+            "--bind" => {
+                let raw = args.get(i + 1).ok_or(2)?;
+                bind = raw.parse::<SocketAddr>().map_err(|_| 2)?;
+                i += 2;
+            }
+            "--token" => {
+                let raw = args.get(i + 1).ok_or(2)?;
+                api_token = Some(raw.to_owned());
+                i += 2;
+            }
+            "--soul" => {
+                let path = args.get(i + 1).ok_or(2)?;
+                soul_path = Some(PathBuf::from(path));
+                i += 2;
+            }
+            _ => {
+                eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--tui]");
+                return Err(2);
+            }
+        }
+    }
+
+    Ok((config_path, bind, api_token, soul_path))
+}
+
+fn build_runtime(
+    config: config::AgentConfig,
+    bind: SocketAddr,
+    api_token: Option<String>,
+    soul_path: Option<PathBuf>,
+) -> Result<Arc<gateway::runtime::AgentRuntime>, i32> {
+    let mut builder = AgentRuntimeBuilder::new(config)
+        .with_bind_addr(bind)
+        .with_api_token(api_token);
+    if let Some(path) = soul_path {
+        builder = builder.with_soul(path);
+    }
+
+    let runtime = std::thread::spawn(move || {
+        builder.build().map_err(|e| {
+            eprintln!("Runtime build error: {e}");
+            1
+        })
+    })
+    .join()
+    .expect("build thread panicked")?;
+
+    Ok(runtime)
+}
+
+fn write_pid_file() {
+    if let Ok(home) = std::env::var("HOME") {
+        let pid_path = PathBuf::from(&home).join(PID_FILE);
+        if let Some(parent) = pid_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&pid_path, std::process::id().to_string());
+        tracing::info!(pid_path = %pid_path.display(), "pid file written");
+    }
+}
+
+async fn do_shutdown(
+    runtime: &gateway::runtime::AgentRuntime,
+    server: gateway::runtime::HttpServerHandle,
+) {
     let _ = runtime.publish_event(Event::new(
         "gateway:lifecycle",
         EventType::Custom("gateway:stopping".to_owned()),
         serde_json::json!({}),
     )).await;
 
-    // Run shutdown with a force-quit escape hatch: a second SIGINT or a
-    // 10 s timeout will abort graceful shutdown and exit immediately.
     const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
     let (force_quit_tx, mut force_quit_rx) = tokio::sync::oneshot::channel::<()>();
@@ -314,5 +464,4 @@ async fn run() -> Result<(), i32> {
     }
 
     tracing::info!("gateway shut down gracefully");
-    Ok(())
 }

@@ -13,3 +13,16 @@ ui:
   events:
     - "team:work_item.updated"
     - "team:safety.alert"
+
+# team plugin needs event pub/sub for work item updates, and filesystem
+# access for its SQLite database. Communication is via stdin/stdout JSON-RPC
+# so no network access is needed.
+security:
+  requested_capabilities:
+    publish_events: true
+    subscribe_events: true
+    read_paths:
+      - "templates/"
+      - "static/"
+    write_paths:
+      - "data/"

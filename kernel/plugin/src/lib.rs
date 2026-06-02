@@ -14,7 +14,7 @@ use kernel::context::{BaseContext, PluginContext, PluginTrackedResources};
 use kernel::hook::Hook;
 use kernel::memory::MemoryProvider;
 use kernel::plugin::{Plugin, PluginDependency};
-use kernel::security::{ApprovalCache, CapabilitySet};
+use kernel::security::{ApprovalCache, CapabilitySet, TemplateContext};
 use kernel::skill::Skill;
 use sandbox::SandboxConfig;
 use kernel::source::EventSource;
@@ -851,17 +851,24 @@ struct LoadedPlugin {
     exports: RegisteredExports,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginLoaderConfig {
     pub unload_timeout: Duration,
     pub unstable_after_timeouts: u8,
+    /// Path to `~/.aman/` — used to resolve `${aman.data_dir}` templates
+    /// in plugin capability paths. Defaults to `$HOME/.aman`.
+    pub aman_data_dir: PathBuf,
 }
 
 impl Default for PluginLoaderConfig {
     fn default() -> Self {
+        let aman_data_dir = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".aman"))
+            .unwrap_or_else(|_| PathBuf::from("/tmp/.aman"));
         Self {
             unload_timeout: Duration::from_secs(30),
             unstable_after_timeouts: 3,
+            aman_data_dir,
         }
     }
 }
@@ -1300,9 +1307,23 @@ impl PluginLoader {
                 // the user-approved capabilities.
                 let sandbox_config = manifest.security.as_ref().map(|sec| {
                     let caps = &sec.requested_capabilities;
+                    // Resolve ${var} templates to concrete paths. Project-specific
+                    // vars (${project.work_dir}, ${project.root}) are None at load
+                    // time — those paths are skipped and added when the project
+                    // context becomes available.
+                    let plugin_data_dir = self.config.aman_data_dir
+                        .join("plugins")
+                        .join(plugin_name);
+                    let ctx = TemplateContext {
+                        project_work_dir: None,
+                        project_root: None,
+                        aman_data_dir: self.config.aman_data_dir.clone(),
+                        plugin_data_dir,
+                    };
+                    let (read_dirs, write_dirs) = caps.resolve_paths(&ctx);
                     SandboxConfig {
-                        allowed_read_dirs: caps.allowed_read_paths.clone(),
-                        allowed_write_dirs: caps.allowed_write_paths.clone(),
+                        allowed_read_dirs: read_dirs,
+                        allowed_write_dirs: write_dirs,
                         network_allowed: caps.can_network,
                         process_spawn_allowed: caps.can_spawn_processes,
                         max_memory_mb: caps.max_memory_mb,

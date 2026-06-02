@@ -75,9 +75,18 @@ pub(crate) fn new_sse_state() -> Arc<SseBroadcastState> {
 ///
 /// Each task handle is stored in `SseBroadcastState` so that
 /// `stop_background_tasks()` can abort them during shutdown.
+///
+/// Returns only after Task A's EventBus subscription is fully established,
+/// so callers can safely publish events knowing the SSE bridge is listening.
 pub(crate) async fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
     let sse_state = runtime.sse_broadcast();
     let tx = sse_state.tx.clone();
+
+    // Notify the caller when the EventBus subscription is live. Without
+    // this barrier, emit_pending_plugin_approvals() races ahead of
+    // subscribe() and fires events before the SSE handler can receive them.
+    let sub_ready = Arc::new(tokio::sync::Notify::new());
+    let sub_ready_signal = Arc::clone(&sub_ready);
 
     // Task A — EventBus subscription
     let bus_tx = tx.clone();
@@ -89,11 +98,15 @@ pub(crate) async fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
             .await
         {
             Ok(_sub_id) => {
+                // Signal that the subscription is live.
+                sub_ready_signal.notify_one();
                 // Keep the subscription alive forever.
                 std::future::pending::<()>().await;
             }
             Err(e) => {
                 error!(error = %e, "sse: failed to subscribe to EventBus");
+                // Also notify on failure — the caller should not block forever.
+                sub_ready_signal.notify_one();
             }
         }
     });
@@ -131,6 +144,11 @@ pub(crate) async fn start_sse_tasks(runtime: &Arc<AgentRuntime>) {
     });
 
     sse_state.tasks.lock().await.extend([handle_a, handle_b, handle_c]);
+
+    // Wait for Task A to establish its EventBus subscription before returning.
+    // This guarantees the SSE bridge is ready when the caller publishes events
+    // (e.g., emit_pending_plugin_approvals) immediately after this function.
+    sub_ready.notified().await;
 }
 
 // ── EventBus handler ──────────────────────────────────────────────────────

@@ -150,6 +150,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/debug/metrics", get(debug_metrics))
         .route("/tool-auth/respond", post(tool_auth_respond))
         .route("/plugin-auth/respond", post(plugin_auth_respond))
+        .route("/plugin-auth/pending", get(plugin_auth_pending))
         .route("/tools/{name}/execute", post(tool_execute))
         .route("/explore/start", post(explore_start))
         .route("/idle-run", post(idle_run))
@@ -2080,6 +2081,20 @@ async fn tool_auth_respond(
 }
 
 // ── Plugin capability approval ───────────────────────────────────────────
+
+/// List all pending plugin capability approval requests.
+/// GET /plugin-auth/pending
+///
+/// Returns a JSON array of objects with `plugin_name`, `version`,
+/// `capabilities_summary`, and `capabilities`. An empty array means
+/// no plugins are awaiting approval.
+async fn plugin_auth_pending(
+    State(runtime): State<Arc<AgentRuntime>>,
+) -> Response {
+    let pending: Vec<crate::runtime::agent_runtime::PendingApprovalInfo> =
+        runtime.pending_plugin_approvals_list().await;
+    (StatusCode::OK, Json(pending)).into_response()
+}
 
 async fn plugin_auth_respond(
     State(runtime): State<Arc<AgentRuntime>>,

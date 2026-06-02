@@ -33,7 +33,9 @@ mod sse;
 
 pub use agent_registry::AgentRegistry;
 pub use date_util::current_date_string;
-pub use agent_runtime::{AgentRuntime, AgentRuntimeBuilder, RuntimePhase, RuntimeStatus};
+pub use agent_runtime::{
+    AgentRuntime, AgentRuntimeBuilder, PendingApprovalInfo, RuntimePhase, RuntimeStatus,
+};
 pub use audit::{AuditLogger, AuditRecord};
 pub use event_store::EventStore;
 pub use http::{serve, HttpServerConfig, HttpServerHandle};

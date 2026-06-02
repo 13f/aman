@@ -1,0 +1,12 @@
+name: info-hub
+version: "1.0.0"
+description: Unified information hub — AI-powered search across APIs and local data
+isolation: in_process
+lifecycle:
+  auto_start: true
+
+# info-hub needs network for LLM API calls and external search.
+# Everything else stays at default (no events, no subprocess, no filesystem).
+security:
+  requested_capabilities:
+    network: true

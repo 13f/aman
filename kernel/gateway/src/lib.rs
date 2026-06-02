@@ -3,6 +3,7 @@
 
 pub mod runtime;
 pub mod ai_signal;
+pub mod tui;
 
 #[allow(dead_code)]
 mod __aman_proof {

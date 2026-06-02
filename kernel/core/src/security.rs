@@ -15,27 +15,29 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapabilitySet {
     /// Whether the plugin can publish events to the event bus.
-    #[serde(default)]
+    #[serde(default, alias = "publish_events")]
     pub can_publish_events: bool,
 
     /// Whether the plugin can subscribe to events from the event bus.
-    #[serde(default)]
+    #[serde(default, alias = "subscribe_events")]
     pub can_subscribe_events: bool,
 
     /// Filesystem paths the plugin is allowed to read.
-    #[serde(default)]
-    pub allowed_read_paths: Vec<PathBuf>,
+    /// May contain `${var}` templates resolved at runtime via [`TemplateContext`].
+    #[serde(default, alias = "read_paths")]
+    pub allowed_read_paths: Vec<String>,
 
     /// Filesystem paths the plugin is allowed to read and write.
-    #[serde(default)]
-    pub allowed_write_paths: Vec<PathBuf>,
+    /// May contain `${var}` templates resolved at runtime via [`TemplateContext`].
+    #[serde(default, alias = "write_paths")]
+    pub allowed_write_paths: Vec<String>,
 
     /// Whether the plugin is allowed to make network connections.
-    #[serde(default)]
+    #[serde(default, alias = "network")]
     pub can_network: bool,
 
     /// Whether the plugin is allowed to spawn child processes.
-    #[serde(default)]
+    #[serde(default, alias = "spawn_processes")]
     pub can_spawn_processes: bool,
 
     /// Maximum memory the plugin process may allocate, in megabytes.
@@ -227,6 +229,74 @@ impl CapabilitySet {
                 self.max_events_per_second
             },
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Path template resolution
+// ---------------------------------------------------------------------------
+
+/// Context for resolving `${var}` templates in capability path strings.
+///
+/// Built-in variables:
+/// - `${project.work_dir}` — the current project's configured work directory
+/// - `${project.root}` — the project's root directory
+/// - `${aman.data_dir}` — `~/.aman/`
+/// - `${plugin.data_dir}` — the plugin's own data directory
+#[derive(Debug, Clone)]
+pub struct TemplateContext {
+    /// Resolved value for `${project.work_dir}`.
+    pub project_work_dir: Option<PathBuf>,
+    /// Resolved value for `${project.root}`.
+    pub project_root: Option<PathBuf>,
+    /// Resolved value for `${aman.data_dir}`.
+    pub aman_data_dir: PathBuf,
+    /// Resolved value for `${plugin.data_dir}`.
+    pub plugin_data_dir: PathBuf,
+}
+
+impl CapabilitySet {
+    /// Resolve `${var}` templates in path entries, returning concrete
+    /// `PathBuf` lists suitable for sandbox configuration.
+    ///
+    /// Paths that still contain unresolved `${...}` references (e.g.,
+    /// `${project.work_dir}` when no project context is available) are
+    /// silently skipped. This ensures project-specific paths are only
+    /// added to the sandbox when the project is loaded.
+    pub fn resolve_paths(&self, ctx: &TemplateContext) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let resolve = |paths: &[String]| -> Vec<PathBuf> {
+            paths
+                .iter()
+                .filter_map(|p| {
+                    let mut s = p.clone();
+                    if let Some(ref d) = ctx.project_work_dir {
+                        s = s.replace("${project.work_dir}", &d.to_string_lossy());
+                    }
+                    if let Some(ref d) = ctx.project_root {
+                        s = s.replace("${project.root}", &d.to_string_lossy());
+                    }
+                    s = s.replace(
+                        "${aman.data_dir}",
+                        &ctx.aman_data_dir.to_string_lossy(),
+                    );
+                    s = s.replace(
+                        "${plugin.data_dir}",
+                        &ctx.plugin_data_dir.to_string_lossy(),
+                    );
+                    // Skip paths with unresolved variables — they will be
+                    // added later when project context is available.
+                    if s.contains("${") {
+                        None
+                    } else {
+                        Some(PathBuf::from(s))
+                    }
+                })
+                .collect()
+        };
+        (
+            resolve(&self.allowed_read_paths),
+            resolve(&self.allowed_write_paths),
+        )
     }
 }
 
@@ -570,15 +640,45 @@ mod tests {
         let old = CapabilitySet::default();
         let new = CapabilitySet {
             can_publish_events: true,
-            allowed_read_paths: vec![PathBuf::from("/data")],
+            allowed_read_paths: vec!["/data".to_string()],
             max_memory_mb: 500,
             ..CapabilitySet::default()
         };
 
         let diff = old.diff(&new);
         assert!(diff.can_publish_events);
-        assert_eq!(diff.allowed_read_paths, vec![PathBuf::from("/data")]);
+        assert_eq!(diff.allowed_read_paths, vec!["/data".to_string()]);
         assert_eq!(diff.max_memory_mb, 500);
+    }
+
+    #[test]
+    fn resolve_template_paths() {
+        let caps = CapabilitySet {
+            allowed_read_paths: vec![
+                "${project.work_dir}/src".to_string(),
+                "${aman.data_dir}/config".to_string(),
+            ],
+            allowed_write_paths: vec![
+                "${project.work_dir}/aman_team".to_string(),
+            ],
+            ..CapabilitySet::default()
+        };
+
+        let ctx = TemplateContext {
+            project_work_dir: Some(PathBuf::from("/home/user/my-project")),
+            project_root: None,
+            aman_data_dir: PathBuf::from("/home/user/.aman"),
+            plugin_data_dir: PathBuf::from("/home/user/.aman/plugins/team"),
+        };
+
+        let (reads, writes) = caps.resolve_paths(&ctx);
+        assert_eq!(reads, vec![
+            PathBuf::from("/home/user/my-project/src"),
+            PathBuf::from("/home/user/.aman/config"),
+        ]);
+        assert_eq!(writes, vec![
+            PathBuf::from("/home/user/my-project/aman_team"),
+        ]);
     }
 
     #[test]

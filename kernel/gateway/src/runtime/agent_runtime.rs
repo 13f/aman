@@ -26,6 +26,7 @@ use pipeline::ToolEventSink;
 use plugin::{
     PluginCandidate, PluginExports, PluginIsolationMode, PluginLifecycleConfig,
     PluginExportRegistrar, PluginInstaller, PluginLoader, PluginManifest,
+    PluginSecurityManifest,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -67,6 +68,17 @@ pub struct CapabilityEntry {
     pub plugin: String,
     pub version: String,
     pub status: CapabilityStatus,
+}
+
+/// Snapshot of a single pending plugin capability approval request.
+/// Returned by `GET /plugin-auth/pending` for rendering in the CLI, TUI,
+/// or desktop UI.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingApprovalInfo {
+    pub plugin_name: String,
+    pub version: String,
+    pub capabilities_summary: Vec<String>,
+    pub capabilities: CapabilitySet,
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +308,20 @@ impl AgentRuntimeBuilder {
             super::self_bridge::SelfBridge::disabled()
         };
 
+        // ── Helper: load security manifest from a plugin's YAML file ──
+        // The YAML is embedded at compile time via include_str!(). Only the
+        // `security` section is extracted; the rest of the manifest is
+        // constructed in code (with runtime version, etc.).
+        fn load_security(yaml: &str) -> Option<PluginSecurityManifest> {
+            #[derive(serde::Deserialize)]
+            struct SecurityOnly {
+                security: Option<PluginSecurityManifest>,
+            }
+            serde_yaml::from_str::<SecurityOnly>(yaml)
+                .ok()
+                .and_then(|s| s.security)
+        }
+
         // Load the built-in memory-store plugin (in-memory keyword-based provider).
         let memory_store_plugin = MemoryStorePlugin::new();
         let memory_store_candidate = PluginCandidate {
@@ -317,7 +343,8 @@ impl AgentRuntimeBuilder {
                 runtime: None,
                 min_version: None,
                 entrypoint: None,
-                security: None,
+                // Security manifest loaded from plugin.yaml (kernel/plugins/memory-store/)
+                security: load_security(include_str!("../../../plugins/memory-store/plugin.yaml")),
             },
             plugin: Box::new(memory_store_plugin),
             isolation: PluginIsolationMode::InProcess,
@@ -372,7 +399,8 @@ impl AgentRuntimeBuilder {
                 runtime: None,
                 min_version: None,
                 entrypoint: None,
-                security: None,
+                // Security manifest loaded from plugin.yaml (kernel/plugins/info-hub/)
+                security: load_security(include_str!("../../../plugins/info-hub/plugin.yaml")),
             },
             plugin: Box::new(info_hub_plugin),
             isolation: PluginIsolationMode::InProcess,
@@ -537,9 +565,14 @@ impl AgentRuntimeBuilder {
         }
 
         // ── Pre-filter: check capability approvals ─────────────────
-        // Plugins that are already approved (or auto-approved via config)
-        // are loaded immediately. Plugins needing user approval are deferred
-        // and processed after the HTTP/SSE layer is up.
+        // Plugins that are already approved are loaded immediately.
+        // Plugins needing user approval are deferred and processed after
+        // the HTTP/SSE layer is up. Built-in plugins declare minimal
+        // capabilities in their security manifest; these are shown to the
+        // user in the approval UI as the requested permission set.
+        //
+        // auto_approve_plugins defaults to false — all plugins (including
+        // built-in) require explicit user approval.
         let auto_approve = aman_cfg
             .as_ref()
             .map(|c| c.runtime.security.auto_approve_plugins)
@@ -2266,6 +2299,24 @@ impl AgentRuntime {
         self.pending_plugin_approvals.lock().await.len()
     }
 
+    /// Return a snapshot of pending plugin approvals for listing via the API.
+    /// Each entry contains the plugin name, version, and requested capabilities
+    /// summary. The caller (HTTP endpoint or TUI) can render these for user
+    /// review before approving or denying.
+    pub async fn pending_plugin_approvals_list(&self) -> Vec<PendingApprovalInfo> {
+        self.pending_plugin_approvals
+            .lock()
+            .await
+            .iter()
+            .map(|(candidate, caps)| PendingApprovalInfo {
+                plugin_name: candidate.manifest.name.clone(),
+                version: candidate.manifest.version.to_string(),
+                capabilities_summary: caps.summary(),
+                capabilities: caps.clone(),
+            })
+            .collect()
+    }
+
     /// Emit `plugin_auth_required` events for all deferred plugin approvals.
     ///
     /// Called after the HTTP server and SSE broadcast are running so the
@@ -2317,6 +2368,75 @@ impl AgentRuntime {
                 );
             }
         }
+    }
+
+    /// Synchronous convenience wrapper for resolving a plugin approval from
+    /// the TUI or other non-async contexts. Persists the decision via the
+    /// approval cache and loads/removes the plugin accordingly.
+    ///
+    /// Returns `Ok(true)` if the plugin was approved and loaded,
+    /// `Ok(false)` if denied, or an error if something went wrong.
+    pub fn resolve_plugin_approval_sync(
+        &self,
+        plugin_name: &str,
+        approved: bool,
+    ) -> AmanResult<bool> {
+        pollster::block_on(async {
+            self.plugin_approval_registry()
+                .resolve(plugin_name, approved);
+
+            if approved {
+                let candidate = self.take_pending_plugin_candidate(plugin_name).await;
+                match candidate {
+                    Some((candidate, approved_caps)) => {
+                        // Persist approval with BLAKE3 signature
+                        if let Some(cache) = self.approval_cache() {
+                            let now_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+                            let mut caps = ApprovedCapabilities {
+                                plugin_version: candidate.manifest.version.to_string(),
+                                capabilities: approved_caps,
+                                approved_at_ms: now_ms,
+                                approved_by: "tui".to_owned(),
+                                signature: String::new(),
+                            };
+                            cache.save(plugin_name, &mut caps)?;
+                            tracing::info!(
+                                plugin = %plugin_name,
+                                "plugin capability approval persisted via TUI"
+                            );
+                        }
+                        let mut loader = self.plugin_loader().await;
+                        loader.load_plugin(candidate).await?;
+                        tracing::info!(
+                            plugin = %plugin_name,
+                            "plugin loaded after TUI capability approval"
+                        );
+                        Ok(true)
+                    }
+                    None => {
+                        tracing::warn!(
+                            plugin = %plugin_name,
+                            "resolve_plugin_approval_sync: no pending candidate found"
+                        );
+                        Err(Error::NotFound {
+                            name: format!(
+                                "pending plugin approval for '{plugin_name}'"
+                            ),
+                        })
+                    }
+                }
+            } else {
+                self.remove_pending_plugin_candidate(plugin_name).await;
+                tracing::info!(
+                    plugin = %plugin_name,
+                    "plugin capability approval denied via TUI"
+                );
+                Ok(false)
+            }
+        })
     }
 
     /// Return the in-process hook registry (plugins register hooks here).

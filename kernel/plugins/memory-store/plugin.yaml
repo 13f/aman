@@ -15,3 +15,8 @@ exports:
 lifecycle:
   on_load: init
   on_unload: shutdown
+
+# memory-store runs in-process and only provides CRUD storage
+# — no network, no events, no subprocess, no filesystem access.
+security:
+  requested_capabilities: {}

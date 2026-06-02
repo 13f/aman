@@ -1227,11 +1227,11 @@ def _handle_delete_work(project_key: str, work_id: str) -> dict:
     if work is None:
         return _json_response({"error": f"work '{work_id}' not found"}, 404)
 
-    # 1. Remove the database row
-    db.execute("DELETE FROM works WHERE id=?", (work_id,))
-    # Also clean up stage history and safety log entries for this work
+    # 1. Remove child rows first (foreign keys reference works.id)
     db.execute("DELETE FROM stage_history WHERE work_id=?", (work_id,))
     db.execute("DELETE FROM safety_log WHERE work_item_id=?", (work_id,))
+    # Then remove the work item itself
+    db.execute("DELETE FROM works WHERE id=?", (work_id,))
     db.commit()
 
     # 2. Delete the JSONL context file

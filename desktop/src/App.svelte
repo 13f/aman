@@ -202,6 +202,11 @@
       const source = event.source as Window | null;
       if (!source) return;
 
+      // Acknowledge immediately so the iframe cancels its fallback timer.
+      // The native dialog may stay open for several seconds while the user
+      // reads the message and decides — the iframe must not time out.
+      source.postMessage({ type: "aman:confirm-ack" }, "*");
+
       try {
         const confirmed = await invoke<boolean>("show_confirm_dialog", {
           title: data.title || "Confirm",
@@ -368,7 +373,7 @@
       class="plugin-iframe"
       src={"http://127.0.0.1:" + gatewayPort + "/api/v1/team"}
       title="Team"
-      sandbox="allow-scripts allow-same-origin allow-forms"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
     ></iframe>
   {:else if currentPage === "settings"}
     <Settings />
@@ -378,7 +383,7 @@
       class="plugin-iframe"
       src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + pluginId}
       title={"Plugin: " + pluginId}
-      sandbox="allow-scripts allow-same-origin allow-forms"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
     ></iframe>
   {/if}
 </main>

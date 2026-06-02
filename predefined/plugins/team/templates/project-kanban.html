@@ -722,12 +722,22 @@ async function createWork() {
 }
 
 // ── Delete work item ─────────────────────────────────────────────
+//
+// When running inside the Tauri desktop app (in an iframe), we request a
+// native OS confirmation dialog via postMessage to the parent App.svelte.
+// We wait indefinitely for the response — no timeout, no fallback race.
+//
+// When running standalone (not in an iframe, e.g. direct browser access),
+// we use the browser's built-in confirm() dialog.
 
 function requestConfirm(title, message, confirmLabel, cancelLabel) {
+  // Standalone browser — use built-in confirm directly
+  if (window.parent === window) {
+    return Promise.resolve(confirm(message));
+  }
+
+  // Inside Tauri iframe — request native OS dialog via parent bridge
   return new Promise(function(resolve) {
-    // Post to the Tauri parent window — the bridge in App.svelte
-    // will show a native OS dialog and post the result back.
-    // Falls back to window.confirm() if no bridge responds within 600ms.
     window.parent.postMessage({
       type: "aman:confirm",
       title: title,
@@ -736,20 +746,8 @@ function requestConfirm(title, message, confirmLabel, cancelLabel) {
       cancelLabel: cancelLabel
     }, "*");
 
-    var settled = false;
-    var timeout = setTimeout(function() {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener("message", handler);
-      // Fallback to browser confirm (useful when testing outside Tauri)
-      resolve(window.confirm(message));
-    }, 600);
-
     function handler(event) {
-      if (settled) return;
       if (event.data && event.data.type === "aman:confirm-result") {
-        settled = true;
-        clearTimeout(timeout);
         window.removeEventListener("message", handler);
         resolve(event.data.confirmed);
       }
@@ -795,6 +793,7 @@ async function executeDelete(workId) {
     load();
   } catch(e) {
     flash("Network error: " + e.message, "error");
+    console.error("executeDelete error:", e);
   }
 }
 

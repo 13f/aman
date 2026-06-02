@@ -13,6 +13,7 @@ use secret::{KeychainBackend, SecretBackend};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tauri::{Emitter, State};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 /// Helper to get the gateway client from state, failing with a clear message if disconnected.
 async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, String> {
@@ -1093,16 +1094,18 @@ pub async fn chat_trace_chain(
 }
 
 // ---------------------------------------------------------------------------
-// Tool authorization (native macOS dialog)
+// Tool authorization (native OS dialog)
 // ---------------------------------------------------------------------------
 
-/// Show a native macOS dialog for tool authorization and POST the user's
+/// Show a native OS dialog for tool authorization and POST the user's
 /// decision to the gateway's `/tool-auth/respond` endpoint.
 ///
-/// This runs as a native shell command (`osascript`) outside the webview, so
-/// it cannot be bypassed by AI-driven UI manipulation.
+/// Uses `tauri-plugin-dialog` which produces a real OS-native dialog
+/// (outside the webview) on macOS, Windows, and Linux — it cannot be
+/// bypassed by AI-driven UI manipulation.
 #[tauri::command]
 pub async fn show_tool_auth_dialog(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     auth_id: String,
     tool_name: String,
@@ -1116,9 +1119,26 @@ pub async fn show_tool_auth_dialog(
             .ok_or_else(|| "Gateway not connected".to_owned())?
     };
 
-    let dialog_result = show_native_auth_dialog(&tool_name, &arguments_summary)?;
+    let message = format!(
+        "Tool \"{tool_name}\" wants to execute with the following arguments:\n\n{arguments_summary}\n\nAllow this operation?"
+    );
 
-    let approved = dialog_result == "allow";
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .message(message)
+        .title("aman — Tool Authorization")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".into(),
+            "Deny".into(),
+        ))
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+
+    let approved = rx.await.unwrap_or(false); // default to Deny on error
+
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
@@ -1135,47 +1155,11 @@ pub async fn show_tool_auth_dialog(
         .map_err(|e| format!("Failed to send auth response: {e}"))?;
 
     if resp.status().is_success() {
-        Ok(dialog_result)
+        Ok(if approved { "allow".to_owned() } else { "deny".to_owned() })
     } else {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         Err(format!("Auth respond failed ({status}): {body}"))
-    }
-}
-
-/// Run a native macOS dialog via `osascript` and return "allow" or "deny".
-fn show_native_auth_dialog(tool_name: &str, arguments_summary: &str) -> Result<String, String> {
-    // Escape for AppleScript string literals: backslash, quote, and newlines.
-    let escaped_tool = tool_name.replace('\\', "\\\\").replace('"', "\\\"");
-    let escaped_args = arguments_summary
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', " ");
-
-    let script = format!(
-        r#"display dialog "Tool "{escaped_tool}" wants to execute with the following arguments:
-
-{escaped_args}
-
-Allow this operation?" buttons {{"Deny", "Allow"}} default button "Allow" cancel button "Deny" with title "aman — Tool Authorization" with icon caution"#
-    );
-
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("Failed to run osascript: {e}"))?;
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.contains("Allow") || stdout.contains("button returned:Allow") {
-            Ok("allow".to_owned())
-        } else {
-            Ok("deny".to_owned())
-        }
-    } else {
-        // User pressed cancel or Esc
-        Ok("deny".to_owned())
     }
 }
 
@@ -2321,7 +2305,11 @@ pub async fn list_code_agents() -> Result<Vec<crate::models::CodeAgentEntry>, St
 
 #[tauri::command]
 pub async fn launch_code_agent(command: String) -> Result<(), String> {
-    crate::code_agents::launch_code_agent(&command)
+    tokio::task::spawn_blocking(move || {
+        crate::code_agents::launch_code_agent(&command)
+    })
+    .await
+    .map_err(|e| format!("Thread panicked: {e}"))?
 }
 
 // ---------------------------------------------------------------------------

@@ -115,71 +115,31 @@ pub fn load_code_agents() -> Result<Vec<CodeAgentEntry>, String> {
 // Terminal launch (UI side — opens a visible terminal window)
 // ---------------------------------------------------------------------------
 
-/// Pick a directory via native dialog, then open a terminal in that directory
-/// running the given command.
+/// Pick a directory via native OS dialog, then open a terminal in that
+/// directory running the given command.
 pub fn launch_code_agent(command: &str) -> Result<(), String> {
     let dir = pick_directory()?;
     launch_in_terminal(&dir, command)
 }
 
-#[cfg(target_os = "macos")]
+/// Show a native folder-picker dialog.
+///
+/// Uses `rfd` (Rust File Dialog) which wraps NSOpenPanel on macOS,
+/// IFileDialog on Windows, and zenity/kdialog/GTK on Linux — a single
+/// implementation for all platforms.
 fn pick_directory() -> Result<String, String> {
-    let output = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            "POSIX path of (choose folder with prompt \"Select project directory:\")",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to open folder picker: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("User cancelled") || stderr.trim().is_empty() {
-            return Err("CANCELLED".to_owned());
-        }
-        return Err(format!("Folder picker error: {}", stderr.trim()));
-    }
-
-    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if dir.is_empty() {
-        return Err("CANCELLED".to_owned());
-    }
-    Ok(dir)
+    rfd::FileDialog::new()
+        .set_title("Select project directory")
+        .pick_folder()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "CANCELLED".to_owned())
 }
 
-#[cfg(target_os = "linux")]
-fn pick_directory() -> Result<String, String> {
-    let output = std::process::Command::new("zenity")
-        .args([
-            "--file-selection",
-            "--directory",
-            "--title=Select project directory",
-        ])
-        .output()
-        .or_else(|_| {
-            std::process::Command::new("kdialog")
-                .args(["--getexistingdirectory", ""])
-                .output()
-        })
-        .map_err(|e| format!("Failed to open folder picker: {e}"))?;
-
-    if !output.status.success() {
-        return Err("CANCELLED".to_owned());
-    }
-    let dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if dir.is_empty() {
-        return Err("CANCELLED".to_owned());
-    }
-    Ok(dir)
-}
-
-#[cfg(target_os = "windows")]
-fn pick_directory() -> Result<String, String> {
-    Err("Code agents are not yet supported on Windows.".to_owned())
-}
+// ── per-platform terminal launchers ──────────────────────────────────────
 
 #[cfg(target_os = "macos")]
 fn launch_in_terminal(dir: &str, command: &str) -> Result<(), String> {
+    // Escape single quotes for the AppleScript string literal.
     let dir_escaped = dir.replace('\'', "'\\''");
     let script = format!(
         "tell application \"Terminal\" to do script \"cd '{dir_escaped}' && {command}\""
@@ -213,6 +173,24 @@ fn launch_in_terminal(dir: &str, command: &str) -> Result<(), String> {
 }
 
 #[cfg(target_os = "windows")]
-fn launch_in_terminal(_dir: &str, _command: &str) -> Result<(), String> {
-    Err("Code agents are not yet supported on Windows.".to_owned())
+fn launch_in_terminal(dir: &str, command: &str) -> Result<(), String> {
+    // Prefer Windows Terminal; fall back to classic conhost.
+    if check_command_available("wt.exe") {
+        return std::process::Command::new("wt.exe")
+            .args(["-d", dir, "cmd", "/k", command])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Failed to open Windows Terminal: {e}"));
+    }
+
+    // Classic cmd window via `start`. The first quoted arg to `start` is the
+    // window title, so we supply one explicitly before the `cmd /k` payload.
+    std::process::Command::new("cmd.exe")
+        .args([
+            "/c", "start", "aman — Code Agent", "cmd", "/k",
+            &format!("cd /d \"{}\" && {}", dir, command),
+        ])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open cmd: {e}"))
 }

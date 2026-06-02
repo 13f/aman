@@ -43,6 +43,7 @@ pub fn run() {
     let rt: &'static tokio::runtime::Runtime = Box::leak(rt);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
                 "reload_skills" => {

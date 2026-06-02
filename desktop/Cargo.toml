@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 tauri = { version = "2", default-features = false, features = ["devtools", "wry", "image-png"] }
+tauri-plugin-dialog = "2"
+rfd = "0.16"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process", "net", "io-util"] }

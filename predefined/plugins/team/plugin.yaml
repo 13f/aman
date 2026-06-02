@@ -24,5 +24,7 @@ security:
     read_paths:
       - "templates/"
       - "static/"
+      - "${project.work_dir}/"
     write_paths:
       - "data/"
+      - "${project.work_dir}/aman_team/"

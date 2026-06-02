@@ -283,6 +283,9 @@ async fn dispatch(
         "tool.execute" => tool_execute(runtime, params).await,
         "tool.auth_respond" => tool_auth_respond(runtime, params).await,
 
+        // -- Plugin auth --
+        "plugin.auth_respond" => plugin_auth_respond(runtime, params).await,
+
         _ => Err(Error::NotFound {
             name: format!("method: {method}"),
         }),
@@ -1174,4 +1177,46 @@ async fn tool_auth_respond(runtime: &AgentRuntime, params: Option<&Value>) -> Am
     let approved = get_param_bool(params, "approved").unwrap_or(true);
     runtime.auth_registry().resolve(&auth_id, approved);
     Ok(serde_json::json!({ "ok": true }))
+}
+
+async fn plugin_auth_respond(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult<Value> {
+    let plugin_name = require_param_str(params, "plugin_name")?;
+    let approved = get_param_bool(params, "approved").unwrap_or(true);
+
+    runtime.plugin_approval_registry().resolve(&plugin_name, approved);
+
+    if approved {
+        let candidate = runtime.take_pending_plugin_candidate(&plugin_name).await;
+        match candidate {
+            Some((candidate, approved_caps)) => {
+                // Persist approval with BLAKE3 signature
+                if let Some(cache) = runtime.approval_cache() {
+                    let now_ms: u64 = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let mut caps = kernel::security::ApprovedCapabilities {
+                        plugin_version: candidate.manifest.version.to_string(),
+                        capabilities: approved_caps,
+                        approved_at_ms: now_ms,
+                        approved_by: "user".to_owned(),
+                        signature: String::new(),
+                    };
+                    cache.save(&plugin_name, &mut caps).map_err(|e| Error::Unrecoverable {
+                        message: format!("failed to save approval: {e}"),
+                    })?;
+                }
+                // Load the approved plugin
+                let mut loader = runtime.plugin_loader().await;
+                loader.load_plugin(candidate).await?;
+                Ok(serde_json::json!({ "ok": true, "loaded": true }))
+            }
+            None => Err(Error::NotFound {
+                name: format!("pending plugin approval for '{plugin_name}'"),
+            }),
+        }
+    } else {
+        runtime.remove_pending_plugin_candidate(&plugin_name).await;
+        Ok(serde_json::json!({ "ok": true, "denied": true }))
+    }
 }

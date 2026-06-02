@@ -115,6 +115,93 @@ impl Default for AuthRegistry {
     }
 }
 
+// ── Plugin Approval Registry ───────────────────────────────────────
+
+/// Shared registry for pending plugin capability approval requests.
+///
+/// When a plugin needs user approval for its requested capabilities,
+/// the gateway registers a oneshot sender here before emitting the
+/// `plugin_auth_required` event. The HTTP/gRPC/stdio endpoint resolves
+/// the sender when the user responds via the native auth dialog.
+///
+/// Separate from [`AuthRegistry`] because plugin approvals are
+/// persistent (saved via [`ApprovalCache`]) and keyed by plugin name
+/// rather than a transient auth_id.
+#[derive(Clone)]
+pub struct PluginApprovalRegistry {
+    pending: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+}
+
+impl std::fmt::Debug for PluginApprovalRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginApprovalRegistry")
+            .field("pending_count", &self.pending_count())
+            .finish()
+    }
+}
+
+impl PluginApprovalRegistry {
+    /// Create a new, empty registry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Register a pending plugin approval request.
+    ///
+    /// Returns a [`oneshot::Receiver<bool>`] that resolves to `true` if the
+    /// user approved or `false` if denied. The caller should wrap the await
+    /// in `tokio::time::timeout()` to prevent hangs if the user never responds.
+    pub fn register(&self, plugin_name: String) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .expect("PluginApprovalRegistry pending lock")
+            .insert(plugin_name, tx);
+        rx
+    }
+
+    /// Resolve a pending plugin approval request.
+    ///
+    /// Returns `true` if the request existed and was resolved, `false` if
+    /// no pending request was found for the given plugin name.
+    pub fn resolve(&self, plugin_name: &str, approved: bool) -> bool {
+        let mut map = self.pending.lock().expect("PluginApprovalRegistry pending lock");
+        if let Some(tx) = map.remove(plugin_name) {
+            let _ = tx.send(approved);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove a pending request without resolving (e.g., on timeout).
+    pub fn remove(&self, plugin_name: &str) -> bool {
+        self.pending
+            .lock()
+            .expect("PluginApprovalRegistry pending lock")
+            .remove(plugin_name)
+            .is_some()
+    }
+
+    /// Number of pending (unresolved) approval requests.
+    #[must_use]
+    pub fn pending_count(&self) -> usize {
+        self.pending
+            .lock()
+            .expect("PluginApprovalRegistry pending lock")
+            .len()
+    }
+}
+
+impl Default for PluginApprovalRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

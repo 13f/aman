@@ -974,6 +974,9 @@
       case "tool_auth_required":
         handleToolAuthRequired(data);
         break;
+      case "plugin_auth_required":
+        handlePluginAuthRequired(data);
+        break;
       // ── AgentHarness events (Phase B migration) ──
       case "agent:reply_stream_start":
         handleAgentStreamStart(data);
@@ -1104,6 +1107,37 @@
       return "error";
     });
 
+  }
+
+  async function handlePluginAuthRequired(data: any) {
+    // data = { plugin_name, version, capabilities_summary, capabilities }
+    const { plugin_name, version, capabilities_summary } = data;
+    if (!plugin_name) return;
+
+    // Format the capabilities list for display
+    let summaryText = "";
+    if (Array.isArray(capabilities_summary)) {
+      summaryText = (capabilities_summary as string[]).join("\n");
+    } else if (typeof capabilities_summary === "string") {
+      summaryText = capabilities_summary;
+    } else {
+      summaryText = JSON.stringify(capabilities_summary, null, 2);
+    }
+
+    const result = await invoke("show_plugin_auth_dialog", {
+      pluginName: plugin_name,
+      version: version ?? "",
+      capabilitiesSummary: summaryText,
+    }).catch((e: string) => {
+      console.error("Plugin auth dialog failed:", e);
+      return "error";
+    });
+
+    if (result === "deny") {
+      addStatusMessage(`Plugin "${plugin_name}" capability request was denied.`);
+    } else if (result === "allow") {
+      addStatusMessage(`Plugin "${plugin_name}" approved and loaded.`);
+    }
   }
 
   function handleLlmError(data: any) {

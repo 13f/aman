@@ -1158,6 +1158,218 @@ impl PluginLoader {
         Ok(())
     }
 
+    /// Load a single plugin dynamically (post-startup).
+    ///
+    /// Validates that all declared dependencies are already loaded, then
+    /// delegates to the shared inner loading routine. Use this to load
+    /// plugins that were deferred pending capability approval.
+    ///
+    /// # Errors
+    /// Returns `NotFound` if a declared dependency is not yet loaded.
+    pub async fn load_plugin(&mut self, candidate: PluginCandidate) -> AmanResult<()> {
+        let plugin_name = candidate.manifest.name.clone();
+
+        // Validate dependencies are already loaded
+        for dep in &candidate.manifest.depends_on {
+            if !self.loaded.contains_key(&dep.name) {
+                return Err(Error::NotFound {
+                    name: format!(
+                        "dependency plugin:{} required by plugin:{} is not loaded",
+                        dep.name, plugin_name
+                    ),
+                });
+            }
+        }
+
+        if self.loaded.contains_key(&plugin_name) {
+            return Err(Error::AlreadyExists {
+                name: format!("plugin:{plugin_name}"),
+            });
+        }
+
+        self.audit(&plugin_name, PluginAuditEventType::LoadStarted, "starting dynamic load");
+        self.load_plugin_inner(&plugin_name, candidate).await?;
+        self.audit(&plugin_name, PluginAuditEventType::LoadSucceeded, "dynamic load completed");
+
+        tracing::info!(
+            plugin = %plugin_name,
+            "plugin loaded dynamically after capability approval"
+        );
+        Ok(())
+    }
+
+    /// Shared inner routine: validate, create runtime, register exports,
+    /// and insert into the loaded map. Does NOT check dependencies or
+    /// handle batch rollback — callers are responsible for those.
+    async fn load_plugin_inner(
+        &mut self,
+        plugin_name: &str,
+        mut candidate: PluginCandidate,
+    ) -> AmanResult<()> {
+        if candidate.plugin.name() != candidate.manifest.name {
+            self.audit(
+                plugin_name,
+                PluginAuditEventType::LoadFailed,
+                "plugin implementation name mismatch",
+            );
+            return Err(Error::ConfigInvalid {
+                message: format!(
+                    "plugin implementation name `{}` does not match manifest `{}`",
+                    candidate.plugin.name(),
+                    candidate.manifest.name
+                ),
+            });
+        }
+
+        if candidate.plugin.version() != &candidate.manifest.version {
+            self.audit(
+                plugin_name,
+                PluginAuditEventType::LoadFailed,
+                "plugin implementation version mismatch",
+            );
+            return Err(Error::VersionMismatch {
+                expected: candidate.manifest.version.to_string(),
+                found: candidate.plugin.version().to_string(),
+            });
+        }
+
+        let manifest = candidate.manifest;
+        let (runtime, exports) = match candidate.isolation {
+            PluginIsolationMode::InProcess => {
+                let ctx = PluginContext {
+                    base: BaseContext::new(TraceId::new()),
+                    plugin_name: Some(manifest.name.clone()),
+                    ..PluginContext::default()
+                };
+                let tracker = Arc::clone(&ctx.resource_tracker);
+                if let Err(error) = candidate.plugin.on_load(ctx).await {
+                    let released = release_tracked_resources(&tracker);
+                    self.audit(
+                        plugin_name,
+                        PluginAuditEventType::OnLoadInterrupted,
+                        format!(
+                            "on_load failed: {error}; released resources fds={}, dbs={}, paths={}",
+                            released.fds.len(),
+                            released.dbs.len(),
+                            released.paths.len()
+                        ),
+                    );
+                    return Err(error);
+                }
+
+                let exports = match self.register_exports(candidate.plugin.as_ref()) {
+                    Ok(exports) => exports,
+                    Err(error) => {
+                        let _ = self.unregister_exports(&RegisteredExports::default(), plugin_name);
+                        let released = release_tracked_resources(&tracker);
+                        let _ = candidate.plugin.on_unload().await;
+                        self.audit(
+                            plugin_name,
+                            PluginAuditEventType::OnLoadInterrupted,
+                            format!(
+                                "register exports failed after on_load: {error}; released resources fds={}, dbs={}, paths={}",
+                                released.fds.len(),
+                                released.dbs.len(),
+                                released.paths.len()
+                            ),
+                        );
+                        return Err(error);
+                    }
+                };
+                (LoadedPluginRuntime::InProcess(candidate.plugin), exports)
+            }
+            PluginIsolationMode::Subprocess => {
+                let mut config = candidate.subprocess.ok_or_else(|| Error::ConfigInvalid {
+                    message: format!("subprocess config is required for plugin `{plugin_name}`"),
+                })?;
+
+                // Auto-derive subprocess config from manifest runtime/entrypoint if needed
+                if let Some(runtime) = &manifest.runtime {
+                    if config.command.is_empty() {
+                        config.command = runtime.clone();
+                    }
+                    if config.args.is_empty()
+                        && let Some(entrypoint) = &manifest.entrypoint
+                    {
+                        config.args = vec![entrypoint.to_string_lossy().to_string()];
+                    }
+                }
+
+                // Derive sandbox config from manifest security (approved capabilities).
+                // When loading via the approval flow, the manifest already reflects
+                // the user-approved capabilities.
+                let sandbox_config = manifest.security.as_ref().map(|sec| {
+                    let caps = &sec.requested_capabilities;
+                    SandboxConfig {
+                        allowed_read_dirs: caps.allowed_read_paths.clone(),
+                        allowed_write_dirs: caps.allowed_write_paths.clone(),
+                        network_allowed: caps.can_network,
+                        process_spawn_allowed: caps.can_spawn_processes,
+                        max_memory_mb: caps.max_memory_mb,
+                    }
+                });
+
+                let bridge = bridge::SubprocessPluginBridge::spawn(
+                    plugin_name,
+                    &config,
+                    None,
+                    Arc::clone(&self.method_handler),
+                    sandbox_config,
+                )?;
+
+                if let Err(error) = bridge.on_load(&manifest.version) {
+                    self.audit(
+                        plugin_name,
+                        PluginAuditEventType::OnLoadInterrupted,
+                        format!("subprocess on_load failed: {error}"),
+                    );
+                    bridge.shutdown();
+                    return Err(error);
+                }
+                (LoadedPluginRuntime::Subprocess(bridge), RegisteredExports::default())
+            }
+            PluginIsolationMode::Wasm => {
+                if has_manifest_exports(&manifest) {
+                    return Err(Error::ConfigInvalid {
+                        message: "wasm plugin exports bridging is not implemented yet".to_owned(),
+                    });
+                }
+                let wasm_bytes = candidate.wasm_module_bytes.ok_or_else(|| Error::ConfigInvalid {
+                    message: format!("wasm module bytes are required for plugin `{plugin_name}`"),
+                })?;
+                let wasm_security = manifest.security.as_ref().map(|s| {
+                    let caps = &s.requested_capabilities;
+                    WasmSecurityConfig {
+                        max_memory_bytes: caps.max_memory_mb * 1_048_576,
+                        ..WasmSecurityConfig::default()
+                    }
+                });
+                let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes, wasm_security)?;
+                runtime.on_load()?;
+                (LoadedPluginRuntime::Wasm(runtime), RegisteredExports::default())
+            }
+        };
+
+        let mut loaded = LoadedPlugin {
+            manifest,
+            runtime,
+            state: PluginLifecycleState::Loaded,
+            exports,
+        };
+        loaded.state = PluginLifecycleState::Enabled;
+        loaded.state = PluginLifecycleState::Running;
+        self.loaded.insert(plugin_name.to_owned(), loaded);
+        self.load_order.push(plugin_name.to_owned());
+        self.health.entry(plugin_name.to_owned()).or_default();
+        Ok(())
+    }
+
+    /// Check whether a plugin is already loaded.
+    #[must_use]
+    pub fn is_loaded(&self, plugin_name: &str) -> bool {
+        self.loaded.contains_key(plugin_name)
+    }
+
     pub async fn load_all(&mut self, candidates: Vec<PluginCandidate>) -> AmanResult<Vec<String>> {
         if !self.loaded.is_empty() {
             return Err(Error::InvalidStateTransition {
@@ -1184,170 +1396,16 @@ impl PluginLoader {
 
         let mut loaded_now = Vec::new();
         for plugin_name in &order {
-            let mut candidate = by_name.remove(plugin_name).ok_or_else(|| Error::NotFound {
+            let candidate = by_name.remove(plugin_name).ok_or_else(|| Error::NotFound {
                 name: format!("plugin:{plugin_name}"),
             })?;
             self.audit(plugin_name, PluginAuditEventType::LoadStarted, "starting load");
 
-            if candidate.plugin.name() != candidate.manifest.name {
+            if let Err(error) = self.load_plugin_inner(plugin_name, candidate).await {
                 self.rollback_loaded(&loaded_now).await?;
-                self.audit(
-                    plugin_name,
-                    PluginAuditEventType::LoadFailed,
-                    "plugin implementation name mismatch",
-                );
-                return Err(Error::ConfigInvalid {
-                    message: format!(
-                        "plugin implementation name `{}` does not match manifest `{}`",
-                        candidate.plugin.name(),
-                        candidate.manifest.name
-                    ),
-                });
+                return Err(error);
             }
 
-            if candidate.plugin.version() != &candidate.manifest.version {
-                self.rollback_loaded(&loaded_now).await?;
-                self.audit(
-                    plugin_name,
-                    PluginAuditEventType::LoadFailed,
-                    "plugin implementation version mismatch",
-                );
-                return Err(Error::VersionMismatch {
-                    expected: candidate.manifest.version.to_string(),
-                    found: candidate.plugin.version().to_string(),
-                });
-            }
-
-            let manifest = candidate.manifest;
-            let (runtime, exports) = match candidate.isolation {
-                PluginIsolationMode::InProcess => {
-                    let ctx = PluginContext {
-                        base: BaseContext::new(TraceId::new()),
-                        plugin_name: Some(manifest.name.clone()),
-                        ..PluginContext::default()
-                    };
-                    let tracker = Arc::clone(&ctx.resource_tracker);
-                    if let Err(error) = candidate.plugin.on_load(ctx).await {
-                        let released = release_tracked_resources(&tracker);
-                        self.audit(
-                            plugin_name,
-                            PluginAuditEventType::OnLoadInterrupted,
-                            format!(
-                                "on_load failed: {error}; released resources fds={}, dbs={}, paths={}",
-                                released.fds.len(),
-                                released.dbs.len(),
-                                released.paths.len()
-                            ),
-                        );
-                        self.rollback_loaded(&loaded_now).await?;
-                        return Err(error);
-                    }
-
-                    let exports = match self.register_exports(candidate.plugin.as_ref()) {
-                        Ok(exports) => exports,
-                        Err(error) => {
-                            let _ = self.unregister_exports(&RegisteredExports::default(), plugin_name);
-                            let released = release_tracked_resources(&tracker);
-                            let _ = candidate.plugin.on_unload().await;
-                            self.audit(
-                                plugin_name,
-                                PluginAuditEventType::OnLoadInterrupted,
-                                format!(
-                                    "register exports failed after on_load: {error}; released resources fds={}, dbs={}, paths={}",
-                                    released.fds.len(),
-                                    released.dbs.len(),
-                                    released.paths.len()
-                                ),
-                            );
-                            self.rollback_loaded(&loaded_now).await?;
-                            return Err(error);
-                        }
-                    };
-                    (LoadedPluginRuntime::InProcess(candidate.plugin), exports)
-                }
-                PluginIsolationMode::Subprocess => {
-                    let mut config = candidate.subprocess.ok_or_else(|| Error::ConfigInvalid {
-                        message: format!("subprocess config is required for plugin `{plugin_name}`"),
-                    })?;
-
-                    // Auto-derive subprocess config from manifest runtime/entrypoint if needed
-                    if let Some(runtime) = &manifest.runtime {
-                        if config.command.is_empty() {
-                            config.command = runtime.clone();
-                        }
-                        if config.args.is_empty()
-                            && let Some(entrypoint) = &manifest.entrypoint
-                        {
-                            config.args = vec![entrypoint.to_string_lossy().to_string()];
-                        }
-                    }
-
-                    // Derive sandbox config from approved capabilities
-                    let sandbox_config = manifest.security.as_ref().map(|sec| {
-                        let caps = &sec.requested_capabilities;
-                        SandboxConfig {
-                            allowed_read_dirs: caps.allowed_read_paths.clone(),
-                            allowed_write_dirs: caps.allowed_write_paths.clone(),
-                            network_allowed: caps.can_network,
-                            process_spawn_allowed: caps.can_spawn_processes,
-                            max_memory_mb: caps.max_memory_mb,
-                        }
-                    });
-
-                    let bridge = bridge::SubprocessPluginBridge::spawn(
-                        plugin_name,
-                        &config,
-                        None, // cwd comes from SubprocessPluginConfig
-                        Arc::clone(&self.method_handler),
-                        sandbox_config,
-                    )?;
-
-                    if let Err(error) = bridge.on_load(&manifest.version) {
-                        self.audit(
-                            plugin_name,
-                            PluginAuditEventType::OnLoadInterrupted,
-                            format!("subprocess on_load failed: {error}"),
-                        );
-                        bridge.shutdown();
-                        self.rollback_loaded(&loaded_now).await?;
-                        return Err(error);
-                    }
-                    (LoadedPluginRuntime::Subprocess(bridge), RegisteredExports::default())
-                }
-                PluginIsolationMode::Wasm => {
-                    if has_manifest_exports(&manifest) {
-                        self.rollback_loaded(&loaded_now).await?;
-                        return Err(Error::ConfigInvalid {
-                            message: "wasm plugin exports bridging is not implemented yet".to_owned(),
-                        });
-                    }
-                    let wasm_bytes = candidate.wasm_module_bytes.ok_or_else(|| Error::ConfigInvalid {
-                        message: format!("wasm module bytes are required for plugin `{plugin_name}`"),
-                    })?;
-                    let wasm_security = manifest.security.as_ref().map(|s| {
-                        let caps = &s.requested_capabilities;
-                        WasmSecurityConfig {
-                            max_memory_bytes: caps.max_memory_mb * 1_048_576,
-                            ..WasmSecurityConfig::default()
-                        }
-                    });
-                    let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes, wasm_security)?;
-                    runtime.on_load()?;
-                    (LoadedPluginRuntime::Wasm(runtime), RegisteredExports::default())
-                }
-            };
-
-            let mut loaded = LoadedPlugin {
-                manifest,
-                runtime,
-                state: PluginLifecycleState::Loaded,
-                exports,
-            };
-            loaded.state = PluginLifecycleState::Enabled;
-            loaded.state = PluginLifecycleState::Running;
-            self.loaded.insert(plugin_name.clone(), loaded);
-            self.load_order.push(plugin_name.clone());
-            self.health.entry(plugin_name.clone()).or_default();
             self.audit(plugin_name, PluginAuditEventType::LoadSucceeded, "load completed");
             loaded_now.push(plugin_name.clone());
         }

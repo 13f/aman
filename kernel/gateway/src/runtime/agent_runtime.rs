@@ -13,7 +13,8 @@ use info_hub::InfoHubPlugin;
 use messaging_core;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
-use kernel::security::ApprovalCache;
+use kernel::security::{ApprovalCache, ApprovedCapabilities, CapabilitySet};
+use tool::auth::PluginApprovalRegistry;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
@@ -523,6 +524,10 @@ impl AgentRuntimeBuilder {
             }
         };
 
+        // Clone the approval cache for runtime use (saving approvals after
+        // user consent) before moving the original into PluginLoader.
+        let approval_cache_runtime = approval_cache.clone();
+
         // Discover subprocess plugins from ~/.aman/plugins/
         let plugins_dir = aman_root.join("plugins");
         let discovered = plugin::discover_subprocess_plugins(&plugins_dir);
@@ -530,6 +535,93 @@ impl AgentRuntimeBuilder {
             tracing::info!(count = discovered.len(), dir = %plugins_dir.display(), "discovered subprocess plugins");
             all_candidates.extend(discovered);
         }
+
+        // ── Pre-filter: check capability approvals ─────────────────
+        // Plugins that are already approved (or auto-approved via config)
+        // are loaded immediately. Plugins needing user approval are deferred
+        // and processed after the HTTP/SSE layer is up.
+        let auto_approve = aman_cfg
+            .as_ref()
+            .map(|c| c.runtime.security.auto_approve_plugins)
+            .unwrap_or(false);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let mut approved_candidates = Vec::with_capacity(all_candidates.len());
+        let mut pending_approvals: Vec<(PluginCandidate, CapabilitySet)> = Vec::new();
+
+        for candidate in all_candidates {
+            let plugin_name = candidate.manifest.name.clone();
+            let needs_approval = match (&approval_cache_runtime, &candidate.manifest.security) {
+                (Some(cache), Some(sec)) => {
+                    match cache.check_approval(
+                        &plugin_name,
+                        &sec.requested_capabilities,
+                        &candidate.manifest.version,
+                    ) {
+                        Ok(Some(needed_caps)) => {
+                            if auto_approve {
+                                // Auto-approve: persist and proceed
+                                let mut caps = ApprovedCapabilities {
+                                    plugin_version: candidate.manifest.version.to_string(),
+                                    capabilities: sec.requested_capabilities.clone(),
+                                    approved_at_ms: now_ms,
+                                    approved_by: "auto".to_owned(),
+                                    signature: String::new(),
+                                };
+                                if let Err(e) = cache.save(&plugin_name, &mut caps) {
+                                    tracing::error!(
+                                        plugin = %plugin_name,
+                                        error = %e,
+                                        "failed to auto-approve plugin capabilities — deferring"
+                                    );
+                                    Some(needed_caps)
+                                } else {
+                                    tracing::info!(
+                                        plugin = %plugin_name,
+                                        "auto-approved plugin capabilities (auto_approve_plugins=true)"
+                                    );
+                                    None
+                                }
+                            } else {
+                                Some(needed_caps)
+                            }
+                        }
+                        Ok(None) => None, // Already approved
+                        Err(e) => {
+                            tracing::error!(
+                                plugin = %plugin_name,
+                                error = %e,
+                                "approval check failed — deferring plugin"
+                            );
+                            Some(sec.requested_capabilities.clone())
+                        }
+                    }
+                }
+                _ => None, // No security manifest or no cache — no approval needed
+            };
+
+            if let Some(caps) = needs_approval {
+                let summary: Vec<String> = caps.summary();
+                tracing::info!(
+                    plugin = %plugin_name,
+                    capabilities = ?summary,
+                    "plugin requires capability approval — deferring"
+                );
+                pending_approvals.push((candidate, caps));
+            } else {
+                approved_candidates.push(candidate);
+            }
+        }
+
+        if !pending_approvals.is_empty() {
+            tracing::info!(
+                count = pending_approvals.len(),
+                "plugins deferred pending user capability approval"
+            );
+        }
+
         let memory_provider_registry = Arc::new(memory::MemoryProviderRegistry::new());
         let rpc_handler = Arc::new(RuntimeJsonRpcHandler::new(
             Arc::clone(&agent_registry),
@@ -545,7 +637,7 @@ impl AgentRuntimeBuilder {
             plugin_loader_builder = plugin_loader_builder.with_approval_cache(cache);
         }
         let mut plugin_loader = plugin_loader_builder;
-        if let Err(e) = pollster::block_on(plugin_loader.load_all(all_candidates)) {
+        if let Err(e) = pollster::block_on(plugin_loader.load_all(approved_candidates)) {
             tracing::error!(error = %e, "failed to load built-in plugins");
         }
 
@@ -1679,6 +1771,7 @@ impl AgentRuntimeBuilder {
             }),
         ));
 
+        let plugin_approval_registry = Arc::new(PluginApprovalRegistry::new());
         let sse_state = super::sse::new_sse_state();
         let runtime = Arc::new(AgentRuntime {
             config,
@@ -1691,6 +1784,9 @@ impl AgentRuntimeBuilder {
             skills,
             tools,
             auth_registry,
+            plugin_approval_registry,
+            approval_cache: approval_cache_runtime,
+            pending_plugin_approvals: Mutex::new(pending_approvals),
             skill_search,
             skill_versions,
             skill_hot_reload,
@@ -2077,6 +2173,12 @@ pub struct AgentRuntime {
     cascade_selector: Option<skm_select::CascadeSelector>,
     /// Registry for tool authorization requests (native macOS dialogs).
     auth_registry: Arc<tool::auth::AuthRegistry>,
+    /// Registry for in-flight plugin capability approval requests.
+    plugin_approval_registry: Arc<PluginApprovalRegistry>,
+    /// Clone of the approval cache for runtime use (saving approved capabilities).
+    approval_cache: Option<ApprovalCache>,
+    /// Plugin candidates deferred pending user capability approval.
+    pending_plugin_approvals: Mutex<Vec<(PluginCandidate, CapabilitySet)>>,
     /// Notification center — user-facing alerts (critical/warning).
     notifications: Arc<notification::NotificationStore>,
     /// Chat session store — maps session IDs to chat targets for reply routing.
@@ -2124,6 +2226,97 @@ impl AgentRuntime {
     #[must_use]
     pub fn auth_registry(&self) -> Arc<tool::auth::AuthRegistry> {
         Arc::clone(&self.auth_registry)
+    }
+
+    /// Return the plugin capability approval registry.
+    #[must_use]
+    pub fn plugin_approval_registry(&self) -> Arc<PluginApprovalRegistry> {
+        Arc::clone(&self.plugin_approval_registry)
+    }
+
+    /// Return a reference to the approval cache (for saving approved capabilities).
+    #[must_use]
+    pub fn approval_cache(&self) -> Option<&ApprovalCache> {
+        self.approval_cache.as_ref()
+    }
+
+    /// Take a pending plugin candidate by name (used after user approval).
+    pub async fn take_pending_plugin_candidate(
+        &self,
+        plugin_name: &str,
+    ) -> Option<(PluginCandidate, CapabilitySet)> {
+        let mut guard = self.pending_plugin_approvals.lock().await;
+        let idx = guard
+            .iter()
+            .position(|(c, _)| c.manifest.name == plugin_name);
+        idx.map(|i| guard.remove(i))
+    }
+
+    /// Remove a pending plugin candidate by name (used after user denial).
+    pub async fn remove_pending_plugin_candidate(&self, plugin_name: &str) -> bool {
+        let mut guard = self.pending_plugin_approvals.lock().await;
+        let before = guard.len();
+        guard.retain(|(c, _)| c.manifest.name != plugin_name);
+        guard.len() != before
+    }
+
+    /// Number of pending plugin approval requests.
+    #[must_use]
+    pub async fn pending_plugin_approvals_count(&self) -> usize {
+        self.pending_plugin_approvals.lock().await.len()
+    }
+
+    /// Emit `plugin_auth_required` events for all deferred plugin approvals.
+    ///
+    /// Called after the HTTP server and SSE broadcast are running so the
+    /// desktop client can receive the events and show native dialogs.
+    pub async fn emit_pending_plugin_approvals(&self) {
+        let pending = {
+            let mut guard = self.pending_plugin_approvals.lock().await;
+            std::mem::take(&mut *guard)
+        };
+
+        if pending.is_empty() {
+            return;
+        }
+
+        tracing::info!(
+            count = pending.len(),
+            "emitting plugin_auth_required events for deferred plugin approvals"
+        );
+
+        for (candidate, needed_caps) in &pending {
+            let plugin_name = candidate.manifest.name.clone();
+            let version = candidate.manifest.version.to_string();
+            let summary = needed_caps.summary();
+
+            // Register a pending approval so the HTTP endpoint can resolve it
+            let _rx = self.plugin_approval_registry.register(plugin_name.clone());
+
+            // Publish event to the EventBus — flows through SseBusHandler → SSE → desktop
+            let event = Event::new(
+                "aman:plugin-auth",
+                EventType::Custom("plugin_auth_required".to_owned()),
+                serde_json::json!({
+                    "plugin_name": plugin_name,
+                    "version": version,
+                    "capabilities_summary": summary,
+                    "capabilities": needed_caps,
+                }),
+            );
+            if let Err(e) = self.bus.publish(event).await {
+                tracing::error!(
+                    plugin = %plugin_name,
+                    error = %e,
+                    "failed to publish plugin_auth_required event"
+                );
+            } else {
+                tracing::info!(
+                    plugin = %plugin_name,
+                    "published plugin_auth_required event"
+                );
+            }
+        }
     }
 
     /// Return the in-process hook registry (plugins register hooks here).

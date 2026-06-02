@@ -12,6 +12,7 @@ pub mod web_fetch;
 pub mod web_search;
 
 pub use auth::AuthRegistry;
+pub use auth::PluginApprovalRegistry;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;
 

@@ -1164,6 +1164,74 @@ pub async fn show_tool_auth_dialog(
 }
 
 // ---------------------------------------------------------------------------
+// Plugin capability authorization
+// ---------------------------------------------------------------------------
+
+/// Show a native OS dialog requesting the user's approval for a plugin's
+/// requested capabilities. POSTs the decision back to the gateway's
+/// `/plugin-auth/respond` endpoint, which persists the approval with a
+/// BLAKE3 keyed-hash signature and dynamically loads the plugin.
+#[tauri::command]
+pub async fn show_plugin_auth_dialog(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+    plugin_name: String,
+    version: String,
+    capabilities_summary: String,
+) -> Result<String, String> {
+    let base_url = {
+        let guard = state.gateway_client.lock().await;
+        guard
+            .as_ref()
+            .map(|c| c.base_url.clone())
+            .ok_or_else(|| "Gateway not connected".to_owned())?
+    };
+
+    let message = format!(
+        "Plugin \"{plugin_name}\" (v{version}) requests the following capabilities:\n\n{capabilities_summary}\n\nAllow this plugin to use these capabilities?"
+    );
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .message(message)
+        .title("aman — Plugin Authorization")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Allow".into(),
+            "Deny".into(),
+        ))
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+
+    let approved = rx.await.unwrap_or(false); // default to Deny on error
+
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {e}"))?;
+
+    let resp = client
+        .post(format!("{base_url}/plugin-auth/respond"))
+        .json(&serde_json::json!({
+            "plugin_name": plugin_name,
+            "approved": approved,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send plugin auth response: {e}"))?;
+
+    if resp.status().is_success() {
+        Ok(if approved { "allow".to_owned() } else { "deny".to_owned() })
+    } else {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        Err(format!("Plugin auth respond failed ({status}): {body}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Third-party service key management
 // ---------------------------------------------------------------------------
 

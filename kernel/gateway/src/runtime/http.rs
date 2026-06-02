@@ -18,9 +18,10 @@ use kernel::event::{Event, EventType};
 use kernel::sanitizer::{content_hash, InputSanitizer, SanitizeResult};
 use kernel::types::TraceId;
 use kernel::Error;
+use kernel::security::{ApprovedCapabilities, CapabilitySet};
 use notification::{Notification as NotificationModel, Severity};
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
-use plugin::{PluginLifecycleState, PluginManifest};
+use plugin::{PluginCandidate, PluginLifecycleState, PluginManifest};
 use serde::{Deserialize, Serialize};
 use rand::Rng;
 use serde_json::{json, Value};
@@ -56,6 +57,9 @@ impl HttpServerHandle {
 
 pub async fn serve(runtime: Arc<AgentRuntime>, config: HttpServerConfig) -> kernel::AmanResult<HttpServerHandle> {
     super::sse::start_sse_tasks(&runtime).await;
+    // Emit plugin approval requests that were deferred during startup.
+    // SSE tasks are now running, so the desktop client can receive them.
+    runtime.emit_pending_plugin_approvals().await;
     let router = build_router(runtime);
     let listener = TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
@@ -145,6 +149,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/dlq/depth", get(dlq_depth))
         .route("/debug/metrics", get(debug_metrics))
         .route("/tool-auth/respond", post(tool_auth_respond))
+        .route("/plugin-auth/respond", post(plugin_auth_respond))
         .route("/tools/{name}/execute", post(tool_execute))
         .route("/explore/start", post(explore_start))
         .route("/idle-run", post(idle_run))
@@ -2074,6 +2079,106 @@ async fn tool_auth_respond(
     }
 }
 
+// ── Plugin capability approval ───────────────────────────────────────────
+
+async fn plugin_auth_respond(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Json(body): Json<PluginAuthRespondBody>,
+) -> Response {
+    let plugin_name = &body.plugin_name;
+
+    // Resolve the oneshot (unblocks any waiter, though the desktop flow
+    // is fire-and-forget so there may not be one).
+    runtime
+        .plugin_approval_registry()
+        .resolve(plugin_name, body.approved);
+
+    if body.approved {
+        // Take the pending candidate
+        let candidate: Option<(PluginCandidate, CapabilitySet)> =
+            runtime.take_pending_plugin_candidate(plugin_name).await;
+
+        match candidate {
+            Some((candidate, approved_caps)) => {
+                // Persist the approval with a BLAKE3 keyed-hash signature
+                if let Some(cache) = runtime.approval_cache() {
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    let mut caps = ApprovedCapabilities {
+                        plugin_version: candidate.manifest.version.to_string(),
+                        capabilities: approved_caps.clone(),
+                        approved_at_ms: now_ms,
+                        approved_by: "user".to_owned(),
+                        signature: String::new(),
+                    };
+                    if let Err(e) = cache.save(plugin_name, &mut caps) {
+                        tracing::error!(
+                            plugin = %plugin_name,
+                            error = %e,
+                            "failed to persist plugin capability approval"
+                        );
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": format!("failed to save approval: {e}")})),
+                        )
+                            .into_response();
+                    }
+                    tracing::info!(
+                        plugin = %plugin_name,
+                        "plugin capability approval persisted with BLAKE3 signature"
+                    );
+                }
+
+                // Dynamically load the approved plugin
+                let mut loader = runtime.plugin_loader().await;
+                match loader.load_plugin(candidate).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            plugin = %plugin_name,
+                            "plugin loaded after user capability approval"
+                        );
+                        (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            plugin = %plugin_name,
+                            error = %e,
+                            "failed to load plugin after approval"
+                        );
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": format!("failed to load plugin: {e}")})),
+                        )
+                            .into_response()
+                    }
+                }
+            }
+            None => {
+                tracing::warn!(
+                    plugin = %plugin_name,
+                    "plugin_auth_respond: no pending candidate found"
+                );
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "no pending approval found for plugin"})),
+                )
+                    .into_response()
+            }
+        }
+    } else {
+        // User denied — remove from pending, don't load
+        let removed: bool = runtime.remove_pending_plugin_candidate(plugin_name).await;
+        tracing::info!(
+            plugin = %plugin_name,
+            removed,
+            "plugin capability approval denied by user"
+        );
+        (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
+    }
+}
+
 async fn tool_execute(
     State(runtime): State<Arc<AgentRuntime>>,
     Path(name): Path<String>,
@@ -3549,6 +3654,12 @@ struct OkResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct ToolAuthRespondBody {
     auth_id: String,
+    approved: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PluginAuthRespondBody {
+    plugin_name: String,
     approved: bool,
 }
 

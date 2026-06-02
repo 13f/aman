@@ -1068,6 +1068,11 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
             "body": json.dumps({"ok": True, "deleted": work_id}),
         }
 
+    # ── Delete work item (entire work item, not just context) ─────
+    m_work_delete = re.match(r"works/([^/]+)$", rel_path)
+    if m_work_delete and method == "DELETE":
+        return _handle_delete_work(project_key, m_work_delete.group(1))
+
     # ── Work item comment ──────────────────────────────────────────
     m_work_comment = re.match(r"works/([^/]+)/comment$", rel_path)
     if m_work_comment and method == "POST":
@@ -1212,6 +1217,46 @@ def _handle_get_work(project_key: str, work_id: str) -> dict:
             "body": json.dumps(work),
         }
     return {"status": 404, "body": json.dumps({"error": "work not found"})}
+
+
+def _handle_delete_work(project_key: str, work_id: str) -> dict:
+    """Delete a work item: remove from DB, delete JSONL context, and
+    remove the output directory."""
+    db = get_db(project_key)
+    work = db.execute("SELECT id, title FROM works WHERE id=?", (work_id,)).fetchone()
+    if work is None:
+        return _json_response({"error": f"work '{work_id}' not found"}, 404)
+
+    # 1. Remove the database row
+    db.execute("DELETE FROM works WHERE id=?", (work_id,))
+    # Also clean up stage history and safety log entries for this work
+    db.execute("DELETE FROM stage_history WHERE work_id=?", (work_id,))
+    db.execute("DELETE FROM safety_log WHERE work_item_id=?", (work_id,))
+    db.commit()
+
+    # 2. Delete the JSONL context file
+    delete_context(project_key, work_id)
+
+    # 3. Remove the output directory (aman_team/{work_id}/)
+    import shutil
+    out_dir = _output_dir(project_key, work_id)
+    if os.path.isdir(out_dir):
+        try:
+            shutil.rmtree(out_dir)
+        except OSError as e:
+            _log(f"Failed to remove output dir {out_dir}: {e}")
+
+    _log(f"Work item deleted: {project_key}/{work_id} ({work['title']})")
+    send_notification("aman.emit_event", {
+        "event_type": "team:work_item.deleted",
+        "payload": {
+            "project_key": project_key,
+            "work_item_id": work_id,
+            "title": work["title"],
+        },
+    })
+
+    return _json_response({"ok": True, "deleted": work_id})
 
 
 def _handle_assign_work(project_key: str, work_id: str, body: dict) -> dict:

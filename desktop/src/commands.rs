@@ -1232,6 +1232,43 @@ pub async fn show_plugin_auth_dialog(
 }
 
 // ---------------------------------------------------------------------------
+// Generic confirmation dialog (for iframes like Team, plugin pages, etc.)
+// ---------------------------------------------------------------------------
+
+/// Show a native OS confirmation dialog with a custom title, message,
+/// and confirm/cancel button labels. Returns `true` if the user clicked
+/// the confirm button, `false` otherwise.
+///
+/// This is designed to be called from iframe content via `postMessage`
+/// (see `App.svelte` for the bridge). The iframe posts a message with
+/// `{type: "aman:confirm", ...}` and the bridge invokes this command,
+/// then posts the boolean result back.
+#[tauri::command]
+pub async fn show_confirm_dialog(
+    app_handle: tauri::AppHandle,
+    title: String,
+    message: String,
+    confirm_label: Option<String>,
+    cancel_label: Option<String>,
+) -> Result<bool, String> {
+    let confirm = confirm_label.unwrap_or_else(|| "Confirm".into());
+    let cancel = cancel_label.unwrap_or_else(|| "Cancel".into());
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(confirm, cancel))
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+
+    Ok(rx.await.unwrap_or(false))
+}
+
+// ---------------------------------------------------------------------------
 // Third-party service key management
 // ---------------------------------------------------------------------------
 

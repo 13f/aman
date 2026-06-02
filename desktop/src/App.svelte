@@ -190,6 +190,31 @@
 
     initialLoadDone = true;
 
+    // ── postMessage bridge: handle aman:confirm from iframes ──────────
+    // Team and plugin pages are loaded in iframes and cannot invoke Tauri
+    // commands directly. This bridge lets them request a native OS confirm
+    // dialog by posting {type:"aman:confirm", title, message, confirmLabel?,
+    // cancelLabel?}. The result {type:"aman:confirm-result", confirmed} is
+    // posted back to the iframe.
+    window.addEventListener("message", async (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.type !== "aman:confirm") return;
+      const source = event.source as Window | null;
+      if (!source) return;
+
+      try {
+        const confirmed = await invoke<boolean>("show_confirm_dialog", {
+          title: data.title || "Confirm",
+          message: data.message || "Are you sure?",
+          confirmLabel: data.confirmLabel || null,
+          cancelLabel: data.cancelLabel || null,
+        });
+        source.postMessage({ type: "aman:confirm-result", confirmed }, "*");
+      } catch {
+        source.postMessage({ type: "aman:confirm-result", confirmed: false }, "*");
+      }
+    });
+
     listen("shutdown:started", () => {
       shuttingDown = true;
     });

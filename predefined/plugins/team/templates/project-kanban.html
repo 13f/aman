@@ -29,13 +29,21 @@
                border-radius: 10px; }
   .card-list { flex: 1; padding: 8px; overflow-y: auto; min-height: 60px; }
   .card { padding: 10px 12px; margin-bottom: 8px; background: #161822; border: 1px solid #1e2030;
-          border-radius: 6px; cursor: pointer; font-size: 13px; transition: opacity 0.15s; }
+          border-radius: 6px; cursor: pointer; font-size: 13px; transition: opacity 0.15s;
+          position: relative; }
   .card:hover { border-color: #333; }
-  .card-title { font-weight: 500; margin-bottom: 4px; }
+  .card:hover .card-delete-btn { opacity: 1; }
+  .card-title { font-weight: 500; margin-bottom: 4px; padding-right: 22px; }
   .card-meta { font-size: 11px; color: #666; }
   .card-output-badge { display: inline-block; font-size: 10px; padding: 1px 6px;
     border-radius: 8px; background: rgba(99, 102, 241, 0.12); color: #818cf8;
     margin-top: 4px; }
+  .card-delete-btn { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    background: none; border: 1px solid transparent; border-radius: 4px;
+    color: #666; font-size: 14px; cursor: pointer; opacity: 0;
+    transition: opacity 0.15s, color 0.15s, border-color 0.15s; line-height: 1; }
+  .card-delete-btn:hover { color: #ef4444; border-color: #ef4444; }
   .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
              color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
   .add-btn:hover { color: #aaa; border-color: #555; }
@@ -195,6 +203,24 @@
 
   .wd-close:hover {
     color: #e0e0e0;
+  }
+
+  .wd-delete-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #666;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .wd-delete-btn:hover {
+    color: #ef4444;
+    border-color: #ef4444;
   }
 
   .wd-messages {
@@ -559,6 +585,7 @@
           <option value="">Assign...</option>
         </select>
         <button class="wd-assign-btn" id="wdAssignBtn" onclick="openAssign()">Assign</button>
+        <button class="wd-delete-btn" onclick="deleteWork(_detailWorkId, event)" title="Delete work item">🗑</button>
         <button class="wd-close" onclick="closeWorkDetail()">&times;</button>
       </div>
     </div>
@@ -647,6 +674,7 @@ function render(stages, works) {
         var w = items[k];
         html += '<div class="card" ' +
                 'onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
+                '<button class="card-delete-btn" onclick="deleteWork(\'' + esc(w.id) + '\', event)" title="Delete">×</button>' +
                 '<div class="card-title">' + esc(w.title) + '</div>' +
                 '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
                 (w.output_type ? '<span class="card-output-badge">' + esc(w.output_type) + '</span>' : '') +
@@ -691,6 +719,83 @@ async function createWork() {
     closeCreate();
     load();
   } catch(e) { console.error(e); }
+}
+
+// ── Delete work item ─────────────────────────────────────────────
+
+function requestConfirm(title, message, confirmLabel, cancelLabel) {
+  return new Promise(function(resolve) {
+    // Post to the Tauri parent window — the bridge in App.svelte
+    // will show a native OS dialog and post the result back.
+    // Falls back to window.confirm() if no bridge responds within 600ms.
+    window.parent.postMessage({
+      type: "aman:confirm",
+      title: title,
+      message: message,
+      confirmLabel: confirmLabel,
+      cancelLabel: cancelLabel
+    }, "*");
+
+    var settled = false;
+    var timeout = setTimeout(function() {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("message", handler);
+      // Fallback to browser confirm (useful when testing outside Tauri)
+      resolve(window.confirm(message));
+    }, 600);
+
+    function handler(event) {
+      if (settled) return;
+      if (event.data && event.data.type === "aman:confirm-result") {
+        settled = true;
+        clearTimeout(timeout);
+        window.removeEventListener("message", handler);
+        resolve(event.data.confirmed);
+      }
+    }
+    window.addEventListener("message", handler);
+  });
+}
+
+function deleteWork(workId, event) {
+  if (event) event.stopPropagation(); // prevent card click → open detail
+
+  // Fetch work title for the confirmation message
+  var work = (_cachedWorks || []).find(function(w) { return w.id === workId; });
+  var titleLine = work ? "「" + work.title + "」" : workId;
+
+  requestConfirm(
+    "aman — Delete Work Item",
+    "Delete work item " + titleLine + "?\n\nThis action cannot be undone. All context history and output files will be permanently removed.",
+    "Delete",
+    "Cancel"
+  ).then(function(confirmed) {
+    if (confirmed) executeDelete(workId);
+  });
+}
+
+async function executeDelete(workId) {
+  try {
+    var r = await fetch(BASE + "/works/" + encodeURIComponent(workId), {
+      method: "DELETE"
+    });
+    if (!r.ok) {
+      var e = await r.json().catch(function(){ return {}; });
+      flash("Delete failed: " + (e.error || r.statusText), "error");
+      return;
+    }
+    flash("Work item deleted", "success");
+    // Close detail modal if the deleted work is currently open
+    if (_detailWorkId === workId) {
+      closeWorkDetail();
+      _detailWorkId = "";
+      _detailWork = null;
+    }
+    load();
+  } catch(e) {
+    flash("Network error: " + e.message, "error");
+  }
 }
 
 async function moveWork(workId) {

@@ -208,6 +208,7 @@ pub fn run() {
             commands::show_tool_auth_dialog,
             // Plugin capability authorization
             commands::show_plugin_auth_dialog,
+            commands::show_confirm_dialog,
             // Third-party service keys
             commands::list_third_party_services,
             commands::set_third_party_key,

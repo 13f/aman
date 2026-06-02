@@ -10,7 +10,7 @@
 //! of any desktop UI.
 //!
 //! Usage:
-//!   aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--tui]
+//!   aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]
 
 use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig, RedactWriter};
@@ -33,17 +33,16 @@ const PID_FILE: &str = ".aman/aman.pid";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    // Check for --tui before setting up tracing so we can install the
-    // TuiLogLayer instead of the plain stdout layer.
+    // TUI mode is the default. Pass --no-tui to use plain stdout logging instead.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let tui_mode = args.iter().any(|a| a == "--tui");
+    let no_tui = args.iter().any(|a| a == "--no-tui");
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let log_dir = PathBuf::from(&home).join(".aman");
     let _ = std::fs::create_dir_all(&log_dir);
     let log_path = log_dir.join("gateway.log");
 
-    if tui_mode {
+    if no_tui {
         let log_file = File::create(&log_path).expect("failed to create gateway log file");
         let file_layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
@@ -52,7 +51,29 @@ async fn main() {
             .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
             .from_env_lossy();
 
-        // In TUI mode: log to file + TUI ring buffer, NOT stdout.
+        // Non-TUI mode: log to stdout + file.
+        let stdout_layer = tracing_subscriber::fmt::layer()
+            .with_writer(|| RedactWriter::new(std::io::stdout()));
+
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stdout_layer)
+            .with(file_layer)
+            .init();
+
+        if let Err(code) = run().await {
+            std::process::exit(code);
+        }
+    } else {
+        let log_file = File::create(&log_path).expect("failed to create gateway log file");
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(Mutex::new(RedactWriter::new(log_file)));
+        let env_filter = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+            .from_env_lossy();
+
+        // TUI mode (default): log to file + TUI ring buffer, NOT stdout.
         // The TUI renders logs in its left panel instead.
         let log_buffer = Arc::new(gateway::tui::LogBuffer::default());
         let tui_layer = gateway::tui::TuiLogLayer::new(Arc::clone(&log_buffer));
@@ -65,35 +86,7 @@ async fn main() {
             .with(tui_layer)
             .init();
 
-        // Filter out --tui from args for the arg parser.
-        let filtered_args: Vec<String> = args
-            .into_iter()
-            .filter(|a| a != "--tui")
-            .collect();
-
-        if let Err(code) = run_tui_mode(filtered_args, log_buffer).await {
-            std::process::exit(code);
-        }
-    } else {
-        let log_file = File::create(&log_path).expect("failed to create gateway log file");
-        let file_layer = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(Mutex::new(RedactWriter::new(log_file)));
-        let env_filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
-            .from_env_lossy();
-
-        // Normal mode: log to stdout + file.
-        let stdout_layer = tracing_subscriber::fmt::layer()
-            .with_writer(|| RedactWriter::new(std::io::stdout()));
-
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(stdout_layer)
-            .with(file_layer)
-            .init();
-
-        if let Err(code) = run().await {
+        if let Err(code) = run_tui_mode(args, log_buffer).await {
             std::process::exit(code);
         }
     }
@@ -366,8 +359,12 @@ fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<St
                 soul_path = Some(PathBuf::from(path));
                 i += 2;
             }
+            "--no-tui" => {
+                // Already handled in main(); silently skip here.
+                i += 1;
+            }
             _ => {
-                eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--tui]");
+                eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]");
                 return Err(2);
             }
         }

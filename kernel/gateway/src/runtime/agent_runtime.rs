@@ -2322,25 +2322,34 @@ impl AgentRuntime {
     /// Called after the HTTP server and SSE broadcast are running so the
     /// desktop client can receive the events and show native dialogs.
     pub async fn emit_pending_plugin_approvals(&self) {
-        let pending = {
-            let mut guard = self.pending_plugin_approvals.lock().await;
-            std::mem::take(&mut *guard)
+        // Extract summary data while holding the lock, then release.
+        // We must NOT take() the vec — the TUI and HTTP API need to read
+        // the same list after events have been emitted.
+        let pending_info: Vec<(String, String, Vec<String>, CapabilitySet)> = {
+            let guard = self.pending_plugin_approvals.lock().await;
+            guard
+                .iter()
+                .map(|(candidate, needed_caps)| {
+                    (
+                        candidate.manifest.name.clone(),
+                        candidate.manifest.version.to_string(),
+                        needed_caps.summary(),
+                        needed_caps.clone(),
+                    )
+                })
+                .collect()
         };
 
-        if pending.is_empty() {
+        if pending_info.is_empty() {
             return;
         }
 
         tracing::info!(
-            count = pending.len(),
+            count = pending_info.len(),
             "emitting plugin_auth_required events for deferred plugin approvals"
         );
 
-        for (candidate, needed_caps) in &pending {
-            let plugin_name = candidate.manifest.name.clone();
-            let version = candidate.manifest.version.to_string();
-            let summary = needed_caps.summary();
-
+        for (plugin_name, version, summary, needed_caps) in &pending_info {
             // Register a pending approval so the HTTP endpoint can resolve it
             let _rx = self.plugin_approval_registry.register(plugin_name.clone());
 

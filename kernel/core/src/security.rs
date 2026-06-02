@@ -119,16 +119,16 @@ impl CapabilitySet {
             lines.push(format!("  - {cap}"));
         }
         if !self.allowed_read_paths.is_empty() {
-            lines.push(format!(
-                "  - read paths: {:?}",
-                self.allowed_read_paths
-            ));
+            lines.push("  - read paths:".to_string());
+            for path in &self.allowed_read_paths {
+                lines.push(format!("      {path}"));
+            }
         }
         if !self.allowed_write_paths.is_empty() {
-            lines.push(format!(
-                "  - write paths: {:?}",
-                self.allowed_write_paths
-            ));
+            lines.push("  - write paths:".to_string());
+            for path in &self.allowed_write_paths {
+                lines.push(format!("      {path}"));
+            }
         }
         lines.push(format!("  - max memory: {} MB", self.max_memory_mb));
         lines.push(format!(

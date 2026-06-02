@@ -27,4 +27,4 @@ security:
       - "${project.work_dir}/"
     write_paths:
       - "data/"
-      - "${project.work_dir}/aman_team/"
+      - "${project.work_dir}/"

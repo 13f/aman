@@ -135,13 +135,12 @@ pub fn apply_seatbelt(config: &SandboxConfig) -> Result<(), SandboxError> {
         std::env::set_var("AMAN_SANDBOX_PROFILE", &profile);
     }
 
-    tracing::info!(
-        read_dirs = config.allowed_read_dirs.len(),
-        write_dirs = config.allowed_write_dirs.len(),
-        network = config.network_allowed,
-        "macOS Seatbelt sandbox profile generated ({} bytes)",
-        profile.len()
-    );
+    // NOTE: Do NOT use tracing::info! here. This function runs inside a
+    // Command::pre_exec() closure in the forked child process. If the
+    // tracing subscriber's file-writer Mutex was locked by another thread
+    // at the moment of fork(), the child inherits the poisoned lock and
+    // deadlocks — which prevents exec() from ever running. The parent's
+    // Command::spawn() then appears to hang indefinitely.
 
     Ok(())
 }

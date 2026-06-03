@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -37,7 +37,11 @@ use serde::Deserialize;
 
 use kernel::plugin::JsonRpcMethodHandler;
 use kernel::AmanResult;
-use sandbox::{SandboxConfig, apply_sandbox};
+use sandbox::SandboxConfig;
+#[cfg(target_os = "linux")]
+use sandbox::apply_sandbox;
+#[cfg(target_os = "macos")]
+use sandbox::macos::generate_sandbox_profile;
 
 use crate::SubprocessPluginConfig;
 
@@ -102,13 +106,24 @@ impl SubprocessPluginBridge {
             command.current_dir(dir);
         }
 
-        // Apply OS-level sandbox (Landlock on Linux, Seatbelt on macOS)
-        // SAFETY: pre_exec runs in the forked child before exec(). The
-        // landlock syscalls in apply_sandbox are async-signal-safe by design.
-        // On macOS, apply_sandbox sets an env var (no syscalls in child).
-        // Failures are logged but may be treated as non-fatal (fail-open mode).
-        // pre_exec is Unix-only (not available on Windows).
-        #[cfg(unix)]
+        // ── Sandbox application ──────────────────────────────────────
+        // On macOS: Seatbelt is applied by generating a profile and passing it
+        // via the AMAN_SANDBOX_PROFILE env var. We do this in the parent process
+        // to avoid fork-safety issues (allocator/tracing mutexes in the child).
+        // On Linux: Landlock requires syscalls in the child, so pre_exec is used.
+        #[cfg(target_os = "macos")]
+        if let Some(ref sb_config) = sandbox_config {
+            let profile = generate_sandbox_profile(sb_config);
+            tracing::info!(
+                read_dirs = sb_config.allowed_read_dirs.len(),
+                write_dirs = sb_config.allowed_write_dirs.len(),
+                network = sb_config.network_allowed,
+                "macOS Seatbelt sandbox profile generated ({} bytes)",
+                profile.len()
+            );
+            command.env("AMAN_SANDBOX_PROFILE", profile);
+        }
+        #[cfg(target_os = "linux")]
         if let Some(ref sb_config) = sandbox_config {
             let sb = sb_config.clone();
             unsafe {
@@ -119,7 +134,7 @@ impl SubprocessPluginBridge {
                 });
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         if sandbox_config.is_some() {
             tracing::warn!("sandbox requested but not supported on this platform — plugin will run unsandboxed");
         }

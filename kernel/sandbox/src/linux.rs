@@ -244,11 +244,9 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<(), SandboxError> {
             libc::close(ruleset_fd);
         }
 
-        tracing::info!(
-            read_dirs = config.allowed_read_dirs.len(),
-            write_dirs = config.allowed_write_dirs.len(),
-            "Landlock sandbox applied successfully"
-        );
+        // NOTE: Do NOT use tracing::info! here. This runs in a pre_exec()
+        // closure — the forked child inherits the parent's tracing subscriber
+        // mutex state, and locked mutexes → deadlock → exec() never runs.
 
         Ok(())
     }

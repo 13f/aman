@@ -1,7 +1,7 @@
 .DS_Store
 target/
 node_modules/
-dist/ 
+dist/
 *.swp
 *.swo
 *~
@@ -9,5 +9,6 @@ dist/
 .vscode/
 *.iml
 .fastembed_cache/
+__pycache__/
 predefined/plugins/team/static/*.hash
 report_02553_首钢朗泽.md

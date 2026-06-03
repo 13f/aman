@@ -397,6 +397,7 @@ def init_db(project_key: str) -> sqlite3.Connection:
             tags TEXT NOT NULL DEFAULT '[]',
             output_type TEXT NOT NULL DEFAULT '',
             output_description TEXT NOT NULL DEFAULT '',
+            need_review INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )"""
@@ -418,6 +419,7 @@ def init_db(project_key: str) -> sqlite3.Connection:
     # ── Schema migrations (add columns that may be missing from older DBs) ──
     _migrate_stage_history(db)
     _migrate_works_output(db)
+    _migrate_works_need_review(db)
 
     db.commit()
     return db
@@ -443,6 +445,13 @@ def _migrate_works_output(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE works ADD COLUMN output_type TEXT NOT NULL DEFAULT ''")
     if "output_description" not in cols:
         db.execute("ALTER TABLE works ADD COLUMN output_description TEXT NOT NULL DEFAULT ''")
+
+
+def _migrate_works_need_review(db: sqlite3.Connection) -> None:
+    """Add need_review column if missing (old DB compat)."""
+    cols = {row[1] for row in db.execute("PRAGMA table_info(works)")}
+    if "need_review" not in cols:
+        db.execute("ALTER TABLE works ADD COLUMN need_review INTEGER NOT NULL DEFAULT 0")
 
 
 def get_db(project_key: str) -> sqlite3.Connection:
@@ -519,19 +528,25 @@ def get_work(project_key: str, work_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def list_works(project_key: str, stage: Optional[str] = None) -> list:
+def list_works(project_key: str, stage: Optional[str] = None,
+               exclude_need_review: bool = False) -> list:
     db = get_db(project_key)
     query = """SELECT t.*, COALESCE(
                    (SELECT sh.assignee FROM stage_history sh
                     WHERE sh.work_id = t.id AND sh.completed_at IS NULL
                     ORDER BY sh.id DESC LIMIT 1), '') as assignee
                FROM works t"""
+    conditions = []
+    params: list = []
     if stage:
-        rows = db.execute(
-            query + " WHERE t.current_stage=? ORDER BY t.created_at DESC", (stage,)
-        ).fetchall()
-    else:
-        rows = db.execute(query + " ORDER BY t.created_at DESC").fetchall()
+        conditions.append("t.current_stage=?")
+        params.append(stage)
+    if exclude_need_review:
+        conditions.append("t.need_review=0")
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY t.created_at DESC"
+    rows = db.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -545,7 +560,7 @@ def update_work_stage(project_key: str, work_id: str, stage: str, assignee: str 
              f"project={project_key}, existing_ids={all_ids})")
         return
     db.execute(
-        "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
+                        "UPDATE works SET current_stage=?, need_review=0, updated_at=datetime('now') WHERE id=?",
         (stage, work_id),
     )
     db.execute(
@@ -1099,6 +1114,21 @@ def handle_api(project_key: str, method: str, path: str, query: Optional[str],
     if m_output and method == "POST":
         return _handle_update_work_output(project_key, m_output.group(1), body_json)
 
+    # ── Mark work item as needing review ─────────────────────────────
+    m_need_review = re.match(r"works/([^/]+)/need-review$", rel_path)
+    if m_need_review and method == "POST":
+        return _handle_mark_need_review(project_key, m_need_review.group(1), body_json)
+
+    # ── Clear need-review flag ───────────────────────────────────────
+    m_clear_review = re.match(r"works/([^/]+)/clear-review$", rel_path)
+    if m_clear_review and method == "POST":
+        return _handle_clear_need_review(project_key, m_clear_review.group(1), body_json)
+
+    # ── Act — trigger assigned agent to process immediately ──────────
+    m_act = re.match(r"works/([^/]+)/act$", rel_path)
+    if m_act and method == "POST":
+        return _handle_act_work(project_key, m_act.group(1), body_json)
+
     # ── List output files ───────────────────────────────────────────
     m_output_files = re.match(r"works/([^/]+)/output-files$", rel_path)
     if m_output_files and method == "GET":
@@ -1124,7 +1154,11 @@ def _handle_get_project(project_key: str) -> dict:
 
 def _handle_list_works(project_key: str, query: Optional[str]) -> dict:
     proj = _projects.get(project_key, {}).get("config", {})
-    works = list_works(project_key)
+    # Parse query params
+    exclude_need_review = False
+    if query:
+        exclude_need_review = "exclude_need_review=1" in query
+    works = list_works(project_key, exclude_need_review=exclude_need_review)
     return {
         "status": 200,
         "headers": {"content-type": "application/json"},
@@ -1286,7 +1320,7 @@ def _handle_assign_work(project_key: str, work_id: str, body: dict) -> dict:
 
     if _unwrap_result(result):
         db.execute(
-            "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
+                            "UPDATE works SET current_stage=?, need_review=0, updated_at=datetime('now') WHERE id=?",
             (stage_id, work_id),
         )
         db.execute(
@@ -1359,7 +1393,7 @@ def _handle_complete_work(project_key: str, work_id: str, body: dict) -> dict:
     # Move to next stage if specified
     if next_stage:
         db.execute(
-            "UPDATE works SET current_stage=?, updated_at=datetime('now') WHERE id=?",
+                            "UPDATE works SET current_stage=?, need_review=0, updated_at=datetime('now') WHERE id=?",
             (next_stage, work_id),
         )
         db.execute(
@@ -1542,6 +1576,135 @@ def _handle_update_work_output(project_key: str, work_id: str, body: dict) -> di
     ))
 
     return _json_response({"ok": True, "work": result})
+
+
+def _handle_mark_need_review(project_key: str, work_id: str, body: dict) -> dict:
+    """Mark a work item as needing human review after agent completion."""
+    agent_id = body.get("agent_id", "")
+    summary = body.get("summary", "")
+
+    db = get_db(project_key)
+    cur = db.execute("SELECT id FROM works WHERE id=?", (work_id,))
+    if cur.fetchone() is None:
+        return _json_response({"error": f"work '{work_id}' not found"}, 404)
+
+    db.execute(
+        "UPDATE works SET need_review=1, updated_at=datetime('now') WHERE id=?",
+        (work_id,),
+    )
+    db.commit()
+
+    append_event(project_key, work_id, make_event(
+        "need_review",
+        agent_id=agent_id,
+        summary=summary,
+    ))
+
+    send_notification("aman.emit_event", {
+        "event_type": "team:work_item.need_review",
+        "payload": {
+            "project_key": project_key,
+            "work_item_id": work_id,
+            "agent_id": agent_id,
+        },
+    })
+
+    return _json_response({"ok": True, "work_id": work_id, "need_review": True})
+
+
+def _handle_clear_need_review(project_key: str, work_id: str, body: dict) -> dict:
+    """Clear the need_review flag on a work item (e.g. after human approval)."""
+    db = get_db(project_key)
+    cur = db.execute("SELECT id FROM works WHERE id=?", (work_id,))
+    if cur.fetchone() is None:
+        return _json_response({"error": f"work '{work_id}' not found"}, 404)
+
+    db.execute(
+        "UPDATE works SET need_review=0, updated_at=datetime('now') WHERE id=?",
+        (work_id,),
+    )
+    db.commit()
+
+    append_event(project_key, work_id, make_event(
+        "review_cleared",
+        cleared_by=body.get("cleared_by", ""),
+    ))
+
+    return _json_response({"ok": True, "work_id": work_id, "need_review": False})
+
+
+def _handle_act_work(project_key: str, work_id: str, body: dict) -> dict:
+    """Trigger the assigned agent to immediately process this work item."""
+    work = get_work(project_key, work_id)
+    if work is None:
+        return _json_response({"error": f"work '{work_id}' not found"}, 404)
+
+    # Don't act on items already marked for review
+    if work.get("need_review"):
+        return _json_response({"error": "work item is already marked for review"}, 400)
+
+    # Get current assignee
+    db = get_db(project_key)
+    row = db.execute(
+        "SELECT assignee FROM stage_history WHERE work_id=? AND completed_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (work_id,),
+    ).fetchone()
+    assignee = row["assignee"] if row else ""
+
+    if not assignee:
+        return _json_response({"error": "no agent assigned to this work item"}, 400)
+
+    # Check agent exists and is idle
+    agents_result = send_request("aman.get_agents", {})
+    agents = _unwrap_result(agents_result)
+    if not agents or not isinstance(agents, dict):
+        return _json_response({"error": "failed to query agent registry"}, 500)
+    agent_list = agents.get("agents", [])
+    agent = next((a for a in agent_list if a.get("id") == assignee), None)
+
+    if agent is None:
+        return _json_response({"error": f"agent '{assignee}' not found in registry"}, 400)
+
+    if agent.get("status") != "Idle":
+        return _json_response(
+            {"error": f"agent '{assignee}' is not idle (status: {agent.get('status', 'unknown')})"},
+            400,
+        )
+
+    # Re-push the work item to wake up the idle agent
+    push_result = send_request("aman.push_work_item", {
+        "agent_id": assignee,
+        "title": work["title"],
+        "description": work.get("description", ""),
+        "priority": work.get("priority", "normal"),
+        "context": {
+            "project_key": project_key,
+            "work_id": work_id,
+            "stage_id": work.get("current_stage", ""),
+            "source": "kanban-act",
+        },
+    })
+
+    if not _unwrap_result(push_result):
+        return _json_response({"error": "failed to push work item to agent"}, 500)
+
+    append_event(project_key, work_id, make_event(
+        "act_triggered",
+        agent_id=assignee,
+        triggered_by=body.get("triggered_by", "User"),
+    ))
+
+    send_notification("aman.emit_event", {
+        "event_type": "team:work_item.act_triggered",
+        "payload": {
+            "project_key": project_key,
+            "work_item_id": work_id,
+            "agent_id": assignee,
+        },
+    })
+
+    return _json_response({"ok": True, "agent_id": assignee, "work_id": work_id})
 
 
 def _handle_list_output_files(project_key: str, work_id: str) -> dict:
@@ -2171,6 +2334,7 @@ def handle_on_load(params: Any) -> dict:
                 "team:work_item.assigned",
                 "team:work_item.stage_changed",
                 "team:work_item.completed",
+                "team:work_item.need_review",
                 "team:work_item.failed",
                 "team:safety.gate_triggered",
                 "team:safety.gate_resolved",

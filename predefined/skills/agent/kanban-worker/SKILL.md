@@ -108,11 +108,15 @@ Find which agent you are:
 GET /api/v1/team/projects
 ```
 
-From the response, pick a project. Then list works:
+From the response, pick a project. Then list works **excluding items already
+marked for review**:
 
 ```
-GET /api/v1/team/projects/{project_key}/works
+GET /api/v1/team/projects/{project_key}/works?exclude_need_review=1
 ```
+
+This returns only work items where `need_review=0` — items that are still
+being actively worked on and haven't been submitted for human review yet.
 
 Look through the results for work items where:
 - The work item is in an active stage (not "done", "closed", "archived")
@@ -187,9 +191,38 @@ Content-Type: application/json
 
 ### Step 5: Complete or Escalate
 
-When all steps are done:
-- Mark the work item as complete
-- Report the outcome
+When all steps are done and you believe the work is complete:
+
+1. **Update the output info** so the kanban board reflects what was produced:
+   ```
+   POST /api/v1/team/projects/{project_key}/works/{work_id}/output
+   Content-Type: application/json
+
+   {
+     "output_type": "code",
+     "output_description": "<what was actually delivered>"
+   }
+   ```
+
+2. **Mark the work item as needing review.** This signals to humans that
+   the agent considers the work done and it's ready for review. It also
+   removes the item from your active queue so you won't pick it up again:
+   ```
+   POST /api/v1/team/projects/{project_key}/works/{work_id}/need-review
+   Content-Type: application/json
+
+   {
+     "agent_id": "<your agent id>",
+     "summary": "Brief description of what was completed and where to find the output"
+   }
+   ```
+
+3. Report the outcome succinctly.
+
+**Important:** Do NOT mark the work item as `complete` — that transitions it
+to the next stage. Instead, mark it as `need_review` so a human can verify
+the work before it moves forward. The human will clear the `need_review` flag
+and advance the stage when they approve the work.
 
 If you encounter a problem you cannot solve:
 - Record what you tried
@@ -215,3 +248,7 @@ If a safety gate triggers:
    cleanly and exit.
 6. **Stop on repeated failures.** If the same tool call fails 3 times with
    the same error, record the failure and move on or stop.
+7. **Mark completed work for review.** When you finish a work item, use the
+   `need-review` endpoint (NOT the `complete` endpoint) to flag it for human
+   review. This removes it from your active queue and prevents you from
+   re-processing it on the next idle check.

@@ -1695,6 +1695,15 @@ def _handle_act_work(project_key: str, work_id: str, body: dict) -> dict:
     if not _unwrap_result(push_result):
         return _json_response({"error": "failed to push work item to agent"}, 500)
 
+    # Move stage to in_progress when agent starts working
+    current_stage = work.get("current_stage", "")
+    proj_config = _projects.get(project_key, {}).get("config", {})
+    stages = {s["id"]: s for s in proj_config.get("stages", [])}
+    in_progress_stage = stages.get("in_progress", {})
+    if in_progress_stage and current_stage != "in_progress":
+        update_work_stage(project_key, work_id, "in_progress", assignee)
+        work["current_stage"] = "in_progress"
+
     append_event(project_key, work_id, make_event(
         "act_triggered",
         agent_id=assignee,

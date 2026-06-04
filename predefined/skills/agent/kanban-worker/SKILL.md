@@ -225,25 +225,27 @@ When all steps are done and you believe the work is complete:
    }
    ```
 
-2. **Mark the work item as needing review.** This signals to humans that
-   the agent considers the work done and it's ready for review. It also
-   removes the item from your active queue so you won't pick it up again:
+2. **Move the work item to Review stage.** This signals to humans that
+   the agent considers the work done and it's ready for human review.
+   The work item will appear in the "Review" column on the kanban board:
    ```
-   POST /api/v1/team/projects/{project_key}/works/{work_id}/need-review
+   POST http://127.0.0.1:9999/api/v1/team/projects/{project_key}/works/{work_id}/complete
    Content-Type: application/json
 
    {
      "agent_id": "<your agent id>",
-     "summary": "Brief description of what was completed and where to find the output"
+     "next_stage": "review",
+     "summary": "Brief description of what was completed and where to find the output",
+     "confidence": 0.9
    }
    ```
 
 3. Report the outcome succinctly.
 
-**Important:** Do NOT mark the work item as `complete` — that transitions it
-to the next stage. Instead, mark it as `need_review` so a human can verify
-the work before it moves forward. The human will clear the `need_review` flag
-and advance the stage when they approve the work.
+**Important:** Use `next_stage: "review"` — this moves the card to the Review
+column where a human can verify the work. The human will then move it to "done"
+(accept) or "todo" (reject with comments). Do NOT set `next_stage: "done"` —
+that skips human review.
 
 If you encounter a problem you cannot solve:
 - Record what you tried
@@ -303,10 +305,9 @@ needing review with a clear failure summary.
    cleanly and exit.
 6. **Stop on repeated failures.** If the same tool call fails 3 times with
    the same error, record the failure and move on or stop.
-7. **Mark completed work for review.** When you finish a work item, use the
-   `need-review` endpoint (NOT the `complete` endpoint) to flag it for human
-   review. This removes it from your active queue and prevents you from
-   re-processing it on the next idle check.
+7. **Move completed work to Review.** When you finish a work item, use
+   `POST /complete` with `next_stage: "review"` (NOT "done"). This moves
+   the card to the Review column for human verification.
 8. **NEVER use the `db` tool on the Team database** (`~/.aman/team/projects/*/data.db`).
    All Team operations MUST go through the HTTP API. Direct DB writes bypass
    stage validation and corrupt the work item state. If an HTTP endpoint returns

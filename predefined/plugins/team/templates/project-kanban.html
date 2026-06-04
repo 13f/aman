@@ -38,73 +38,6 @@
   .card-output-badge { display: inline-block; font-size: 10px; padding: 1px 6px;
     border-radius: 8px; background: rgba(99, 102, 241, 0.12); color: #818cf8;
     margin-top: 4px; }
-  .card-need-review-badge { display: inline-block; font-size: 10px; padding: 1px 6px;
-    border-radius: 8px; background: rgba(234, 179, 8, 0.15); color: #eab308;
-    margin-top: 4px; margin-left: 4px; }
-  .card-need-review-icon { position: absolute; top: 8px; right: 26px;
-    font-size: 13px; opacity: 0.85; }
-  .card-delete-btn { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px;
-    display: flex; align-items: center; justify-content: center;
-    background: none; border: 1px solid transparent; border-radius: 4px;
-    color: #666; font-size: 14px; cursor: pointer; opacity: 0;
-    transition: opacity 0.15s, color 0.15s, border-color 0.15s; line-height: 1; }
-  .card-delete-btn:hover { color: #ef4444; border-color: #ef4444; }
-  .add-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
-             color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; margin-top: auto; }
-  .add-btn:hover { color: #aaa; border-color: #555; }
-
-  .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-           z-index: 100; align-items: center; justify-content: center; }
-  .modal.open { display: flex; }
-  .modal-card { background: #13151f; border: 1px solid #1e2030; border-radius: 10px;
-                padding: 24px; width: 440px; max-width: 90vw; max-height: 85vh;
-                overflow-y: auto; }
-  .modal-card h3 { font-size: 15px; margin-bottom: 16px; }
-  .form-group { margin-bottom: 12px; }
-  .form-group label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
-  .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px 10px;
-    background: #0b0d13; border: 1px solid #2a2d3a; border-radius: 6px;
-    color: #e0e0e0; font-size: 13px; font-family: inherit; }
-  .form-group textarea { resize: vertical; min-height: 60px; }
-  .form-group .hint { font-size: 11px; color: #555; margin-top: 4px; }
-
-  .stage-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px;
-                padding: 6px 8px; background: #0f1119; border: 1px solid #1e2030;
-                border-radius: 6px; }
-  .stage-row input { flex: 1; padding: 5px 7px; background: #0b0d13; border: 1px solid #2a2d3a;
-                     border-radius: 4px; color: #e0e0e0; font-size: 12px; min-width: 0; }
-  .stage-row input.stage-id { max-width: 90px; }
-  .stage-row input.stage-name { max-width: 140px; }
-  .stage-row input.allowed-next { max-width: 180px; }
-  .stage-row button { padding: 4px 8px; background: none; border: 1px solid #2a2d3a;
-                      color: #888; border-radius: 4px; cursor: pointer; font-size: 11px; flex-shrink: 0; }
-  .stage-row button:hover { color: #e0e0e0; border-color: #555; }
-  .stage-row button.danger:hover { color: #ef4444; border-color: #ef4444; }
-  .add-stage-btn { width: 100%; padding: 8px; background: none; border: 1px dashed #2a2d3a;
-                   color: #666; border-radius: 6px; cursor: pointer; font-size: 12px; }
-  .add-stage-btn:hover { color: #aaa; border-color: #555; }
-  .empty-state { padding: 24px; text-align: center; color: #555; font-size: 12px; }
-
-  .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
-  .modal-actions button { padding: 6px 14px; border-radius: 6px; border: 1px solid #2a2d3a;
-    background: #1a1d2b; color: #e0e0e0; cursor: pointer; font-size: 12px; }
-  .modal-actions button.primary { background: #6366f1; border-color: #6366f1; }
-
-  .flash { position: fixed; top: 16px; right: 16px; padding: 10px 16px; border-radius: 6px;
-           font-size: 13px; z-index: 200; max-width: 360px; }
-  .flash.success { background: #064e3b; border: 1px solid #065f46; color: #6ee7b7; }
-  .flash.error { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
-
-  /* ── Work Detail Modal ──────────────────────────────── */
-  .work-detail-modal .modal-card {
-    width: 680px;
-    max-width: 94vw;
-    max-height: 90vh;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
 
   .work-detail-card {
     height: 80vh;
@@ -142,15 +75,6 @@
     margin-right: 8px;
   }
 
-  .wd-need-review-badge {
-    display: inline-block;
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 10px;
-    background: rgba(234, 179, 8, 0.15);
-    color: #eab308;
-    margin-right: 8px;
-  }
 
   .wd-meta {
     font-size: 11px;
@@ -522,7 +446,6 @@
   <a href="/api/v1/team">&larr; Projects</a>
   <h1>$project_name</h1>
   <span class="spacer"></span>
-  <button class="bar-btn" id="filterBtn" onclick="toggleFilter()" title="Toggle need-review filter">🔍 Active</button>
   <button class="bar-btn" onclick="openProjectDir()" title="Open project directory in file manager">📂 Open Dir</button>
   <button class="bar-btn" onclick="openEditProject()">Edit Project</button>
   <button class="bar-btn" onclick="openEditBoard()">Edit Board</button>
@@ -632,7 +555,6 @@
       <div class="wd-header-info">
         <h3 class="wd-title" id="wdTitle"></h3>
         <span class="wd-stage-badge" id="wdStageBadge"></span>
-        <span class="wd-need-review-badge" id="wdNeedReviewBadge" style="display:none;">⏳ Needs Review</span>
         <span class="wd-meta" id="wdMeta"></span>
         <span class="wd-assignee" id="wdAssignee"></span>
       </div>
@@ -642,7 +564,6 @@
         </select>
         <button class="wd-assign-btn" id="wdAssignBtn" onclick="openAssign()">Assign</button>
         <button class="wd-act-btn" id="wdActBtn" onclick="actOnWork()" title="Trigger assigned agent to process this work item immediately" disabled>⚡ Act!</button>
-        <button class="wd-clear-review-btn" id="wdClearReviewBtn" onclick="clearNeedReview()" title="Clear review flag" style="display:none;">✅ Approved</button>
         <button class="wd-delete-btn" onclick="deleteWork(_detailWorkId, event)" title="Delete work item">🗑</button>
         <button class="wd-close" onclick="closeWorkDetail()">&times;</button>
       </div>
@@ -698,25 +619,10 @@ var BASE = "/api/v1/team/projects/" + PROJECT;
 
 var _cachedStages = [];
 var _cachedWorks = [];
-var _excludeNeedReview = true;  // default: show only active (non-review) items
-
-function toggleFilter() {
-  _excludeNeedReview = !_excludeNeedReview;
-  var btn = document.getElementById("filterBtn");
-  if (_excludeNeedReview) {
-    btn.textContent = "🔍 Active";
-    btn.title = "Showing only active work items (need_review hidden). Click to show all.";
-  } else {
-    btn.textContent = "📋 All";
-    btn.title = "Showing all work items. Click to hide need_review items.";
-  }
-  load();
-}
 
 async function load() {
   try {
     var url = BASE + "/works";
-    if (_excludeNeedReview) url += "?exclude_need_review=1";
     var r = await fetch(url);
     var data = await r.json();
     _cachedStages = data.stages || [];
@@ -749,10 +655,8 @@ function render(stages, works) {
         html += '<div class="card" ' +
                 'onclick="openWorkDetail(\'' + esc(w.id) + '\')">' +
                 '<button class="card-delete-btn" onclick="deleteWork(\'' + esc(w.id) + '\', event)" title="Delete">×</button>' +
-                (w.need_review ? '<span class="card-need-review-icon" title="Needs review">🔍</span>' : '') +
                 '<div class="card-title">' + esc(w.title) + '</div>' +
                 '<div class="card-meta">' + esc(w.priority || 'normal') + (w.assignee ? ' &middot; ' + esc(w.assignee) : '') + '</div>' +
-                (w.need_review ? '<span class="card-need-review-badge">⏳ Review</span>' : '') +
                 (w.output_type ? '<span class="card-output-badge">' + esc(w.output_type) + '</span>' : '') +
                 '</div>';
       }
@@ -907,10 +811,6 @@ function openWorkDetail(workId) {
   var stage = (_cachedStages || []).find(function(s) { return s.id === _detailWork.current_stage; });
   document.getElementById("wdTitle").textContent = _detailWork.title;
   document.getElementById("wdStageBadge").textContent = stage ? stage.name : _detailWork.current_stage;
-  var nrBadge = document.getElementById("wdNeedReviewBadge");
-  nrBadge.style.display = _detailWork.need_review ? "" : "none";
-  var crBtn = document.getElementById("wdClearReviewBtn");
-  crBtn.style.display = _detailWork.need_review ? "" : "none";
   document.getElementById("wdMeta").textContent = (_detailWork.priority || "normal") +
     " · created " + (_detailWork.created_at || "").slice(0, 10);
   var ae = document.getElementById("wdAssignee");
@@ -1002,17 +902,7 @@ function renderWorkContext(events) {
       cls = "wd-msg-system";
       var pct = ev.confidence != null ? (ev.confidence * 100).toFixed(0) + "%" : "";
       body = "Stage completed" + (pct ? " (confidence: " + pct + ")" : "") +
-             (ev.next_stage ? " &rarr; " + esc(ev.next_stage) : "");
-    } else if (t === "need_review") {
-      cls = "wd-msg-system";
-      body = "⏳ Marked for review" +
-             (ev.agent_id ? " by <b>" + esc(ev.agent_id) + "</b>" : "") +
-             (ev.summary ? ": " + esc(ev.summary) : "");
-    } else if (t === "review_cleared") {
-      cls = "wd-msg-system";
-      body = "✅ Review flag cleared" +
-             (ev.cleared_by ? " by " + esc(ev.cleared_by) : "");
-    } else if (t === "act_triggered") {
+             (ev.next_stage ? " &rarr; " + esc(ev.next_stage) : ""); else if (t === "act_triggered") {
       cls = "wd-msg-system";
       body = "⚡ Act! Triggered <b>" + esc(ev.agent_id || "agent") + "</b>" +
              " to process this work item" +
@@ -1419,22 +1309,6 @@ async function saveWorkOutput() {
   } catch(e) { flash("Network error: " + e.message, "error"); }
 }
 
-async function clearNeedReview() {
-  if (!_detailWorkId) return;
-  try {
-    var r = await fetch(BASE + "/works/" + _detailWorkId + "/clear-review", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({cleared_by: "User"})
-    });
-    if (!r.ok) { var e = await r.json().catch(function(){ return {}; }); flash("Failed: " + (e.error || r.statusText), "error"); return; }
-    if (_detailWork) _detailWork.need_review = 0;
-    document.getElementById("wdNeedReviewBadge").style.display = "none";
-    document.getElementById("wdClearReviewBtn").style.display = "none";
-    flash("Review flag cleared", "success");
-    load();
-  } catch(e) { flash("Network error: " + e.message, "error"); }
-}
 
 var _agentStatuses = {};  // agent_id → {status, system_state, activity}
 var _actTriggeredAgent = null;  // agent_id that was just triggered via Act
@@ -1492,10 +1366,9 @@ async function updateActButton() {
 
   // Disable if no assignee or work is already marked for review
   var assignee = _detailWork && _detailWork.assignee;
-  var needReview = _detailWork && _detailWork.need_review;
-  if (!assignee || needReview) {
+  if (!assignee) {
     btn.disabled = true;
-    btn.title = needReview ? "Work item is already marked for review" : "No agent assigned";
+    btn.title = "No agent assigned";
     return;
   }
 

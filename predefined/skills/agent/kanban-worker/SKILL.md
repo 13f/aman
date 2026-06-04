@@ -147,6 +147,26 @@ includes the work history. Read it fully:
 - **Output Type** — what deliverable is expected? (report, code, etc.)
 - **Work History** — what has been done so far? Is this new or a resume?
 
+### Step 1.5: Mark Work as In Progress
+
+**Before you start working, move the work item to In Progress** so the kanban
+board reflects the current state:
+
+```
+POST http://127.0.0.1:9999/api/v1/team/projects/{project_key}/works/{work_id}/complete
+Content-Type: application/json
+
+{
+  "agent_id": "<your agent id>",
+  "next_stage": "in_progress",
+  "summary": "Starting work",
+  "confidence": 1.0
+}
+```
+
+This transitions the card from Todo → In Progress on the kanban board.
+(Applies to both Act! and boredom-triggered work.)
+
 ### Step 2: Explore & Plan (Turn 1)
 
 **Before writing any code or report, explore the relevant parts of the codebase.**
@@ -225,9 +245,9 @@ When all steps are done and you believe the work is complete:
    }
    ```
 
-2. **Move the work item to Review stage.** This signals to humans that
-   the agent considers the work done and it's ready for human review.
-   The work item will appear in the "Review" column on the kanban board:
+2. **Move the work item to Review stage** (from In Progress). This signals
+   to humans that the agent considers the work done and it's ready for review.
+   The card will move to the "Review" column on the kanban board:
    ```
    POST http://127.0.0.1:9999/api/v1/team/projects/{project_key}/works/{work_id}/complete
    Content-Type: application/json

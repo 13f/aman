@@ -391,7 +391,6 @@
         class="plugin-iframe"
         src={"http://127.0.0.1:" + gatewayPort + teamIframePath + "?_=" + teamPageVersion}
         title="Team"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
       ></iframe>
     {/key}
   {:else if currentPage === "settings"}
@@ -402,7 +401,6 @@
         class="plugin-iframe"
         src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + currentPage.slice("plugin:".length)}
         title={"Plugin: " + currentPage.slice("plugin:".length)}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
       ></iframe>
     {/key}
   {/if}

@@ -561,8 +561,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             ));
         };
 
-        // Retry LLM API calls with increasing backoff: 1s, 2s, 3s
-        const LLM_MAX_RETRIES: u32 = 3;
+        // Retry LLM API calls with exponential backoff: 1s, 3s, 9s, 27s, 81s
+        const LLM_MAX_RETRIES: u32 = 5;
         let mut llm_attempt = 0;
         let result = loop {
             llm_attempt += 1;
@@ -580,7 +580,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             if !should_retry {
                 break r;
             }
-            let delay_secs = llm_attempt as u64; // 1s, 2s, 3s
+            // Exponential backoff: 1s, 3s, 9s, 27s, 81s (capped at 120s)
+            let delay_secs = (3_u64.pow(llm_attempt - 1)).min(120);
             tracing::warn!(
                 agent_id = %ctx.agent_id,
                 session_id = %ctx.session_id,
@@ -1191,6 +1192,22 @@ impl AgentHarness {
         // 4. Build conversation history — load existing session history
         // and append the new user message for cross-turn continuity.
         let mut history = self.session_history.get(session_id);
+
+        // For work-item sessions, if in-memory history is empty (e.g. after
+        // gateway restart), restore from the persisted JSONL so the agent
+        // can resume ("断点续传") instead of starting from scratch.
+        if history.is_empty()
+            && super::session::work_session::parse_work_session_id(session_id).is_some()
+        {
+            if let Some(store) = self.registry.get_session_store(agent_id).await {
+                let _ = super::session::work_session::resume_work_session(
+                    self, &store, session_id, 0,
+                ).await;
+                // Reload after restore
+                history = self.session_history.get(session_id);
+            }
+        }
+
         history.push(ChatMessage::user(user_text));
 
         // 5. Initialize model-aware token budget (M4)
@@ -1511,8 +1528,8 @@ impl AgentHarness {
     async fn direct_act(
         &self,
         ctx: &mut ReActContext,
-        _token_budget: &mut context_manager::TokenBudget,
-        _interrupt: Option<&InterruptFlag>,
+        token_budget: &mut context_manager::TokenBudget,
+        interrupt: Option<&InterruptFlag>,
     ) -> Result<ReactOutcome, Error> {
         // Turn 1: LLM parses the methodology and outputs tool calls.
         // The methodology is already in ctx.history from the user message.
@@ -1584,8 +1601,8 @@ impl AgentHarness {
                     });
                 }
 
-                // No detach — run Turn 2 immediately
-                self.direct_act_turn2(ctx).await
+                // No detach — continue with shared ReAct loop for remaining turns
+                self.react_loop(ctx, token_budget, interrupt).await
             }
             ReActTurn::Finished { content, .. } => {
                 // LLM chose not to use any tools — just return its response.
@@ -1608,36 +1625,6 @@ impl AgentHarness {
     ///
     /// Assumes `ctx.history` already contains Turn 1 assistant message and
     /// tool results.  Calls the LLM to produce a human-readable summary.
-    async fn direct_act_turn2(&self, ctx: &mut ReActContext) -> Result<ReactOutcome, Error> {
-        let turn_messages = ctx.history.clone();
-        let stream_handle = self.spawn_stream_forwarder(ctx);
-
-        let turn2_result = self.engine.execute_turn(ctx, turn_messages).await;
-        // Clear the streaming callback and await the forwarder so
-        // reply_stream_done is published before reply_ready (on all paths).
-        ctx.stream_cb = None;
-        let _ = stream_handle.await;
-        let turn2 = turn2_result.map_err(|e| Error::ConfigInvalid {
-            message: format!("direct act report failed: {e}"),
-        })?;
-
-        match turn2 {
-            ReActTurn::Finished { content, .. } => {
-                ctx.history.push(ChatMessage::assistant(content.clone()));
-                Ok(ReactOutcome::Finished(content))
-            }
-            ReActTurn::ToolCalls { content, .. } => {
-                // LLM tried to call more tools — unusual for direct mode.
-                // Accept the partial text and finish.
-                ctx.history.push(ChatMessage::assistant(content.clone()));
-                Ok(ReactOutcome::Finished(content))
-            }
-            ReActTurn::Error(e) => Err(Error::ConfigInvalid {
-                message: format!("direct act report failed: {e}"),
-            }),
-        }
-    }
-
     /// Wait for a detached process to complete, returning the
     /// `tool:completed` event (or `None` if interrupted).
     async fn wait_for_detach(
@@ -1807,24 +1794,24 @@ impl AgentHarness {
         let history =
             self.replace_tool_result(history, &tool_call_id, &final_output);
 
-        // 3. Rebuild ReActContext and run Turn 2
+        // 3. Rebuild ReActContext and run remaining turns via shared loop
+        let ctx_model = model.clone();
+        let mut token_budget = context_manager::TokenBudget::new(ctx_model.clone());
         let mut ctx = ReActContext::new(
             agent_id.clone(),
             session_id.clone(),
             soul_snapshot,
             history,
             agent_tools,
-            model,
+            ctx_model,
             self.max_react_turns,
             self.budget_policy.session_token_limit(),
             max_output_tokens,
         );
         ctx.turn = turn;
-
-        let reply = match self.direct_act_turn2(&mut ctx).await {
+        let reply = match self.react_loop(&mut ctx, &mut token_budget, None).await {
             Ok(ReactOutcome::Finished(reply)) => reply,
             Ok(ReactOutcome::Interrupted(reply)) => {
-                // Should not happen for direct_act, but handle gracefully
                 reply
             }
             Ok(ReactOutcome::AwaitingDetach { .. }) => {
@@ -1892,6 +1879,181 @@ impl AgentHarness {
     }
 
     /// The core think-act-observe loop with M4 token budget management.
+    /// Shared core: process one ReAct turn (LLM → tools → results).
+    ///
+    /// Returns `Ok(true)` if the caller should continue looping (tools executed,
+    /// results added to history), `Ok(false)` if a final reply was produced,
+    /// or `Err` on failure.
+    ///
+    /// Used by both [`react_loop`] and [`direct_act`] — after skill selection
+    /// the logic is identical.
+    async fn process_react_turn(
+        &self,
+        ctx: &mut ReActContext,
+        token_budget: &mut context_manager::TokenBudget,
+        loaded_skill_body: &mut Option<String>,
+    ) -> Result<bool, Error> {
+        let turn_messages = ctx.history.clone();
+        let stream_handle = self.spawn_stream_forwarder(ctx);
+
+        self.registry.set_activity(&ctx.agent_id, "Thinking...").await;
+
+        match self.engine.execute_turn(ctx, turn_messages).await {
+            Ok(ReActTurn::Finished { ref content, .. }) => {
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
+                ctx.history.push(ChatMessage::assistant(content.clone()));
+                let completion_tokens =
+                    context_manager::TokenBudget::estimate_tokens(content);
+                token_budget.record_usage(0, completion_tokens);
+                Ok(false) // done
+            }
+            Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
+
+                let tool_names: Vec<&str> = calls.iter().map(|c| c.tool_name.as_str()).collect();
+                self.registry.set_activity(
+                    &ctx.agent_id,
+                    format!("Using tools: {}", tool_names.join(", ")),
+                ).await;
+
+                self.publish_tool_calls_event(ctx, &calls).await;
+
+                let formatted_calls = llm::format_tool_calls_for_history(&calls);
+                ctx.history.push(ChatMessage {
+                    role: ChatMessageRole::Assistant,
+                    content: tool_text,
+                    tool_call_id: None,
+                    tool_name: None,
+                    tool_calls: Some(formatted_calls),
+                    reasoning_content,
+                });
+
+                let exec_result = self.engine.execute_tools(ctx, &calls, true).await.map_err(|e| {
+                    Error::ConfigInvalid {
+                        message: format!("tool execution failed: {e}"),
+                    }
+                })?;
+                let results = exec_result.messages;
+
+                self.publish_tool_results_event(ctx, results.len()).await;
+
+                // read_skill detection + reinforcement
+                let has_read_skill = calls.iter().any(|c| c.tool_name == "read_skill");
+                if has_read_skill {
+                    *loaded_skill_body = calls.iter()
+                        .position(|c| c.tool_name == "read_skill")
+                        .and_then(|idx| results.get(idx))
+                        .map(|r| r.content.clone());
+                }
+
+                ctx.history.extend(results);
+
+                if has_read_skill
+                    && let Some(call) = calls.iter().find(|c| c.tool_name == "read_skill") {
+                        let skill_name = call.args.get("skill")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("skill");
+                        ctx.history.push(skill::formatting::build_read_skill_reinforcement(skill_name));
+                    }
+
+                // Format reminder after data-gathering turns
+                if ctx.turn >= 1 && !calls.iter().any(|c| c.tool_name == "read_skill") {
+                    let skill_was_loaded = ctx.history.iter().any(|m| {
+                        m.tool_calls.as_ref().is_some_and(|tcs| {
+                            tcs.iter().any(|tc| {
+                                tc.get("function")
+                                    .and_then(|f| f.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    == Some("read_skill")
+                            })
+                        })
+                    });
+                    if skill_was_loaded {
+                        ctx.history.push(skill::formatting::build_format_reminder(loaded_skill_body.as_deref()));
+                    }
+                }
+
+                ctx.turn += 1;
+                Ok(true) // continue looping
+            }
+            Ok(ReActTurn::Error(react_err)) => {
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
+                let _ = self.publish_llm_error(ctx, &react_err.to_string()).await;
+                Err(Error::ConfigInvalid {
+                    message: format!("ReAct turn error at {}: {react_err}", ctx.turn),
+                })
+            }
+            Err(e) => {
+                ctx.stream_cb = None;
+                let _ = stream_handle.await;
+                let _ = self.publish_llm_error(ctx, &e.to_string()).await;
+                Err(Error::ConfigInvalid {
+                    message: format!("ReAct loop error at turn {}: {e}", ctx.turn),
+                })
+            }
+        }
+    }
+
+    /// Publish agent:got_tool_calls event.
+    async fn publish_tool_calls_event(&self, ctx: &ReActContext, calls: &[ParsedToolCall]) {
+        let _ = self
+            .publish_to_agent_bus(
+                &ctx.agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:got_tool_calls".to_owned()),
+                    json!({
+                        "agent_id": ctx.agent_id,
+                        "session_id": ctx.session_id,
+                        "turn": ctx.turn,
+                        "tool_calls": calls.iter().map(|c| json!({"name": c.tool_name, "id": c.id})).collect::<Vec<_>>(),
+                    }),
+                ),
+            )
+            .await;
+    }
+
+    /// Publish agent:tool_results_fed_back event.
+    async fn publish_tool_results_event(&self, ctx: &ReActContext, result_count: usize) {
+        let _ = self
+            .publish_to_agent_bus(
+                &ctx.agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("agent:tool_results_fed_back".to_owned()),
+                    json!({
+                        "agent_id": ctx.agent_id,
+                        "session_id": ctx.session_id,
+                        "turn": ctx.turn,
+                        "result_count": result_count,
+                    }),
+                ),
+            )
+            .await;
+    }
+
+    /// Publish llm_error event.
+    async fn publish_llm_error(&self, ctx: &ReActContext, error: &str) {
+        let _ = self
+            .publish_to_agent_bus(
+                &ctx.agent_id,
+                Event::new(
+                    "agent:harness",
+                    EventType::Custom("llm_error".to_owned()),
+                    json!({
+                        "agent_id": ctx.agent_id,
+                        "session_id": ctx.session_id,
+                        "turn": ctx.turn,
+                        "error": error,
+                    }),
+                ),
+            )
+            .await;
+    }
+
     async fn react_loop(
         &self,
         ctx: &mut ReActContext,
@@ -1901,19 +2063,16 @@ impl AgentHarness {
         let compressor = context_manager::HistoryCompressor::new(
             context_manager::CompressionStrategy::Truncate,
         );
-
-        // Track skill body so we can re-inject scoring methodology later (Task #18).
         let mut loaded_skill_body: Option<String> = None;
 
         loop {
-            // Check max turns
+            // --- pre-turn checks ---
             if ctx.turn >= ctx.max_turns {
                 return Err(Error::ConfigInvalid {
                     message: format!("max ReAct turns ({}) reached", ctx.max_turns),
                 });
             }
 
-            // Check interrupt (M6)
             if let Some(flag) = interrupt
                 && flag.is_interrupted() {
                     let _ = self
@@ -1933,9 +2092,7 @@ impl AgentHarness {
                     return Ok(ReactOutcome::Interrupted(String::new()));
                 }
 
-            // Estimate history tokens for budget tracking.
-            // Must happen BEFORE the trim check so new tool results from the
-            // previous turn are accounted for.
+            // --- token budget & compression ---
             let history_tokens: usize = ctx
                 .history
                 .iter()
@@ -1943,7 +2100,6 @@ impl AgentHarness {
                 .sum();
             token_budget.set_history_tokens(history_tokens);
 
-            // M4: Check token budget and compress history if needed
             if token_budget.needs_trim() {
                 let config = self.compression_config.clone();
                 let result = compressor.compress_with_boundaries(
@@ -1952,8 +2108,6 @@ impl AgentHarness {
                     &config,
                 );
                 if result.messages_removed > 0 || result.tokens_saved > 0 {
-                    let remaining = ctx.history.len();
-                    let usage_pct = token_budget.usage_percent();
                     let _ = self
                         .publish_to_agent_bus(
                             &ctx.agent_id,
@@ -1966,43 +2120,8 @@ impl AgentHarness {
                                     "turn": ctx.turn,
                                     "messages_removed": result.messages_removed,
                                     "tokens_saved": result.tokens_saved,
-                                    "remaining_messages": remaining,
-                                    "token_usage_pct": usage_pct,
-                                    "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
-                                    "compression_paused": token_budget.compression_paused,
-                                }),
-                            ),
-                        )
-                        .await;
-                }
-            }
-
-            // Preflight: quick token check before sending to LLM.
-            // Catches any remaining oversized requests before they hit the API.
-            if token_budget.preflight_check(&ctx.history) {
-                let config = self.compression_config.clone();
-                let result = compressor.compress_with_boundaries(
-                    &mut ctx.history,
-                    token_budget,
-                    &config,
-                );
-                if result.messages_removed > 0 || result.tokens_saved > 0 {
-                    let remaining = ctx.history.len();
-                    let usage_pct = token_budget.usage_percent();
-                    let _ = self
-                        .publish_to_agent_bus(
-                            &ctx.agent_id,
-                            Event::new(
-                                "agent:harness",
-                                EventType::Custom("agent:history_compressed".to_owned()),
-                                json!({
-                                    "agent_id": ctx.agent_id,
-                                    "session_id": ctx.session_id,
-                                    "turn": ctx.turn,
-                                    "messages_removed": result.messages_removed,
-                                    "tokens_saved": result.tokens_saved,
-                                    "remaining_messages": remaining,
-                                    "token_usage_pct": usage_pct,
+                                    "remaining_messages": ctx.history.len(),
+                                    "token_usage_pct": token_budget.usage_percent(),
                                     "strategy": if result.strategy.is_truncate() { "truncate" } else { "summarize" },
                                     "preflight": true,
                                     "compression_paused": token_budget.compression_paused,
@@ -2013,186 +2132,15 @@ impl AgentHarness {
                 }
             }
 
-            let turn_messages = ctx.history.clone();
-
-            // Execute one ReAct turn (T2.4: with streaming support)
-            let stream_handle = self.spawn_stream_forwarder(ctx);
-
-            // Update activity so the UI shows what the agent is doing.
-            self.registry.set_activity(&ctx.agent_id, "Thinking...").await;
-
-            match self.engine.execute_turn(ctx, turn_messages).await {
-                Ok(ReActTurn::Finished { ref content, .. }) => {
-                    // Clear streaming callback then await the forwarder
-                    // so reply_stream_done is published before reply_ready.
-                    ctx.stream_cb = None;
-                    let _ = stream_handle.await;
-                    ctx.history.push(ChatMessage::assistant(content.clone()));
-                    // Track output tokens only — the next iteration re-estimates
-                    // history from scratch, so we don't double-count prompt tokens.
-                    let completion_tokens =
-                        context_manager::TokenBudget::estimate_tokens(content);
-                    token_budget.record_usage(0, completion_tokens);
-                    return Ok(ReactOutcome::Finished(content.clone()));
-                }
-                Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {
-                    // Clear streaming callback and await the forwarder
-                    // so reply_stream_done is published before tool results.
-                    ctx.stream_cb = None;
-                    let _ = stream_handle.await;
-
-                    // Show which tools are being called
-                    let tool_names: Vec<&str> = calls.iter().map(|c| c.tool_name.as_str()).collect();
-                    self.registry.set_activity(
-                        &ctx.agent_id,
-                        format!("Using tools: {}", tool_names.join(", ")),
-                    ).await;
-
-                    // Publish agent:got_tool_calls to local bus
-                    let _ = self
-                        .publish_to_agent_bus(
-                            &ctx.agent_id,
-                            Event::new(
-                                "agent:harness",
-                                EventType::Custom("agent:got_tool_calls".to_owned()),
-                                json!({
-                                    "agent_id": ctx.agent_id,
-                                    "session_id": ctx.session_id,
-                                    "turn": ctx.turn,
-                                    "tool_calls": calls.iter().map(|c| json!({"name": c.tool_name, "id": c.id})).collect::<Vec<_>>(),
-                                }),
-                            ),
-                        )
-                        .await;
-
-                    // Record assistant message with tool calls in history
-                    let formatted_calls = llm::format_tool_calls_for_history(&calls);
-                    ctx.history.push(ChatMessage {
-                        role: ChatMessageRole::Assistant,
-                        content: tool_text,
-                        tool_call_id: None,
-                        tool_name: None,
-                        tool_calls: Some(formatted_calls),
-                        reasoning_content,
-                    });
-
-                    // Execute tools
-                    let exec_result = self.engine.execute_tools(ctx, &calls, true).await.map_err(|e| {
-                        Error::ConfigInvalid {
-                            message: format!("tool execution failed: {e}"),
-                        }
-                    })?;
-                    let results = exec_result.messages;
-
-                    // Publish agent:tool_results_fed_back to local bus
-                    let _ = self
-                        .publish_to_agent_bus(
-                            &ctx.agent_id,
-                            Event::new(
-                                "agent:harness",
-                                EventType::Custom("agent:tool_results_fed_back".to_owned()),
-                                json!({
-                                    "agent_id": ctx.agent_id,
-                                    "session_id": ctx.session_id,
-                                    "turn": ctx.turn,
-                                    "result_count": results.len(),
-                                }),
-                            ),
-                        )
-                        .await;
-
-                    // If read_skill was called, save the skill body for later format reminders.
-                    // Extract before `results` is moved into `extend` below.
-                    let has_read_skill = calls.iter().any(|c| c.tool_name == "read_skill");
-                    if has_read_skill {
-                        loaded_skill_body = calls.iter()
-                            .position(|c| c.tool_name == "read_skill")
-                            .and_then(|idx| results.get(idx))
-                            .map(|r| r.content.clone());
-                    }
-
-                    ctx.history.extend(results);
-
-                    // Inject activation note if read_skill was called
-                    if has_read_skill
-                        && let Some(call) = calls.iter().find(|c| c.tool_name == "read_skill") {
-                            let skill_name = call.args.get("skill")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("skill");
-                            ctx.history.push(skill::formatting::build_read_skill_reinforcement(skill_name));
-                        }
-
-                    // If a skill was loaded in a previous turn (via read_skill) and this
-                    // turn has finished gathering data, remind the LLM of the output format
-                    // template before it produces the final report. After many tool calls
-                    // the skill content drifts out of the LLM's immediate context window,
-                    // causing the final output to lose the prescribed template structure.
-                    if ctx.turn >= 1 && !calls.iter().any(|c| c.tool_name == "read_skill") {
-                        let skill_was_loaded = ctx.history.iter().any(|m| {
-                            m.tool_calls.as_ref().is_some_and(|tcs| {
-                                tcs.iter().any(|tc| {
-                                    tc.get("function")
-                                        .and_then(|f| f.get("name"))
-                                        .and_then(|n| n.as_str())
-                                        == Some("read_skill")
-                                })
-                            })
-                        });
-                        if skill_was_loaded {
-                            ctx.history.push(skill::formatting::build_format_reminder(loaded_skill_body.as_deref()));
-                        }
-                    }
-
-                    // Increment turn
-                    ctx.turn += 1;
-                }
-                Ok(ReActTurn::Error(react_err)) => {
-                    // Clear streaming callback so the forwarder task exits.
-                    ctx.stream_cb = None;
-                    let _ = stream_handle.await;
-                    let _ = self
-                        .publish_to_agent_bus(
-                            &ctx.agent_id,
-                            Event::new(
-                                "agent:harness",
-                                EventType::Custom("llm_error".to_owned()),
-                                json!({
-                                    "agent_id": ctx.agent_id,
-                                    "session_id": ctx.session_id,
-                                    "turn": ctx.turn,
-                                    "error": react_err.to_string(),
-                                }),
-                            ),
-                        )
-                        .await;
-                    return Err(Error::ConfigInvalid {
-                        message: format!("ReAct turn error at {}: {react_err}", ctx.turn),
-                    });
-                }
-                Err(e) => {
-                    // Clear streaming callback so the forwarder task exits.
-                    ctx.stream_cb = None;
-                    let _ = stream_handle.await;
-                    // Publish llm:error to local bus
-                    let _ = self
-                        .publish_to_agent_bus(
-                            &ctx.agent_id,
-                            Event::new(
-                                "agent:harness",
-                                EventType::Custom("llm_error".to_owned()),
-                                json!({
-                                    "agent_id": ctx.agent_id,
-                                    "session_id": ctx.session_id,
-                                    "turn": ctx.turn,
-                                    "error": e.to_string(),
-                                }),
-                            ),
-                        )
-                        .await;
-                    return Err(Error::ConfigInvalid {
-                        message: format!("ReAct loop error at turn {}: {e}", ctx.turn),
-                    });
-                }
+            // --- process one turn (shared with direct_act) ---
+            let should_continue = self.process_react_turn(
+                ctx, token_budget, &mut loaded_skill_body,
+            ).await?;
+            if !should_continue {
+                let reply = ctx.history.last()
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                return Ok(ReactOutcome::Finished(reply));
             }
         }
     }

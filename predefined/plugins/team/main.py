@@ -1557,6 +1557,98 @@ def _handle_update_work_output(project_key: str, work_id: str, body: dict) -> di
 
 
 
+def _handle_act_work(project_key: str, work_id: str, body: dict) -> dict:
+    """Trigger the assigned agent to immediately process this work item."""
+    work = get_work(project_key, work_id)
+    if work is None:
+        return _json_response({"error": f"work '{work_id}' not found"}, 404)
+
+    # Get current assignee
+    db = get_db(project_key)
+    row = db.execute(
+        "SELECT assignee FROM stage_history WHERE work_id=? AND completed_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (work_id,),
+    ).fetchone()
+    assignee = row["assignee"] if row else ""
+
+    if not assignee:
+        return _json_response({"error": "no agent assigned to this work item"}, 400)
+
+    # Check agent exists and is idle
+    agents_result = send_request("aman.get_agents", {})
+    agents = _unwrap_result(agents_result)
+    if not agents or not isinstance(agents, dict):
+        return _json_response({"error": "failed to query agent registry"}, 500)
+    agent_list = agents.get("agents", [])
+    agent = next((a for a in agent_list if a.get("id") == assignee), None)
+
+    if agent is None:
+        return _json_response({"error": f"agent '{assignee}' not found in registry"}, 400)
+
+    if agent.get("status") != "Idle":
+        return _json_response(
+            {"error": f"agent '{assignee}' is not idle (status: {agent.get('status', 'unknown')})"},
+            400,
+        )
+
+    # Re-push the work item to wake up the idle agent.
+    # Load work context (JSONL history) so the agent has full context.
+    proj = _projects.get(project_key, {}).get("config", {})
+    work_context = build_work_context_for_agent(project_key, work_id)
+    push_result = send_request("aman.push_work_item", {
+        "agent_id": assignee,
+        "title": work["title"],
+        "description": work.get("description", ""),
+        "priority": work.get("priority", "normal"),
+        "context": {
+            "project_key": project_key,
+            "work_id": work_id,
+            "stage_id": work.get("current_stage", ""),
+            "source": "kanban-act",
+            "output_type": work.get("output_type", ""),
+            "output_description": work.get("output_description", ""),
+            "work_context": work_context,
+        },
+    })
+
+    if not _unwrap_result(push_result):
+        return _json_response({"error": "failed to push work item to agent"}, 500)
+
+    # Move stage to in_progress when agent starts working
+    current_stage = work.get("current_stage", "")
+    proj_config = _projects.get(project_key, {}).get("config", {})
+    stages = {s["id"]: s for s in proj_config.get("stages", [])}
+    in_progress_stage = stages.get("in_progress", {})
+    if in_progress_stage and current_stage != "in_progress":
+        update_work_stage(project_key, work_id, "in_progress", assignee)
+        work["current_stage"] = "in_progress"
+
+    append_event(project_key, work_id, make_event(
+        "act_triggered",
+        agent_id=assignee,
+        triggered_by=body.get("triggered_by", "User"),
+    ))
+
+    send_notification("aman.emit_event", {
+        "event_type": "team:work_item.act_triggered",
+        "payload": {
+            "project_key": project_key,
+            "work_item_id": work_id,
+            "agent_id": assignee,
+        },
+    })
+
+    return _json_response({"ok": True, "agent_id": assignee, "work_id": work_id})
+
+
+def _handle_list_output_files(project_key: str, work_id: str) -> dict:
+    """List files in the work item's output directory."""
+    files = list_output_files(project_key, work_id)
+    path = _output_dir(project_key, work_id)
+    return _json_response({"path": path, "files": files})
+
+
 # ── Setup / Config API ─────────────────────────────────────────────────
 
 

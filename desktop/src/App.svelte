@@ -27,6 +27,7 @@
   let pluginPages = $state<{ id: string; label: string }[]>([]);
   let gatewayPort = $state(9999);
   let secretsMode = $state("env");
+  let teamPageVersion = $state(0);
   let hasTeamPlugin = $derived(pluginPages.some(p => p.id === "team"));
   let nonTeamPluginPages = $derived(pluginPages.filter(p => p.id !== "team"));
 
@@ -129,6 +130,11 @@
 
   function navigateTo(pageId: string) {
     currentPage = pageId;
+    // Force iframe recreation when navigating to team or plugin pages.
+    // WKWebView caches iframe content by URL, so returning to the
+    // same src after the iframe was destroyed may show stale/blank
+    // content. Incrementing a key forces a fresh DOM element.
+    if (pageId === "team" || pageId.startsWith("plugin:")) teamPageVersion++;
     handlePageVisited(pageId);
   }
 
@@ -369,22 +375,25 @@
   {:else if currentPage === "chat"}
     <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
   {:else if currentPage === "team"}
-    <iframe
-      class="plugin-iframe"
-      src={"http://127.0.0.1:" + gatewayPort + "/api/v1/team"}
-      title="Team"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-    ></iframe>
+    {#key teamPageVersion}
+      <iframe
+        class="plugin-iframe"
+        src={"http://127.0.0.1:" + gatewayPort + "/api/v1/team"}
+        title="Team"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+      ></iframe>
+    {/key}
   {:else if currentPage === "settings"}
     <Settings />
   {:else if currentPage.startsWith("plugin:")}
-    {@const pluginId = currentPage.slice("plugin:".length)}
-    <iframe
-      class="plugin-iframe"
-      src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + pluginId}
-      title={"Plugin: " + pluginId}
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
-    ></iframe>
+    {#key teamPageVersion}
+      <iframe
+        class="plugin-iframe"
+        src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + currentPage.slice("plugin:".length)}
+        title={"Plugin: " + currentPage.slice("plugin:".length)}
+        sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
+      ></iframe>
+    {/key}
   {/if}
 </main>
 

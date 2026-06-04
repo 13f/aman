@@ -28,10 +28,48 @@ idle_prompts:
 
 ## Overview
 
-This skill runs autonomously (triggered by the idle/boredom system) to check
-for work items assigned to the current agent and execute them. It is designed
-to be called without user interaction — the agent checks its queue, picks up
-work, and reports progress.
+This skill has two entry modes:
+
+- **Act! (direct trigger):** The work item details and history are already in your
+  prompt. Skip API queries, go straight to **Step 1: Understand the Work Item**.
+- **Boredom/idle poll:** You need to discover work yourself. Start from
+  **Step 0: Query Assigned Work Items** below.
+
+### Step 0: Query Assigned Work Items (boredom mode only)
+
+Find which agent you are:
+
+```
+GET http://127.0.0.1:9999/api/v1/team/projects
+```
+
+From the response, pick a project. Then list works **excluding items already
+marked for review**:
+
+```
+GET http://127.0.0.1:9999/api/v1/team/projects/{project_key}/works?exclude_need_review=1
+```
+
+Look for work items where:
+- The work item is in an active stage (not "done", "closed", "archived")
+- The work item is assigned to you (check `assignee` field)
+- Or: the work item is unassigned but in a stage with `auto_assign` policy
+
+**If no work items are assigned to you:**
+> No work items assigned. Agent is idle.
+
+Stop. Do NOT fabricate tasks.
+
+## Gateway API
+
+The Aman gateway serves the Team API. All HTTP calls to team endpoints must use
+the gateway base URL:
+
+    http://127.0.0.1:9999
+
+Full endpoint pattern: `http://127.0.0.1:9999/api/v1/team/projects/{project_key}/works/{work_id}/...`
+
+If the gateway is not reachable at that address, try `http://localhost:9999`.
 
 ## Output Directory & Deliverables
 
@@ -100,65 +138,48 @@ and stop. Do NOT fabricate tasks. Do NOT try other tools to "find" work.
 
 ## Workflow
 
-### Step 1: Query Assigned Work Items
+### Step 1: Understand the Work Item
 
-Find which agent you are:
+When you receive a work item (via Act! or idle poll), the prompt already
+includes the work history. Read it fully:
 
-```
-GET /api/v1/team/projects
-```
+- **Title & Description** — what problem are you solving?
+- **Output Type** — what deliverable is expected? (report, code, etc.)
+- **Work History** — what has been done so far? Is this new or a resume?
 
-From the response, pick a project. Then list works **excluding items already
-marked for review**:
+### Step 2: Explore & Plan (Turn 1)
 
-```
-GET /api/v1/team/projects/{project_key}/works?exclude_need_review=1
-```
+**Before writing any code or report, explore the relevant parts of the codebase.**
+You cannot solve a problem you don't understand.
 
-This returns only work items where `need_review=0` — items that are still
-being actively worked on and haven't been submitted for human review yet.
+1. **Map the territory.** Use `list`, `grep`, and `read` to explore the
+   directories, files, and modules relevant to the work description.
+2. **Identify what needs to change.** Which files? What's the current behavior?
+3. **Make a plan.** In your reply, state clearly:
+   - What you found during exploration
+   - What specific changes you will make
+   - What files you will create/modify
+   - What the expected outcome is
 
-Look through the results for work items where:
-- The work item is in an active stage (not "done", "closed", "archived")
-- The work item is assigned to you (check the `assignee` or `agent_id` field)
-- Or: the work item is unassigned but in a stage with `auto_assign` policy
+This plan becomes your Turn 1 reply. The harness will feed it back as context
+for Turn 2 (execution).
 
-**If no work items are assigned to you:** output the following and STOP:
+**Minimum exploration before planning:** at least 3-5 tool calls (grep, read,
+list) to understand the relevant code. Do NOT plan based on guesses.
 
-> No work items assigned. Agent is idle.
+### Step 3: Execute the Plan (Turn 2)
 
-Do NOT invoke any other tools. Do NOT try to create work items. Do NOT
-search for work elsewhere. The idle check is complete.
+Execute each item in your plan:
 
-### Step 2: Read Work Item Context
-
-Once you've found an assigned work item, read its full context:
-
-```
-GET /api/v1/team/projects/{project_key}/works/{work_id}/context?raw=1&max_lines=200
-```
-
-This returns the JSONL event history (thoughts, tool calls, responses,
-human directions) for this work item. Use this to understand:
-- What has been done so far (check `step_complete` events)
-- What the current step is
-- Any human directions or safety gates
-- Whether this is a new item or a resume ("断点续传")
-
-### Step 3: Execute the Current Step
-
-Based on the work item's description, steps, and context:
-
-1. **If the work item has predefined steps**: work through them in order.
-   Mark each step complete after finishing it.
-2. **If the work item has no steps**: analyze the description and determine
-   the next action. Break complex work into smaller steps.
-3. **If resuming**: skip completed steps, continue from the first incomplete one.
+1. **For code changes**: use `edit` or `write` to make changes, then verify.
+2. **For analysis/reports**: gather all data first, then write the report in
+   `aman_team/{work_id}/`.
+3. **For multi-step work**: work through steps in order, recording progress.
 
 For each step:
-- Use the appropriate tools (file operations, HTTP calls, code execution, etc.)
-- Record your thought process
-- Record tool call inputs and outputs
+- Use the appropriate tools (file operations, grep, code execution, etc.)
+- Record your thought process via comments on the work item
+- Verify each change before moving on
 
 ### Step 4: Update Progress
 
@@ -234,6 +255,40 @@ If a safety gate triggers:
 - Record the safety event
 - Wait for human direction
 
+## Tool Failure Recovery (CRITICAL)
+
+**A tool error is NOT a reason to stop.** Most errors are fixable — wrong path,
+missing argument, network blip. You MUST recover and continue.
+
+### Error → Fix → Retry loop
+
+1. **Read the error carefully.** What exactly failed?
+2. **Fix the root cause.** Wrong directory? Try the correct one. Connection refused?
+   Try the alternate URL. Missing file? Search for it.
+3. **Retry with the fix.** Do NOT skip the step — complete it.
+4. **Only give up after 3 attempts on the SAME step.** But "attempt" means trying
+   the SAME broken call — fixing the arguments and trying again is a NEW attempt.
+
+### Common errors and their fixes
+
+| Error pattern | What it means | Fix |
+|---|---|---|
+| `No such file or directory` | Wrong path | List parent dir, find correct path, retry |
+| `Connection refused` | Wrong URL/port | Try `http://127.0.0.1:9999` then `http://localhost:9999` |
+| `not found` (HTTP 404) | Wrong endpoint | Check the API path, verify work_id/project_key |
+| `Permission denied` | Can't access | Try a different path or report as blocker |
+
+### Never do this
+
+- ❌ Return an EMPTY reply. Always say what happened and what you'll try next.
+- ❌ Abandon the work item after one tool error. Fix it.
+- ❌ Skip a step because the tool failed. Do it another way.
+- ❌ Say "I cannot proceed" without trying at least 2 alternative approaches.
+
+If you truly cannot continue after 3 genuinely different attempts, post a
+comment explaining what you tried and why it failed, then mark the work as
+needing review with a clear failure summary.
+
 ## Important Rules
 
 1. **One work item at a time.** Don't try to parallelize across multiple items.
@@ -252,3 +307,10 @@ If a safety gate triggers:
    `need-review` endpoint (NOT the `complete` endpoint) to flag it for human
    review. This removes it from your active queue and prevents you from
    re-processing it on the next idle check.
+8. **NEVER use the `db` tool on the Team database** (`~/.aman/team/projects/*/data.db`).
+   All Team operations MUST go through the HTTP API. Direct DB writes bypass
+   stage validation and corrupt the work item state. If an HTTP endpoint returns
+   404, fix the URL — do NOT fall back to SQLite.
+9. **Name output files descriptively.** Use the work item's title to derive a
+   meaningful filename (e.g. `trace-log-analysis.md`, `backpressure-fix.patch`).
+   Do NOT use generic names like `review-report.md` or `output.md`.

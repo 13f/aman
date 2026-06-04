@@ -375,6 +375,11 @@ function flash(msg, type) {
   el.textContent = msg;
   setTimeout(function(){ el.className = ""; el.textContent = ""; }, 3500);
 }
+
+// Notify parent app of current URL so it can restore this page on revisit
+if (window.parent !== window) {
+  window.parent.postMessage({type: "aman:team-url", url: window.location.pathname + window.location.search}, "*");
+}
 </script>
 </body>
 </html>

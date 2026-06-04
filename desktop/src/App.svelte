@@ -28,6 +28,7 @@
   let gatewayPort = $state(9999);
   let secretsMode = $state("env");
   let teamPageVersion = $state(0);
+  let teamIframePath = $state("/api/v1/team");
   let hasTeamPlugin = $derived(pluginPages.some(p => p.id === "team"));
   let nonTeamPluginPages = $derived(pluginPages.filter(p => p.id !== "team"));
 
@@ -196,15 +197,23 @@
 
     initialLoadDone = true;
 
-    // ── postMessage bridge: handle aman:confirm from iframes ──────────
+    // ── postMessage bridge: handle messages from iframes ─────────────
     // Team and plugin pages are loaded in iframes and cannot invoke Tauri
-    // commands directly. This bridge lets them request a native OS confirm
-    // dialog by posting {type:"aman:confirm", title, message, confirmLabel?,
-    // cancelLabel?}. The result {type:"aman:confirm-result", confirmed} is
-    // posted back to the iframe.
+    // commands directly. This bridge handles:
+    //   - aman:confirm    → native OS confirm dialog
+    //   - aman:team-url   → save current iframe URL for restore on revisit
     window.addEventListener("message", async (event: MessageEvent) => {
       const data = event.data;
-      if (!data || data.type !== "aman:confirm") return;
+      if (!data) return;
+
+      // ── aman:team-url — remember iframe's current URL ──────────
+      if (data.type === "aman:team-url" && typeof data.url === "string") {
+        teamIframePath = data.url;
+        return;
+      }
+
+      // ── aman:confirm — native OS confirm dialog ────────────────
+      if (data.type !== "aman:confirm") return;
       const source = event.source as Window | null;
       if (!source) return;
 
@@ -378,7 +387,7 @@
     {#key teamPageVersion}
       <iframe
         class="plugin-iframe"
-        src={"http://127.0.0.1:" + gatewayPort + "/api/v1/team"}
+        src={"http://127.0.0.1:" + gatewayPort + teamIframePath + (teamIframePath.includes("?") ? "&" : "?") + "_=" + teamPageVersion}
         title="Team"
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
       ></iframe>

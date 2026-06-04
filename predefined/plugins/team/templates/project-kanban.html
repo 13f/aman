@@ -1518,7 +1518,7 @@ setInterval(load, 10000);
 
 // Notify parent app of current URL so it can restore this page on revisit
 if (window.parent !== window) {
-  window.parent.postMessage({type: "aman:team-url", url: window.location.pathname + window.location.search}, "*");
+  window.parent.postMessage({type: "aman:team-url", url: window.location.pathname}, "*");
 }
 </script>
 </body>

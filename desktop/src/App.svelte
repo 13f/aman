@@ -28,7 +28,9 @@
   let gatewayPort = $state(9999);
   let secretsMode = $state("env");
   let teamPageVersion = $state(0);
-  let teamIframePath = $state("/api/v1/team");
+  // NOT $state — postMessage updates must not trigger iframe src reload.
+  // The path is read at render time (when teamPageVersion changes).
+  let teamIframePath = "/api/v1/team";
   let hasTeamPlugin = $derived(pluginPages.some(p => p.id === "team"));
   let nonTeamPluginPages = $derived(pluginPages.filter(p => p.id !== "team"));
 
@@ -387,7 +389,7 @@
     {#key teamPageVersion}
       <iframe
         class="plugin-iframe"
-        src={"http://127.0.0.1:" + gatewayPort + teamIframePath + (teamIframePath.includes("?") ? "&" : "?") + "_=" + teamPageVersion}
+        src={"http://127.0.0.1:" + gatewayPort + teamIframePath + "?_=" + teamPageVersion}
         title="Team"
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals"
       ></iframe>

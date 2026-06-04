@@ -1,13 +1,22 @@
 #!/bin/bash
 # Build and install the aman gateway binary to ~/.aman/bin/
 #
-# Usage: ./scripts/install-gateway.sh [--release|--debug]
+# Usage: ./scripts/install-gateway.sh [--release|--debug] [--run]
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PROFILE="${1:-"--release"}"
-PROFILE="${PROFILE#--}"  # strip leading --
+PROFILE="release"
+RUN=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --release) PROFILE="release" ;;
+        --debug)   PROFILE="debug" ;;
+        --run)     RUN=true ;;
+        *)         echo "Unknown flag: $arg"; exit 1 ;;
+    esac
+done
 
 SRC="target/${PROFILE}/aman"
 DEST_DIR="$HOME/.aman/bin"
@@ -27,3 +36,9 @@ cp -f "$SRC" "$DEST"
 echo "     Installed: $DEST"
 echo ""
 echo "==> Done. The Tauri app can now start the gateway from $DEST"
+
+if $RUN; then
+    echo ""
+    echo "==> Starting gateway..."
+    exec "$DEST"
+fi

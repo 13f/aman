@@ -434,6 +434,12 @@ impl Tool for HttpTool {
         "http"
     }
 
+    fn description(&self) -> &str {
+        "Make an HTTP request to a URL. For Aman gateway API endpoints, use \
+         the gateway base URL from the system prompt (http://127.0.0.1:9999 by default). \
+         Common endpoints include /api/v1/team/projects for the Team kanban."
+    }
+
     fn mode(&self) -> ToolMode {
         ToolMode::Local
     }

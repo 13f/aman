@@ -128,6 +128,7 @@ pub struct AgentRuntimeBuilder {
     soul_file: Option<PathBuf>,
     extra_plugins: Vec<plugin::PluginCandidate>,
     predefined_dir: PathBuf,
+    runtime_handle: Option<tokio::runtime::Handle>,
 }
 
 impl AgentRuntimeBuilder {
@@ -142,6 +143,7 @@ impl AgentRuntimeBuilder {
             soul_file: None,
             extra_plugins: vec![],
             predefined_dir: PathBuf::from("predefined"),
+            runtime_handle: None,
         }
     }
 
@@ -154,6 +156,12 @@ impl AgentRuntimeBuilder {
     #[must_use]
     pub fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
         self.bind_addr = addr;
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
+        self.runtime_handle = Some(handle);
         self
     }
 
@@ -851,6 +859,7 @@ impl AgentRuntimeBuilder {
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
             compressor_config,
             tool_timeout_ms,
+            self.runtime_handle.clone().expect("runtime_handle must be set before build()"),
         ));
 
         // ── Session manager ──────────────────────────────────────────
@@ -1202,6 +1211,21 @@ impl AgentRuntimeBuilder {
                         .find(|s| s.name == *name)
                         .map(|s| s.react_mode)
                 });
+
+                // Set agent status immediately (synchronously, before the
+                // spawned task runs) so the idle detector doesn't race and
+                // fire a boredom activity while this message is queued.
+                // Skip for background boredom messages — the boredom actor
+                // already set the system_state before publishing.
+                if !background {
+                    let is_work = super::session::work_session::parse_work_session_id(&session_id).is_some();
+                    let _ = self.agent_registry.set_status(&agent_id, kernel::agent::AgentStatus::Busy).await;
+                    self.agent_registry.set_system_state(
+                        &agent_id,
+                        if is_work { kernel::agent::AgentSystemState::Working }
+                        else { kernel::agent::AgentSystemState::Chatting },
+                    ).await;
+                }
 
                 // Spawn async ReAct processing — do not block the bus drain loop.
                 self.agent_harness.spawn_process_message(
@@ -1602,16 +1626,24 @@ impl AgentRuntimeBuilder {
         // ));
 
         // ── Subscribe work item event forwarder for dual-write ──
-        // Forwards events from work item sessions (session_id matching
-        // "{agent}:work:{project}:{work_id}") as "work:item:event" on the
-        // global bus so the Python team plugin can pick them up and write
-        // to ~/.aman/team/projects/{project_key}/works/{work_id}.jsonl
+        // Forwards selected agent events from work item sessions to the
+        // global bus as "work:item:event" so the Python team plugin can
+        // write them to ~/.aman/team/projects/{project}/works/{work}.jsonl.
+        //
+        // Only forwards events that are meaningful for work context:
+        // tool results, agent replies, and errors.  Skips streaming chunks,
+        // internal bus events, and its own forwarded events (loop prevention).
         struct WorkItemEventHandler {
             bus: Arc<dyn EventBus>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for WorkItemEventHandler {
             async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                // Prevent infinite loop — don't re-wrap our own events.
+                if event.source.as_str() == "gateway:work_item" {
+                    return Ok(());
+                }
+
                 let session_id = event
                     .payload
                     .get("session_id")
@@ -1620,6 +1652,19 @@ impl AgentRuntimeBuilder {
                 if let Some((agent_id, project_key, work_id)) =
                     super::session::work_session::parse_work_session_id(session_id)
                 {
+                    // Only forward events that are useful for work context.
+                    // Skip streaming chunks (per-token), internal bus signals,
+                    // and events that don't carry meaningful work data.
+                    let etype = format!("{:?}", event.event_type);
+                    let should_forward = etype.contains("tool:completed")
+                        || etype.contains("tool:failed")
+                        || etype.contains("agent:reply_ready")
+                        || etype.contains("agent:reply_stream_error")
+                        || etype.contains("MessageReceived");
+                    if !should_forward {
+                        return Ok(());
+                    }
+
                     let _ = self
                         .bus
                         .publish(Event::new(
@@ -1631,7 +1676,7 @@ impl AgentRuntimeBuilder {
                                 "project_key": project_key,
                                 "work_id": work_id,
                                 "source_event": event.source,
-                                "source_event_type": format!("{:?}", event.event_type),
+                                "source_event_type": etype,
                                 "payload": event.payload,
                             }),
                         ))
@@ -2067,6 +2112,8 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                             "id": a.descriptor.agent_id,
                             "name": a.descriptor.display_name,
                             "status": a.status,
+                            "system_state": a.system_state,
+                            "activity": a.activity,
                         })
                     })
                     .collect();
@@ -2092,27 +2139,40 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| kernel::Error::ConfigInvalid {
                         message: "missing agent_id".to_owned(),
-                    })?;
+                    })?
+                    .to_owned();
                 let title = params
                     .get("title")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("untitled");
+                    .unwrap_or("untitled")
+                    .to_owned();
                 let description = params
                     .get("description")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                    .unwrap_or("")
+                    .to_owned();
+                let priority_str = params
+                    .get("priority")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("normal");
+                let priority = match priority_str {
+                    "critical" => work::Priority::Critical,
+                    "high" => work::Priority::High,
+                    "low" => work::Priority::Low,
+                    _ => work::Priority::Normal,
+                };
                 let item = work::WorkItem {
                     id: work::WorkItemId::new(),
-                    title: title.to_owned(),
-                    description: description.to_owned(),
+                    title: title.clone(),
+                    description: description.clone(),
                     steps: None,
-                    priority: work::Priority::Normal,
+                    priority,
                     timeout: None,
                     context: std::collections::HashMap::new(),
                     notify_on_complete: true,
                     created_at: kernel::types::Timestamp::now(),
                 };
-                let ws = self.agent_registry.get_work_system(agent_id).await.ok_or_else(|| {
+                let ws = self.agent_registry.get_work_system(&agent_id).await.ok_or_else(|| {
                     kernel::Error::NotFound {
                         name: format!("agent:{agent_id}"),
                     }
@@ -2123,6 +2183,85 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                 }).await.map_err(|e| kernel::Error::Unrecoverable {
                     message: format!("push_work_item failed: {e:?}"),
                 })?;
+
+                // ── Trigger agent ReAct loop via MessageReceived event ──
+                // The WorkSystem/LifecycleEngine publishes WorkItemAssigned to the
+                // agent's local bus, but no subscriber routes it to ws.handle() yet.
+                // To actually wake the agent and process this work item NOW, we
+                // publish a MessageReceived event on the global bus — the same path
+                // used by the idle_run HTTP endpoint and the BoredomActor.
+                //
+                // The MessageReceivedHandler (subscribed below) will:
+                // 1. Ensure the session exists
+                // 2. Persist the incoming message to session JSONL
+                // 3. Spawn process_message → react_loop → actual LLM work
+                let context = params.get("context").and_then(|v| v.as_object());
+                let project_key = context
+                    .and_then(|c| c.get("project_key"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                let work_id = context
+                    .and_then(|c| c.get("work_id"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+
+                if let (Some(pk), Some(wid)) = (project_key, work_id) {
+                    let session_id = super::session::work_session::work_session_id(
+                        &agent_id, pk, wid,
+                    );
+
+                    let stage_id = context
+                        .and_then(|c| c.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let work_context = context
+                        .and_then(|c| c.get("work_context"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // Publish a MessageReceived event with the kanban-worker skill.
+                    // The skill (in ~/.aman/skills/) defines the workflow; the backend
+                    // only passes data.
+                    //
+                    // NOTE: use push_str to build the text — work_context may contain
+                    // JSON tool-call payloads with { } that would panic format!().
+                    let mut text = format!(
+                        "[WORK ITEM — Kanban Act!]\n\
+                         Project: {pk}  Work ID: {wid}  Stage: {stage_id}\n\
+                         Title: {title}\n\
+                         Description: {description}\n"
+                    );
+                    if !work_context.is_empty() {
+                        text.push('\n');
+                        text.push_str(work_context);
+                    }
+
+                    let event = kernel::event::Event::new(
+                        "gateway:push_work_item",
+                        kernel::event::EventType::MessageReceived,
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "text": text,
+                            "project_key": pk,
+                            "work_id": wid,
+                            "stage_id": stage_id,
+                            "session_type": "background",
+                            "background": false,
+                            "skill_name": "kanban-worker",
+                        }),
+                    );
+                    if let Err(e) = self.bus.publish(event).await {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            project_key = pk,
+                            work_id = wid,
+                            error = %e,
+                            "push_work_item: failed to publish MessageReceived event",
+                        );
+                    }
+                }
+
                 Ok(serde_json::json!({"ok": true}))
             }
             "aman.subscribe_events" => {
@@ -3797,7 +3936,31 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
         // Persist session-related events to JSONL so conversation history
         // survives gateway restarts.
         let session_id = event.payload.get("session_id").and_then(|v| v.as_str());
+
+        // --- Filter: skip streaming and internal events that bloat session files ---
         if let Some(sid) = session_id {
+            // Skip per-token streaming chunks — the final reply_ready captures it all.
+            // Also skip stream lifecycle markers and internal bus events that don't
+            // contribute to conversation history.
+            let etype = format!("{:?}", event.event_type);
+            if etype.contains("reply_chunk")
+                || etype.contains("reply_stream_start")
+                || etype.contains("reply_stream_done")
+                || etype.contains("llm:call_started")
+                || etype.contains("llm:call_ended")
+                || etype.contains("agent:busy")
+                || etype.contains("agent:idle")
+                || etype.contains("agent:got_tool_calls")
+                || etype.contains("agent:tool_results_fed_back")
+                || etype.contains("agent:history_compressed")
+                || etype.contains("agent:reply_interrupted")
+                || etype.contains("work:item:event")       // duplicate wrapper, not conversation
+                || etype.contains("tool:dispatched")        // internal forwarding event
+            {
+                self.store.record(event);
+                return Ok(());
+            }
+
             let agent_id = event
                 .payload
                 .get("agent_id")

@@ -108,7 +108,7 @@ async fn run() -> Result<(), i32> {
         })?
         .config;
 
-    let runtime = build_runtime(config, bind, api_token, soul_path)?;
+    let runtime = build_runtime(config, bind, api_token, soul_path, tokio::runtime::Handle::current())?;
 
     tracing::info!(bind = %bind, "starting gateway");
 
@@ -254,7 +254,7 @@ async fn run_tui_mode(
         })?
         .config;
 
-    let runtime = build_runtime(config, bind, api_token, soul_path)?;
+    let runtime = build_runtime(config, bind, api_token, soul_path, tokio::runtime::Handle::current())?;
 
     tracing::info!(bind = %bind, "starting gateway (TUI mode)");
 
@@ -378,10 +378,12 @@ fn build_runtime(
     bind: SocketAddr,
     api_token: Option<String>,
     soul_path: Option<PathBuf>,
+    handle: tokio::runtime::Handle,
 ) -> Result<Arc<gateway::runtime::AgentRuntime>, i32> {
     let mut builder = AgentRuntimeBuilder::new(config)
         .with_bind_addr(bind)
-        .with_api_token(api_token);
+        .with_api_token(api_token)
+        .with_runtime_handle(handle);
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }

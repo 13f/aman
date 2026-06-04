@@ -947,6 +947,9 @@ pub struct AgentHarness {
     agent_router: Box<dyn AgentRouter>,
     /// Compression configuration.
     compression_config: context_manager::CompressorConfig,
+    /// Handle to the main tokio runtime, used to spawn tasks from any thread
+    /// (including non-tokio threads like the plugin bridge).
+    runtime: tokio::runtime::Handle,
 }
 
 impl AgentHarness {
@@ -961,6 +964,7 @@ impl AgentHarness {
         agent_router: Box<dyn AgentRouter>,
         compression_config: context_manager::CompressorConfig,
         tool_timeout_ms: u64,
+        runtime: tokio::runtime::Handle,
     ) -> Self {
         let engine = LlmReActEngine::new(
             Arc::clone(&tool_registry),
@@ -980,6 +984,7 @@ impl AgentHarness {
             budget_policy,
             agent_router,
             compression_config,
+            runtime,
         }
     }
 
@@ -1100,7 +1105,7 @@ impl AgentHarness {
         background: bool,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             if let Err(e) = harness
                 .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background)
                 .await
@@ -1148,10 +1153,14 @@ impl AgentHarness {
             .set_active_session(agent_id, Some(session_id.to_owned()))
             .await?;
         self.registry.set_status(agent_id, AgentStatus::Busy).await?;
-        // Only set Chatting for foreground (user-initiated) messages.
-        // Background messages (idle_run) already have their system state set by the
-        // boredom actor (Working/Studying/DailyLife/Idle based on the activity tag).
-        if !background {
+        // Pick the right system state for the UI:
+        // - Work-item sessions (kanban Act! / idle_run with work tag) → Working
+        // - Foreground user messages → Chatting
+        // - Background boredom runs → already set by boredom actor, leave as-is
+        let is_work_session = super::session::work_session::parse_work_session_id(session_id).is_some();
+        if is_work_session {
+            self.registry.set_system_state(agent_id, AgentSystemState::Working).await;
+        } else if !background {
             self.registry.set_system_state(agent_id, AgentSystemState::Chatting).await;
         }
 
@@ -1415,9 +1424,12 @@ impl AgentHarness {
                         }),
                     ))
                     .await;
-                // Still go to Idle on error
+                // Still go to Idle on error — reset both status and system_state
+                // so the agent doesn't get stuck in Chatting/Working.
                 let _ = self.registry.set_active_session(agent_id, None).await;
                 let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+                self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+                self.registry.set_activity(agent_id, "").await;
                 return Err(e);
             }
             _ => {
@@ -1691,6 +1703,7 @@ impl AgentHarness {
         let _ = self.registry.set_active_session(agent_id, None).await;
         let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
         self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+        self.registry.set_activity(agent_id, "").await;
         let _ = self
             .publish_to_agent_bus(
                 agent_id,
@@ -2005,6 +2018,9 @@ impl AgentHarness {
             // Execute one ReAct turn (T2.4: with streaming support)
             let stream_handle = self.spawn_stream_forwarder(ctx);
 
+            // Update activity so the UI shows what the agent is doing.
+            self.registry.set_activity(&ctx.agent_id, "Thinking...").await;
+
             match self.engine.execute_turn(ctx, turn_messages).await {
                 Ok(ReActTurn::Finished { ref content, .. }) => {
                     // Clear streaming callback then await the forwarder
@@ -2024,6 +2040,14 @@ impl AgentHarness {
                     // so reply_stream_done is published before tool results.
                     ctx.stream_cb = None;
                     let _ = stream_handle.await;
+
+                    // Show which tools are being called
+                    let tool_names: Vec<&str> = calls.iter().map(|c| c.tool_name.as_str()).collect();
+                    self.registry.set_activity(
+                        &ctx.agent_id,
+                        format!("Using tools: {}", tool_names.join(", ")),
+                    ).await;
+
                     // Publish agent:got_tool_calls to local bus
                     let _ = self
                         .publish_to_agent_bus(

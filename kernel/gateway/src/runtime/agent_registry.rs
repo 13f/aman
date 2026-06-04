@@ -943,6 +943,15 @@ impl AgentRegistry {
         *ss.lock().expect("system_state lock") = state;
     }
 
+    /// Set the human-readable activity description for an agent.
+    /// Shown in the UI so users can see what the agent is doing right now.
+    pub async fn set_activity(&self, agent_id: &str, activity: impl Into<String>) {
+        let mut agents = self.agents.write().await;
+        if let Some(instance) = agents.get_mut(agent_id) {
+            instance.activity = activity.into();
+        }
+    }
+
     // ── Idle loop management ─────────────────────────────────────────
 
     /// 启动所有 Agent 的 idle 后台循环（在 Phase 4 调用）。

@@ -954,6 +954,7 @@ function closeWorkDetail() {
   document.getElementById("workDetailModal").classList.remove("open");
   _detailWorkId = "";
   _detailWork = null;
+  stopActPolling();  // clean up any active Act status polling
 }
 
 async function loadWorkContext(workId) {
@@ -1435,11 +1436,59 @@ async function clearNeedReview() {
   } catch(e) { flash("Network error: " + e.message, "error"); }
 }
 
-var _agentStatuses = {};  // agent_id → status string
+var _agentStatuses = {};  // agent_id → {status, system_state, activity}
+var _actTriggeredAgent = null;  // agent_id that was just triggered via Act
+var _actPoller = null;  // interval handle for polling agent status after Act
+
+async function fetchAgentInfo(agentId) {
+  try {
+    var r = await fetch(BASE + "/agents");
+    if (!r.ok) return null;
+    var agents = await r.json();
+    if (Array.isArray(agents)) {
+      for (var i = 0; i < agents.length; i++) {
+        var a = agents[i];
+        var id = a.id || a.name;
+        _agentStatuses[id] = {
+          status: a.status,
+          system_state: a.system_state || "",
+          activity: a.activity || ""
+        };
+        if (id === agentId) return _agentStatuses[id];
+      }
+    }
+  } catch(e) { /* ignore */ }
+  return null;
+}
+
+function agentStatusText(info) {
+  // Build a human-readable status line from the agent info.
+  if (!info) return "Unknown";
+  var parts = [info.status];
+  if (info.system_state && info.system_state !== "Idle") {
+    parts.push("· " + info.system_state);
+  }
+  if (info.activity) {
+    parts.push("· " + info.activity);
+  }
+  return parts.join(" ");
+}
 
 async function updateActButton() {
   var btn = document.getElementById("wdActBtn");
   if (!btn) return;
+
+  // While an Act-triggered agent is processing, keep button disabled.
+  if (_actTriggeredAgent && _actPoller) {
+    btn.disabled = true;
+    var info = _agentStatuses[_actTriggeredAgent];
+    btn.title = "Agent " + _actTriggeredAgent + " is processing — " + agentStatusText(info || {status: "Busy"});
+    // Update button text to show current activity
+    if (info && info.activity) {
+      btn.textContent = "⚡ " + info.activity;
+    }
+    return;
+  }
 
   // Disable if no assignee or work is already marked for review
   var assignee = _detailWork && _detailWork.assignee;
@@ -1452,30 +1501,64 @@ async function updateActButton() {
 
   // Fetch agent statuses if not already cached
   if (!Object.keys(_agentStatuses).length) {
-    try {
-      var r = await fetch(BASE + "/agents");
-      if (!r.ok) { btn.disabled = true; btn.title = "Failed to fetch agent status"; return; }
-      var agents = await r.json();
-      if (Array.isArray(agents)) {
-        for (var i = 0; i < agents.length; i++) {
-          _agentStatuses[agents[i].id || agents[i].name] = agents[i].status;
-        }
-      }
-    } catch(e) {
-      btn.disabled = true;
-      btn.title = "Failed to fetch agent status";
-      return;
-    }
+    var info = await fetchAgentInfo(assignee);
+    if (info === null) { btn.disabled = true; btn.title = "Failed to fetch agent status"; return; }
   }
 
-  var status = _agentStatuses[assignee];
+  var info = _agentStatuses[assignee];
+  var status = info ? info.status : "unknown";
   if (status === "Idle") {
     btn.disabled = false;
+    btn.textContent = "⚡ Act!";
     btn.title = "Trigger " + assignee + " to process this work item now";
   } else {
     btn.disabled = true;
-    btn.title = "Agent " + assignee + " is " + (status || "unknown") + " (must be Idle)";
+    btn.title = "Agent " + assignee + " — " + agentStatusText(info || {status: status});
   }
+}
+
+function startActPolling(agentId) {
+  _actTriggeredAgent = agentId;
+  var btn = document.getElementById("wdActBtn");
+  btn.disabled = true;
+  btn.textContent = "⚡ Processing...";
+  btn.title = "Agent " + agentId + " is processing — waiting for idle";
+
+  // Poll every 3s until agent leaves Idle, then continue until it returns to Idle
+  var seenWorking = false;
+  _actPoller = setInterval(async function() {
+    var info = await fetchAgentInfo(agentId);
+    if (info === null) return;  // network error, keep polling
+
+    if (!seenWorking && info.status !== "Idle") {
+      // Agent started working!
+      seenWorking = true;
+      if (btn) {
+        btn.textContent = "⚡ " + (info.activity || "Working...");
+        btn.title = agentId + " — " + agentStatusText(info);
+      }
+    }
+
+    if (seenWorking && info.activity && btn) {
+      // Update button text to reflect current activity in real time
+      btn.textContent = "⚡ " + info.activity;
+      btn.title = agentId + " — " + agentStatusText(info);
+    }
+
+    if (seenWorking && info.status === "Idle") {
+      // Agent finished and returned to idle — re-enable the button
+      stopActPolling();
+      if (btn) { btn.textContent = "⚡ Act!"; btn.title = "Trigger agent to process this work item now"; }
+      flash("Agent " + agentId + " finished processing", "success");
+      // Refresh work detail to show any updates
+      if (_detailWorkId) openWorkDetail(_detailWorkId);
+    }
+  }, 3000);
+}
+
+function stopActPolling() {
+  _actTriggeredAgent = null;
+  if (_actPoller) { clearInterval(_actPoller); _actPoller = null; }
 }
 
 async function actOnWork() {
@@ -1490,11 +1573,19 @@ async function actOnWork() {
       body: JSON.stringify({triggered_by: "User"})
     });
     var data = await r.json();
-    if (!r.ok) { flash(data.error || "Act failed", "error"); btn.textContent = "⚡ Act!"; updateActButton(); return; }
-    _agentStatuses = {};  // invalidate cache so next check is fresh
-    flash("Triggered " + (data.agent_id || "agent") + " — agent is now processing this work item", "success");
-    btn.textContent = "✓ Done";
-    setTimeout(function() { btn.textContent = "⚡ Act!"; updateActButton(); }, 3000);
+    if (!r.ok) {
+      flash(data.error || "Act failed", "error");
+      btn.textContent = "⚡ Act!";
+      updateActButton();
+      return;
+    }
+    // Invalidate cache and start polling — button stays disabled until agent
+    // leaves Idle and returns to Idle (processing cycle complete).
+    _agentStatuses = {};
+    var agentId = data.agent_id;
+    flash("Triggered " + (agentId || "agent") + " — waiting for agent to start processing...", "success");
+    btn.textContent = "⚡ Awaiting...";
+    startActPolling(agentId);
   } catch(e) {
     flash("Network error: " + e.message, "error");
     btn.textContent = "⚡ Act!";

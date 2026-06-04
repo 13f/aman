@@ -96,6 +96,10 @@ pub struct AgentInstance {
     /// 当前拟人系统状态（idle / work / …）
     #[serde(default)]
     pub system_state: AgentSystemState,
+    /// 当前正在做什么（如 "Thinking..."、"Calling tool: grep"）。
+    /// 用于 UI 提示，防止用户以为 agent 卡死。
+    #[serde(default)]
+    pub activity: String,
 }
 
 impl AgentInstance {
@@ -112,6 +116,7 @@ impl AgentInstance {
             active_session_id: None,
             registered_at: Timestamp::now(),
             system_state: AgentSystemState::default(),
+            activity: String::new(),
         }
     }
 }

@@ -1672,7 +1672,10 @@ def _handle_act_work(project_key: str, work_id: str, body: dict) -> dict:
             400,
         )
 
-    # Re-push the work item to wake up the idle agent
+    # Re-push the work item to wake up the idle agent.
+    # Load work context (JSONL history) so the agent has full context.
+    proj = _projects.get(project_key, {}).get("config", {})
+    work_context = build_work_context_for_agent(project_key, work_id)
     push_result = send_request("aman.push_work_item", {
         "agent_id": assignee,
         "title": work["title"],
@@ -1683,6 +1686,9 @@ def _handle_act_work(project_key: str, work_id: str, body: dict) -> dict:
             "work_id": work_id,
             "stage_id": work.get("current_stage", ""),
             "source": "kanban-act",
+            "output_type": work.get("output_type", ""),
+            "output_description": work.get("output_description", ""),
+            "work_context": work_context,
         },
     })
 

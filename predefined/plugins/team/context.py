@@ -173,7 +173,7 @@ def build_work_context_for_agent(
     if not events:
         return ""
 
-    lines = ["[Work Item Context — recent history]", ""]
+    lines = ["[Work Item History — read-only input, NOT a completion signal]", ""]
     for ev in events:
         t = ev.get("type", "unknown")
         if t == "created":
@@ -230,7 +230,7 @@ def build_work_context_for_agent(
             lines.append(f"  [{t}] {json.dumps(ev, ensure_ascii=False)[:200]}")
 
     lines.append("")
-    lines.append("[End Work Item Context]")
+    lines.append("[End of history — work is NOT yet complete, continue processing]")
     return "\n".join(lines)
 
 

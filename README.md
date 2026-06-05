@@ -139,6 +139,99 @@ sidebar item because keychain writes would be ignored at runtime.
 > once at startup and the values stay in protected memory for the process
 > lifetime.
 
+## Agent Configuration
+
+aman supports multiple agents, each with its own provider, model, soul,
+and optional subsystems. Configure them under the `agents` key in
+`~/.aman/config.yaml`.
+
+### Minimal multi-agent setup
+
+```yaml
+# ~/.aman/config.yaml
+providers:
+  openai:
+    display_name: OpenAI
+    base_url: https://api.openai.com/v1
+  deepseek:
+    display_name: DeepSeek
+    base_url: https://api.deepseek.com/v1
+
+model:
+  default: gpt-5
+  provider: openai
+
+agents:
+  health:
+    display_name: Health
+    provider: deepseek
+    model: deepseek-v4-flash
+```
+
+Each agent stores its data under `~/.aman/agents/{agent_id}/`:
+```
+~/.aman/agents/health/
+├── SOUL.md          # agent identity, boundaries, personality
+├── memory/          # long-term memory (YantrikDB)
+├── sessions/        # chat session JSONL files
+├── sessions.db      # session metadata (SQLite)
+├── traces/          # task execution traces
+└── emotions/        # (optional) visual emotion images
+    ├── data.json    # emotion definitions
+    ├── calm.png
+    ├── happy.png
+    └── ...
+```
+
+### Emotion System
+
+Agents can display visual emotion images instead of Unicode emojis.
+Place a valid `emotions/` directory under the agent's data directory
+with a `data.json` and matching image files.
+
+**Desktop UI behaviour:**
+- If `emotions/` is present and valid → displays images for each agent state
+- If `emotions/` is missing or invalid → falls back to emoji display
+
+**LLM-driven emotion evaluation** (optional):
+When `emotion` is configured at the top level, the gateway periodically
+evaluates each agent's emotional state using an LLM. It collects recent
+session messages and trace records, then picks the best-matching emotion
+from the agent's `emotions/data.json`.
+
+```yaml
+# ~/.aman/config.yaml
+emotion:
+  enabled: true
+  provider: deepseek          # provider for emotion classification
+  model: deepseek-v4-flash    # cheap/fast model recommended
+  interval_secs: 45           # how often to re-evaluate
+  temperature: 0.3            # low for consistent results
+  max_context_messages: 10    # recent messages to include
+```
+
+**Gating**: the emotion evaluator only starts for agents that have a
+valid `emotions/` directory. If `data.json` is missing, unparseable,
+or any referenced image file is absent, the evaluator is silently
+skipped and the UI falls back to the state-based emoji mapping.
+
+### Emotion data.json format
+
+```json
+{
+  "img_ext": "png",
+  "items": [
+    { "id": "happy",   "tags": ["愉悦", "开心", "happy"],   "description": "微笑，眼睛微弯" },
+    { "id": "focused", "tags": ["专注", "focused"],         "description": "眼神集中，眉头微压" },
+    { "id": "working", "tags": ["工作中", "working"],       "description": "认真、略带严肃" },
+    { "id": "sleeping","tags": ["睡觉", "sleeping"],        "description": "双眼紧闭，眉毛舒展" }
+  ]
+}
+```
+
+Each `id` must have a corresponding image file: `{id}.{img_ext}`
+(e.g. `happy.png`). The evaluator and UI both validate this at startup.
+
 ## Core Concepts
 
 - **Events** — typed JSON payloads with trace IDs flow from Sources through

@@ -112,6 +112,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "aman-tauri-lib"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "config",
  "futures",
  "reqwest 0.12.28",

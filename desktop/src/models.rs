@@ -263,6 +263,24 @@ pub struct FinanceCardEntry {
     pub icon: String,
 }
 
+/// A single emotion entry from an agent's `emotions/data.json`.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmotionEntry {
+    pub id: String,
+    pub tags: Vec<String>,
+    pub description: String,
+    /// Base64-encoded data URL ready for `<img src="...">`.
+    pub data_url: String,
+}
+
+/// Full emotions configuration parsed from `emotions/data.json`.
+/// Returned to the frontend so it can map state → emotion image.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmotionsConfig {
+    pub img_ext: String,
+    pub items: Vec<EmotionEntry>,
+}
+
 /// Agent runtime instance exposed via Tauri IPC.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentInstanceInfo {

@@ -21,6 +21,7 @@
   let hasProvider = $state(false);
   let hasAgent = $state(false);
   let activeAgentName = $state("");
+  let activeAgentKey = $state("");
   let chatPrefill = $state("");
   let chatPrefillSeq = $state(0);
   let sidebarCompact = $state(false);
@@ -149,10 +150,12 @@
 
   async function refreshActiveAgent() {
     try {
-      const agent = await invoke<{ display_name: string } | null>("get_active_agent");
+      const agent = await invoke<{ key: string; display_name: string } | null>("get_active_agent");
       activeAgentName = agent?.display_name ?? "";
+      activeAgentKey = agent?.key ?? "";
     } catch {
       activeAgentName = "";
+      activeAgentKey = "";
     }
   }
 
@@ -356,7 +359,7 @@
     {/if}
   {/if}
 
-  <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentName={activeAgentName} compact={sidebarCompact} />
+  <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentId={activeAgentKey} agentName={activeAgentName} compact={sidebarCompact} />
 </nav>
 
 <NotificationOverlay onNavigate={(p) => navigateTo(p)} />

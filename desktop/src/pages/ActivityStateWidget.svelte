@@ -2,6 +2,8 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import IdleRing from "./IdleRing.svelte";
+  import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
+  import type { EmotionsConfig } from "../lib/emotions";
 
   // ---------------------------------------------------------------------------
   // Types
@@ -49,6 +51,8 @@
   let idleSnap = $state<IdleSnap | null>(null);
   let reflectSnap = $state<ReflectSnap | null>(null);
   let systemState = $state<string>("");
+  let llmEmotionId = $state<string>("");
+  let emotionsConfig = $state<EmotionsConfig | null>(null);
   let unlisteners: (() => void)[] = [];
 
   $effect(() => {
@@ -57,6 +61,18 @@
       idleSnap = null;
       reflectSnap = null;
       systemState = "";
+      llmEmotionId = "";
+    }
+  });
+
+  // Reload emotions config whenever the selected agent changes.
+  $effect(() => {
+    if (agentId) {
+      loadEmotions(agentId).then((cfg) => {
+        emotionsConfig = cfg;
+      });
+    } else {
+      emotionsConfig = null;
     }
   });
 
@@ -169,6 +185,19 @@
 
   let ringColors = $derived(COLORS[displayState] ?? COLORS["idle"]);
 
+  // Resolve the emotion image for the current display state.
+  // Priority: LLM emotion (from gateway) > state-based mapping.
+  let emotionKind = $derived.by(() => {
+    if (llmEmotionId) return llmEmotionId;
+    if (displayState === "idle") return idleSnap?.kind ?? "idle";
+    if (displayState === "reflection") return "reflection";
+    return displayState; // active system state key
+  });
+
+  let emotionImage = $derived(
+    resolveEmotionImage(emotionsConfig, emotionKind) ?? "",
+  );
+
   // ---------------------------------------------------------------------------
   // Event handlers
   // ---------------------------------------------------------------------------
@@ -210,10 +239,13 @@
   onMount(async () => {
     unlisteners.push(await listen("event:processed", onEvent));
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
-      const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
+      const list: Array<{ agent_id: string; system_state: string; emotion_id?: string }> = e.payload?.agents ?? [];
       for (const a of list) {
         if (!agentId || a.agent_id === agentId) {
           systemState = a.system_state;
+          if (a.emotion_id) {
+            llmEmotionId = a.emotion_id;
+          }
           break;
         }
       }
@@ -236,6 +268,7 @@
       {outerPct}
       {innerPct}
       {emoji}
+      imageSrc={emotionImage}
       {label}
       {info1}
       {info2}

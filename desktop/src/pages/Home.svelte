@@ -4,6 +4,8 @@
   import { onMount, onDestroy } from "svelte";
   import IdleRing from "./IdleRing.svelte";
   import AgentSelector from "./AgentSelector.svelte";
+  import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
+  import type { EmotionsConfig } from "../lib/emotions";
   import claudeIcon from "../lib/assets/code-agents/claude.svg?raw";
   import codexIcon from "../lib/assets/code-agents/codex.svg?raw";
   import opencodeIcon from "../lib/assets/code-agents/opencode.svg?raw";
@@ -71,6 +73,8 @@
     outerPct: number;
     innerPct: number;
     emoji: string;
+    /** Idle sub-mode kind (daze/sleep/…) or system-state key (working/…). */
+    kind: string;
   }
 
   const COLORS: Record<Mode, { outer: string; inner: string }> = {
@@ -124,7 +128,7 @@
   }
 
   function defaultIdleState(): AgentIdleState {
-    return { mode: "idle", outerPct: 0, innerPct: 0, emoji: MODE_ICON.idle };
+    return { mode: "idle", outerPct: 0, innerPct: 0, emoji: MODE_ICON.idle, kind: "" };
   }
 
   let agents = $state<AgentEntry[]>([]);
@@ -133,6 +137,8 @@
   let activeTab = $state<"agents" | "finance">("agents");
   let idleStates = $state<Record<string, AgentIdleState>>({});
   let systemStates = $state<Record<string, string>>({});
+  let llmEmotionIds = $state<Record<string, string>>({});
+  let emotionsConfigs = $state<Record<string, EmotionsConfig | null>>({});
   let unlisteners: (() => void)[] = [];
   let showAgentSelector = $state(false);
   let selectedSkillName = $state("");
@@ -174,6 +180,7 @@
           outerPct: depthPct(depth),
           innerPct: Math.round(arousal * 100),
           emoji: IDLE_EMOJI[kind] ?? MODE_ICON.idle,
+          kind,
         },
       };
     } else if (et === "agent:reply_stream_start" || et === "agent:reply_chunk" ||
@@ -182,7 +189,13 @@
       // Agent is active — show processing
       idleStates = {
         ...idleStates,
-        [agentId]: { mode: "processing", outerPct: 50, innerPct: 50, emoji: MODE_ICON.processing },
+        [agentId]: {
+          mode: "processing",
+          outerPct: 50,
+          innerPct: 50,
+          emoji: MODE_ICON.processing,
+          kind: "processing",
+        },
       };
     }
   }
@@ -193,6 +206,21 @@
 
   function getSystemState(key: string): string {
     return systemStates[key] ?? "idle";
+  }
+
+  /** Resolve the emotion image data URL for an agent's current state.
+   *  Returns empty string when emotions aren't configured or the state
+   *  doesn't map to a known emotion — the caller falls back to emoji.
+   *
+   *  Priority: LLM emotion (from gateway) > state-based mapping. */
+  function getEmotionImage(key: string, stateOrKind: string): string {
+    const cfg = emotionsConfigs[key];
+    // When the LLM has evaluated an emotion, use it directly.
+    const llmId = llmEmotionIds[key];
+    if (llmId) {
+      return resolveEmotionImage(cfg, llmId) ?? "";
+    }
+    return resolveEmotionImage(cfg, stateOrKind) ?? "";
   }
 
   const SYSTEM_STATE_LABEL: Record<string, string> = {
@@ -335,6 +363,13 @@
         init[a.key] = defaultIdleState();
       }
       idleStates = init;
+
+      // Pre-load emotions configs (non-blocking, one per agent).
+      for (const a of agents) {
+        loadEmotions(a.key).then((cfg) => {
+          emotionsConfigs = { ...emotionsConfigs, [a.key]: cfg };
+        });
+      }
     } catch {
       // no agents or config missing
     } finally {
@@ -353,12 +388,19 @@
 
     // Listen for system state updates from the gateway
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
-      const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
-      const next: Record<string, string> = {};
+      const list: Array<{ agent_id: string; system_state: string; emotion_id?: string }> = e.payload?.agents ?? [];
+      const nextStates: Record<string, string> = {};
+      const nextEmotions: Record<string, string> = {};
       for (const a of list) {
-        next[a.agent_id] = a.system_state;
+        nextStates[a.agent_id] = a.system_state;
+        if (a.emotion_id) {
+          nextEmotions[a.agent_id] = a.emotion_id;
+        }
       }
-      systemStates = next;
+      systemStates = nextStates;
+      if (Object.keys(nextEmotions).length > 0) {
+        llmEmotionIds = { ...llmEmotionIds, ...nextEmotions };
+      }
     }));
   });
 
@@ -399,26 +441,35 @@
           {@const st = getIdleState(agent.key)}
           {@const ss = getSystemState(agent.key)}
           <button class="agent-avatar-card" class:needs-config={!agent.provider} onclick={() => selectAgent(agent)}>
+            <div class="agent-avatar-wrap">
             {#if ss === "idle" || !agent.provider}
+              {@const imgSrc = getEmotionImage(agent.key, st.kind || "idle")}
               <IdleRing
                 mode={st.mode}
                 outerPct={st.outerPct}
                 innerPct={st.innerPct}
                 emoji={st.emoji}
+                imageSrc={imgSrc}
                 ringColors={COLORS[st.mode]}
-                size={56}
+                size={100}
                 showLabel={false}
                 showInfo={false}
                 active={!!agent.provider}
               />
             {:else}
+              {@const imgSrc = getEmotionImage(agent.key, ss)}
               <div
                 class="state-visual {STATE_ANIM[ss] ?? ''}"
-                style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:56px; height:56px;"
+                style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:100px; height:100px;"
               >
-                <span class="state-emoji">{STATE_EMOJI[ss] ?? "\u{1F4CB}"}</span>
+                {#if imgSrc}
+                  <img class="state-emotion-img" src={imgSrc} alt="" />
+                {:else}
+                  <span class="state-emoji">{STATE_EMOJI[ss] ?? "\u{1F4CB}"}</span>
+                {/if}
               </div>
             {/if}
+            </div>
             <span class="agent-avatar-name">{agent.display_name}</span>
             {#if !agent.provider}
               <span class="badge warn" style="margin-top:2px;font-size:10px;">needs config</span>
@@ -600,15 +651,19 @@
   .agent-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 16px;
+    gap: 14px;
+  }
+
+  .agent-avatar-wrap {
+    margin-top: -5px;
   }
 
   .agent-avatar-card {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 10px;
-    padding: 20px 16px 16px;
+    gap: 2px;
+    padding: 18px 8px 10px;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -1076,13 +1131,20 @@
     justify-content: center;
     border-radius: 50%;
     background: color-mix(in srgb, var(--st-color, #6c8cff) 12%, transparent);
-    border: 2px solid color-mix(in srgb, var(--st-color, #6c8cff) 35%, transparent);
+    border: 4px solid color-mix(in srgb, var(--st-color, #6c8cff) 35%, transparent);
     flex-shrink: 0;
   }
   .state-emoji {
-    font-size: 24px;
+    font-size: 64px;
     line-height: 1;
     user-select: none;
+  }
+  .state-emotion-img {
+    width: 90%;
+    height: 90%;
+    object-fit: contain;
+    border-radius: 50%;
+    pointer-events: none;
   }
 
   /* Animations for non-idle states */

@@ -695,6 +695,12 @@ pub struct AmanConfig {
     pub llm: Option<LlmConfig>,
     /// Memory subsystem configuration (provider, embedding, extraction LLM).
     pub memory: Option<MemoryTopConfig>,
+    /// Emotion evaluation subsystem (LLM-driven agent emotion updates).
+    /// When absent or `enabled: false`, emotion evaluation is skipped for all agents.
+    /// Even when enabled globally, each agent additionally requires a valid
+    /// `~/.aman/agents/{id}/emotions/` directory with data.json + images.
+    #[serde(default)]
+    pub emotion: Option<EmotionTopConfig>,
     /// Script hooks triggered on events.
     /// Each hook runs a script via the specified runtime when its event fires.
     #[serde(default)]
@@ -798,6 +804,41 @@ pub struct MemoryLlmConfig {
     /// Global model ID.
     pub model: String,
 }
+
+/// Emotion evaluation subsystem configuration.
+///
+/// ```yaml
+/// emotion:
+///   enabled: true
+///   provider: deepseek
+///   model: deepseek-v4-flash
+///   interval_secs: 45
+///   temperature: 0.3
+///   max_context_messages: 10
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmotionTopConfig {
+    /// Whether emotion evaluation is enabled. Default true.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Provider key in the `providers` map.
+    pub provider: String,
+    /// Global model ID to use for emotion classification.
+    pub model: String,
+    /// How often to re-evaluate emotions, in seconds. Default 47.
+    #[serde(default = "default_emotion_interval_secs")]
+    pub interval_secs: u64,
+    /// LLM temperature for emotion evaluation. Default 0.3.
+    #[serde(default = "default_emotion_temperature")]
+    pub temperature: f64,
+    /// Max recent session messages to include as context. Default 10.
+    #[serde(default = "default_emotion_max_context")]
+    pub max_context_messages: usize,
+}
+
+const fn default_emotion_interval_secs() -> u64 { 47 }
+fn default_emotion_temperature() -> f64 { 0.3 }
+const fn default_emotion_max_context() -> usize { 10 }
 
 /// A single script-based hook that fires on one or more named events.
 ///

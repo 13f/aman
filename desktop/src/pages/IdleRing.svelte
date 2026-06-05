@@ -6,6 +6,7 @@
     outerPct = 0,
     innerPct = 0,
     emoji = "",
+    imageSrc = "",
     label = "",
     info1 = "",
     info2 = "",
@@ -19,6 +20,8 @@
     outerPct?: number;
     innerPct?: number;
     emoji?: string;
+    /** Optional image data URL — when set, shown instead of the emoji glyph. */
+    imageSrc?: string;
     label?: string;
     info1?: string;
     info2?: string;
@@ -50,21 +53,27 @@
 >
   <svg viewBox="0 0 110 110" class="ring-svg" width={size} height={size}>
     <!-- track rings -->
-    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke="var(--border)" stroke-width="5" />
-    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke="var(--border)" stroke-width="5" />
+    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke="var(--border)" stroke-width="6" />
+    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke="var(--border)" stroke-width="6" />
 
     <!-- outer ring (progress) -->
-    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke={ringColors.outer} stroke-width="5"
+    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke={ringColors.outer} stroke-width="6"
       stroke-dasharray={C_OUTER} stroke-dashoffset={outerDash}
       stroke-linecap="round" transform="rotate(-90 55 55)" />
 
     <!-- inner ring (secondary) -->
-    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke={ringColors.inner} stroke-width="5"
+    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke={ringColors.inner} stroke-width="6"
       stroke-dasharray={C_INNER} stroke-dashoffset={innerDash}
       stroke-linecap="round" transform="rotate(-90 55 55)" />
   </svg>
 
-  <div class="ring-center" style="font-size: {30 * scale}px;">{emoji}</div>
+  <div class="ring-center" style="font-size: {46 * scale}px;">
+    {#if imageSrc}
+      <img class="ring-emotion-img" src={imageSrc} alt="" />
+    {:else}
+      {emoji}
+    {/if}
+  </div>
 </div>
 
 {#if showLabel}
@@ -105,6 +114,13 @@
     user-select: none;
     cursor: default;
     line-height: 1;
+  }
+  .ring-emotion-img {
+    width: 50%;
+    height: 50%;
+    object-fit: contain;
+    border-radius: 50%;
+    pointer-events: none;
   }
   .label-text {
     font-size: 10px;

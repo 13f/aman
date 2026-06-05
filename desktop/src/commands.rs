@@ -5,9 +5,10 @@ use crate::gateway_client::GatewayClient;
 use crate::state::AppState;
 use crate::models::{
     ChatMessageEntry, ChatSessionInfo, ChatSessionState,
-    DlqEntry, FinanceCardEntry, MetricsSnapshot, PluginEntry,
-    PluginHealthEntry, QueueDepth, RuntimeConfigInfo,
-    RuntimeStatusInfo, SkillEntry, SoulInfo, WorkflowEntry,
+    DlqEntry, EmotionEntry, EmotionsConfig, FinanceCardEntry,
+    MetricsSnapshot, PluginEntry, PluginHealthEntry, QueueDepth,
+    RuntimeConfigInfo, RuntimeStatusInfo, SkillEntry, SoulInfo,
+    WorkflowEntry,
 };
 use secret::{KeychainBackend, SecretBackend};
 use serde::{Deserialize, Serialize};
@@ -2203,6 +2204,100 @@ pub async fn delete_agent(
 #[tauri::command]
 pub async fn get_agent_soul(key: String) -> Result<String, String> {
     crate::agent_fs::read_soul(&key)
+}
+
+/// Read an agent's emotions configuration from `~/.aman/agents/{key}/emotions/`.
+///
+/// Returns `Ok(None)` when the emotions directory doesn't exist, `data.json`
+/// can't be read, or any referenced image file is missing — the frontend
+/// should fall back to the default emoji display.
+///
+/// Returns `Ok(Some(config))` when `data.json` is valid and all referenced
+/// image files exist on disk.  Each [`EmotionEntry`] includes a base64-encoded
+/// `data_url` so the frontend can render `<img>` tags directly with no
+/// additional IPC round-trips.
+#[tauri::command]
+pub async fn get_agent_emotions(key: String) -> Result<Option<EmotionsConfig>, String> {
+    use base64::Engine;
+    let dir = crate::agent_fs::emotions_dir(&key);
+    if !dir.exists() {
+        return Ok(None);
+    }
+
+    let data_path = dir.join("data.json");
+    let raw = match std::fs::read_to_string(&data_path) {
+        Ok(r) => r,
+        Err(_) => return Ok(None),
+    };
+
+    // Parse the JSON — we only need img_ext and the items array.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("emotions data.json parse error: {e}"))?;
+
+    let img_ext = parsed["img_ext"]
+        .as_str()
+        .unwrap_or("png")
+        .to_owned();
+
+    let mime = match img_ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        _ => "image/png",
+    };
+
+    let raw_items = parsed["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    if raw_items.is_empty() {
+        return Ok(None);
+    }
+
+    let mut items: Vec<EmotionEntry> = Vec::with_capacity(raw_items.len());
+
+    for item in &raw_items {
+        let emotion_id = item["id"].as_str().unwrap_or("").to_owned();
+        if emotion_id.is_empty() {
+            return Ok(None); // malformed entry
+        }
+
+        let img_path = dir.join(format!("{}.{}", emotion_id, img_ext));
+        let img_bytes = match std::fs::read(&img_path) {
+            Ok(b) => b,
+            Err(_) => {
+                tracing::warn!(
+                    "emotion image missing for agent '{key}': {}",
+                    img_path.display()
+                );
+                return Ok(None);
+            }
+        };
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
+        let data_url = format!("data:{};base64,{}", mime, b64);
+
+        items.push(EmotionEntry {
+            id: emotion_id,
+            tags: item["tags"]
+                .as_array()
+                .map(|t| {
+                    t.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            description: item["description"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned(),
+            data_url,
+        });
+    }
+
+    Ok(Some(EmotionsConfig { img_ext, items }))
 }
 
 #[tauri::command]

@@ -196,6 +196,7 @@ pub fn run() {
             commands::update_agent,
             commands::delete_agent,
             commands::get_agent_soul,
+            commands::get_agent_emotions,
             commands::select_agent,
             commands::get_active_agent,
             // Multi-agent config/status (P2)

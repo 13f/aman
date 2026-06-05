@@ -836,6 +836,42 @@ impl AgentRuntimeBuilder {
                         tracing::warn!(error = %e, agent = %agent_id, "trace store init skipped");
                     }
                 }
+
+                // -- EmotionEvaluator (LLM-driven emotion updates) --
+                // Gated on: global emotion.enabled AND valid emotions/ directory per agent.
+                if let Some(ref emotion_cfg) = cfg.emotion {
+                    if emotion_cfg.enabled {
+                        if let Some(ref provider) = cfg.providers.get(&emotion_cfg.provider) {
+                            let api_key =
+                                get_llm_api_key_or_inline(&emotion_cfg.provider, Some(provider));
+                            let eval_llm = super::emotion_evaluator::EmotionLlmConfig {
+                                base_url: provider.base_url.clone(),
+                                api_key: if api_key.is_empty() { None } else { Some(api_key) },
+                                model: emotion_cfg.model.clone(),
+                            };
+                            let eval_cfg = super::emotion_evaluator::EmotionEvalConfig {
+                                interval_secs: emotion_cfg.interval_secs,
+                                temperature: emotion_cfg.temperature,
+                                max_context_messages: emotion_cfg.max_context_messages,
+                            };
+                            let ss = pollster::block_on(agent_registry.get_session_store(agent_id));
+                            let ts = pollster::block_on(agent_registry.get_trace_store(agent_id));
+                            pollster::block_on(agent_registry.init_emotion_evaluator(
+                                agent_id,
+                                ss,
+                                ts,
+                                eval_llm,
+                                eval_cfg,
+                            ));
+                        } else {
+                            tracing::warn!(
+                                agent = %agent_id,
+                                provider = %emotion_cfg.provider,
+                                "emotion provider not found in config, skipping emotion evaluator"
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -3628,6 +3664,8 @@ impl AgentRuntime {
             RuntimePhase::Phase4 => {
                 // Start per-agent idle loops
                 self.agent_registry.start_all_idle_loops().await;
+                // Start emotion evaluators (require Tokio runtime)
+                self.agent_registry.start_all_emotion_evaluators().await;
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {

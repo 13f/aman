@@ -30,6 +30,7 @@ mod tracing_setup;
 mod stdio;
 mod grpc;
 mod sse;
+mod emotion_evaluator;
 
 pub use agent_registry::AgentRegistry;
 pub use date_util::current_date_string;

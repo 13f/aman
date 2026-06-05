@@ -49,6 +49,10 @@ pub struct AgentRegistry {
     trace_stores: RwLock<HashMap<String, Arc<dyn TraceStore>>>,
     /// Per-agent system state (idle / working / …), updated atomically by each system.
     system_states: RwLock<HashMap<String, Arc<std::sync::Mutex<AgentSystemState>>>>,
+    /// Per-agent emotion evaluators (Some = active, None = emotions not configured).
+    emotion_evaluators: RwLock<HashMap<String, Arc<super::emotion_evaluator::EmotionEvaluator>>>,
+    /// Latest emotion IDs indexed by agent_id (read by SSE snapshot).
+    emotion_latest: RwLock<HashMap<String, Arc<tokio::sync::Mutex<Option<String>>>>>,
     bus: Arc<dyn EventBus>,
     /// Skill search index for BoredomActor tag-based skill lookup.
     skill_search: Option<Arc<skill::SkillSearch>>,
@@ -71,6 +75,8 @@ impl AgentRegistry {
             llm_providers: RwLock::new(HashMap::new()),
             trace_stores: RwLock::new(HashMap::new()),
             system_states: RwLock::new(HashMap::new()),
+            emotion_evaluators: RwLock::new(HashMap::new()),
+            emotion_latest: RwLock::new(HashMap::new()),
             bus,
             skill_search: None,
             skill_registry: None,
@@ -694,6 +700,15 @@ impl AgentRegistry {
 
     /// 清空注册表（shutdown 时调用）。
     pub async fn clear(&self) {
+        // Shut down all per-agent emotion evaluators
+        let eval_keys: Vec<String> = {
+            let evaluators = self.emotion_evaluators.read().await;
+            evaluators.keys().cloned().collect()
+        };
+        for agent_id in &eval_keys {
+            self.stop_emotion_evaluator(agent_id).await;
+        }
+
         // Shut down all per-agent idle managers first
         let idle_managers: Vec<Arc<AgentIdleManager>> = {
             let managers = self.idle_managers.read().await;
@@ -952,6 +967,79 @@ impl AgentRegistry {
         }
     }
 
+    // ── Emotion evaluator management ───────────────────────────────────
+
+    /// Initialize (or re-create) the emotion evaluator for an agent.
+    ///
+    /// Automatically gates on the existence of a valid `emotions/` directory.
+    /// If emotions aren't configured, this is a no-op and the desktop will
+    /// fall back to the state-based emoji mapping.
+    ///
+    /// Should be called AFTER session_store, trace_store, and the LLM
+    /// provider have been set up.
+    pub async fn init_emotion_evaluator(
+        &self,
+        agent_id: &str,
+        session_store: Option<Arc<SessionStore>>,
+        trace_store: Option<Arc<dyn kernel::trace::TraceStore>>,
+        llm_config: super::emotion_evaluator::EmotionLlmConfig,
+        eval_config: super::emotion_evaluator::EmotionEvalConfig,
+    ) {
+        // Stop any existing evaluator first.
+        self.stop_emotion_evaluator(agent_id).await;
+
+        let ss = self.get_or_create_system_state(agent_id).await;
+        let bus = Arc::clone(&self.bus) as Arc<dyn EventBus>;
+
+        let Some(evaluator) = super::emotion_evaluator::EmotionEvaluator::new(
+            agent_id.to_owned(),
+            session_store,
+            trace_store,
+            llm_config,
+            eval_config,
+            bus,
+            ss,
+        ) else {
+            // No valid emotions — store None so SSE can skip.
+            let mut latest = self.emotion_latest.write().await;
+            latest.remove(agent_id);
+            return;
+        };
+
+        // Store the latest-emotion handle for SSE snapshots.
+        let handle = evaluator.latest_emotion_handle();
+        {
+            let mut latest = self.emotion_latest.write().await;
+            latest.insert(agent_id.to_owned(), handle);
+        }
+
+        let arc_eval = Arc::new(evaluator);
+        // NOTE: start() is called later in start_all_emotion_evaluators()
+        // during Phase 4, when the Tokio runtime is active.
+
+        let mut evaluators = self.emotion_evaluators.write().await;
+        evaluators.insert(agent_id.to_owned(), arc_eval);
+    }
+
+    /// Stop and remove the emotion evaluator for an agent.
+    pub async fn stop_emotion_evaluator(&self, agent_id: &str) {
+        if let Some(eval) = {
+            let mut evaluators = self.emotion_evaluators.write().await;
+            evaluators.remove(agent_id)
+        } {
+            eval.stop();
+        }
+        let mut latest = self.emotion_latest.write().await;
+        latest.remove(agent_id);
+    }
+
+    /// Get the latest emotion ID for an agent (for the SSE snapshot).
+    pub async fn get_latest_emotion(&self, agent_id: &str) -> Option<String> {
+        let latest = self.emotion_latest.read().await;
+        let handle = latest.get(agent_id)?;
+        handle.lock().await.clone()
+    }
+
     // ── Idle loop management ─────────────────────────────────────────
 
     /// 启动所有 Agent 的 idle 后台循环（在 Phase 4 调用）。
@@ -959,6 +1047,19 @@ impl AgentRegistry {
         let managers = self.idle_managers.read().await;
         for manager in managers.values() {
             manager.start().await;
+        }
+    }
+
+    /// Start all emotion evaluator background loops (Phase 4).
+    /// Must be called after the Tokio runtime is active — the evaluators
+    /// use `tokio::spawn` internally.
+    pub async fn start_all_emotion_evaluators(&self) {
+        let evaluators = self.emotion_evaluators.read().await;
+        for eval in evaluators.values() {
+            eval.start();
+        }
+        if !evaluators.is_empty() {
+            tracing::info!(count = evaluators.len(), "emotion evaluators started");
         }
     }
 }

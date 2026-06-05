@@ -79,6 +79,12 @@ pub fn list_agent_dirs() -> Vec<String> {
     keys
 }
 
+/// Return the path to an agent's emotions directory.
+#[must_use]
+pub fn emotions_dir(key: &str) -> PathBuf {
+    agents_dir().join(key).join("emotions")
+}
+
 /// Extract a short summary (first 3 non-empty lines) from an agent's `SOUL.md`.
 #[must_use]
 pub fn soul_summary(key: &str) -> String {

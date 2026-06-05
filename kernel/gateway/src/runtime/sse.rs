@@ -233,22 +233,33 @@ async fn metrics_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
 
 async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
     let instances = runtime.agent_registry().list().await;
-    let agents: Vec<serde_json::Value> = instances
-        .into_iter()
-        .map(|inst| {
-            serde_json::json!({
-                "agent_id": inst.descriptor.agent_id,
-                "system_state": serde_json::to_value(inst.system_state)
-                    .ok()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "idle".to_owned()),
-                "status": serde_json::to_value(inst.status)
-                    .ok()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_default(),
-            })
-        })
-        .collect();
+    let registry = runtime.agent_registry();
+    let mut agents: Vec<serde_json::Value> = Vec::with_capacity(instances.len());
+
+    for inst in instances {
+        let agent_id = &inst.descriptor.agent_id;
+        // Include the LLM-evaluated emotion_id if available.
+        let emotion_id = registry.get_latest_emotion(agent_id).await;
+
+        let mut entry = serde_json::json!({
+            "agent_id": agent_id,
+            "system_state": serde_json::to_value(&inst.system_state)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "idle".to_owned()),
+            "status": serde_json::to_value(&inst.status)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default(),
+        });
+
+        if let Some(ref emo) = emotion_id {
+            entry["emotion_id"] = serde_json::json!(emo);
+        }
+
+        agents.push(entry);
+    }
+
     serde_json::json!({ "agents": agents })
 }
 

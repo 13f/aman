@@ -15,6 +15,7 @@
   import NotificationOverlay from "./pages/NotificationOverlay.svelte";
   import Settings from "./pages/Settings.svelte";
   import Integration from "./pages/Integration.svelte";
+  import McpServers from "./pages/McpServers.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -54,6 +55,7 @@
         { id: "agents", label: "Agents", short: "Ag" },
         { id: "providers", label: "Providers", short: "Pr" },
         { id: "integration", label: "Integration", short: "In" },
+        { id: "mcp-servers", label: "MCP Servers", short: "MC" },
         { id: "dashboard", label: "Dashboard", short: "Db" },
       ],
     },
@@ -398,6 +400,8 @@
     {/key}
   {:else if currentPage === "settings"}
     <Settings />
+  {:else if currentPage === "mcp-servers"}
+    <McpServers />
   {:else if currentPage.startsWith("plugin:")}
     {#key teamPageVersion}
       <iframe

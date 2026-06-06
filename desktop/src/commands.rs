@@ -2555,3 +2555,136 @@ fn default_config_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(home).join(".aman").join("config.yaml")
 }
+
+// ── MCP Server commands ────────────────────────────────────────────
+
+/// List all MCP server definitions (global + per-agent), merged with runtime
+/// connection status from the gateway (if running).
+#[tauri::command]
+pub async fn list_mcp_servers(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<Vec<crate::models::McpServerEntry>, String> {
+    // 1. Load all server definitions from JSON files.
+    let mut entries = crate::mcp_servers_fs::load_all_mcp_servers()?;
+
+    // 2. If gateway is running, query runtime status for each agent.
+    let guard = state.gateway_client.lock().await;
+    if let Some(client) = guard.as_ref() {
+        // Collect runtime status from gateway per agent.
+        let mut seen_agents = std::collections::HashSet::new();
+        // Map of (source, name) -> (connected, tool_count, error)
+        let mut runtime_status: std::collections::HashMap<(String, String), (bool, usize, Option<String>)> = std::collections::HashMap::new();
+
+        for entry in &entries {
+            if entry.source != "global" && seen_agents.insert(entry.source.clone()) {
+                if let Ok(statuses) = client.mcp_list_servers(&entry.source).await {
+                    for status in &statuses {
+                        if let Some(name) = status.get("name").and_then(|v| v.as_str()) {
+                            let connected = status.get("connected")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let tool_count = status.get("tool_count")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as usize;
+                            let error = status.get("error")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            runtime_status.insert(
+                                (entry.source.clone(), name.to_string()),
+                                (connected, tool_count, error),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply runtime status to entries.
+        for e in &mut entries {
+            if let Some((connected, tool_count, error)) =
+                runtime_status.get(&(e.source.clone(), e.name.clone()))
+            {
+                e.connected = *connected;
+                e.tool_count = *tool_count;
+                e.error = error.clone();
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Create a new MCP server definition (global or per-agent).
+#[tauri::command]
+pub async fn create_mcp_server(
+    name: String,
+    transport: String,
+    command: Option<String>,
+    args: Vec<String>,
+    url: Option<String>,
+    env: std::collections::BTreeMap<String, String>,
+    headers: std::collections::BTreeMap<String, String>,
+    auto_connect: bool,
+    agent_key: Option<String>,
+) -> Result<String, String> {
+    if name.trim().is_empty() {
+        return Err("Server name 不能为空".to_string());
+    }
+
+    let config = crate::mcp_servers_fs::McpServerConfig {
+        name: name.trim().to_string(),
+        transport,
+        command,
+        args,
+        url,
+        env,
+        headers,
+        auto_connect,
+    };
+
+    crate::mcp_servers_fs::add_mcp_server(config, agent_key.as_deref())?;
+
+    Ok(format!("MCP server '{}' 已创建", name.trim()))
+}
+
+/// Delete an MCP server definition.
+#[tauri::command]
+pub async fn delete_mcp_server(
+    name: String,
+    agent_key: Option<String>,
+) -> Result<String, String> {
+    crate::mcp_servers_fs::remove_mcp_server(&name, agent_key.as_deref())?;
+    Ok(format!("MCP server '{}' 已删除", name))
+}
+
+/// Connect an agent to an MCP server via the gateway.
+#[tauri::command]
+pub async fn connect_mcp_server(
+    state: tauri::State<'_, crate::state::AppState>,
+    agent_key: String,
+    name: String,
+) -> Result<String, String> {
+    let guard = state.gateway_client.lock().await;
+    let client = guard.as_ref()
+        .ok_or_else(|| "Gateway 未运行".to_string())?;
+    client.mcp_connect_server(&agent_key, &name).await
+}
+
+/// Disconnect an agent from an MCP server via the gateway.
+#[tauri::command]
+pub async fn disconnect_mcp_server(
+    state: tauri::State<'_, crate::state::AppState>,
+    agent_key: String,
+    name: String,
+) -> Result<String, String> {
+    let guard = state.gateway_client.lock().await;
+    let client = guard.as_ref()
+        .ok_or_else(|| "Gateway 未运行".to_string())?;
+    client.mcp_disconnect_server(&agent_key, &name).await
+}
+
+/// List all agent keys (for UI dropdown).
+#[tauri::command]
+pub async fn list_agent_keys() -> Result<Vec<String>, String> {
+    Ok(crate::agent_fs::list_agent_dirs())
+}

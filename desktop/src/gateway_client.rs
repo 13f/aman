@@ -923,6 +923,66 @@ impl GatewayClient {
             Err(status_error("list_idle_availability", resp.status()).await)
         }
     }
+
+    // ── MCP ───────────────────────────────────────────────────────────
+
+    /// List MCP server status for a specific agent.
+    pub async fn mcp_list_servers(&self, agent_key: &str) -> Result<Vec<serde_json::Value>, String> {
+        let resp = self
+            .client
+            .get(self.url(&format!("/mcp/agent/{agent_key}/servers")))
+            .send()
+            .await
+            .map_err(|e| format!("mcp_list_servers request: {e}"))?;
+
+        if resp.status().is_success() {
+            resp.json::<Vec<serde_json::Value>>()
+                .await
+                .map_err(|e| format!("mcp_list_servers decode: {e}"))
+        } else {
+            Err(status_error("mcp_list_servers", resp.status()).await)
+        }
+    }
+
+    /// Connect an agent to an MCP server.
+    pub async fn mcp_connect_server(
+        &self,
+        agent_key: &str,
+        name: &str,
+    ) -> Result<String, String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/mcp/agent/{agent_key}/server/{name}/connect")))
+            .send()
+            .await
+            .map_err(|e| format!("mcp_connect_server request: {e}"))?;
+
+        if resp.status().is_success() {
+            Ok(format!("MCP server '{name}' connected for agent '{agent_key}'"))
+        } else {
+            Err(status_error("mcp_connect_server", resp.status()).await)
+        }
+    }
+
+    /// Disconnect an agent from an MCP server.
+    pub async fn mcp_disconnect_server(
+        &self,
+        agent_key: &str,
+        name: &str,
+    ) -> Result<String, String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/mcp/agent/{agent_key}/server/{name}/disconnect")))
+            .send()
+            .await
+            .map_err(|e| format!("mcp_disconnect_server request: {e}"))?;
+
+        if resp.status().is_success() {
+            Ok(format!("MCP server '{name}' disconnected for agent '{agent_key}'"))
+        } else {
+            Err(status_error("mcp_disconnect_server", resp.status()).await)
+        }
+    }
 }
 
 async fn status_error(context: &str, status: reqwest::StatusCode) -> String {

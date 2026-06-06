@@ -9,6 +9,7 @@ pub mod code_agents;
 pub mod commands;
 pub mod finance_cards;
 pub mod gateway_client;
+pub mod mcp_servers_fs;
 pub mod models;
 pub mod rate_limiter;
 pub mod sse_client;
@@ -240,6 +241,13 @@ pub fn run() {
             commands::remove_finance_card,
             // Plugin UI pages
             commands::get_plugin_pages,
+            // MCP server management
+            commands::list_mcp_servers,
+            commands::create_mcp_server,
+            commands::delete_mcp_server,
+            commands::connect_mcp_server,
+            commands::disconnect_mcp_server,
+            commands::list_agent_keys,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Set the window/dock icon explicitly for dev mode.

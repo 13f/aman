@@ -50,6 +50,7 @@ members = [
   "kernel/daily-life",
   "kernel/memory",
   "kernel/notification",
+  "kernel/mcp-client",
   "kernel/skm-core-patched",
   "kernel/llm-api",
   "kernel/eval",
@@ -88,6 +89,7 @@ default-members = [
   "kernel/work",
   "kernel/memory",
   "kernel/notification",
+  "kernel/mcp-client",
 ]
 
 [workspace.package]

@@ -13,6 +13,7 @@ use kernel::llm::LlmProvider;
 use kernel::memory::MemoryProvider;
 use kernel::trace::TraceStore;
 use kernel::AmanResult;
+use mcp_client::McpClientManager;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,6 +54,8 @@ pub struct AgentRegistry {
     emotion_evaluators: RwLock<HashMap<String, Arc<super::emotion_evaluator::EmotionEvaluator>>>,
     /// Latest emotion IDs indexed by agent_id (read by SSE snapshot).
     emotion_latest: RwLock<HashMap<String, Arc<tokio::sync::Mutex<Option<String>>>>>,
+    /// Per-agent MCP client managers (None = MCP not initialized for this agent).
+    mcp_managers: RwLock<HashMap<String, Arc<mcp_client::McpClientManager>>>,
     bus: Arc<dyn EventBus>,
     /// Skill search index for BoredomActor tag-based skill lookup.
     skill_search: Option<Arc<skill::SkillSearch>>,
@@ -77,6 +80,7 @@ impl AgentRegistry {
             system_states: RwLock::new(HashMap::new()),
             emotion_evaluators: RwLock::new(HashMap::new()),
             emotion_latest: RwLock::new(HashMap::new()),
+            mcp_managers: RwLock::new(HashMap::new()),
             bus,
             skill_search: None,
             skill_registry: None,
@@ -1060,6 +1064,87 @@ impl AgentRegistry {
         }
         if !evaluators.is_empty() {
             tracing::info!(count = evaluators.len(), "emotion evaluators started");
+        }
+    }
+
+    // ── MCP ─────────────────────────────────────────────────────────
+
+    /// Get the MCP client manager for a specific agent.
+    pub async fn get_mcp_manager(
+        &self,
+        agent_id: &str,
+    ) -> Option<Arc<McpClientManager>> {
+        self.mcp_managers.read().await.get(agent_id).cloned()
+    }
+
+    /// Initialize MCP for a specific agent.
+    ///
+    /// Loads global + per-agent configs, creates a [`McpClientManager`],
+    /// and spawns auto-connection in the background.
+    pub async fn init_mcp_for_agent(
+        &self,
+        agent_id: &str,
+        tools: Arc<tool::ToolRegistry>,
+    ) -> Option<Arc<McpClientManager>> {
+        // Check if already initialized
+        {
+            let managers = self.mcp_managers.read().await;
+            if managers.contains_key(agent_id) {
+                return managers.get(agent_id).cloned();
+            }
+        }
+
+        let manager = Arc::new(McpClientManager::new(
+            agent_id.to_string(),
+            tools,
+        ));
+
+        // Store before connecting so the manager is visible
+        self.mcp_managers
+            .write()
+            .await
+            .insert(agent_id.to_string(), Arc::clone(&manager));
+
+        // Spawn auto-connect in background (non-blocking)
+        let mgr = Arc::clone(&manager);
+        tokio::spawn(async move {
+            mgr.connect_all_from_config().await;
+        });
+
+        tracing::info!(agent = %agent_id, "MCP client manager initialized");
+
+        Some(manager)
+    }
+
+    /// Deinitialize MCP for a specific agent.
+    ///
+    /// Disconnects all MCP servers and unregisters their tools.
+    pub async fn deinit_mcp_for_agent(&self, agent_id: &str) {
+        if let Some(manager) = self.mcp_managers.write().await.remove(agent_id) {
+            manager.disconnect_all().await;
+            tracing::info!(agent = %agent_id, "MCP client manager removed");
+        }
+    }
+
+    /// Reload MCP config for a specific agent.
+    ///
+    /// Disconnects current connections and re-connects with updated config.
+    pub async fn reload_mcp_for_agent(&self, agent_id: &str) -> Result<(), String> {
+        let manager = self.get_mcp_manager(agent_id).await.ok_or_else(|| {
+            format!("MCP manager not found for agent '{agent_id}'")
+        })?;
+
+        manager.disconnect_all().await;
+        manager.connect_all_from_config().await;
+
+        Ok(())
+    }
+
+    /// Initialize MCP for all registered agents.
+    pub async fn init_mcp_all(&self, tools: Arc<tool::ToolRegistry>) {
+        let agent_ids: Vec<String> = self.agents.read().await.keys().cloned().collect();
+        for agent_id in &agent_ids {
+            self.init_mcp_for_agent(agent_id, Arc::clone(&tools)).await;
         }
     }
 }

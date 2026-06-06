@@ -159,6 +159,11 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/agent/{agent_id}/status", post(agent_set_status))
         .route("/agent/{agent_id}/reload", post(agent_reload))
         .route("/agents/idle-availability", get(agents_idle_availability))
+        // MCP endpoints (per-agent)
+        .route("/mcp/agent/{agent_key}/servers", get(mcp_list_servers))
+        .route("/mcp/agent/{agent_key}/server/{name}/connect", post(mcp_connect_server))
+        .route("/mcp/agent/{agent_key}/server/{name}/disconnect", post(mcp_disconnect_server))
+        .route("/mcp/agent/{agent_key}/reload", post(mcp_reload))
         .route_layer(middleware::from_fn_with_state(
             runtime.clone(),
             require_api_token,
@@ -4069,4 +4074,110 @@ async fn idle_run(
         })),
     )
         .into_response()
+}
+
+// ── MCP handlers ───────────────────────────────────────────────────
+
+async fn mcp_list_servers(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_key): Path<String>,
+) -> Result<Json<Vec<mcp_client::McpServerStatus>>, (StatusCode, Json<Value>)> {
+    let manager = runtime
+        .agent_registry()
+        .get_mcp_manager(&agent_key)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("MCP manager not found for agent '{agent_key}'")})),
+            )
+        })?;
+
+    let statuses = manager.list_servers().await;
+    Ok(Json(statuses))
+}
+
+async fn mcp_connect_server(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path((agent_key, name)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let manager = runtime
+        .agent_registry()
+        .get_mcp_manager(&agent_key)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("MCP manager not found for agent '{agent_key}'")})),
+            )
+        })?;
+
+    let merged = mcp_client::McpClientManager::load_merged_config(&agent_key).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e})),
+        )
+    })?;
+
+    let config = merged.iter().find(|c| c.name == name).cloned().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("MCP server '{name}' not found in config")})),
+        )
+    })?;
+
+    manager
+        .connect(&config)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e.to_string()})),
+            )
+        })?;
+
+    Ok(Json(json!({"ok": true, "server": name, "agent": agent_key})))
+}
+
+async fn mcp_disconnect_server(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path((agent_key, name)): Path<(String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let manager = runtime
+        .agent_registry()
+        .get_mcp_manager(&agent_key)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": format!("MCP manager not found for agent '{agent_key}'")})),
+            )
+        })?;
+
+    manager.disconnect(&name).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()})),
+        )
+    })?;
+
+    Ok(Json(json!({"ok": true, "server": name, "agent": agent_key})))
+}
+
+async fn mcp_reload(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_key): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    runtime
+        .agent_registry()
+        .reload_mcp_for_agent(&agent_key)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": e})),
+            )
+        })?;
+
+    Ok(Json(json!({"ok": true, "agent": agent_key})))
 }

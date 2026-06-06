@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct QueueDepth {
@@ -294,4 +295,29 @@ pub struct AgentInstanceInfo {
     /// Current anthropomorphic system state: "idle", "working", etc.
     #[serde(default)]
     pub system_state: String,
+}
+
+// ── MCP Server models ──────────────────────────────────────────────
+
+/// An MCP server definition + runtime status (returned to the UI).
+/// Mirrors `mcp_servers_fs::McpServerEntry`.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpServerEntry {
+    pub name: String,
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub headers: BTreeMap<String, String>,
+    pub auto_connect: bool,
+    /// "global" or the agent key.
+    pub source: String,
+    /// Runtime status from gateway.
+    #[serde(default)]
+    pub connected: bool,
+    #[serde(default)]
+    pub tool_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }

@@ -71,11 +71,14 @@
     },
   ];
 
-  // Hide Integration when secrets are read from env vars (Keychain unused).
+  // Hide Providers and Integration when secrets are read from env vars
+  // (Keychain unused — providers/models are configured in config files).
   let visibleMenuGroups = $derived(
     menuGroups.map(g => ({
       ...g,
-      items: g.items.filter(item => !(item.id === "integration" && secretsMode === "env")),
+      items: g.items.filter(item => !(
+        (item.id === "integration" || item.id === "providers") && secretsMode === "env"
+      )),
     })).filter(g => g.items.length > 0)
   );
 

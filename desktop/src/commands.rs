@@ -1725,14 +1725,20 @@ fn provider_env_key(key: &str) -> String {
 }
 
 /// Check whether a provider's API key is available.
-/// Checks Keychain first, then env var as fallback.
+/// Respects secrets_mode: in "env" mode, only checks env vars (no Keychain).
 fn provider_has_api_key(key: &str) -> bool {
-    // Keychain is the primary store
-    let backend = KeychainBackend;
-    if let Ok(Some(_)) = backend.get(&format!("aman.providers.{key}.api_key")) {
-        return true;
+    let use_keyring = config::AmanConfig::from_default_path()
+        .map(|cfg| cfg.runtime.security.secrets_mode.use_keyring())
+        .unwrap_or(true); // default to keyring if config can't be read
+
+    if use_keyring {
+        // Keychain is the primary store
+        let backend = KeychainBackend;
+        if let Ok(Some(_)) = backend.get(&format!("aman.providers.{key}.api_key")) {
+            return true;
+        }
     }
-    // Env var fallback (runtime override)
+    // Env var (primary source in env mode, fallback in keyring mode)
     let env_var = format!("AMAN_PROVIDER_{}_API_KEY", provider_env_key(key));
     std::env::var(env_var).is_ok()
 }
@@ -1880,11 +1886,18 @@ pub async fn has_provider_api_key(key: String) -> Result<bool, String> {
     Ok(provider_has_api_key(&key))
 }
 
-/// Retrieve the API key for a provider, checking Keychain first, then env var.
+/// Retrieve the API key for a provider.
+/// Respects secrets_mode: in "env" mode, only checks env vars (no Keychain).
 fn provider_get_api_key(key: &str) -> Option<String> {
-    let backend = KeychainBackend;
-    if let Ok(Some(val)) = backend.get(&format!("aman.providers.{key}.api_key")) {
-        return Some(val);
+    let use_keyring = config::AmanConfig::from_default_path()
+        .map(|cfg| cfg.runtime.security.secrets_mode.use_keyring())
+        .unwrap_or(true); // default to keyring if config can't be read
+
+    if use_keyring {
+        let backend = KeychainBackend;
+        if let Ok(Some(val)) = backend.get(&format!("aman.providers.{key}.api_key")) {
+            return Some(val);
+        }
     }
     let env_var = format!("AMAN_PROVIDER_{}_API_KEY", provider_env_key(key));
     std::env::var(env_var).ok()
@@ -1911,6 +1924,23 @@ pub async fn list_provider_models(
         .providers
         .get(&provider_key)
         .ok_or_else(|| format!("Provider '{provider_key}' 不存在"))?;
+
+    let secrets_mode = aman_config.runtime.security.secrets_mode;
+
+    // In env mode, skip the remote API call — providers/models are configured
+    // statically in config files (no Keychain access needed).
+    if !secrets_mode.use_keyring() {
+        let mut models: Vec<crate::models::ModelEntry> = provider
+            .models
+            .iter()
+            .map(|m| crate::models::ModelEntry {
+                id: m.id.clone(),
+                model_id: m.model_id.clone(),
+            })
+            .collect();
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+        return Ok(models);
+    }
 
     // Try fetching from the provider's /v1/models endpoint.
     if let Some(api_key) = provider_get_api_key(&provider_key) {
@@ -2040,19 +2070,19 @@ pub async fn list_agents(
         .into_iter()
         .map(|(key, agent)| {
             let summary = crate::agent_fs::soul_summary(&key);
-            // Count session directories on disk (approximate, P4 will use sessions.db).
+            // Count session JSONL files on disk (approximate, P4 will use sessions.db).
             let agent_dir = crate::agent_fs::agents_dir().join(&key).join("sessions");
-            let session_count = if agent_dir.exists() { {
+            let session_count = if agent_dir.exists() {
                 let mut count = 0u64;
                 if let Ok(entries) = std::fs::read_dir(&agent_dir) {
                     for entry in entries.flatten() {
-                        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                        if entry.file_type().is_ok_and(|t| t.is_file()) {
                             count += 1;
                         }
                     }
                 }
                 count
-            } } else { 0 };
+            } else { 0 };
 
             let is_active = active_key.as_deref() == Some(&key);
             crate::models::AgentEntry {

@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Security**: AGPL-3.0 license, log redaction via compile-time `println!`/`eprintln!` prevention
   and `RedactWriter` (7 regex patterns), redaction module in `kernel::redactor`, comprehensive
   security-harness documentation, dev signing script for macOS keychain prompts.
+- **Windows sandbox**: Job Objects + AppContainer isolation in `kernel/sandbox/src/windows.rs`.
+  Phase 1 provides memory limits (`JOB_OBJECT_LIMIT_JOB_MEMORY`) and process-count limits
+  (`JOB_OBJECT_LIMIT_ACTIVE_PROCESS`) via `CREATE_SUSPENDED` + `AssignProcessToJobObject`.
+  Phase 2 AppContainer network isolation framework is in place with well-known capability
+  SIDs defined. Previously Windows was a no-op warn+Ok — now has meaningful resource isolation.
 - **Observability**: SSE connection replacing 5 polling loops, tracing redaction layer,
   `AmanExistence` provenance type, ai signal type registration, `proof.bin` embedded at compile
   time, `TraceStore` queries wired into Reflection, `DeferredTaskQueue` in idle loop.

@@ -90,7 +90,7 @@ Workspace with ~40 crates:
 | `cli` | `kernel/cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
 | `sdk` | `kernel/sdk` | Pub re-export crate for external devs |
 | `skm-core-patched` | `kernel/skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
-| `sandbox` | `kernel/sandbox` | Execution sandbox for tool isolation |
+| `sandbox` | `kernel/sandbox` | OS-level sandbox: Landlock (Linux), Seatbelt (macOS), Job Objects + AppContainer (Windows) |
 
 ### Cognitive Engine Crates (`cognitive/`)
 

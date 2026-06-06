@@ -16,6 +16,9 @@
 pub mod linux;
 pub mod macos;
 
+#[cfg(target_os = "windows")]
+pub mod windows;
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -89,9 +92,17 @@ impl std::fmt::Display for SandboxError {
 /// Attempt to apply sandbox restrictions. Designed to be called from within
 /// a `Command::pre_exec()` closure.
 ///
-/// On Linux: applies Landlock LSM (kernel 5.13+).
-/// On macOS: writes a Seatbelt profile to an env var for sandbox-exec.
-/// On other platforms: warns and returns Ok (sandbox is a no-op).
+/// | Platform | Mechanism            | Applied in          |
+/// |----------|---------------------|---------------------|
+/// | Linux    | Landlock LSM (5.13+) | `pre_exec()` (child) |
+/// | macOS    | Seatbelt profile    | env var (parent)    |
+/// | Windows  | See `windows` module | Before spawn (parent)|
+///
+/// ## Platform Notes
+///
+/// **Windows:** `apply_sandbox()` is a no-op — Job Objects and AppContainer
+/// must be set up in the parent process before `CreateProcess`. Use
+/// [`windows::WindowsSandbox`] directly for Windows isolation.
 ///
 /// # Errors
 /// Returns `SandboxError` if sandbox application fails. Callers may choose
@@ -107,10 +118,21 @@ pub fn apply_sandbox(config: &SandboxConfig) -> Result<(), SandboxError> {
         macos::apply_seatbelt(config)
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = config;
         tracing::warn!("sandbox not supported on this platform — plugin will run unsandboxed");
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config;
+        tracing::warn!(
+            "apply_sandbox() is a no-op on Windows — use windows::WindowsSandbox \
+             in the parent process before Command::spawn() for Job Object + \
+             AppContainer isolation"
+        );
         Ok(())
     }
 }

@@ -130,6 +130,7 @@ tonic = "0.13"
 prost = "0.13"
 rand = "0.8"
 regex = "1"
+windows-sys = "0.59"
 
 [patch.crates-io]
 skm-core = { path = "kernel/skm-core-patched" }

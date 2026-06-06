@@ -252,7 +252,7 @@ See [SECURITY_HARNESS.md](SECURITY_HARNESS.md) for the full security catalog.
 
 | Layer | Mechanisms |
 |-------|-----------|
-| **Plugin Sandbox** | 4-layer isolation: WASM fuel metering (100M instructions) + epoch interruption; OS-level subprocess sandbox (Landlock on Linux, Seatbelt on macOS); capability-based access control with first-time approval + auto-approval on reload; event bus rate limiting + trust-level enforcement (Sandboxed sources blocked from publishing sensitive event types) |
+| **Plugin Sandbox** | 4-layer isolation: WASM fuel metering (100M instructions) + epoch interruption; OS-level subprocess sandbox (Landlock on Linux, Seatbelt on macOS, Job Objects + AppContainer on Windows); capability-based access control with first-time approval + auto-approval on reload; event bus rate limiting + trust-level enforcement (Sandboxed sources blocked from publishing sensitive event types) |
 | **Input** | Three-tier prompt-injection sanitization (block / replace-msg / replace-token); trust-level gates (Trusted / Untrusted / Sandboxed); system prompt hardening |
 | **Execution** | Hardline tool blocks — `rm -rf /`, fork bombs, raw disk writes, permission escalations, `DROP TABLE` — **not approvable**; user auth flow with 60s timeout + per-session cache |
 | **Output** | Fail-closed validation on every LLM reply (secret leak, prompt leak, tool injection); 7-pattern log redaction on every line via `RedactWriter`; `#![deny(unsafe_code)]` across 21+ crates |

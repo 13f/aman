@@ -132,7 +132,20 @@ impl SubprocessPluginBridge {
                 });
             }
         }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        #[cfg(target_os = "windows")]
+        let _windows_sandbox = if let Some(ref sb_config) = sandbox_config {
+            let sandbox = sandbox::windows::WindowsSandbox::create(sb_config)
+                .map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!(
+                        "failed to create Windows sandbox for plugin `{plugin_name}`: {e}"
+                    ),
+                })?;
+            sandbox::windows::WindowsSandbox::configure_command(&mut command);
+            Some(sandbox)
+        } else {
+            None
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         if sandbox_config.is_some() {
             tracing::warn!("sandbox requested but not supported on this platform — plugin will run unsandboxed");
         }
@@ -140,6 +153,22 @@ impl SubprocessPluginBridge {
         let mut child = command.spawn().map_err(|e| kernel::Error::Unrecoverable {
             message: format!("failed to spawn subprocess plugin `{plugin_name}`: {e}"),
         })?;
+
+        // ── Windows: apply Job Object + resume suspended thread ─────
+        #[cfg(target_os = "windows")]
+        if let Some(ref sandbox) = _windows_sandbox {
+            let pid = child.id();
+            sandbox.apply_after_spawn(pid).map_err(|e| kernel::Error::Unrecoverable {
+                message: format!(
+                    "sandbox apply-after-spawn failed for plugin `{plugin_name}` (PID {pid}): {e}"
+                ),
+            })?;
+            tracing::info!(
+                plugin = %plugin_name,
+                pid = pid,
+                "Windows sandbox applied (Job Object + CREATE_SUSPENDED resume)"
+            );
+        }
 
         let stdin = child.stdin.take().ok_or_else(|| kernel::Error::Unrecoverable {
             message: format!("subprocess plugin `{plugin_name}`: stdin not available"),

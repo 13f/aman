@@ -14,10 +14,11 @@ Aman 的四层安全沙箱系统，保护用户本地运行的插件/hooks 免�
 │         ┌───────────────┬──────────────────┐            │
 │         │               │                  │            │
 │  Layer 1: WASM 加固     │  Layer 2: 子进程沙箱         │
-│  • Fuel metering (100M) │  • Landlock (Linux 5.13+) │
-│  • Epoch interruption   │  • Seatbelt (macOS)       │
-│  • 500MB 内存限制        │  • 500MB 内存限制           │
-│  • 1MB 栈深度限制       │  • 网络/进程生成控制         │
+│  • Fuel metering (100M) │  • Landlock (Linux 5.13+)     │
+│  • Epoch interruption   │  • Seatbelt (macOS)          │
+│  • 500MB 内存限制        │  • Job Objects (Windows)     │
+│  • 1MB 栈深度限制       │  • 500MB 内存限制              │
+│                         │  • 网络/进程生成控制           │
 └─────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -81,6 +82,41 @@ macOS 使用 `sandbox-exec` 命令行工具生成动态 Seatbelt profile。
 
 **注意**: macOS 沙箱依赖 `sandbox-exec` 命令可用，当不可用时以 fail-open 模式运行。
 
+### Windows: Job Objects + AppContainer
+
+Windows 使用两种互补的内核机制：
+
+| 机制 | 限制内容 | 需要管理员 |
+|------|---------|----------|
+| **Job Objects** | 内存上限、进程创建数量 | 否 |
+| **AppContainer** | 网络访问（通过 capability SID） | 否 |
+
+**Phase 1 — Job Objects (已实现)**:
+- `JOB_OBJECT_LIMIT_JOB_MEMORY` → `max_memory_mb`
+- `JOB_OBJECT_LIMIT_ACTIVE_PROCESS` = 1 → 禁止子进程生成
+- `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` → 沙箱释放时自动终止所有子进程
+- 通过 `CREATE_SUSPENDED` + `AssignProcessToJobObject` 集成到
+  `std::process::Command` 流程中
+
+**Phase 2 — AppContainer (已预留框架)**:
+- 不含 `internetClient` capability → 所有 `connect()`/`send()` 返回 `WSAEACCES`
+- 文件路径隔离需要目录 ACL 预先配置（Phase 3，需管理员权限）
+
+**集成流程**:
+```
+WindowsSandbox::create(config) → Job Object
+    ↓
+Command::spawn() ← CREATE_SUSPENDED
+    ↓
+AssignProcessToJobObject(job, pid)
+    ↓
+ResumeThread(main_thread)
+```
+
+**注意**: `apply_sandbox()` 在 Windows 上是 no-op — Windows 隔离必须在父进程中
+通过 `WindowsSandbox` 在 `Command::spawn()` 前后应用。调用方应直接使用
+`sandbox::windows::WindowsSandbox`。
+
 ### SandboxConfig
 
 ```rust
@@ -98,6 +134,7 @@ pub struct SandboxConfig {
 - `kernel/sandbox/src/lib.rs` — `SandboxConfig`, `apply_sandbox()`
 - `kernel/sandbox/src/linux.rs` — Landlock 实现
 - `kernel/sandbox/src/macos.rs` — Seatbelt profile 生成器
+- `kernel/sandbox/src/windows.rs` — Job Objects + AppContainer 实现
 - `kernel/plugin/src/bridge.rs` — `SubprocessPluginBridge::spawn()` 接收 sandbox_config
 
 ### 平台支持
@@ -107,6 +144,8 @@ pub struct SandboxConfig {
 | Linux (x86_64, aarch64, kernel 5.13+) | Landlock | ✅ 完整 |
 | Linux (kernel < 5.13) | 无 | ⚠️ 无沙箱，日志警告 |
 | macOS | Seatbelt (sandbox-exec) | ✅ 最佳努力 |
+| Windows (Win8+) | Job Objects + AppContainer | ✅ Phase 1: 资源限制; Phase 2: 网络隔离(预留) |
+| 其他平台 | 无 | ⚠️ 无沙箱，日志警告 |
 | 其他 | 无 | ⚠️ 无沙箱，日志警告 |
 
 ---
@@ -293,7 +332,8 @@ kernel/sandbox/                     # 操作系统级沙箱
 ├── src/
 │   ├── lib.rs                      # SandboxConfig, apply_sandbox()
 │   ├── linux.rs                    # Landlock 实现 (Linux 5.13+)
-│   └── macos.rs                    # Seatbelt 实现 (macOS)
+│   ├── macos.rs                    # Seatbelt 实现 (macOS)
+│   └── windows.rs                  # Job Objects + AppContainer (Windows)
 ```
 
 ---
@@ -312,6 +352,7 @@ kernel/sandbox/                     # 操作系统级沙箱
 - `kernel/sandbox/src/lib.rs` — **新文件**: 平台无关的沙箱接口
 - `kernel/sandbox/src/linux.rs` — **新文件**: Linux Landlock 实现
 - `kernel/sandbox/src/macos.rs` — **新文件**: macOS Seatbelt 实现
+- `kernel/sandbox/src/windows.rs` — **新文件**: Windows Job Objects + AppContainer 实现
 
 ### 插件加载
 - `kernel/plugin/src/lib.rs` — `WasmSecurityConfig`, `PluginSecurityManifest`, `PluginLoader` 能力检查, `PluginManifest` 新增 `security` 字段
@@ -369,6 +410,18 @@ Landlock not supported (kernel < 5.13 or not enabled)
 - 确认 Landlock 已启用: `cat /boot/config-$(uname -r) | grep LANDSOCK`
 - 如果不可用，插件将以无沙箱模式运行 (日志警告)
 
+### Windows Job Object 创建失败
+
+```
+CreateJobObjectW failed: error 5
+```
+
+**原因**: 进程缺少创建 Job Object 所需的权限（通常不应发生，非特权进程即可创建）。
+**解决方案**:
+- 确认程序未在受限的 AppContainer 或容器中运行
+- 确认杀毒软件未拦截 Job Object API 调用
+- 如果持续失败，插件将以无沙箱模式运行（日志警告）
+
 ### macOS sandbox-exec 报错
 
 ```
@@ -404,6 +457,8 @@ Plugin "xxx" requests capabilities but no approval cache configured
 
 1. **gVisor/Firecracker 集成**: 对高风险插件使用微虚拟机级隔离
 2. **Landlock 网络规则**: 当 kernel 6.7+ 普及后，添加 `LANDLOCK_ACCESS_NET_BIND_TCP` 等网络限制
-3. **Plugin Catalog**: 集中管理的已审核插件目录，预审批已知插件的能力
-4. **Hook 脚本沙箱**: 将 `ScriptHook` (`kernel/hook/src/lib.rs`) 也纳入沙箱保护
-5. **Seccomp-BPF**: 对子进程插件添加系统调用过滤
+3. **Windows AppContainer 网络隔离**: 集成 `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`，通过 `internetClient` capability 控制网络访问
+4. **Windows AppContainer 文件隔离 (Phase 3)**: 通过目录 ACL 动态授权 `allowed_read_dirs` / `allowed_write_dirs`
+5. **Plugin Catalog**: 集中管理的已审核插件目录，预审批已知插件的能力
+6. **Hook 脚本沙箱**: 将 `ScriptHook` (`kernel/hook/src/lib.rs`) 也纳入沙箱保护
+7. **Seccomp-BPF**: 对子进程插件添加系统调用过滤

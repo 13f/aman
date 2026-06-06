@@ -200,8 +200,7 @@ impl AgentRegistry {
                     .runtime
                     .idle
                     .boredom
-                    .as_ref()
-                    .or(idle_personality.boredom.as_ref());
+                    .as_ref();
                 let boredom_actor = boredom_cfg.and_then(|cfg| {
                     match (&self.skill_search, &self.skill_registry) {
                         (Some(ss), Some(sr)) => {
@@ -367,8 +366,7 @@ impl AgentRegistry {
                 .runtime
                 .idle
                 .boredom
-                .as_ref()
-                .or(personality.boredom.as_ref());
+                .as_ref();
             let boredom_actor = boredom_cfg.and_then(|cfg| {
                 match (&self.skill_search, &self.skill_registry) {
                     (Some(ss_idx), Some(sr)) => {

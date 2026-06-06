@@ -251,7 +251,6 @@ mod tests {
                 pollute_chat_history: false,
                 suspend_on_user_input: true,
             },
-            boredom: None,
         }
     }
 

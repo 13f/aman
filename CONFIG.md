@@ -77,18 +77,18 @@ idle:
     context_isolation:
       pollute_chat_history: false
       suspend_on_user_input: true
-    boredom:                      # Optional boredom random-action config
-      trigger_poll: 5
-      activities:
-        - tag: idle
-          weight: 0.5
-        - tag: work
-          weight: 0.3
-      work_pressure:              # Optional dynamic weight scaling
-        target_tag: work          # Which activity tag gets pressure boost
-        curve: linear             # "linear" | "sigmoid"
-        slope: 0.3
-        max_multiplier: 10.0
+  boredom:                        # Optional boredom random-action config
+    trigger_poll: 5
+    activities:
+      - tag: idle
+        weight: 0.5
+      - tag: work
+        weight: 0.3
+    work_pressure:                # Optional dynamic weight scaling
+      target_tag: work            # Which activity tag gets pressure boost
+      curve: linear               # "linear" | "sigmoid"
+      slope: 0.3
+      max_multiplier: 10.0
   arousal:
     initial_value: 1.0
     half_life_secs: 900

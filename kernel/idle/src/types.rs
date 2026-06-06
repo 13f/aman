@@ -137,9 +137,6 @@ pub struct IdlePersonality {
     pub reflection_breaker: ReflectionBreaker,
     /// 上下文隔离配置
     pub context_isolation: ContextIsolation,
-    /// Boredom 随机行动配置
-    #[serde(default)]
-    pub boredom: Option<BoredomConfig>,
 }
 
 impl Default for IdlePersonality {
@@ -166,7 +163,6 @@ impl Default for IdlePersonality {
             chat_mode: ChatMode::default(),
             reflection_breaker: ReflectionBreaker::default(),
             context_isolation: ContextIsolation::default(),
-            boredom: None,
         }
     }
 }
@@ -255,7 +251,6 @@ impl ChatMode {
                 pollute_chat_history: false,
                 suspend_on_user_input: true,
             },
-            boredom: None,
         }
     }
 }
@@ -546,7 +541,6 @@ mod tests {
                 pollute_chat_history: false,
                 suspend_on_user_input: true,
             },
-            boredom: None,
         };
         assert_eq!(p.resolve(0), IdleKind::Daze);
         assert_eq!(p.resolve(1), IdleKind::Boredom);

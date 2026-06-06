@@ -694,18 +694,17 @@ Depth 200 → Incubation   孵化（后台线程）
 
 ```yaml
 idle:
-  personality:
-    boredom:
-      trigger_poll: 3
-      activities:
-        - tag: idle
-          weight: 0.75          # 75% — 什么都不做，继续推进深度
-        - tag: work
-          weight: 0.10          # 10% — 随机一个 work + idle_run skill
-        - tag: internet
-          weight: 0.08          # 8% — 随机一个 internet + idle_run skill
-        - tag: entertainment
-          weight: 0.07          # 7% — 随机一个 entertainment + idle_run skill
+  boredom:
+    trigger_poll: 3
+    activities:
+      - tag: idle
+        weight: 0.75          # 75% — 什么都不做，继续推进深度
+      - tag: work
+        weight: 0.10          # 10% — 随机一个 work + idle_run skill
+      - tag: internet
+        weight: 0.08          # 8% — 随机一个 internet + idle_run skill
+      - tag: entertainment
+        weight: 0.07          # 7% — 随机一个 entertainment + idle_run skill
 ```
 
 #### 执行流程
@@ -759,7 +758,7 @@ tags: [work, idle_run]
 
 #### 扩展：添加新的 Boredom 标签
 
-1. 在 `idle.personality.boredom.activities` 中添加新 tag 和权重
+1. 在 `idle.boredom.activities` 中添加新 tag 和权重
 2. 创建一个 Skill，在 tags 中包含该 tag + `idle_run`
 3. 无需修改任何系统代码——BoredomActor 自动发现并随机匹配
 

@@ -212,15 +212,16 @@
    *  Returns empty string when emotions aren't configured or the state
    *  doesn't map to a known emotion — the caller falls back to emoji.
    *
-   *  Priority: LLM emotion (from gateway) > state-based mapping. */
+   *  Priority: state-based mapping > LLM emotion (fallback only). */
   function getEmotionImage(key: string, stateOrKind: string): string {
     const cfg = emotionsConfigs[key];
-    // When the LLM has evaluated an emotion, use it directly.
+    // State-based mapping is primary — deterministic and never stale.
+    const fromState = resolveEmotionImage(cfg, stateOrKind);
+    if (fromState) return fromState;
+    // LLM emotion as fallback for unmapped states.
     const llmId = llmEmotionIds[key];
-    if (llmId) {
-      return resolveEmotionImage(cfg, llmId) ?? "";
-    }
-    return resolveEmotionImage(cfg, stateOrKind) ?? "";
+    if (llmId) return resolveEmotionImage(cfg, llmId) ?? "";
+    return "";
   }
 
   const SYSTEM_STATE_LABEL: Record<string, string> = {
@@ -393,14 +394,10 @@
       const nextEmotions: Record<string, string> = {};
       for (const a of list) {
         nextStates[a.agent_id] = a.system_state;
-        if (a.emotion_id) {
-          nextEmotions[a.agent_id] = a.emotion_id;
-        }
+        nextEmotions[a.agent_id] = a.emotion_id ?? "";
       }
       systemStates = nextStates;
-      if (Object.keys(nextEmotions).length > 0) {
-        llmEmotionIds = { ...llmEmotionIds, ...nextEmotions };
-      }
+      llmEmotionIds = { ...llmEmotionIds, ...nextEmotions };
     }));
   });
 
@@ -451,7 +448,7 @@
                 emoji={st.emoji}
                 imageSrc={imgSrc}
                 ringColors={COLORS[st.mode]}
-                size={100}
+                size={165}
                 showLabel={false}
                 showInfo={false}
                 active={!!agent.provider}
@@ -460,7 +457,7 @@
               {@const imgSrc = getEmotionImage(agent.key, ss)}
               <div
                 class="state-visual {STATE_ANIM[ss] ?? ''}"
-                style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:100px; height:100px;"
+                style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:165px; height:165px;"
               >
                 {#if imgSrc}
                   <img class="state-emotion-img" src={imgSrc} alt="" />
@@ -470,14 +467,17 @@
               </div>
             {/if}
             </div>
-            <span class="agent-avatar-name">{agent.display_name}</span>
-            {#if !agent.provider}
-              <span class="badge warn" style="margin-top:2px;font-size:10px;">needs config</span>
-            {:else}
-              <span class="system-state-badge {SYSTEM_STATE_CLASS[ss] ?? 'ss-idle'}">
-                {SYSTEM_STATE_LABEL[ss] ?? ss}
-              </span>
-            {/if}
+            <div class="agent-card-info">
+              <span class="agent-avatar-name">{agent.display_name}</span>
+              {#if !agent.provider}
+                <span class="badge warn" style="font-size:10px;">needs config</span>
+              {:else}
+                <span class="agent-status-row {SYSTEM_STATE_CLASS[ss] ?? 'ss-idle'}">
+                  <span class="agent-status-dot"></span>
+                  {SYSTEM_STATE_LABEL[ss] ?? ss}
+                </span>
+              {/if}
+            </div>
           </button>
         {/each}
       </div>
@@ -650,30 +650,66 @@
 
   .agent-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+    gap: 18px;
+    padding-top: 80px;
   }
 
   .agent-avatar-wrap {
-    margin-top: -5px;
+    margin-top: -75px;
+    filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.5));
+    transition: transform 0.25s ease, filter 0.25s;
+  }
+
+  .agent-avatar-card:hover .agent-avatar-wrap {
+    transform: scale(1.04);
+    filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.6));
   }
 
   .agent-avatar-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    padding: 18px 8px 10px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    gap: 0;
+    padding: 0 10px 20px;
+    background: color-mix(in srgb, var(--bg-card) 78%, transparent);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid color-mix(in srgb, var(--fg-dim) 10%, transparent);
+    border-radius: 20px;
     cursor: pointer;
-    transition: border-color 0.2s, transform 0.15s;
+    transition: border-color 0.25s, transform 0.2s, box-shadow 0.25s;
     text-align: center;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.02),
+      0 20px 40px -12px rgba(0, 0, 0, 0.5),
+      0 0 60px -20px rgba(91, 125, 245, 0.08);
   }
+
+  /* Subtle top accent glow line */
+  .agent-avatar-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 12px; right: 12px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 15%, transparent), transparent);
+    border-radius: 1px;
+    transition: opacity 0.25s;
+    opacity: 0.5;
+  }
+  .agent-avatar-card:hover::before {
+    opacity: 1;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 30%, transparent), transparent);
+  }
+
   .agent-avatar-card:hover {
-    border-color: var(--accent);
-    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--fg-dim) 18%, transparent);
+    transform: translateY(-4px);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 24px 48px -12px rgba(0, 0, 0, 0.6),
+      0 0 80px -16px rgba(91, 125, 245, 0.18);
   }
 
   .agent-avatar-card.needs-config {
@@ -683,15 +719,92 @@
 
   .agent-avatar-card.needs-config:hover {
     opacity: 0.65;
-    border-color: var(--yellow);
+    border-color: color-mix(in srgb, var(--yellow) 25%, transparent);
+  }
+
+  .agent-card-info {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
   }
 
   .agent-avatar-name {
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
     color: var(--fg);
     line-height: 1.3;
     word-break: break-word;
+    letter-spacing: 0.01em;
+  }
+
+  /* Status row — dot + label */
+  .agent-status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    transition: color 0.3s;
+    line-height: 1;
+  }
+  .agent-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+
+  /* Status colours — shared between dot and label */
+  .ss-idle .agent-status-dot,
+  .ss-idle { color: var(--accent); }
+  .ss-idle .agent-status-dot { background: var(--accent); }
+
+  .ss-working .agent-status-dot,
+  .ss-working { color: var(--green); }
+  .ss-working .agent-status-dot {
+    background: var(--green);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--green) 60%, transparent);
+    animation: statusPulse 2s ease-in-out infinite;
+  }
+
+  .ss-studying .agent-status-dot,
+  .ss-studying { color: #b39dfc; }
+  .ss-studying .agent-status-dot {
+    background: #b39dfc;
+    box-shadow: 0 0 8px rgba(167, 139, 250, 0.5);
+    animation: statusPulse 3s ease-in-out infinite;
+  }
+
+  .ss-dailylife .agent-status-dot,
+  .ss-dailylife { color: var(--yellow); }
+  .ss-dailylife .agent-status-dot {
+    background: var(--yellow);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--yellow) 50%, transparent);
+    animation: statusPulse 3.5s ease-in-out infinite;
+  }
+
+  .ss-waiting .agent-status-dot,
+  .ss-waiting { color: #f59e0b; }
+  .ss-waiting .agent-status-dot {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+    animation: statusPulse 2.5s ease-in-out infinite;
+  }
+
+  .ss-chatting .agent-status-dot,
+  .ss-chatting { color: #38dff0; }
+  .ss-chatting .agent-status-dot {
+    background: #38dff0;
+    box-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
+    animation: statusPulse 1.5s ease-in-out infinite;
+  }
+
+  @keyframes statusPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.55; transform: scale(1.35); }
   }
 
   /* Finance cards */
@@ -1075,53 +1188,6 @@
     color: #fff;
   }
 
-  /* System state badges */
-  .system-state-badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 10px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    margin-top: 2px;
-    transition: background 0.3s, color 0.3s;
-  }
-  .ss-idle {
-    background: var(--accent-muted);
-    color: var(--accent);
-  }
-  .ss-working {
-    background: var(--green-muted);
-    color: var(--green);
-    animation: workingPulse 2s ease-in-out infinite;
-  }
-  .ss-studying {
-    background: rgba(167, 139, 250, 0.12);
-    color: #b39dfc;
-  }
-  .ss-dailylife {
-    background: var(--yellow-muted);
-    color: var(--yellow);
-  }
-  .ss-waiting {
-    background: rgba(245, 158, 11, 0.12);
-    color: #f59e0b;
-    animation: waitingPulse 2.5s ease-in-out infinite;
-  }
-  .ss-chatting {
-    background: rgba(34, 211, 238, 0.12);
-    color: #38dff0;
-    animation: workingPulse 2s ease-in-out infinite;
-  }
-
-  @keyframes workingPulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.65; }
-  }
-  @keyframes waitingPulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
 
   /* State visual — emoji circle for non-idle states */
   .state-visual {
@@ -1130,12 +1196,13 @@
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    background: color-mix(in srgb, var(--st-color, #6c8cff) 12%, transparent);
-    border: 4px solid color-mix(in srgb, var(--st-color, #6c8cff) 35%, transparent);
+    background: color-mix(in srgb, var(--st-color, #6c8cff) 14%, transparent);
+    border: 3px solid color-mix(in srgb, var(--st-color, #6c8cff) 35%, transparent);
     flex-shrink: 0;
+    box-shadow: 0 0 30px color-mix(in srgb, var(--st-color, #6c8cff) 15%, transparent);
   }
   .state-emoji {
-    font-size: 64px;
+    font-size: 105px;
     line-height: 1;
     user-select: none;
   }

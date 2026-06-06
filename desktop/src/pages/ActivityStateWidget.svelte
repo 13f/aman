@@ -188,7 +188,8 @@
   // Resolve the emotion image for the current display state.
   // Priority: LLM emotion (from gateway) > state-based mapping.
   let emotionKind = $derived.by(() => {
-    if (llmEmotionId) return llmEmotionId;
+    // LLM emotion only applies to active states — idle uses the event-driven sub-mode kind.
+    if (isActive && llmEmotionId) return llmEmotionId;
     if (displayState === "idle") return idleSnap?.kind ?? "idle";
     if (displayState === "reflection") return "reflection";
     return displayState; // active system state key
@@ -243,9 +244,7 @@
       for (const a of list) {
         if (!agentId || a.agent_id === agentId) {
           systemState = a.system_state;
-          if (a.emotion_id) {
-            llmEmotionId = a.emotion_id;
-          }
+          llmEmotionId = a.emotion_id ?? "";
           break;
         }
       }
@@ -259,50 +258,114 @@
 
 {#if visible}
   <div class="activity-widget" class:active={runtimeRunning} class:compact>
-    {#if agentName && !compact}
-      <div class="agent-label">{agentName}</div>
+    {#if !compact}
+      <span class="aw-name" title={agentName}>{agentName}</span>
+      <div class="aw-ring-wrap">
+        <IdleRing
+          mode={displayState}
+          {outerPct}
+          {innerPct}
+          {emoji}
+          imageSrc={emotionImage}
+          {ringColors}
+          size={155}
+          active={runtimeRunning}
+          showLabel={false}
+          showInfo={false}
+        />
+      </div>
+      <span class="aw-state-label">{label}</span>
+    {:else}
+      <IdleRing
+        mode={displayState}
+        {outerPct}
+        {innerPct}
+        {emoji}
+        imageSrc={emotionImage}
+        {ringColors}
+        size={36}
+        active={runtimeRunning}
+        showLabel={false}
+        showInfo={false}
+      />
     {/if}
 
-    <IdleRing
-      mode={displayState}
-      {outerPct}
-      {innerPct}
-      {emoji}
-      imageSrc={emotionImage}
-      {label}
-      {info1}
-      {info2}
-      {ringColors}
-      size={compact ? 36 : 110}
-      active={runtimeRunning}
-      showLabel={!compact}
-      showInfo={!compact && !isActive}
-    />
-
+    {#if !compact && !isActive && (info1 || info2)}
+      <div class="aw-tooltip">
+        <span class="aw-ti">{info1}</span>
+        <span class="aw-ti">{info2}</span>
+      </div>
+    {/if}
   </div>
 {/if}
 
 <style>
   .activity-widget {
+    position: relative;
     margin-top: auto;
-    padding: 14px 16px 20px;
+    padding: 12px 14px 14px 16px;
     border-top: 1px solid var(--border);
-    text-align: center;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
+    gap: 6px;
   }
   .activity-widget.compact {
     padding: 8px 4px;
+    gap: 0;
+    align-items: center;
   }
-  .agent-label {
+
+  /* ── Name: top row, left ── */
+  .aw-name {
     font-size: 11px;
     font-weight: 600;
     color: var(--accent);
-    margin-bottom: 8px;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* ── Ring: middle row, centered ── */
+  .aw-ring-wrap {
+    align-self: center;
+  }
+
+  /* ── State: bottom row, left ── */
+  .aw-state-label {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--fg-dim);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+
+  /* ── Tooltip ── */
+  .aw-tooltip {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-card);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 6px 12px;
+    display: flex;
+    gap: 14px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s;
+    box-shadow: var(--shadow-lg);
+    z-index: 10;
+  }
+  .activity-widget:hover .aw-tooltip {
+    opacity: 1;
+  }
+  .aw-ti {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--fg-dim);
   }
 </style>

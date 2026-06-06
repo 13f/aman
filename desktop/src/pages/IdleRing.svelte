@@ -1,6 +1,13 @@
 <script lang="ts">
   type Mode = "idle" | "reflection" | "processing";
 
+  // Stable unique id per component instance for SVG gradient references.
+  let _uid = "";
+  function uid(): string {
+    if (!_uid) _uid = "ir" + Math.random().toString(36).slice(2, 8);
+    return _uid;
+  }
+
   let {
     mode = "idle" as Mode,
     outerPct = 0,
@@ -33,7 +40,7 @@
   } = $props();
 
   const R_OUTER = 48;
-  const R_INNER = 34;
+  const R_INNER = 41;
   const C_OUTER = 2 * Math.PI * R_OUTER;
   const C_INNER = 2 * Math.PI * R_INNER;
 
@@ -44,25 +51,43 @@
   let outerDash = $derived(dash(C_OUTER, outerPct));
   let innerDash = $derived(dash(C_INNER, innerPct));
   let scale = $derived(size / 110);
+
+  // Glow colour derived from the outer ring colour.
+  let glowColor = $derived(ringColors.outer);
 </script>
 
 <div
   class="idle-ring"
   class:dimmed={!active}
-  style="width: {size}px; height: {size}px;"
+  style="width: {size}px; height: {size}px; --glow-c: {glowColor};"
 >
   <svg viewBox="0 0 110 110" class="ring-svg" width={size} height={size}>
-    <!-- track rings -->
-    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke="var(--border)" stroke-width="6" />
-    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke="var(--border)" stroke-width="6" />
+    <defs>
+      <linearGradient id="grad-outer-{uid()}" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color={ringColors.outer} stop-opacity="0.25" />
+        <stop offset="100%" stop-color={ringColors.outer} stop-opacity="0.6" />
+      </linearGradient>
+      <linearGradient id="grad-inner-{uid()}" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color={ringColors.inner} stop-opacity="0.25" />
+        <stop offset="100%" stop-color={ringColors.inner} stop-opacity="0.5" />
+      </linearGradient>
+    </defs>
+
+    <!-- track rings — barely there -->
+    <circle cx="55" cy="55" r={R_OUTER} fill="none"
+      stroke="var(--border)" stroke-width="1.5" opacity="0.5" />
+    <circle cx="55" cy="55" r={R_INNER} fill="none"
+      stroke="var(--border)" stroke-width="1.5" opacity="0.5" />
 
     <!-- outer ring (progress) -->
-    <circle cx="55" cy="55" r={R_OUTER} fill="none" stroke={ringColors.outer} stroke-width="6"
+    <circle cx="55" cy="55" r={R_OUTER} fill="none"
+      stroke="url(#grad-outer-{uid()})" stroke-width="2"
       stroke-dasharray={C_OUTER} stroke-dashoffset={outerDash}
       stroke-linecap="round" transform="rotate(-90 55 55)" />
 
     <!-- inner ring (secondary) -->
-    <circle cx="55" cy="55" r={R_INNER} fill="none" stroke={ringColors.inner} stroke-width="6"
+    <circle cx="55" cy="55" r={R_INNER} fill="none"
+      stroke="url(#grad-inner-{uid()})" stroke-width="2"
       stroke-dasharray={C_INNER} stroke-dashoffset={innerDash}
       stroke-linecap="round" transform="rotate(-90 55 55)" />
   </svg>
@@ -104,6 +129,8 @@
   }
   .ring-svg {
     display: block;
+    filter: drop-shadow(0 0 4px color-mix(in srgb, var(--glow-c, #6c8cff) 10%, transparent));
+    transition: filter 0.5s;
   }
   .ring-center {
     position: absolute;
@@ -116,11 +143,12 @@
     line-height: 1;
   }
   .ring-emotion-img {
-    width: 50%;
-    height: 50%;
+    width: 65%;
+    height: 65%;
     object-fit: contain;
     border-radius: 50%;
     pointer-events: none;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
   }
   .label-text {
     font-size: 10px;

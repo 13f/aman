@@ -94,27 +94,28 @@ export function resolveEmotionImage(
 ): string | null {
   if (!config) return null;
 
-  // Try a direct lookup first (supports bare emotion IDs from the gateway).
-  let emotionId = STATE_TO_EMOTION[stateOrKind] ?? null;
+  const lower = stateOrKind.toLowerCase();
 
-  // If no direct mapping, try tag-based fuzzy match.
-  if (!emotionId) {
-    const lower = stateOrKind.toLowerCase();
-    for (const item of config.items) {
-      if (
-        item.id === lower ||
-        item.tags.some((t) => t.toLowerCase() === lower)
-      ) {
-        emotionId = item.id;
-        break;
-      }
+  // 1. Search the emotion config directly — match by id or tag.
+  //    This lets the user's data.json define its own vocabulary without
+  //    being constrained by the STATE_TO_EMOTION mapping table.
+  for (const item of config.items) {
+    if (
+      item.id === lower ||
+      item.tags.some((t) => t.toLowerCase() === lower)
+    ) {
+      return item.data_url;
     }
   }
 
-  if (!emotionId) return null;
+  // 2. Fall back to the hard-coded state→emotion mapping (e.g. "sleep" → "sleeping").
+  const mappedId = STATE_TO_EMOTION[stateOrKind];
+  if (mappedId) {
+    const entry = config.items.find((e) => e.id === mappedId);
+    if (entry) return entry.data_url;
+  }
 
-  const entry = config.items.find((e) => e.id === emotionId);
-  return entry?.data_url ?? null;
+  return null;
 }
 
 /** Build a lookup map from emotion ID → data_url for O(1) access. */

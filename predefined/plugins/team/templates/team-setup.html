@@ -144,7 +144,7 @@
       <span class="hint" style="display:inline;">— drag to reorder (not yet, use remove + add)</span>
     </label>
     <div class="preset-btns">
-      <button class="preset-btn" onclick="loadPreset('simple')">Simple (Todo, Doing, Done)</button>
+      <button class="preset-btn" onclick="loadPreset('simple')">Simple (Todo, Doing, Review, Done)</button>
       <button class="preset-btn" onclick="loadPreset('standard')">Standard (Backlog, Todo, In Progress, Review, Done)</button>
       <button class="preset-btn" onclick="loadPreset('dev')">Dev (Backlog, WIP, Review, QA, Done)</button>
     </div>
@@ -245,7 +245,8 @@ function loadPreset(name) {
   if (name === "simple") {
     stages = [
       {id: "todo", name: "Todo", allowed_next: ["doing"]},
-      {id: "doing", name: "Doing", allowed_next: ["done"]},
+      {id: "doing", name: "Doing", allowed_next: ["review"]},
+      {id: "review", name: "Review", allowed_next: ["done"]},
       {id: "done", name: "Done", allowed_next: []}
     ];
   } else if (name === "standard") {

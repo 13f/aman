@@ -285,7 +285,8 @@ async function createProject() {
         work_dir: workDir,
         stages: [
           {id: "todo", name: "Todo", allowed_next: ["doing"]},
-          {id: "doing", name: "Doing", allowed_next: ["done"]},
+          {id: "doing", name: "Doing", allowed_next: ["review"]},
+          {id: "review", name: "Review", allowed_next: ["done"]},
           {id: "done", name: "Done", allowed_next: []}
         ],
         initial_stage: "todo"

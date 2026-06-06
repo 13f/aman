@@ -1,0 +1,30 @@
+name: "startup"
+version: "0.1.0"
+description: "Startup idea validation & strategy — evaluate, strategize, execute, reflect"
+isolation: subprocess
+runtime: python3
+min_version: ">=3.11"
+entrypoint: "main.py"
+lifecycle:
+  auto_start: true
+ui:
+  pages:
+    - "startup"
+  events:
+    - "startup:analyzed"
+    - "startup:scored"
+    - "startup:decided"
+    - "startup:pivot"
+
+# startup plugin needs event pub/sub for analysis milestones, and filesystem
+# access for its SurrealDB embedded database. Communication is via stdin/stdout
+# JSON-RPC so no network access is needed.
+security:
+  requested_capabilities:
+    publish_events: true
+    subscribe_events: true
+    read_paths:
+      - "templates/"
+      - "static/"
+    write_paths:
+      - "data/"

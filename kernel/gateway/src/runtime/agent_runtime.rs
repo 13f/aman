@@ -272,6 +272,10 @@ impl AgentRuntimeBuilder {
             agent_registry: OnceLock::new(),
         });
         let _ = tools.register(Arc::clone(&read_skill_tool) as Arc<dyn Tool>);
+        let llm_chat_tool = Arc::new(LlmChatTool {
+            agent_registry: OnceLock::new(),
+        });
+        let _ = tools.register(Arc::clone(&llm_chat_tool) as Arc<dyn Tool>);
         let skill_search = Arc::new(skill::SkillSearch::new());
         let skill_versions = Arc::new(skill::SkillVersionManager::from_root(
             self.runtime_dir.join("skill-history"),
@@ -289,7 +293,9 @@ impl AgentRuntimeBuilder {
         let workflow_engine = Arc::new(WorkflowEngine::new());
         super::session::SessionManager::register_workflow(&workflow_engine);
 
-        let cron_manager = CronManager::with_runtime_dir(self.runtime_dir.clone());
+        let cron_manager = Arc::new(Mutex::new(
+            CronManager::with_runtime_dir(self.runtime_dir.clone()),
+        ));
         let plugin_installer = Arc::new(PluginInstaller::new(self.runtime_dir.join("plugins")));
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
@@ -544,6 +550,7 @@ impl AgentRuntimeBuilder {
         let agent_registry = Arc::new(agent_registry_inner);
         // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
         read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
+        llm_chat_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Plugin loading ──────────────────────────────────────────
         let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
@@ -668,6 +675,8 @@ impl AgentRuntimeBuilder {
             Arc::clone(&agent_registry),
             Arc::clone(&bus),
         ));
+        rpc_handler.set_notifications(Arc::clone(&notifications));
+        rpc_handler.set_cron_manager(Arc::clone(&cron_manager));
         let mut plugin_loader_builder = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
@@ -1908,7 +1917,7 @@ impl AgentRuntimeBuilder {
             skill_thread: Mutex::new(None),
             workflow_engine,
             plugin_loader: Mutex::new(plugin_loader),
-            cron_manager: Mutex::new(cron_manager),
+            cron_manager: Arc::clone(&cron_manager),
             plugin_installer,
             dlq,
             index_store,
@@ -2117,16 +2126,158 @@ impl Tool for ReadSkillTool {
     }
 }
 
+/// Tool that lets plugins (and agents) call LLM chat completion through
+/// a specific agent's LLM provider.  Registered at startup; the
+/// `agent_registry` is wired after creation via [`LlmChatTool::set_agent_registry`].
+struct LlmChatTool {
+    agent_registry: OnceLock<Arc<super::AgentRegistry>>,
+}
+
+impl LlmChatTool {
+    fn set_agent_registry(&self, registry: Arc<super::AgentRegistry>) {
+        let _ = self.agent_registry.set(registry);
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for LlmChatTool {
+    fn name(&self) -> &str {
+        "llm_chat"
+    }
+
+    fn mode(&self) -> ToolMode {
+        ToolMode::Local
+    }
+
+    fn description(&self) -> &str {
+        "Call an agent's LLM provider for chat completion. Use this to run structured analysis, generate text, or evaluate prompts without going through the full agent ReAct loop. Requires agent_id to select which agent's LLM config to use."
+    }
+
+    fn parameters(&self) -> &JsonSchema {
+        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "required": ["agent_id", "user_prompt"],
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Which agent's LLM provider to use"
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "System instructions for the model"
+                    },
+                    "user_prompt": {
+                        "type": "string",
+                        "description": "The user message / task description"
+                    },
+                    "temperature": {
+                        "type": "number",
+                        "description": "Sampling temperature (0.0–2.0, default 0.3)"
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum tokens in the response (default 4000)"
+                    }
+                }
+            }))
+        });
+        &PARAMS
+    }
+
+    fn returns(&self) -> &JsonSchema {
+        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "content": { "type": "string" },
+                    "finish_reason": { "type": "string" }
+                }
+            }))
+        });
+        &RETURNS
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        _ctx: ToolContext,
+    ) -> kernel::AmanResult<serde_json::Value> {
+        let agent_id = params
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::ConfigInvalid {
+                message: "agent_id is required".to_owned(),
+            })?;
+        let system_prompt = params
+            .get("system_prompt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let user_prompt = params
+            .get("user_prompt")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| Error::ConfigInvalid {
+                message: "user_prompt is required".to_owned(),
+            })?;
+        let max_tokens = params
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(4000) as u32;
+
+        let provider = self
+            .agent_registry
+            .get()
+            .and_then(|reg| pollster::block_on(reg.get_llm_provider(agent_id)))
+            .ok_or_else(|| Error::NotFound {
+                name: format!("LLM provider for agent '{agent_id}'"),
+            })?;
+
+        let req = kernel::llm::LlmChatRequest {
+            model: String::new(),
+            system_prompt: system_prompt.to_owned(),
+            messages: vec![kernel::react::ChatMessage::user(user_prompt.to_owned())],
+            tools: vec![],
+            max_output_tokens: max_tokens,
+        };
+
+        let resp = pollster::block_on(provider.chat_completion(req, None)).map_err(|e| {
+            Error::Unrecoverable {
+                message: format!("llm_chat failed: {e}"),
+            }
+        })?;
+
+        Ok(serde_json::json!({
+            "content": resp.content,
+            "finish_reason": resp.finish_reason,
+        }))
+    }
+}
+
 /// JSON-RPC method handler for subprocess plugins.
 /// Gives plugins access to AgentRegistry and EventBus.
 struct RuntimeJsonRpcHandler {
     agent_registry: Arc<super::AgentRegistry>,
     bus: Arc<dyn EventBus>,
+    notifications: OnceLock<Arc<notification::NotificationStore>>,
+    cron_manager: OnceLock<Arc<Mutex<CronManager>>>,
 }
 
 impl RuntimeJsonRpcHandler {
     fn new(agent_registry: Arc<super::AgentRegistry>, bus: Arc<dyn EventBus>) -> Self {
-        Self { agent_registry, bus }
+        Self {
+            agent_registry,
+            bus,
+            notifications: OnceLock::new(),
+            cron_manager: OnceLock::new(),
+        }
+    }
+
+    fn set_notifications(&self, store: Arc<notification::NotificationStore>) {
+        let _ = self.notifications.set(store);
+    }
+
+    fn set_cron_manager(&self, cm: Arc<Mutex<CronManager>>) {
+        let _ = self.cron_manager.set(cm);
     }
 }
 
@@ -2322,9 +2473,123 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 tracing::info!(plugin = %plugin_name, workflow = %name, "plugin registered workflow");
-                // Workflow registration is handled by the WorkflowEngine.
-                // For now, accept the definition and log it.
                 Ok(serde_json::json!({"ok": true, "workflow": name}))
+            }
+            "aman.send_notification" => {
+                let store = self.notifications.get().ok_or_else(|| {
+                    kernel::Error::Unrecoverable {
+                        message: "notification store not initialized".to_owned(),
+                    }
+                })?;
+                let title = params
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let message = params
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let severity = params
+                    .get("severity")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("info");
+                let category = params
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("plugin");
+                let action_label = params
+                    .get("action_label")
+                    .and_then(|v| v.as_str());
+                let action_route = params
+                    .get("action_route")
+                    .and_then(|v| v.as_str());
+                let n = notification::Notification {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    severity: match severity {
+                        "critical" => notification::Severity::Critical,
+                        "warning" => notification::Severity::Warning,
+                        _ => notification::Severity::Info,
+                    },
+                    category: match category {
+                        "plugin" => notification::Category::Plugin,
+                        "idle" => notification::Category::Idle,
+                        "security" => notification::Category::Security,
+                        "workflow" => notification::Category::Workflow,
+                        "llm" => notification::Category::Llm,
+                        "skill" => notification::Category::Skill,
+                        _ => notification::Category::Plugin,
+                    },
+                    title: title.to_owned(),
+                    message: message.to_owned(),
+                    dismissed: false,
+                    dismissible: true,
+                    created_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as i64,
+                    event_id: None,
+                    source: Some(format!("plugin:{plugin_name}")),
+                    action_label: action_label.map(|s| s.to_owned()),
+                    action_route: action_route.map(|s| s.to_owned()),
+                };
+                store.push(n);
+                Ok(serde_json::json!({"ok": true}))
+            }
+            "aman.add_cron_job" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "id is required".to_owned(),
+                    })?;
+                let expression = params
+                    .get("expression")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "cron expression is required".to_owned(),
+                    })?;
+                // Validation is handled by CronSource::new below
+                let caller = format!("plugin:{plugin_name}");
+                // Basic validation: non-empty and has at least spaces for fields
+                if expression.trim().is_empty() {
+                    return Err(kernel::Error::ConfigInvalid {
+                        message: "cron expression is empty".to_owned(),
+                    });
+                }
+                let cm = self
+                    .cron_manager
+                    .get()
+                    .ok_or_else(|| kernel::Error::Unrecoverable {
+                        message: "cron manager not initialized".to_owned(),
+                    })?;
+                let mut guard = cm.lock().await;
+                let ctx = kernel::context::SourceContext {
+                    base: kernel::context::BaseContext {
+                        trace_id: kernel::types::TraceId::new(),
+                        timeout_ms: None,
+                        labels: Default::default(),
+                        extensions: Default::default(),
+                        event_bus: None,
+                    },
+                    source_name: Some(id.to_owned()),
+                };
+                let cron_source = source::CronSource::new(id.to_owned(), expression)
+                    .map_err(|e| kernel::Error::Unrecoverable {
+                        message: format!("invalid cron source: {e}"),
+                    })?;
+                guard
+                    .add_with_caller(cron_source, ctx, &caller)
+                    .await
+                    .map_err(|e| kernel::Error::Unrecoverable {
+                        message: format!("add_cron_job failed: {e}"),
+                    })?;
+                tracing::info!(
+                    plugin = %plugin_name,
+                    cron_id = %id,
+                    expression = %expression,
+                    "plugin registered cron job"
+                );
+                Ok(serde_json::json!({"ok": true, "id": id}))
             }
             other => Err(kernel::Error::Unrecoverable {
                 message: format!("unknown rpc method: {other}"),
@@ -2350,7 +2615,7 @@ pub struct AgentRuntime {
     skill_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     workflow_engine: Arc<WorkflowEngine>,
     plugin_loader: Mutex<PluginLoader>,
-    cron_manager: Mutex<CronManager>,
+    cron_manager: Arc<Mutex<CronManager>>,
     plugin_installer: Arc<PluginInstaller>,
     dlq: Arc<InMemoryDeadLetterQueue>,
     index_store: Arc<persistence::IndexStore>,

@@ -127,6 +127,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .route("/notifications/{id}/ack", post(notification_ack))
         .route("/notifications/dismiss-all", post(notifications_dismiss_all))
         .route("/notifications/test", post(notifications_test))
+        .route("/notifications/send", post(notifications_send))
         .route("/config/set", post(config_set))
         .route("/audit-log", get(audit_log))
         .route("/runtime/status", get(runtime_status))
@@ -1736,6 +1737,60 @@ async fn notifications_test(
             n = n.with_action(label, route);
         }
 
+    runtime.notifications().push(n);
+    StatusCode::OK.into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct SendNotificationRequest {
+    title: Option<String>,
+    message: String,
+    #[serde(default = "default_notif_severity")]
+    severity: String,
+    #[serde(default = "default_notif_category")]
+    category: String,
+    action_label: Option<String>,
+    action_route: Option<String>,
+}
+fn default_notif_severity() -> String { "info".into() }
+fn default_notif_category() -> String { "plugin".into() }
+
+async fn notifications_send(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Json(req): Json<SendNotificationRequest>,
+) -> Response {
+    let title = req.title.unwrap_or_else(|| req.message.chars().take(50).collect());
+    let sev = match req.severity.as_str() {
+        "critical" => notification::Severity::Critical,
+        "warning" => notification::Severity::Warning,
+        _ => notification::Severity::Info,
+    };
+    let cat = match req.category.as_str() {
+        "plugin" => notification::Category::Plugin,
+        "idle" => notification::Category::Idle,
+        "security" => notification::Category::Security,
+        "workflow" => notification::Category::Workflow,
+        "llm" => notification::Category::Llm,
+        "skill" => notification::Category::Skill,
+        _ => notification::Category::Plugin,
+    };
+    let mut n = notification::Notification {
+        id: uuid::Uuid::now_v7().to_string(),
+        severity: sev,
+        category: cat,
+        title,
+        message: req.message,
+        dismissed: false,
+        dismissible: true,
+        created_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64,
+        event_id: None,
+        source: Some("plugin:startup".into()),
+        action_label: req.action_label,
+        action_route: req.action_route,
+    };
     runtime.notifications().push(n);
     StatusCode::OK.into_response()
 }

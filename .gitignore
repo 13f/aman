@@ -13,3 +13,4 @@ __pycache__/
 predefined/plugins/team/static/*.hash
 report_02553_首钢朗泽.md
 aman_team/
+*.pyc

@@ -10,4 +10,4 @@ def audit_decisions(decisions: list[dict], llm: LlmClient | None = None) -> dict
     client = llm or LlmClient()
     ctx = [f"Founder decision history ({len(decisions)} decisions):\n\n"
            + json.dumps(decisions, default=str)[:6000]]
-    return client.chat_json(_load("decision_journal.txt"), "\n".join(ctx), temperature=0.3)
+    return client.chat_json(_load("decision_journal.md"), "\n".join(ctx), temperature=0.3)

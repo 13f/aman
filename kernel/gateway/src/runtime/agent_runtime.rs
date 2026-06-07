@@ -239,6 +239,10 @@ impl AgentRuntimeBuilder {
         if let Err(e) = super::plugin_sync::sync_builtin_plugins() {
             tracing::error!(error = %e, "failed to sync built-in plugins");
         }
+        // Sync built-in self module from repo to ~/.aman/self/ (preserves user modifications)
+        if let Err(e) = super::self_sync::sync_builtin_self() {
+            tracing::error!(error = %e, "failed to sync built-in self module");
+        }
         // Sync built-in configs from repo to ~/.aman/ (preserves user modifications)
         if let Err(e) = super::config_sync::sync_builtin_configs() {
             tracing::error!(error = %e, "failed to sync built-in configs");
@@ -762,6 +766,7 @@ impl AgentRuntimeBuilder {
             }
         };
 
+
         // ── Per-agent resources ─────────────────────────────────────
         // Each agent gets its own SessionStore, YantrikDB, and LlmProvider.
         let home = std::env::var("HOME")
@@ -883,6 +888,7 @@ impl AgentRuntimeBuilder {
                 }
             }
         }
+
 
         // ── Agent harness (ReAct loop orchestrator) ──────────────────
         let compressor_config = context_manager::CompressorConfig {
@@ -2232,8 +2238,17 @@ impl Tool for LlmChatTool {
                 name: format!("LLM provider for agent '{agent_id}'"),
             })?;
 
+        // Resolve the agent's configured model — regular chat passes this,
+        // but the tool interface previously sent an empty string.
+        let model = self
+            .agent_registry
+            .get()
+            .and_then(|reg| pollster::block_on(reg.get(agent_id)))
+            .map(|instance| instance.descriptor.model.clone())
+            .unwrap_or_default();
+
         let req = kernel::llm::LlmChatRequest {
-            model: String::new(),
+            model,
             system_prompt: system_prompt.to_owned(),
             messages: vec![kernel::react::ChatMessage::user(user_prompt.to_owned())],
             tools: vec![],

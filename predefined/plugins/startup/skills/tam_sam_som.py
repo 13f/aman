@@ -19,7 +19,7 @@ def estimate_market_size(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("tam_sam_som.txt")
+    system_prompt = _load_prompt("tam_sam_som.md")
     user_parts = [f"Estimate market size for: {idea_description}"]
     if competitors:
         comp_count = len(competitors.get("direct_competitors", []))

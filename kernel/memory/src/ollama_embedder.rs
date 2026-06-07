@@ -122,6 +122,7 @@ impl OllamaEmbedder {
         let resp: Value = match agent
             .post(&url)
             .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(3))
             .send_json(body)
         {
             Ok(r) => {

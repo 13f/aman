@@ -15,4 +15,4 @@ def check_ikigai(ideas: list[dict], scores_history: dict[str, list] | None = Non
         for i in ideas], default=str)[:5000]]
     if scores_history:
         ctx.append(f"\nScore history:\n{json.dumps(scores_history, default=str)[:3000]}")
-    return client.chat_json(_load("ikigai.txt"), "\n\n".join(ctx), temperature=0.4)
+    return client.chat_json(_load("ikigai.md"), "\n\n".join(ctx), temperature=0.4)

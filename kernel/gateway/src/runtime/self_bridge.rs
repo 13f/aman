@@ -29,9 +29,19 @@ pub struct SelfBridge {
 
 impl SelfBridge {
     /// Create a new bridge from config and the predefined directory path.
+    ///
+    /// Prefers `~/.aman/self/bridge.py` (user data dir, synced at startup)
+    /// so that runtime modifications by the agent are picked up. Falls back
+    /// to `predefined/self/bridge.py` (source tree) if the user copy is
+    /// missing.
     #[must_use]
     pub fn new(config: &SelfConfig, predefined_dir: &Path) -> Self {
-        let bridge_script = predefined_dir.join(&config.bridge_script);
+        let user_self = super::skill_sync::aman_data_dir().join(&config.bridge_script);
+        let bridge_script = if user_self.exists() {
+            user_self
+        } else {
+            predefined_dir.join(&config.bridge_script)
+        };
         Self {
             enabled: config.enabled,
             python: config.python.clone(),

@@ -60,7 +60,12 @@ pub async fn serve(runtime: Arc<AgentRuntime>, config: HttpServerConfig) -> kern
     // Emit plugin approval requests that were deferred during startup.
     // SSE tasks are now running, so the desktop client can receive them.
     runtime.emit_pending_plugin_approvals().await;
-    let router = build_router(runtime);
+    // Collect plugin routes BEFORE build_router — uses the async lock safely.
+    let plugin_routes = {
+        let loader = runtime.plugin_loader().await;
+        loader.collect_routes()
+    };
+    let router = build_router(runtime, plugin_routes);
     let listener = TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
     let (tx, rx) = oneshot::channel::<()>();
@@ -76,7 +81,7 @@ pub async fn serve(runtime: Arc<AgentRuntime>, config: HttpServerConfig) -> kern
     })
 }
 
-fn build_router(runtime: Arc<AgentRuntime>) -> Router {
+fn build_router(runtime: Arc<AgentRuntime>, plugin_routes: Vec<axum::Router<()>>) -> Router {
     let control = Router::new()
         .route("/agent/start", post(agent_start))
         .route("/agent/shutdown", post(agent_shutdown))
@@ -181,8 +186,12 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
         .merge(control);
 
     // Merge plugin-contributed routes under /api/v1
-    for plugin_router in runtime.plugin_routes() {
-        app = app.nest_service("/api/v1", plugin_router);
+    if !plugin_routes.is_empty() {
+        let merged = plugin_routes
+            .into_iter()
+            .reduce(|acc, r| acc.merge(r))
+            .unwrap();
+        app = app.nest_service("/api/v1", merged);
     }
 
     app.with_state(runtime)
@@ -204,6 +213,7 @@ async fn ui_plugin_pages(State(runtime): State<Arc<AgentRuntime>>) -> Json<Vec<U
                 id: page_id.clone(),
                 label: match page_id.as_str() {
                     "team" => "Team".into(),
+                    "startup" => "Startup".into(),
                     other => other.to_string(),
                 },
             })
@@ -1774,7 +1784,7 @@ async fn notifications_send(
         "skill" => notification::Category::Skill,
         _ => notification::Category::Plugin,
     };
-    let mut n = notification::Notification {
+    let n = notification::Notification {
         id: uuid::Uuid::now_v7().to_string(),
         severity: sev,
         category: cat,

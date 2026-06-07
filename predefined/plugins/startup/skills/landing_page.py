@@ -20,7 +20,7 @@ def build_landing_page(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("landing_page.txt")
+    system_prompt = _load_prompt("landing_page.md")
     context = [f"Idea: {idea_description}"]
     if desire:
         context.append(f"Primary desire: {desire.get('primary_driver', 'unknown')}, strength: {desire.get('desire_strength', 0)}")

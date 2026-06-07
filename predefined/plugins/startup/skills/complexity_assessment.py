@@ -17,5 +17,5 @@ def assess_complexity(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("complexity.txt")
+    system_prompt = _load_prompt("complexity.md")
     return client.chat_json(system_prompt, idea_description, temperature=0.2)

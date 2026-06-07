@@ -37,4 +37,4 @@ def simulate_what_if(
     if history:
         ctx.append(f"## Past Decisions\n{json.dumps(history[-5:] if len(history) > 5 else history, default=str)[:1500]}")
 
-    return client.chat_json(_load("what_if.txt"), "\n\n".join(ctx), temperature=0.4, max_tokens=3000)
+    return client.chat_json(_load("what_if.md"), "\n\n".join(ctx), temperature=0.4, max_tokens=3000)

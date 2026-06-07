@@ -18,7 +18,7 @@ def predict_retention(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("retention.txt")
+    system_prompt = _load_prompt("retention.md")
     user_parts = [f"Predict retention for: {idea_description}"]
     if desire:
         user_parts.append(f"Desire strength: {desire.get('desire_strength', 0)}, "

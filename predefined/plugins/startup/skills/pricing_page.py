@@ -20,7 +20,7 @@ def optimize_pricing_page(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("pricing_page.txt")
+    system_prompt = _load_prompt("pricing_page.md")
     context = [f"Idea: {idea_description}"]
     if pricing:
         context.append(f"Recommended price: ${pricing.get('recommended_price_monthly', 0)}/mo, "

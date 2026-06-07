@@ -23,7 +23,7 @@ def detect_weaknesses(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("weakness_detection.txt")
+    system_prompt = _load_prompt("weakness_detection.md")
 
     context = [f"Dimension scores: {json.dumps(dimension_scores)}"]
     if desire:

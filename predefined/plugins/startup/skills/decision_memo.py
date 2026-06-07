@@ -56,7 +56,7 @@ def generate_decision_memo(
         Markdown string with the complete decision memo.
     """
     client = llm or LlmClient()
-    system_prompt = _load_prompt("decision_memo.txt")
+    system_prompt = _load_prompt("decision_memo.md")
 
     verdict = scores.get("verdict", "drop")
     final_score = scores.get("final_score", 0)

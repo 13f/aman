@@ -37,7 +37,7 @@ def analyze_pricing(
         Dict with van_westendorp analysis, recommended pricing, etc.
     """
     client = llm or LlmClient()
-    system_prompt = _load_prompt("pricing.txt")
+    system_prompt = _load_prompt("pricing.md")
 
     user_parts = [f"Model the pricing for this app idea:\n\n{idea_description}"]
 

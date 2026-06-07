@@ -40,7 +40,7 @@ def analyze_competitors(
         emerging_threats, positioning_gaps, saturation_score, etc.
     """
     client = llm or LlmClient()
-    system_prompt = _load_prompt("competitor_mapping.txt")
+    system_prompt = _load_prompt("competitor_mapping.md")
 
     user_parts = [f"Analyze the competitive landscape for this app idea:\n\n{idea_description}"]
     if keywords:

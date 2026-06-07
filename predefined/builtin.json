@@ -57,7 +57,10 @@
     },
     "files": [
       "self/__init__.py",
-      "self/config.yaml"
+      "self/config.yaml",
+      "self/llm.py",
+      "self/jsonrpc.py",
+      "self/html_utils.py"
     ]
   }
 }

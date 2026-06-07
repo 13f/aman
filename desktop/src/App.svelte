@@ -82,6 +82,26 @@
     })).filter(g => g.items.length > 0)
   );
 
+  // Sidebar groups with dynamic Plugins section inserted between
+  // Services (platform) and Management.
+  let sidebarGroups = $derived(
+    visibleMenuGroups
+      .filter(g => g.name !== "management")
+      .concat(
+        (hasTeamPlugin || nonTeamPluginPages.length > 0)
+          ? [{
+              name: "plugins",
+              label: "Plugins",
+              items: [
+                ...(hasTeamPlugin ? [{ id: "team", label: "Team", short: "Te" }] : []),
+                ...nonTeamPluginPages.map(p => ({ id: "plugin:" + p.id, label: p.label, short: p.label.slice(0, 2) })),
+              ],
+            }]
+          : [],
+      )
+      .concat(visibleMenuGroups.filter(g => g.name === "management")),
+  );
+
   let expandedGroups = $state<Record<string, boolean>>({
     apps: true,
     platform: true,
@@ -260,10 +280,7 @@
 <nav class="sidebar" class:compact={sidebarCompact}>
   {#if sidebarCompact}
     <!-- Compact mode: flat icon-only items -->
-    <div class="runtime-dot-row" class:live={runtimeRunning}>
-      <span class="runtime-mini-dot"></span>
-    </div>
-    {#each visibleMenuGroups as group}
+    {#each sidebarGroups as group}
       {#each group.items as page}
         {@const isDisabled = !runtimeRunning || page.id === "settings"}
         {#if isDisabled}
@@ -281,34 +298,10 @@
           </button>
         {/if}
       {/each}
-      {#if group.name === "apps" && hasTeamPlugin}
-        <button
-          class="nav-icon"
-          class:active={currentPage === "team"}
-          onclick={() => navigateTo("team")}
-          title="Team"
-        >
-          <span class="nav-short">Te</span>
-        </button>
-      {/if}
-    {/each}
-    {#each nonTeamPluginPages as pg}
-      <button
-        class="nav-icon"
-        class:active={currentPage === "plugin:" + pg.id}
-        onclick={() => navigateTo("plugin:" + pg.id)}
-        title={pg.label}
-      >
-        <span class="nav-short">{pg.label.slice(0, 2)}</span>
-      </button>
     {/each}
   {:else}
     <!-- Expanded mode: grouped with headers -->
-    <div class="sidebar-status-bar" class:live={runtimeRunning}>
-      <span class="runtime-status-dot"></span>
-      <span class="runtime-status-label">{runtimeRunning ? "Runtime Online" : "Runtime Offline"}</span>
-    </div>
-    {#each visibleMenuGroups as group}
+    {#each sidebarGroups as group}
       <button class="menu-header" onclick={() => toggleGroup(group.name)}>
         <span class="menu-arrow">{expandedGroups[group.name] ? "▾" : "▸"}</span>
         {group.label}
@@ -331,37 +324,9 @@
               </button>
             {/if}
           {/each}
-          {#if group.name === "apps" && hasTeamPlugin}
-            <button
-              class="nav-btn"
-              class:active={currentPage === "team"}
-              onclick={() => navigateTo("team")}
-            >
-              Team
-            </button>
-          {/if}
         </div>
       {/if}
     {/each}
-    {#if nonTeamPluginPages.length > 0}
-      <button class="menu-header" onclick={() => toggleGroup("plugins")}>
-        <span class="menu-arrow">{expandedGroups["plugins"] ? "▾" : "▸"}</span>
-        Plugins
-      </button>
-      {#if expandedGroups["plugins"]}
-        <div class="menu-items">
-          {#each nonTeamPluginPages as pg}
-            <button
-              class="nav-btn"
-              class:active={currentPage === "plugin:" + pg.id}
-              onclick={() => navigateTo("plugin:" + pg.id)}
-            >
-              {pg.label}
-            </button>
-          {/each}
-        </div>
-      {/if}
-    {/if}
   {/if}
 
   <ActivityStateWidget {runtimeRunning} visible={activeAgentName !== ""} agentId={activeAgentKey} agentName={activeAgentName} compact={sidebarCompact} />

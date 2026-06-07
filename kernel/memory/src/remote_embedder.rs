@@ -63,7 +63,8 @@ impl RemoteEmbedder {
         });
 
         let mut req = ureq::post(&url)
-            .set("Content-Type", "application/json");
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(3));
 
         if !api_key.is_empty() {
             req = req.set("Authorization", &format!("Bearer {api_key}"));

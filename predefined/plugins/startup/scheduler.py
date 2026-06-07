@@ -155,7 +155,7 @@ def make_trend_watcher(
 
         for niche in niches[:3]:  # Limit to 3 niches per scan
             try:
-                trends = _http_post("/api/v1/tools/llm_chat/execute", {
+                trends = _http_post("/tools/llm_chat/execute", {
                     "agent_id": agent_id,
                     "system_prompt": "You are a market trend analyst. Analyze current trends.",
                     "user_prompt": f"Analyze trends for niche: {niche}\nPlatforms: TikTok, Reddit, App Store, Google Trends\nReturn JSON with trend_velocity and top_signals.",

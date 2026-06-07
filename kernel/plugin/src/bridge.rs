@@ -503,17 +503,18 @@ pub fn build_subprocess_router(bridge: Arc<SubprocessPluginBridge>) -> axum::Rou
         let method = spec.method.clone();
         let path = spec.path.clone();
 
-        // axum 0.8 requires Handler to return a Future; wrap sync call in spawn_blocking
+        // axum 0.8 requires Handler to return a Future; wrap sync call in spawn_blocking.
+        // Use the actual request URI path (not the route pattern) so that path
+        // parameters like /ideas/{slug}/revalidate are forwarded correctly.
         let handler = {
             let method = method.clone();
-            let path = path.clone();
             move |req: axum::http::Request<axum::body::Body>| {
                 let bridge = Arc::clone(&bridge);
                 let method = method.clone();
-                let path = path.clone();
+                let actual_path = req.uri().path().to_string();
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        forward_to_plugin_sync(&bridge, &method, &path, req)
+                        forward_to_plugin_sync(&bridge, &method, &actual_path, req)
                     })
                     .await
                     .unwrap_or_else(|_| {

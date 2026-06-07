@@ -26,50 +26,50 @@ function startupNav() {
       {
         name: 'evaluate', label: 'Evaluation', icon: '🔍',
         modules: [
-          { id: 'validate', label: 'Idea Validation', url: '/startup',
+          { id: 'validate', label: 'Idea Validation', url: '/api/v1/startup',
             icon: '📊', badge: null },
-          { id: 'idea-gen', label: 'Idea Generation', url: '/startup/generate',
-            icon: '💡', badge: null },
-          { id: 'market', label: 'Market Deep Dive', url: '/startup/market',
-            icon: '🌊', badge: null },
+          { id: 'idea-gen', label: 'Idea Generation', url: '/api/v1/startup/generate',
+            icon: '💡', badge: 'soon' },
+          { id: 'market', label: 'Market Deep Dive', url: '/api/v1/startup/market',
+            icon: '🌊', badge: 'soon' },
         ]
       },
       {
         name: 'strategy', label: 'Strategy', icon: '🎯',
         modules: [
-          { id: 'landing-page', label: 'Landing Page', url: '/startup/strategy/landing-page',
-            icon: '📄', badge: null },
-          { id: 'gtm', label: 'GTM Narrative', url: '/startup/strategy/gtm',
-            icon: '📣', badge: null },
-          { id: 'pricing-page', label: 'Pricing Page', url: '/startup/strategy/pricing-page',
-            icon: '💰', badge: null },
-          { id: 'outreach', label: 'Cold Outreach', url: '/startup/strategy/outreach',
-            icon: '✉️', badge: null },
+          { id: 'landing-page', label: 'Landing Page', url: '/api/v1/startup/strategy/landing-page',
+            icon: '📄', badge: 'soon' },
+          { id: 'gtm', label: 'GTM Narrative', url: '/api/v1/startup/strategy/gtm',
+            icon: '📣', badge: 'soon' },
+          { id: 'pricing-page', label: 'Pricing Page', url: '/api/v1/startup/strategy/pricing-page',
+            icon: '💰', badge: 'soon' },
+          { id: 'outreach', label: 'Cold Outreach', url: '/api/v1/startup/strategy/outreach',
+            icon: '✉️', badge: 'soon' },
         ]
       },
       {
         name: 'execution', label: 'Execution', icon: '⚡',
         modules: [
-          { id: 'mvp-scope', label: 'MVP Scope', url: '/startup/execution/mvp-scope',
-            icon: '✂️', badge: null },
-          { id: 'feedback', label: 'User Feedback', url: '/startup/execution/feedback',
-            icon: '🗣️', badge: null },
+          { id: 'mvp-scope', label: 'MVP Scope', url: '/api/v1/startup/execution/mvp-scope',
+            icon: '✂️', badge: 'soon' },
+          { id: 'feedback', label: 'User Feedback', url: '/api/v1/startup/execution/feedback',
+            icon: '🗣️', badge: 'soon' },
         ]
       },
       {
         name: 'reflection', label: 'Reflection', icon: '🧘',
         modules: [
-          { id: 'journal', label: 'Decision Journal', url: '/startup/reflection/journal',
-            icon: '📓', badge: null },
-          { id: 'ikigai', label: 'Ikigai Check', url: '/startup/reflection/ikigai',
-            icon: '🎌', badge: null },
+          { id: 'journal', label: 'Decision Journal', url: '/api/v1/startup/reflection/journal',
+            icon: '📓', badge: 'soon' },
+          { id: 'ikigai', label: 'Ikigai Check', url: '/api/v1/startup/reflection/ikigai',
+            icon: '🎌', badge: 'soon' },
         ]
       },
       {
         name: 'ai-native', label: 'AI-Native', icon: '🤖',
         modules: [
-          { id: 'what-if', label: 'What-If Simulator', url: '/startup/ai-native/what-if',
-            icon: '🔄', badge: null },
+          { id: 'what-if', label: 'What-If Simulator', url: '/api/v1/startup/ai-native/what-if',
+            icon: '🔄', badge: 'soon' },
         ]
       },
     ],
@@ -88,7 +88,7 @@ function startupNav() {
       }
     },
 
-    async navigate(mod) {
+    navigate(mod) {
       this.currentModule = mod.id;
 
       // Skip 'soon' badges for now
@@ -97,15 +97,7 @@ function startupNav() {
         return;
       }
 
-      try {
-        const resp = await fetch(mod.url);
-        if (resp.ok) {
-          const html = await resp.text();
-          document.getElementById('main-content').innerHTML = html;
-        }
-      } catch (e) {
-        console.error('Navigation failed:', e);
-      }
+      window.location.href = mod.url;
     },
 
     async submitValidate() {
@@ -117,7 +109,7 @@ function startupNav() {
       };
 
       try {
-        const resp = await fetch('/startup/api/validate', {
+        const resp = await fetch('/api/v1/startup/api/validate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

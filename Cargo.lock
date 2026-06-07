@@ -7108,6 +7108,7 @@ dependencies = [
  "serde_json",
  "tracing",
  "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

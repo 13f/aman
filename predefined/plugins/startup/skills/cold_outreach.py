@@ -19,7 +19,7 @@ def design_outreach(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("cold_outreach.txt")
+    system_prompt = _load_prompt("cold_outreach.md")
     context = [f"Idea: {idea_description}"]
     if user_profile:
         context.append(f"Founder context: {user_profile}")

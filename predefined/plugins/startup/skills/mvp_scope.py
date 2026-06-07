@@ -19,4 +19,4 @@ def negotiate_mvp(idea_description: str, competitors: dict | None = None,
     if complexity:
         ctx.append(f"Build estimate: {complexity.get('build_time_estimate_months', 0)} months, "
                    f"riskiest: {complexity.get('riskiest_technical_unknown', 'N/A')}")
-    return client.chat_json(_load("mvp_scope.txt"), "\n".join(ctx), temperature=0.4)
+    return client.chat_json(_load("mvp_scope.md"), "\n".join(ctx), temperature=0.4)

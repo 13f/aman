@@ -34,7 +34,7 @@ def evaluate_desire(
         Dict with desire_scores, primary_driver, desire_strength, etc.
     """
     client = llm or LlmClient()
-    system_prompt = _load_prompt("desire_evaluation.txt")
+    system_prompt = _load_prompt("desire_evaluation.md")
     user_prompt = f"Evaluate the desire motivations for this app idea:\n\n{idea_description}"
 
     result = client.chat_json(system_prompt, user_prompt, temperature=0.2)

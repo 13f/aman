@@ -18,6 +18,6 @@ def analyze_trends(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("trend_analysis.txt")
+    system_prompt = _load_prompt("trend_analysis.md")
     platform_str = ", ".join(platforms) if platforms else "TikTok, Reddit, App Store, Google Trends"
     return client.chat_json(system_prompt, f"Analyze trends for niche: {niche}\nPlatforms: {platform_str}", temperature=0.3)

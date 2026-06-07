@@ -18,7 +18,7 @@ def model_cac(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("cac_model.txt")
+    system_prompt = _load_prompt("cac_model.md")
     user_parts = [f"Estimate CAC for: {idea_description}"]
     if pricing:
         price = pricing.get("recommended_price_monthly", 0)

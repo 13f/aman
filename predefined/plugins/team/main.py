@@ -8,170 +8,27 @@ All logging goes to stderr to avoid corrupting the JSON-RPC stream on stdout.
 import json
 import sys
 import os
-import traceback
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
+
+# Allow import from ~/.aman/self/
+_aman_dir = os.path.expanduser("~/.aman")
+if _aman_dir not in sys.path:
+    sys.path.insert(0, _aman_dir)
+from self.jsonrpc import Bridge
 
 # ---------------------------------------------------------------------------
-# JSON-RPC Bridge
+# JSON-RPC Bridge (shared via self.jsonrpc)
 # ---------------------------------------------------------------------------
 
-_PENDING: Dict[int, "PendingRequest"] = {}
+bridge = Bridge("team-plugin")
 
-
-class _PendingRequest:
-    """Tracks a plugin→server JSON-RPC request awaiting a response."""
-
-    __slots__ = ("method", "resolve")
-
-    def __init__(self, method: str, resolve: Callable[[Any], None]):
-        self.method = method
-        self.resolve = resolve
-
-
-_next_id = 1
-
-
-def _make_id() -> int:
-    global _next_id
-    rid = _next_id
-    _next_id += 1
-    return rid
-
-
-def _log(msg: str) -> None:
-    print(f"[team-plugin] {msg}", file=sys.stderr, flush=True)
-
-
-# ── Sending (Plugin → Server) ──────────────────────────────────────────
-
-
-def send_response(req_id: int, result: Any) -> None:
-    """Send a JSON-RPC success response."""
-    payload = json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result})
-    _write_line(payload)
-
-
-def send_error(req_id: int, code: int, message: str) -> None:
-    """Send a JSON-RPC error response."""
-    payload = json.dumps(
-        {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
-    )
-    _write_line(payload)
-
-
-def send_request(method: str, params: Any) -> Any:
-    """Send a JSON-RPC request to the server and block waiting for response."""
-    rid = _make_id()
-    payload = json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-    result_holder: list = []
-
-    def resolve(val: Any) -> None:
-        result_holder.append(val)
-
-    _PENDING[rid] = _PendingRequest(method, resolve)
-    _write_line(payload)
-
-    # Wait for response (blocking — we're single-threaded)
-    _process_until_response(rid)
-
-    if not result_holder:
-        raise RuntimeError(f"No response for {method}")
-    return result_holder[0]
-
-
-def send_notification(method: str, params: Any) -> None:
-    """Send a JSON-RPC notification (no response expected)."""
-    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
-    _write_line(payload)
-
-
-def _write_line(data: str) -> None:
-    """Write a single line to stdout and flush."""
-    try:
-        sys.stdout.write(data + "\n")
-        sys.stdout.flush()
-    except BrokenPipeError:
-        # Server closed the pipe (shutting down), stop writing
-        pass
-
-
-# ── Receiving (Server → Plugin handling) ───────────────────────────────
-
-
-def _process_until_response(rid: int) -> None:
-    """Read stdin lines until the response for `rid` arrives."""
-    while rid in _PENDING:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        _dispatch(line.rstrip("\n"))
-
-
-def _dispatch(line: str) -> None:
-    """Parse and dispatch a single JSON-RPC line."""
-    if not line.strip():
-        return
-    try:
-        msg = json.loads(line)
-    except json.JSONDecodeError as e:
-        _log(f"Invalid JSON from server: {e}")
-        return
-
-    msg_id = msg.get("id")
-
-    if msg_id is not None and "method" not in msg:
-        # This is a *response* to one of our requests
-        rid = int(msg_id)
-        pending = _PENDING.pop(rid, None)
-        if pending:
-            result = msg.get("result")
-            error = msg.get("error")
-            if error:
-                _log(f"Server error for {pending.method}: {error}")
-                pending.resolve({"__error__": error})
-            else:
-                pending.resolve(result)
-        return
-
-    method = msg.get("method")
-    if method is None:
-        return
-
-    params = msg.get("params")
-    req_id = int(msg_id) if msg_id is not None else None
-    _handle_incoming_request(method, params, req_id)
-
-
-def _handle_incoming_request(method: str, params: Any, req_id: Optional[int]) -> None:
-    """Dispatch a server→plugin request to the registered handler."""
-    handler = _HANDLERS.get(method)
-    if handler is None:
-        _log(f"Unknown method: {method}")
-        if req_id is not None:
-            send_error(req_id, -32601, f"Method not found: {method}")
-        return
-
-    try:
-        result = handler(params)
-        if req_id is not None:
-            send_response(req_id, result)
-    except Exception as e:
-        _log(f"Handler error for {method}: {traceback.format_exc()}")
-        if req_id is not None:
-            send_error(req_id, -32000, str(e))
-
-
-_HANDLERS: Dict[str, Callable[[Any], Any]] = {}
-
-
-def on(method: str):
-    """Decorator to register a handler for a server→plugin method."""
-
-    def decorator(fn):
-        _HANDLERS[method] = fn
-        return fn
-
-    return decorator
+# Module-level aliases for backward compatibility
+send_response = bridge.send_response
+send_error = bridge.send_error
+send_request = bridge.send_request
+send_notification = bridge.send_notification
+_log = bridge.log
+on = bridge.on
 
 
 # ---------------------------------------------------------------------------
@@ -967,18 +824,6 @@ def load_context_files(project_key: str) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _parse_body(body: Any) -> dict:
-    """Parse an HTTP request body, handling both raw strings and pre-parsed dicts."""
-    if body is None:
-        return {}
-    if isinstance(body, dict):
-        return body
-    if isinstance(body, str):
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            return {}
-    return {}
 
 
 def handle_api(project_key: str, method: str, path: str, query: Optional[str],
@@ -2043,33 +1888,21 @@ def _handle_boards_import(project_key: str, body: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# HTML Template Helpers
+# HTML Template Helpers (shared via self.html_utils)
 # ---------------------------------------------------------------------------
+
+from self.html_utils import esc, esc_js, html_response, json_response, parse_body, load_template, serve_static, error_response, MIME
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-_MIME = {
-    ".js": "application/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".woff2": "font/woff2",
-}
-
-
-def _load_template(name: str) -> Template:
-    with open(os.path.join(_TEMPLATE_DIR, name), "r") as f:
-        return Template(f.read())
-
-
-def _esc(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def _esc_js(s: str) -> str:
-    """Escape a string for safe inclusion in a JS single-quoted string."""
-    return (s or "").replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "")
+# Backward-compatible aliases
+_esc = esc
+_esc_js = esc_js
+_html_response = html_response
+_json_response = json_response
+_parse_body = parse_body
+_load_template = lambda name: load_template(_TEMPLATE_DIR, name)
 
 
 def _build_project_card(key: str, proj: dict) -> str:
@@ -2106,12 +1939,6 @@ def _build_kanban_columns(proj: dict) -> str:
     return "\n".join(parts)
 
 
-def _html_response(html: str) -> dict:
-    return {"status": 200, "headers": {"content-type": "text/html; charset=utf-8"}, "body": html}
-
-
-def _json_response(data: Any, status: int = 200) -> dict:
-    return {"status": status, "headers": {"content-type": "application/json"}, "body": json.dumps(data)}
 
 
 # ---------------------------------------------------------------------------
@@ -2319,7 +2146,7 @@ def handle_route(params: Any) -> dict:
         if not os.path.isfile(filepath):
             return {"status": 404, "body": "not found"}
         ext = os.path.splitext(filename)[1].lower()
-        mime = _MIME.get(ext, "application/octet-stream")
+        mime = MIME.get(ext, "application/octet-stream")
         try:
             with open(filepath, "r") as f:
                 content = f.read()
@@ -2488,18 +2315,5 @@ def handle_on_event(params: Any) -> None:
 # Main loop
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    """Read JSON-RPC lines from stdin forever."""
-    _log("Team plugin started, waiting for JSON-RPC...")
-    try:
-        for line in sys.stdin:
-            _dispatch(line.rstrip("\n"))
-    except KeyboardInterrupt:
-        pass
-    except BrokenPipeError:
-        pass
-    _log("Team plugin stopped")
-
-
 if __name__ == "__main__":
-    main()
+    bridge.main()

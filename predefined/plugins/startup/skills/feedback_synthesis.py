@@ -15,4 +15,4 @@ def synthesize_feedback(feedback_text: str, competitor_analysis: dict | None = N
         if gaps:
             ctx.append(f"\nCompare against these known competitor gaps:\n"
                        + "\n".join(f"- [{g.get('gap_type','')}] {g.get('description','')}" for g in gaps))
-    return client.chat_json(_load("feedback_synthesis.txt"), "\n\n".join(ctx), temperature=0.3, max_tokens=4000)
+    return client.chat_json(_load("feedback_synthesis.md"), "\n\n".join(ctx), temperature=0.3, max_tokens=4000)

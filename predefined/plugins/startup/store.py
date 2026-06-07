@@ -224,6 +224,11 @@ class StartupStore:
 
     # ── Score Snapshots (time-series) ──────────────────────────────
 
+    def get_latest_snapshot(self, idea_slug: str) -> Optional[dict]:
+        """Return the most recent score snapshot for an idea, if any."""
+        history = self.get_score_history(idea_slug)
+        return history[-1] if history else None
+
     def store_score_snapshot(self, idea_slug: str, scores: dict) -> dict:
         """Store a scoring snapshot and update the idea's current state."""
         now = datetime.now(timezone.utc).isoformat()

@@ -130,6 +130,30 @@ Workspace with ~40 crates:
 |---|---|---|
 | `test-utils` | `kernel/test-utils` | Shared test helpers, fixtures, mock factories |
 
+### Self Module (`predefined/self/` → `~/.aman/self/`)
+
+Shared Python infrastructure for subprocess plugins. Synced to the user data
+directory at gateway startup (hash-tracked, preserves user modifications).
+
+| Module | Purpose |
+|---|---|
+| `self/prompts/` | Prompt builders: SOUL, skills index, tools, reflection extraction. `load_skill_prompt()` strips YAML frontmatter from SKILL.md files. |
+| `self/decisions/` | Skill routing (`parse_skill_command`, `match_skill_prefix`) and complexity assessment. |
+| `self/memory/` | Memory extraction strategies. |
+| `self/evolution/` | Self-improvement: prompt mutation, variant tracking, self-audit. |
+| `self/jsonrpc.py` | `Bridge` class — reusable bidirectional JSON-RPC 2.0 bridge over stdin/stdout. All subprocess plugins use this instead of duplicating bridge code. |
+| `self/html_utils.py` | HTML escaping (`esc`, `esc_js`), response builders (`html_response`, `json_response`), template loading, static file serving, MIME types. |
+| `self/llm.py` | `LlmClient` — calls `POST /tools/llm_chat/execute`. Plugins import `from self.llm import LlmClient`. |
+| `self/bridge.py` | One-shot CLI bridge for the Rust gateway (`SelfBridge`) — prompt assembly without a persistent Python process. |
+
+### Skills as SKILL.md
+
+Skills are defined as markdown files under `predefined/skills/`. Each
+skill is a directory with a `SKILL.md` containing YAML frontmatter
+(`name`, `category`, `description`) and methodology instructions. The
+agent harness executes them via `direct_act`. Startup validation skills
+live under `predefined/skills/startup/`.
+
 ## Key Design Rules
 
 - No unsafe code (`#![forbid(unsafe_code)]` in every crate)

@@ -18,7 +18,7 @@ def analyze_distribution(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("distribution.txt")
+    system_prompt = _load_prompt("distribution.md")
     user_parts = [f"Analyze distribution for: {idea_description}"]
     if competitors:
         comp_count = len(competitors.get("direct_competitors", []))

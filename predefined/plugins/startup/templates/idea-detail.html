@@ -4,20 +4,57 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>$slug — Startup</title>
-  <link rel="stylesheet" href="/startup/static/startup.css">
+  <link rel="stylesheet" href="/api/v1/startup/static/startup.css">
+  <script src="/api/v1/startup/static/startup.js" defer></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
 </head>
-<body class="startup-layout">
+<body x-data="startupNav()" class="startup-layout">
+
+  <!-- Left Sidebar Navigation -->
   <nav class="sidebar">
     <div class="sidebar-header">
-      <h2><a href="/startup" style="color:inherit;text-decoration:none;">&#128640; Startup</a></h2>
+      <h2><a href="/api/v1/startup" style="color:inherit;text-decoration:none;">&#128640; Startup</a></h2>
+      <span class="idea-count" x-text="activeCount + ' ideas'"></span>
     </div>
+
+    <!-- Layer Navigation -->
+    <template x-for="layer in layers" :key="layer.name">
+      <div class="nav-layer">
+        <button class="nav-layer-btn"
+                @click="toggle(layer.name)"
+                :aria-expanded="isOpen(layer.name)">
+          <span class="layer-icon" x-text="layer.icon"></span>
+          <span class="layer-label" x-text="layer.label"></span>
+          <span class="layer-chevron">▾</span>
+        </button>
+
+        <ul x-show="isOpen(layer.name)" class="nav-modules">
+          <template x-for="mod in layer.modules" :key="mod.id">
+            <li>
+              <a :href="mod.url"
+                 :class="{ active: currentModule === mod.id }"
+                 @click.prevent="navigate(mod)">
+                <span class="module-icon" x-text="mod.icon"></span>
+                <span class="module-label" x-text="mod.label"></span>
+                <span x-show="mod.badge" class="badge" x-text="mod.badge"></span>
+              </a>
+            </li>
+          </template>
+        </ul>
+      </div>
+    </template>
   </nav>
 
+  <!-- Main Content Area -->
   <main class="content">
     <div class="content-header">
-      <a href="/startup" class="back-link">&larr; All Ideas</a>
+      <a href="/api/v1/startup" class="back-link">&larr; All Ideas</a>
       <h1>$slug</h1>
       <span class="status-badge status-$status">$status</span>
+      <div class="revalidate-wrap">
+        <div id="agentDropdown" class="agent-dropdown" style="display:none"></div>
+        <button id="btnRevalidate" class="btn-revalidate">&#x21bb; Re-validate</button>
+      </div>
     </div>
 
     <div class="detail-grid">
@@ -66,5 +103,208 @@
       </div>
     </div>
   </main>
+
+  <div id="revalidateMsg" style="display:none;padding:6px 12px;margin-left:auto;border-radius:6px;font-size:13px;max-width:360px"></div>
+
+  <script>
+    (function() {
+      var h1 = document.querySelector('.content-header h1');
+      var SLUG = h1 ? h1.textContent.trim() : '';
+      var dropdown = document.getElementById('agentDropdown');
+      var btn = document.getElementById('btnRevalidate');
+      var msgEl = document.getElementById('revalidateMsg');
+      if (!btn) return;
+
+      function showMsg(text, isError) {
+        if (!msgEl) return;
+        msgEl.textContent = text;
+        msgEl.style.display = '';
+        msgEl.style.background = isError ? 'rgba(239,68,68,0.15)' : 'rgba(99,102,241,0.12)';
+        msgEl.style.color = isError ? '#fca5a5' : 'var(--accent)';
+        msgEl.style.border = '1px solid ' + (isError ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.25)');
+      }
+
+      function hideMsg() {
+        if (msgEl) msgEl.style.display = 'none';
+      }
+
+      var agentsLoaded = false;
+      var agents = [];
+
+      btn.addEventListener('click', async function() {
+        hideMsg();
+
+        // Load agents on first click
+        if (!agentsLoaded) {
+          btn.disabled = true;
+          btn.textContent = 'Loading…';
+          try {
+            var resp = await fetch('/agents');
+            if (resp.ok) {
+              var list = await resp.json();
+              for (var i = 0; i < list.length; i++) {
+                var a = list[i];
+                var id = (a.descriptor && a.descriptor.agent_id) || a.id || a.key || '';
+                var name = (a.descriptor && a.descriptor.display_name) || a.display_name || id;
+                var model = (a.descriptor && a.descriptor.model) || a.model || '';
+                var provider = (a.descriptor && a.descriptor.provider) || '';
+                if (id) agents.push({ id: id, name: name, model: model, provider: provider });
+              }
+            }
+          } catch (e) {
+            showMsg('Failed to reach gateway: ' + e.message, true);
+            btn.disabled = false;
+            btn.textContent = '↻ Re-validate';
+            return;
+          }
+          agentsLoaded = true;
+          btn.disabled = false;
+          btn.textContent = '↻ Re-validate';
+
+          if (agents.length === 0) {
+            showMsg('No agents found. Create an agent first.', true);
+            return;
+          }
+
+          // Single agent — validate immediately
+          if (agents.length === 1) {
+            startRevalidate(agents[0].id);
+            return;
+          }
+        }
+
+        // Toggle dropdown
+        if (dropdown.style.display === 'block') {
+          dropdown.style.display = 'none';
+          return;
+        }
+
+        // Build and show card-style agent picker
+        var html = '<div class="agent-dropdown-header">Choose an agent — validation starts immediately</div>';
+        for (var j = 0; j < agents.length; j++) {
+          var ag = agents[j];
+          var label = '<span class="agent-card-name">' + escHtml(ag.name) + '</span>' +
+            '<span class="agent-card-id">' + escHtml(ag.id) + '</span>';
+          if (ag.model) {
+            label += '<span class="agent-card-model">' + escHtml(ag.model) + (ag.provider ? ' @ ' + escHtml(ag.provider) : '') + '</span>';
+          }
+          html += '<div class="agent-card" data-agent-id="' + escHtml(ag.id) + '">' + label + '</div>';
+        }
+        dropdown.innerHTML = html;
+        dropdown.style.display = 'block';
+
+        // Clicking a card starts validation immediately
+        var cards = dropdown.querySelectorAll('.agent-card');
+        for (var k = 0; k < cards.length; k++) {
+          cards[k].addEventListener('click', function(e) {
+            e.stopPropagation();
+            var agentId = this.getAttribute('data-agent-id');
+            if (agentId) startRevalidate(agentId);
+          });
+        }
+      });
+
+      // Close dropdown on outside click
+      document.addEventListener('click', function(e) {
+        if (dropdown && btn && dropdown.style.display !== 'none' && !dropdown.contains(e.target) && e.target !== btn) {
+          dropdown.style.display = 'none';
+        }
+      });
+
+      function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
+
+      function pollValidationStatus(slug) {
+        var phaseLabels = {
+          'starting': 'Phase 1/4',
+          '1/4':      'Phase 1/4',
+          '2/4':      'Phase 2/4',
+          '3/4':      'Phase 3/4',
+          '4/4':      'Phase 4/4',
+          'complete': 'Done ✓',
+        };
+        var attempts = 0;
+        var maxAttempts = 40; // ~3.3 min at 5s intervals
+
+        function tick() {
+          fetch('/api/v1/startup/api/ideas/' + encodeURIComponent(slug) + '/validation-status')
+            .then(function(r) { return r.json(); })
+            .then(function(status) {
+              if (status.status === 'done') {
+                window.location.reload();
+                return;
+              }
+              if (status.status === 'running' && status.phase) {
+                var label = phaseLabels[status.phase] || ('Phase ' + status.phase);
+                btn.textContent = '⏳ ' + label;
+                showMsg(getPhaseMsg(status.phase), false);
+              }
+              attempts++;
+              if (attempts < maxAttempts) {
+                setTimeout(tick, 5000);
+              } else {
+                showMsg('Taking longer than expected. Refresh to check.', true);
+                btn.textContent = '⟳ Refresh';
+                btn.disabled = false;
+                btn.onclick = function() { window.location.reload(); };
+              }
+            })
+            .catch(function() {
+              attempts++;
+              if (attempts < maxAttempts) setTimeout(tick, 5000);
+            });
+        }
+
+        setTimeout(tick, 2000); // First poll after 2s
+      }
+
+      function getPhaseMsg(phase) {
+        var msgs = {
+          'starting': 'Phase 1/4 — analyzing desire, competitors, pricing…',
+          '1/4':      'Phase 1/4 — analyzing desire, competitors, pricing…',
+          '2/4':      'Phase 2/4 — market size, CAC, distribution…',
+          '3/4':      'Phase 3/4 — scoring & decision memo…',
+          '4/4':      'Phase 4/4 — pivot suggestions…',
+        };
+        return msgs[phase] || '';
+      }
+
+      async function startRevalidate(agentId) {
+        btn.disabled = true;
+        btn.textContent = 'Starting…';
+        dropdown.style.display = 'none';
+        hideMsg();
+
+        try {
+          var resp = await fetch('/api/v1/startup/api/ideas/' + encodeURIComponent(SLUG) + '/revalidate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent_id: agentId }),
+          });
+          var data = await resp.json();
+          if (data.ok) {
+            if (data.status === 'started') {
+              // Background pipeline started — poll for phase progress
+              btn.textContent = 'Phase …';
+              btn.disabled = true;
+              showMsg('Validation started. Polling for progress…', false);
+              pollValidationStatus(SLUG);
+            } else {
+              window.location.reload();
+            }
+          } else {
+            showMsg(data.error || 'Re-validation failed', true);
+            btn.disabled = false;
+            btn.textContent = '↻ Re-validate';
+          }
+        } catch (e) {
+          showMsg('Request failed: ' + e.message, true);
+          btn.disabled = false;
+          btn.textContent = '↻ Re-validate';
+        }
+      }
+    })();
+  </script>
 </body>
 </html>

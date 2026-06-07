@@ -20,7 +20,7 @@ def build_gtm_narrative(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("gtm_narrative.txt")
+    system_prompt = _load_prompt("gtm_narrative.md")
     context = [f"Idea: {idea_description}"]
     if competitors:
         context.append(f"Competitor count: {len(competitors.get('direct_competitors', []))}")

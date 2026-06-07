@@ -21,6 +21,7 @@ mod session;
 mod session_store;
 mod skill_sync;
 mod plugin_sync;
+mod self_sync;
 mod redact_layer;
 mod config_sync;
 mod agent_seed;

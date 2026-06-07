@@ -20,7 +20,7 @@ def generate_pivots(
     llm: LlmClient | None = None,
 ) -> dict[str, Any]:
     client = llm or LlmClient()
-    system_prompt = _load_prompt("pivot.txt")
+    system_prompt = _load_prompt("pivot.md")
 
     context = [
         f"Idea: {idea_description}",

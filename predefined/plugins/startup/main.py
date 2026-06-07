@@ -11,157 +11,34 @@ import json
 import sys
 import os
 import re
-import traceback
 from pathlib import Path
+
+# Allow import from ~/.aman/self/
+_aman_dir = os.path.expanduser("~/.aman")
+if _aman_dir not in sys.path:
+    sys.path.insert(0, _aman_dir)
+from self.prompts import load_skill_prompt
+from self.jsonrpc import Bridge
+from self.html_utils import (
+    esc, esc_js, html_response, json_response, parse_body,
+    load_template as _load_template_file, serve_static, MIME,
+)
 from string import Template
 from typing import Any, Callable, Dict, Optional
 
 # ---------------------------------------------------------------------------
-# JSON-RPC Bridge
+# JSON-RPC Bridge (shared via self.jsonrpc)
 # ---------------------------------------------------------------------------
 
-_PENDING: Dict[int, "PendingRequest"] = {}
+bridge = Bridge("startup-plugin")
 
-
-class _PendingRequest:
-    __slots__ = ("method", "resolve")
-
-    def __init__(self, method: str, resolve: Callable[[Any], None]):
-        self.method = method
-        self.resolve = resolve
-
-
-_next_id = 1
-
-
-def _make_id() -> int:
-    global _next_id
-    rid = _next_id
-    _next_id += 1
-    return rid
-
-
-def _log(msg: str) -> None:
-    print(f"[startup-plugin] {msg}", file=sys.stderr, flush=True)
-
-
-# ── Sending (Plugin → Server) ──────────────────────────────────────────
-
-
-def send_response(req_id: int, result: Any) -> None:
-    payload = json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result})
-    _write_line(payload)
-
-
-def send_error(req_id: int, code: int, message: str) -> None:
-    payload = json.dumps(
-        {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
-    )
-    _write_line(payload)
-
-
-def send_request(method: str, params: Any) -> Any:
-    rid = _make_id()
-    payload = json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-    result_holder: list = []
-
-    def resolve(val: Any) -> None:
-        result_holder.append(val)
-
-    _PENDING[rid] = _PendingRequest(method, resolve)
-    _write_line(payload)
-    _process_until_response(rid)
-
-    if not result_holder:
-        raise RuntimeError(f"No response for {method}")
-    return result_holder[0]
-
-
-def send_notification(method: str, params: Any) -> None:
-    payload = json.dumps({"jsonrpc": "2.0", "method": method, "params": params})
-    _write_line(payload)
-
-
-def _write_line(data: str) -> None:
-    try:
-        sys.stdout.write(data + "\n")
-        sys.stdout.flush()
-    except BrokenPipeError:
-        pass
-
-
-# ── Receiving (Server → Plugin handling) ───────────────────────────────
-
-
-def _process_until_response(rid: int) -> None:
-    while rid in _PENDING:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        _dispatch(line.rstrip("\n"))
-
-
-def _dispatch(line: str) -> None:
-    if not line.strip():
-        return
-    try:
-        msg = json.loads(line)
-    except json.JSONDecodeError as e:
-        _log(f"Invalid JSON from server: {e}")
-        return
-
-    msg_id = msg.get("id")
-
-    if msg_id is not None and "method" not in msg:
-        # Response to one of our requests
-        rid = int(msg_id)
-        pending = _PENDING.pop(rid, None)
-        if pending:
-            result = msg.get("result")
-            error = msg.get("error")
-            if error:
-                _log(f"Server error for {pending.method}: {error}")
-                pending.resolve({"__error__": error})
-            else:
-                pending.resolve(result)
-        return
-
-    method = msg.get("method")
-    if method is None:
-        return
-
-    params = msg.get("params")
-    req_id = int(msg_id) if msg_id is not None else None
-    _handle_incoming_request(method, params, req_id)
-
-
-def _handle_incoming_request(method: str, params: Any, req_id: Optional[int]) -> None:
-    handler = _HANDLERS.get(method)
-    if handler is None:
-        _log(f"Unknown method: {method}")
-        if req_id is not None:
-            send_error(req_id, -32601, f"Method not found: {method}")
-        return
-
-    try:
-        result = handler(params)
-        if req_id is not None:
-            send_response(req_id, result)
-    except Exception as e:
-        _log(f"Handler error for {method}: {traceback.format_exc()}")
-        if req_id is not None:
-            send_error(req_id, -32000, str(e))
-
-
-_HANDLERS: Dict[str, Callable[[Any], Any]] = {}
-
-
-def on(method: str):
-    """Decorator to register a handler for a server→plugin method."""
-    def decorator(fn):
-        _HANDLERS[method] = fn
-        return fn
-    return decorator
+# Module-level aliases for backward compatibility
+send_response = bridge.send_response
+send_error = bridge.send_error
+send_request = bridge.send_request
+send_notification = bridge.send_notification
+_log = bridge.log
+on = bridge.on
 
 
 # ---------------------------------------------------------------------------
@@ -179,14 +56,40 @@ _store: Optional[StartupStore] = None
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
 
-_MIME = {
-    ".js": "application/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".html": "text/html; charset=utf-8",
+# Mapping from internal skill key → prompt filename (no extension)
+_SKILL_PROMPTS = {
+    "desire": "desire_evaluation",
+    "competitors": "competitor_mapping",
+    "pricing": "pricing",
+    "market_size": "tam_sam_som",
+    "cac": "cac_model",
+    "distribution": "distribution",
+    "retention": "retention",
+    "complexity": "complexity",
+    "weaknesses": "weakness_detection",
+    "memo": "decision_memo",
+    "pivot": "pivot",
+    "landing_page": "landing_page",
+    "gtm": "gtm_narrative",
+    "pricing_page": "pricing_page",
+    "outreach": "cold_outreach",
+    "mvp_scope": "mvp_scope",
+    "feedback": "feedback_synthesis",
+    "journal": "decision_journal",
+    "ikigai": "ikigai",
+    "what_if": "what_if",
+    "trends": "trend_analysis",
 }
+
+
+def _load_skill_prompt(skill_key: str) -> str:
+    """Load a SKILL.md-style prompt using the shared self.prompts.load_skill_prompt."""
+    filename = _SKILL_PROMPTS.get(skill_key, skill_key)
+    return load_skill_prompt(PROMPTS_DIR, filename)
+
+_MIME = MIME
 
 
 # ---------------------------------------------------------------------------
@@ -194,34 +97,12 @@ _MIME = {
 # ---------------------------------------------------------------------------
 
 
-def _load_template(name: str) -> Template:
-    with open(os.path.join(TEMPLATE_DIR, name), "r") as f:
-        return Template(f.read())
-
-
-def _esc(s: str) -> str:
-    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
-
-
-def _html_response(html: str) -> dict:
-    return {"status": 200, "headers": {"content-type": "text/html; charset=utf-8"}, "body": html}
-
-
-def _json_response(data: Any, status: int = 200) -> dict:
-    return {"status": status, "headers": {"content-type": "application/json"}, "body": json.dumps(data)}
-
-
-def _parse_body(body: Any) -> dict:
-    if body is None:
-        return {}
-    if isinstance(body, dict):
-        return body
-    if isinstance(body, str):
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            return {}
-    return {}
+# Backward-compatible aliases to shared self.html_utils functions
+_load_template = lambda name: _load_template_file(TEMPLATE_DIR, name)
+_esc = esc
+_html_response = html_response
+_json_response = json_response
+_parse_body = parse_body
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +123,7 @@ def _render_startup_index() -> dict:
         score = idea.get("final_score")
         score_str = f"{int(score)}/100" if score is not None else "—"
         idea_cards.append(
-            f'<div class="idea-card status-{status}" onclick="window.location.href=\'/startup/ideas/{slug}\'">'
+            f'<div class="idea-card status-{status}" onclick="window.location.href=\'/api/v1/startup/ideas/{slug}\'">'
             f'<span class="idea-status">{status}</span>'
             f'<h3>{slug}</h3>'
             f'<span class="idea-score">{score_str}</span>'
@@ -405,7 +286,7 @@ def _handle_validate_idea(body: dict) -> dict:
         lambda: analyze_competitors(description, keywords=keywords, niche=niche, llm=llm),
         {"direct_competitors": [], "market_saturation": "unknown", "saturation_score": {"total": 0}}, errors)
     if competitors.get("direct_competitors"):
-        _store.store_competitor_analysis(slug, competitors)
+        bg_store.store_competitor_analysis(slug, competitors)
 
     comp_pricing = _build_competitor_pricing_context(competitors)
     pricing = _run_or_fallback(f"[{slug}] pricing",
@@ -459,7 +340,7 @@ def _handle_validate_idea(body: dict) -> dict:
         "verdict": score_result.verdict.value, "confidence": score_result.confidence.value,
         "killer_dimensions": score_result.killer_dimensions,
     }
-    _store.store_score_snapshot(slug, scores_dict)
+    bg_store.store_score_snapshot(slug, scores_dict)
 
     memo = _run_or_fallback(f"[{slug}] memo",
         lambda: generate_decision_memo(idea_slug=slug, idea_description=description,
@@ -529,6 +410,269 @@ def _handle_validate_idea(body: dict) -> dict:
         "pivot": pivot_result,
         "errors": errors if errors else None,
     }, 201)
+
+
+def _handle_revalidate_idea(slug: str, agent_id: Optional[str] = None) -> dict:
+    """Re-run the full validation pipeline on an existing idea.
+
+    Returns immediately with a 202 Accepted response. The actual pipeline runs
+    in a background thread so it doesn't block the plugin's JSON-RPC loop
+    (which would freeze all other plugin pages and agent liveness).
+    """
+    if not _store:
+        return _json_response({"error": "store not initialized"}, 500)
+
+    idea = _store.get_idea(slug)
+    if not idea:
+        return _json_response({"error": f"idea '{slug}' not found"}, 404)
+
+    description = idea.get("description", "").strip()
+    if not description:
+        return _json_response({"error": "idea has no description"}, 400)
+
+    # Reset status immediately so the UI reflects it
+    try:
+        _store.update_idea_status(slug, "in_validation")
+    except ValueError:
+        pass
+
+    import threading
+    thread = threading.Thread(
+        target=_run_revalidate_pipeline,
+        args=(slug, idea, agent_id),
+        daemon=True,
+    )
+    thread.start()
+    _log(f"[{slug}] Re-validation started in background thread (agent={agent_id or 'auto'})")
+
+    return _json_response({
+        "ok": True,
+        "slug": slug,
+        "status": "started",
+        "message": "Validation pipeline started. Refresh to see results.",
+    }, 202)
+
+
+def _handle_validation_status(slug: str) -> dict:
+    """Return the current validation progress for an idea."""
+    if not _store:
+        return _json_response({"error": "store not initialized"}, 500)
+
+    idea = _store.get_idea(slug)
+    if not idea:
+        return _json_response({"error": f"idea '{slug}' not found"}, 404)
+
+    status = idea.get("status", "candidate")
+    latest = _store.get_latest_snapshot(slug)
+    phase = latest.get("phase", "") if latest else ""
+    partial = latest.get("partial", False) if latest else False
+
+    if status == "in_validation":
+        if phase:
+            return _json_response({"slug": slug, "status": "running", "phase": phase})
+        return _json_response({"slug": slug, "status": "running", "phase": "starting"})
+
+    if status == "scored":
+        return _json_response({"slug": slug, "status": "done", "phase": "complete",
+                                "verdict": idea.get("verdict", ""),
+                                "final_score": idea.get("final_score")})
+
+    return _json_response({"slug": slug, "status": "idle", "phase": None})
+
+
+def _run_revalidate_pipeline(slug: str, idea: dict, agent_id: Optional[str] = None) -> None:
+    """Run the full validation pipeline in a background thread.
+
+    Uses its own SurrealDB connection so that concurrent page requests
+    (served by the main thread) are not blocked or corrupted.
+
+    The pipeline has 4 phases. After each phase, results are saved to the
+    store so the user can refresh the detail page to see progress:
+      Phase 1 (3 LLM calls, sequential)  — desire, competitors, pricing
+      Phase 2 (5 LLM calls, parallel)    — market size, CAC, distribution,
+                                           retention, complexity
+      Phase 3 (3 LLM calls, sequential)  — weaknesses, scoring, decision memo
+      Phase 4 (conditional)              — pivot engine (if verdict == pivot)
+    """
+    import concurrent.futures
+    from llm import LlmClient
+    from skills import (
+        analyze_competitors, evaluate_desire, analyze_pricing, generate_decision_memo,
+        estimate_market_size, model_cac, analyze_distribution, predict_retention,
+        assess_complexity, detect_weaknesses, generate_pivots,
+    )
+    from scoring import score_idea, DEFAULT_WEIGHTS
+    from store import StartupStore, STARTUP_DIR
+
+    # Open a dedicated SurrealDB connection for this background thread.
+    # The global _store is NOT thread-safe — sharing it with the main
+    # JSON-RPC loop causes UI crashes and data corruption.
+    bg_store = StartupStore()
+    try:
+        bg_store.connect()
+    except Exception as e:
+        _log(f"[{slug}] Failed to open background store: {e}")
+        return
+
+    # JSONL session log for real-time progress visibility.
+    import time as _time
+    _sessions_dir = os.path.join(STARTUP_DIR, "sessions")
+    os.makedirs(_sessions_dir, exist_ok=True)
+    _session_path = os.path.join(_sessions_dir, f"{slug}.jsonl")
+    def _session_log(event: str, **kw):
+        entry = {"t": _time.time(), "event": event}
+        entry.update(kw)
+        try:
+            with open(_session_path, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
+
+    description = idea.get("description", "").strip()
+    keywords = idea.get("keywords", [])
+    niche = idea.get("niche", "")
+
+    llm = LlmClient(agent_id=agent_id) if agent_id else LlmClient()
+    _log(f"[{slug}] Using agent: {llm.agent_id}")
+    _session_log("pipeline_started", agent=llm.agent_id)
+    errors = []
+
+    # ── Phase 1: Sequential core analysis (3 calls) ──────────────────
+    _log(f"[{slug}] Phase 1/4: desire, competitors, pricing…")
+    desire = _run_or_fallback(f"[{slug}] desire", lambda: evaluate_desire(description, llm=llm),
+                               {"desire_scores": {}, "desire_label": "unknown", "desire_strength": 0,
+                                "primary_driver": "unknown", "virality_potential": "unknown"}, errors)
+
+    competitors = _run_or_fallback(f"[{slug}] competitors",
+        lambda: analyze_competitors(description, keywords=keywords, niche=niche, llm=llm),
+        {"direct_competitors": [], "market_saturation": "unknown", "saturation_score": {"total": 0}}, errors)
+    if competitors.get("direct_competitors"):
+        bg_store.store_competitor_analysis(slug, competitors)
+
+    comp_pricing = _build_competitor_pricing_context(competitors)
+    pricing = _run_or_fallback(f"[{slug}] pricing",
+        lambda: analyze_pricing(description, desire_scores=desire, competitor_pricing=comp_pricing, llm=llm),
+        {"recommended_price_monthly": 0, "pricing_model": "unknown"}, errors)
+
+    # Save Phase 1 partial snapshot so it's visible on refresh
+    bg_store.store_score_snapshot(slug, {
+        "phase": "1/4",
+        "desire": desire,
+        "competitors": {"direct_count": len(competitors.get("direct_competitors", [])),
+                         "market_saturation": competitors.get("market_saturation")},
+        "pricing": pricing,
+        "partial": True,
+    })
+    _log(f"[{slug}] Phase 1/4 complete")
+    _session_log("phase_1_done", errors=len([e for e in errors if "Phase 1" in str(e) or "desire" in str(e) or "competitor" in str(e) or "pricing" in str(e)]))
+
+    # ── Phase 2: Parallel analysis (5 calls) ─────────────────────────
+    _log(f"[{slug}] Phase 2/4: market, cac, distribution, retention, complexity (parallel)…")
+    def _run_parallel():
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            f_market = pool.submit(lambda: _run_or_fallback(f"[{slug}] market_size",
+                lambda: estimate_market_size(description, competitors=competitors,
+                    trend_velocity="stable", llm=llm),
+                {"market_size_verdict": "unknown"}, errors))
+            f_cac = pool.submit(lambda: _run_or_fallback(f"[{slug}] cac",
+                lambda: model_cac(description, pricing=pricing, llm=llm),
+                {"blended_cac": 0}, errors))
+            f_dist = pool.submit(lambda: _run_or_fallback(f"[{slug}] distribution",
+                lambda: analyze_distribution(description, competitors=competitors, llm=llm),
+                {"composite_k_factor": 0, "distribution_confidence": "low"}, errors))
+            f_ret = pool.submit(lambda: _run_or_fallback(f"[{slug}] retention",
+                lambda: predict_retention(description, desire=desire, llm=llm),
+                {"retention_tier": "unknown", "predicted_retention": {}}, errors))
+            f_comp = pool.submit(lambda: _run_or_fallback(f"[{slug}] complexity",
+                lambda: assess_complexity(description, llm=llm),
+                {"total_complexity": 0, "build_time_estimate_months": 0}, errors))
+            return f_market.result(), f_cac.result(), f_dist.result(), f_ret.result(), f_comp.result()
+
+    market_size, cac, distribution, retention, complexity = _run_parallel()
+
+    # Save Phase 2 partial snapshot
+    bg_store.store_score_snapshot(slug, {
+        "phase": "2/4",
+        "desire": desire,
+        "competitors": {"direct_count": len(competitors.get("direct_competitors", [])),
+                         "market_saturation": competitors.get("market_saturation")},
+        "pricing": pricing,
+        "market_size": market_size,
+        "cac": cac,
+        "distribution": distribution,
+        "retention": retention,
+        "complexity": complexity,
+        "partial": True,
+    })
+    _log(f"[{slug}] Phase 2/4 complete")
+    _session_log("phase_2_done")
+
+    # ── Phase 3: Synthesis (3 calls) ─────────────────────────────────
+    _log(f"[{slug}] Phase 3/4: weaknesses, scoring, memo…")
+    weaknesses = _run_or_fallback(f"[{slug}] weaknesses",
+        lambda: detect_weaknesses(
+            dimension_scores=_build_dimension_scores(desire, competitors, pricing, market_size,
+                                                      cac, distribution, retention, complexity),
+            desire=desire, competitors=competitors, pricing=pricing,
+            distribution=distribution, retention=retention, complexity=complexity, llm=llm),
+        {"weaknesses": [], "overall_weakness_severity": "unknown"}, errors)
+
+    dimension_scores = _build_dimension_scores(desire, competitors, pricing, market_size,
+                                                cac, distribution, retention, complexity)
+    score_result = score_idea(dimension_scores, weights=DEFAULT_WEIGHTS)
+    _log(f"[{slug}] Scored: {score_result.final_score}/100 → {score_result.verdict.value}")
+
+    scores_dict = {
+        "dimension_scores": score_result.dimension_scores, "weights_applied": score_result.weights_applied,
+        "base_score": score_result.base_score, "floor_penalty": score_result.floor_penalty,
+        "missing_discount": score_result.missing_discount, "final_score": score_result.final_score,
+        "verdict": score_result.verdict.value, "confidence": score_result.confidence.value,
+        "killer_dimensions": score_result.killer_dimensions,
+    }
+    bg_store.store_score_snapshot(slug, scores_dict)
+
+    try:
+        bg_store.update_idea_status(slug, "scored")
+    except ValueError:
+        pass
+
+    memo = _run_or_fallback(f"[{slug}] memo",
+        lambda: generate_decision_memo(idea_slug=slug, idea_description=description,
+            scores=scores_dict, desire=desire, competitors=competitors, pricing=pricing, llm=llm),
+        f"# Decision Memo: {slug}\n\nError generating memo.", errors)
+    _log(f"[{slug}] Phase 3/4 complete")
+    _session_log("phase_3_done", verdict=score_result.verdict.value, score=score_result.final_score)
+
+    # ── Phase 4: Conditional pivot ──────────────────────────────────
+    pivot_result = None
+    if score_result.verdict.value == "pivot":
+        _log(f"[{slug}] Phase 4/4: pivot engine…")
+        pivot_result = _run_or_fallback(f"[{slug}] pivot",
+            lambda: generate_pivots(idea_description=description, scores=scores_dict,
+                                     weaknesses=weaknesses.get("weaknesses", []),
+                                     competitors=competitors, llm=llm),
+            None, errors)
+        _log(f"[{slug}] Phase 4/4 complete")
+
+    # ── Team integration (HTTP-based, safe from background thread) ──
+    # NOTE: send_request() uses the JSON-RPC bridge which reads from stdin —
+    # calling it from a background thread would deadlock with the main loop.
+    # Team integration is skipped in background re-validation; it runs during
+    # the initial validate (which is synchronous).
+    send_notification("aman.emit_event", {
+        "event_type": "startup:decided",
+        "payload": {"idea_slug": slug, "verdict": score_result.verdict.value,
+                     "final_score": score_result.final_score, "confidence": score_result.confidence.value},
+    })
+    _log(f"[{slug}] All phases complete: {score_result.final_score}/100 → {score_result.verdict.value}"
+         + (f" ({len(errors)} errors)" if errors else ""))
+    _session_log("pipeline_done", verdict=score_result.verdict.value,
+                 score=score_result.final_score, errors=len(errors))
+
+    try:
+        bg_store.close()
+    except Exception:
+        pass
 
 
 def _run_or_fallback(label: str, fn, fallback, errors: list) -> dict:
@@ -691,6 +835,17 @@ def handle_route(method: str, path: str, query: Optional[str],
     if method == "POST" and clean == "/startup/api/validate":
         body_json = _parse_body(body)
         return _handle_validate_idea(body_json)
+
+    # ── API: Re-validate existing idea ─────────────────────────────
+    m_revalidate = re.match(r"/startup/api/ideas/([^/]+)/revalidate$", clean)
+    if m_revalidate and method == "POST":
+        body_json = _parse_body(body)
+        return _handle_revalidate_idea(m_revalidate.group(1), body_json.get("agent_id"))
+
+    # ── API: Check validation progress ──────────────────────────────
+    m_val_status = re.match(r"/startup/api/ideas/([^/]+)/validation-status$", clean)
+    if m_val_status and method == "GET":
+        return _handle_validation_status(m_val_status.group(1))
 
     # ── API: Get full analysis ─────────────────────────────────────
     m_analysis = re.match(r"/startup/api/ideas/([^/]+)/analysis$", clean)
@@ -1104,6 +1259,7 @@ def handle_on_load(params: Any) -> dict:
         {"method": "GET", "path": "/startup/ideas"},
         {"method": "GET", "path": "/startup/api/ideas"},
         {"method": "POST", "path": "/startup/api/validate"},
+        {"method": "POST", "path": "/startup/api/ideas/{slug}/revalidate"},
         {"method": "POST", "path": "/startup/api/generate"},
         {"method": "POST", "path": "/startup/api/market-deepdive"},
         {"method": "GET", "path": "/startup/api/incubation-data"},
@@ -1126,7 +1282,7 @@ def handle_on_load(params: Any) -> dict:
     # Start autonomous scheduler
     try:
         from scheduler import StartupScheduler
-        agent_id = _store.db.url.split("/")[-1] if _store else "default"
+        agent_id = str(_store.db.url).rsplit("/", 1)[-1] if _store else "default"
         _scheduler = StartupScheduler(_store)
         _scheduler.start()
         _log("Autonomous scheduler started (trend_watcher, rat_reminder, market_monitor)")
@@ -1195,18 +1351,5 @@ def handle_on_event(params: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    """Read JSON-RPC lines from stdin forever."""
-    _log("Startup plugin started, waiting for JSON-RPC...")
-    try:
-        for line in sys.stdin:
-            _dispatch(line.rstrip("\n"))
-    except KeyboardInterrupt:
-        pass
-    except BrokenPipeError:
-        pass
-    _log("Startup plugin stopped")
-
-
 if __name__ == "__main__":
-    main()
+    bridge.main()

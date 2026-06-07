@@ -47,6 +47,9 @@ pub(crate) struct GroupedHashes {
     pub(crate) plugins: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(crate) configs: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(rename = "self")]
+    pub(crate) self_files: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------

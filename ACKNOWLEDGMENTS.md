@@ -19,6 +19,9 @@ This project stands on the shoulders of many open-source projects and individual
 * [Agent Skills](https://agentskills.io)
 * [skm](https://github.com/tonitangpotato/skm)
 
+## Startup
+* [idea-validation-agents](https://github.com/MaxKmet/idea-validation-agents)
+
 
 ---
 

@@ -15,6 +15,7 @@ pub mod rate_limiter;
 pub mod sse_client;
 pub mod state;
 
+use i18n::Translator;
 use state::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
@@ -203,6 +204,7 @@ pub fn run() {
             // Multi-agent config/status (P2)
             commands::get_aman_config,
             commands::get_secrets_mode,
+            commands::get_locale,
             commands::has_any_provider,
             commands::has_any_agent,
             commands::get_default_model,
@@ -258,24 +260,55 @@ pub fn run() {
                     let _ = window.set_icon(icon);
                 }
 
-            // Build menu bar
+            // Build menu bar (i18n-aware via app state locale).
             let handle = app.handle();
-            let reload = MenuItem::with_id(handle, "reload_skills", "Reload Skills", true, Some("CmdOrCtrl+R"))?;
+            let t = app.state::<AppState>().locale;
+            let translator = Translator::new(t);
+
+            let reload = MenuItem::with_id(
+                handle, "reload_skills",
+                translator.translate("desktop.menu.reload_skills"),
+                true, Some("CmdOrCtrl+R"),
+            )?;
             let separator = PredefinedMenuItem::separator(handle)?;
-            let quit = PredefinedMenuItem::quit(handle, Some("Quit aman desktop"))?;
-            let file_menu = Submenu::with_items(handle, "File", true, &[&reload, &separator, &quit])?;
-            let cut = PredefinedMenuItem::cut(handle, Some("Cut"))?;
-            let copy = PredefinedMenuItem::copy(handle, Some("Copy"))?;
-            let paste = PredefinedMenuItem::paste(handle, Some("Paste"))?;
-            let select_all = PredefinedMenuItem::select_all(handle, Some("Select All"))?;
+            let quit = PredefinedMenuItem::quit(
+                handle,
+                Some(translator.translate("desktop.menu.quit")),
+            )?;
+            let file_menu = Submenu::with_items(
+                handle,
+                translator.translate("desktop.menu.file"),
+                true,
+                &[&reload, &separator, &quit],
+            )?;
+            let cut = PredefinedMenuItem::cut(handle, None)?;
+            let copy = PredefinedMenuItem::copy(handle, None)?;
+            let paste = PredefinedMenuItem::paste(handle, None)?;
+            let select_all = PredefinedMenuItem::select_all(handle, None)?;
             let edit_sep = PredefinedMenuItem::separator(handle)?;
             let edit_menu = Submenu::with_items(
-                handle, "Edit", true,
+                handle,
+                translator.translate("desktop.menu.edit"),
+                true,
                 &[&cut, &copy, &paste, &edit_sep, &select_all],
             )?;
-            let about = PredefinedMenuItem::about(handle, Some("About aman desktop"), None)?;
-            let devtools = MenuItem::with_id(handle, "devtools", "Toggle DevTools", true, Some("CmdOrCtrl+Shift+I"))?;
-            let help_menu = Submenu::with_items(handle, "Help", true, &[&about, &devtools])?;
+            let about = PredefinedMenuItem::about(
+                handle,
+                Some(translator.translate("desktop.menu.about")),
+                None,
+            )?;
+            let devtools = MenuItem::with_id(
+                handle, "devtools",
+                translator.translate("desktop.menu.devtools"),
+                true,
+                Some("CmdOrCtrl+Shift+I"),
+            )?;
+            let help_menu = Submenu::with_items(
+                handle,
+                translator.translate("desktop.menu.help"),
+                true,
+                &[&about, &devtools],
+            )?;
             let menu = Menu::with_items(handle, &[&file_menu, &edit_menu, &help_menu])?;
             app.set_menu(menu)?;
 

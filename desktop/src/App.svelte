@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import * as i18n from "./lib/i18n.svelte";
   import Home from "./pages/Home.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
   import Maintenance from "./pages/Maintenance.svelte";
@@ -198,6 +199,14 @@
 
   onMount(async () => {
     await checkOnboarding();
+
+    // Load locale from backend config (ui.locale).
+    try {
+      const loc = await invoke<{ code: string; display: string }>("get_locale");
+      i18n.setLocale({ code: loc.code as i18n.LocaleCode, display: loc.display });
+    } catch {
+      // keep default (en)
+    }
 
     // Read secrets mode to decide whether to show Integration.
     try {

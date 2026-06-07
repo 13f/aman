@@ -115,6 +115,7 @@ dependencies = [
  "base64 0.22.1",
  "config",
  "futures",
+ "i18n",
  "reqwest 0.12.28",
  "rfd",
  "rusqlite",
@@ -1239,6 +1240,7 @@ version = "0.1.0"
 dependencies = [
  "daily-life",
  "eval",
+ "i18n",
  "idle",
  "kernel",
  "serde",
@@ -2769,6 +2771,7 @@ dependencies = [
  "event-bus",
  "futures",
  "hook",
+ "i18n",
  "idle",
  "info-hub",
  "kernel",
@@ -3455,6 +3458,14 @@ dependencies = [
  "tower-service",
  "tracing",
  "windows-registry",
+]
+
+[[package]]
+name = "i18n"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

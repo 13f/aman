@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process", "net", "io-util"] }
 config = { path = "../kernel/config", version = "0.1.0" }
+i18n = { path = "../shared/i18n", version = "0.1.0" }
 secret = { path = "../kernel/secret", version = "0.1.0" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures = "0.3"

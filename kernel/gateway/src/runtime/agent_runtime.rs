@@ -2794,6 +2794,12 @@ impl AgentRuntime {
         self.api_token.as_deref()
     }
 
+    /// Returns the configured UI locale (default: English).
+    #[must_use]
+    pub fn locale(&self) -> i18n::Locale {
+        self.config.ui.locale
+    }
+
     #[must_use]
     pub fn risky_capabilities_enabled(&self) -> bool {
         self.config.security.risky_capabilities_enabled

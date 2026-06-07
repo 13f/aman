@@ -5,6 +5,7 @@
 
 
 use daily_life::DailyLifeConfig;
+use i18n::Locale;
 use idle::{BoredomConfig, IdlePersonality};
 use study::StudyConfig;
 use work::WorkConfig;
@@ -436,6 +437,23 @@ impl Default for IdleConfig {
 }
 
 
+/// UI / display configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiConfig {
+    /// Display locale. Default: English (`en`).
+    /// Supported values: `en`, `zhs` (简体中文).
+    #[serde(default)]
+    pub locale: Locale,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            locale: Locale::En,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct AgentConfig {
     #[serde(default)]
@@ -465,6 +483,9 @@ pub struct AgentConfig {
     /// Self-module configuration — Python prompt builders for agent self-evolution.
     #[serde(default)]
     pub self_module: SelfConfig,
+    /// UI / display configuration (locale, theme, etc.).
+    #[serde(default)]
+    pub ui: UiConfig,
 }
 
 /// Context compression configuration.
@@ -1154,6 +1175,12 @@ pub struct PartialAgentConfig {
     pub study: Option<PartialStudyConfig>,
     pub daily_life: Option<PartialDailyLifeConfig>,
     pub compression: Option<PartialCompressionConfig>,
+    pub ui: Option<PartialUiConfig>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialUiConfig {
+    pub locale: Option<Locale>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1526,6 +1553,12 @@ impl AgentConfig {
         if let Some(work_patch) = patch.work {
             if let Some(v) = work_patch.config {
                 self.work = v;
+            }
+        }
+
+        if let Some(ui) = patch.ui {
+            if let Some(v) = ui.locale {
+                self.ui.locale = v;
             }
         }
     }

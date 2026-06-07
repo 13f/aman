@@ -26,6 +26,7 @@ use tracing::Level;
 use tracing_subscriber::Layer;
 
 use crate::runtime::AgentRuntime;
+use i18n::Translator;
 use kernel::AmanResult;
 
 // ── Log buffer ────────────────────────────────────────────────────────────
@@ -142,6 +143,8 @@ struct PendingItem {
 struct TuiState {
     log_buffer: Arc<LogBuffer>,
     runtime: Arc<AgentRuntime>,
+    /// Translator for i18n.
+    translator: Translator,
     /// Log lines captured since last render.
     log_lines: Vec<LogLine>,
     /// Pending approvals snapshot, refreshed periodically.
@@ -158,9 +161,12 @@ struct TuiState {
 
 impl TuiState {
     fn new(log_buffer: Arc<LogBuffer>, runtime: Arc<AgentRuntime>) -> Self {
+        let locale = runtime.locale();
+        let translator = Translator::new(locale);
         Self {
             log_buffer,
             runtime,
+            translator,
             log_lines: Vec::new(),
             pending: Vec::new(),
             selected: None,
@@ -220,8 +226,9 @@ impl TuiState {
 
     /// Approve the currently selected pending plugin.
     fn approve_selected(&mut self) -> AmanResult<()> {
+        let err_msg = self.translator.translate("tui.error.no_plugin_selected").to_owned();
         let idx = self.selected.ok_or_else(|| kernel::Error::Unrecoverable {
-            message: "no plugin selected".into(),
+            message: err_msg.clone(),
         })?;
         let item = &self.pending[idx];
         self.runtime.resolve_plugin_approval_sync(&item.plugin_name, true)?;
@@ -231,8 +238,9 @@ impl TuiState {
 
     /// Deny the currently selected pending plugin.
     fn deny_selected(&mut self) -> AmanResult<()> {
+        let err_msg = self.translator.translate("tui.error.no_plugin_selected").to_owned();
         let idx = self.selected.ok_or_else(|| kernel::Error::Unrecoverable {
-            message: "no plugin selected".into(),
+            message: err_msg.clone(),
         })?;
         let item = &self.pending[idx];
         self.runtime.resolve_plugin_approval_sync(&item.plugin_name, false)?;
@@ -267,8 +275,13 @@ fn render_log_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
         Style::default().fg(Color::Gray)
     };
 
+    let title = format!(
+        " {} ({}) ",
+        state.translator.translate("tui.logs.title"),
+        state.translator.translate("tui.logs.switch_hint"),
+    );
     let block = Block::default()
-        .title(" Logs (Tab to switch) ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 
@@ -309,20 +322,18 @@ fn render_approval_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
         Style::default().fg(Color::Gray)
     };
 
+    let title = state.translator.translate("tui.approvals.title");
     let block = Block::default()
-        .title(" Pending Approvals ")
+        .title(format!(" {title} "))
         .borders(Borders::ALL)
         .border_style(border_style);
 
     if state.pending.is_empty() {
+        let no_pending = state.translator.translate("tui.approvals.no_pending");
         let text = Text::from(vec![
             Line::from(""),
             Line::from(Span::styled(
-                "  No pending",
-                Style::default().fg(Color::DarkGray),
-            )),
-            Line::from(Span::styled(
-                "  approvals.",
+                format!("  {no_pending}"),
                 Style::default().fg(Color::DarkGray),
             )),
         ]);
@@ -375,9 +386,11 @@ fn render_approval_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
                     width: area.width.saturating_sub(2),
                     height: (area.bottom() - detail_y).min(8),
                 };
+                let caps_label = state.translator.translate("tui.approvals.capabilities_for");
+                let hint = state.translator.translate("tui.approvals.approve_deny_hint");
                 let mut detail_lines: Vec<Line<'_>> = vec![
                     Line::from(Span::styled(
-                        format!("Capabilities for {}:", item.plugin_name),
+                        format!("{caps_label} {}:", item.plugin_name),
                         Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                     )),
                 ];
@@ -389,7 +402,7 @@ fn render_approval_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
                 }
                 detail_lines.push(Line::from(""));
                 detail_lines.push(Line::from(Span::styled(
-                    "Enter=Approve  d=Deny",
+                    hint,
                     Style::default().fg(Color::DarkGray),
                 )));
                 let detail = Paragraph::new(Text::from(detail_lines));
@@ -408,37 +421,72 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
         height: 1,
     };
 
+    let t = &state.translator;
+
     let mut spans = vec![
-        Span::styled(" Tab ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::styled(" switch focus ", Style::default()),
+        Span::styled(
+            format!(" {} ", t.translate("tui.footer.tab")),
+            Style::default().fg(Color::Black).bg(Color::Cyan),
+        ),
+        Span::styled(
+            format!(" {} ", t.translate("tui.footer.switch_focus")),
+            Style::default(),
+        ),
         Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
     ];
 
     if state.focus == Focus::Approvals && !state.pending.is_empty() {
         spans.extend(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
-            Span::styled(" navigate ", Style::default()),
+            Span::styled(
+                " ↑↓ ",
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            ),
+            Span::styled(
+                format!(" {} ", t.translate("tui.footer.navigate")),
+                Style::default(),
+            ),
             Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-            Span::styled(" Enter ", Style::default().fg(Color::Black).bg(Color::Green)),
-            Span::styled(" approve ", Style::default()),
+            Span::styled(
+                format!(" {} ", t.translate("tui.footer.enter")),
+                Style::default().fg(Color::Black).bg(Color::Green),
+            ),
+            Span::styled(
+                format!(" {} ", t.translate("tui.footer.approve")),
+                Style::default(),
+            ),
             Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
-            Span::styled(" d ", Style::default().fg(Color::Black).bg(Color::Red)),
-            Span::styled(" deny ", Style::default()),
+            Span::styled(
+                format!(" {} ", t.translate("tui.footer.d_key")),
+                Style::default().fg(Color::Black).bg(Color::Red),
+            ),
+            Span::styled(
+                format!(" {} ", t.translate("tui.footer.deny")),
+                Style::default(),
+            ),
             Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         ]);
     } else if state.focus == Focus::Logs {
         spans.extend(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-            Span::styled(" scroll ", Style::default()),
+            Span::styled(
+                " ↑↓ ",
+                Style::default().fg(Color::Black).bg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" {} ", t.translate("tui.footer.scroll")),
+                Style::default(),
+            ),
             Span::styled(" │ ", Style::default().fg(Color::DarkGray)),
         ]);
     }
 
     spans.push(Span::styled(
-        " q ",
+        format!(" {} ", t.translate("tui.footer.q_key")),
         Style::default().fg(Color::Black).bg(Color::Red),
     ));
-    spans.push(Span::styled(" quit ", Style::default()));
+    spans.push(Span::styled(
+        format!(" {} ", t.translate("tui.footer.quit")),
+        Style::default(),
+    ));
 
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), footer_area);
@@ -526,18 +574,19 @@ fn event_loop(terminal: &mut DefaultTerminal, state: &mut TuiState) -> io::Resul
                         },
                         KeyCode::Enter if state.focus == Focus::Approvals => {
                             if let Err(e) = state.approve_selected() {
-                                // Log error to the TUI log buffer so user sees it.
+                                let err_msg = state.translator.translate("tui.error.approve_failed");
                                 state.log_buffer.push(
                                     Level::ERROR,
-                                    format!("approve failed: {e}"),
+                                    format!("{err_msg}: {e}"),
                                 );
                             }
                         }
                         KeyCode::Char('d') if state.focus == Focus::Approvals => {
                             if let Err(e) = state.deny_selected() {
+                                let err_msg = state.translator.translate("tui.error.deny_failed");
                                 state.log_buffer.push(
                                     Level::ERROR,
-                                    format!("deny failed: {e}"),
+                                    format!("{err_msg}: {e}"),
                                 );
                             }
                         }

@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 kernel = { path = "../core", version = "0.1.0" }
+i18n = { path = "../../shared/i18n", version = "0.1.0" }
 eval = { path = "../eval", version = "0.1.0" }
 idle = { path = "../idle", version = "0.1.0" }
 work = { path = "../work", version = "0.1.0" }

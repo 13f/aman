@@ -55,6 +55,7 @@ members = [
   "kernel/llm-api",
   "kernel/eval",
   "kernel/context-manager",
+  "shared/i18n",
 ]
 default-members = [
   "cognitive/engine",
@@ -75,6 +76,7 @@ default-members = [
   "kernel/secret",
   "kernel/config",
   "kernel/context-manager",
+  "shared/i18n",
   "kernel/cli",
   "kernel/sdk",
   "kernel/sdk/examples/hello-skill",

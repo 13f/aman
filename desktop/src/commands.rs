@@ -10,18 +10,25 @@ use crate::models::{
     RuntimeConfigInfo, RuntimeStatusInfo, SkillEntry, SoulInfo,
     WorkflowEntry,
 };
+use i18n::Translator;
 use secret::{KeychainBackend, SecretBackend};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tauri::{Emitter, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+/// Create a translator from the app state's locale.
+fn translator(state: &State<'_, AppState>) -> Translator {
+    Translator::new(state.locale)
+}
+
 /// Helper to get the gateway client from state, failing with a clear message if disconnected.
 async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, String> {
     let guard = state.gateway_client.lock().await;
+    let t = translator(state);
     guard
         .clone()
-        .ok_or_else(|| "Gateway not connected. Start the gateway daemon first.".to_owned())
+        .ok_or_else(|| t.translate("desktop.error.no_gateway").to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -53,10 +60,11 @@ pub async fn get_runtime_status(state: State<'_, AppState>) -> Result<RuntimeSta
 #[tauri::command]
 pub async fn try_connect_gateway(state: State<'_, AppState>) -> Result<RuntimeStatusInfo, String> {
     // Skip if already connected
+    let t = translator(&state);
     {
         let guard = state.gateway_client.lock().await;
         if guard.is_some() {
-            return Err("Already connected to a gateway".to_owned());
+            return Err(t.translate("desktop.error.already_connected").to_owned());
         }
     }
 
@@ -64,7 +72,11 @@ pub async fn try_connect_gateway(state: State<'_, AppState>) -> Result<RuntimeSt
     let base_url = format!("http://127.0.0.1:{port}");
     let client = GatewayClient::new(&base_url);
 
-    client.health().await.map_err(|e| format!("Gateway not reachable at {base_url}: {e}"))?;
+    client.health().await.map_err(|e| {
+        let mut args = std::collections::HashMap::new();
+        args.insert("url", base_url.as_str());
+        format!("{}: {e}", t.translate_with("desktop.error.gateway_unreachable", &args))
+    })?;
 
     let v = client.runtime_status().await?;
     let status = parse_runtime_status(&v);
@@ -149,11 +161,12 @@ pub async fn start_runtime(
     state: State<'_, AppState>,
     gateway_url: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     // Check not already connected
     {
         let guard = state.gateway_client.lock().await;
         if guard.is_some() {
-            return Err("Already connected to a gateway".to_owned());
+            return Err(t.translate("desktop.error.already_connected").to_owned());
         }
     }
 
@@ -165,7 +178,9 @@ pub async fn start_runtime(
         *guard = Some(client);
         // gateway_process stays None — we don't own this process, so we
         // won't kill it on shutdown.
-        return Ok(format!("Connected to already-running gateway at {gateway_url}"));
+        let mut args = std::collections::HashMap::new();
+        args.insert("url", gateway_url.as_str());
+        return Ok(t.translate_with("desktop.info.gateway_connected", &args));
     }
 
     let bin_path = gateway_bin_path()?;
@@ -176,7 +191,12 @@ pub async fn start_runtime(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| format!("Failed to spawn gateway at {}: {e}", bin_path.display()))?;
+        .map_err(|e| {
+            let mut args = std::collections::HashMap::new();
+            let path_str = bin_path.display().to_string();
+            args.insert("path", path_str.as_str());
+            format!("{}: {e}", t.translate_with("desktop.error.spawn_failed", &args))
+        })?;
 
     // Poll health endpoint until the gateway is ready (up to 120 s)
     let max_retries = 120u32;
@@ -205,7 +225,9 @@ pub async fn start_runtime(
                 *client_guard = Some(client);
                 let mut proc_guard = state.gateway_process.lock().await;
                 *proc_guard = Some(child);
-                return Ok(format!("Gateway started at {gateway_url}"));
+                let mut args = std::collections::HashMap::new();
+                args.insert("url", gateway_url.as_str());
+                return Ok(t.translate_with("desktop.info.gateway_started", &args));
             }
             Err(e) => {
                 last_err = e;
@@ -217,8 +239,12 @@ pub async fn start_runtime(
     // Timeout — kill the process and report failure
     let _ = child.kill().await;
     let _ = child.wait().await;
+    let secs_str = max_retries.to_string();
+    let mut args = std::collections::HashMap::new();
+    args.insert("secs", secs_str.as_str());
     Err(format!(
-        "Gateway failed to become healthy within {max_retries}s: {last_err}"
+        "{}: {last_err}",
+        t.translate_with("desktop.error.startup_timeout", &args)
     ))
 }
 
@@ -2411,6 +2437,16 @@ pub async fn get_secrets_mode() -> Result<String, String> {
         .map_err(|e| format!("读取配置失败: {e}"))?;
     Ok(serde_json::to_string(&cfg.runtime.security.secrets_mode)
         .unwrap_or_else(|_| "\"env\"".to_owned()))
+}
+
+/// Return the current UI locale as `{ code: "en", display: "English" }`.
+#[tauri::command]
+pub async fn get_locale(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let locale = state.locale;
+    Ok(serde_json::json!({
+        "code": locale.code(),
+        "display": locale.display_name(),
+    }))
 }
 
 #[tauri::command]

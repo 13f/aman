@@ -268,6 +268,25 @@ def _handle_validate_idea(body: dict) -> dict:
     llm = LlmClient()
     errors = []
 
+    # ── Push work item to agent's WorkSystem ──────────────────────────
+    # This syncs the agent's state to Working while the validation runs,
+    # integrating the startup plugin with the Work System (like the team plugin).
+    try:
+        send_request("aman.push_work_item", {
+            "agent_id": llm.agent_id,
+            "title": f"Validate: {slug}",
+            "description": description,
+            "priority": "high",
+            "context": {
+                "source": "startup",
+                "idea_slug": slug,
+                "skill": "validate",
+            },
+        })
+        _log(f"[{slug}] Work item pushed to agent {llm.agent_id}")
+    except Exception as e:
+        _log(f"[{slug}] Failed to push work item: {e}")
+
     # ── Step 1: Create idea ──────────────────────────────────────────
     try:
         idea = _store.create_idea(slug, {"description": description, "keywords": keywords, "niche": niche})
@@ -286,7 +305,7 @@ def _handle_validate_idea(body: dict) -> dict:
         lambda: analyze_competitors(description, keywords=keywords, niche=niche, llm=llm),
         {"direct_competitors": [], "market_saturation": "unknown", "saturation_score": {"total": 0}}, errors)
     if competitors.get("direct_competitors"):
-        bg_store.store_competitor_analysis(slug, competitors)
+        _store.store_competitor_analysis(slug, competitors)
 
     comp_pricing = _build_competitor_pricing_context(competitors)
     pricing = _run_or_fallback(f"[{slug}] pricing",
@@ -340,7 +359,7 @@ def _handle_validate_idea(body: dict) -> dict:
         "verdict": score_result.verdict.value, "confidence": score_result.confidence.value,
         "killer_dimensions": score_result.killer_dimensions,
     }
-    bg_store.store_score_snapshot(slug, scores_dict)
+    _store.store_score_snapshot(slug, scores_dict)
 
     memo = _run_or_fallback(f"[{slug}] memo",
         lambda: generate_decision_memo(idea_slug=slug, idea_description=description,
@@ -363,7 +382,8 @@ def _handle_validate_idea(body: dict) -> dict:
             rat = scores_dict.get("rat_experiment") if score_result.verdict.value == "test" else None
             create_team_work_item(
                 send_request, slug, score_result.verdict.value,
-                score_result.final_score, rat_experiment=rat,
+                score_result.final_score, agent_id=llm.agent_id,
+                rat_experiment=rat,
                 description=description,
             )
         except Exception as e:
@@ -693,6 +713,15 @@ def _run_revalidate_pipeline(slug: str, idea: dict, agent_id: Optional[str] = No
     # calling it from a background thread would deadlock with the main loop.
     # Team integration is skipped in background re-validation; it runs during
     # the initial validate (which is synchronous).
+
+    # Close bg_store BEFORE sending the notification so SurrealDB writes
+    # are flushed to disk. Otherwise _store (reopened by handle_on_event)
+    # may not see the latest data.
+    try:
+        bg_store.close()
+    except Exception:
+        pass
+
     send_notification("aman.emit_event", {
         "event_type": "startup:decided",
         "payload": {"idea_slug": slug, "verdict": score_result.verdict.value,
@@ -702,11 +731,6 @@ def _run_revalidate_pipeline(slug: str, idea: dict, agent_id: Optional[str] = No
          + (f" ({len(errors)} errors)" if errors else ""))
     _session_log("pipeline_done", verdict=score_result.verdict.value,
                  score=score_result.final_score, errors=len(errors))
-
-    try:
-        bg_store.close()
-    except Exception:
-        pass
 
 
 def _run_or_fallback(label: str, fn, fallback, errors: list) -> dict:

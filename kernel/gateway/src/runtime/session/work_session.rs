@@ -54,6 +54,41 @@ pub fn parse_work_session_id(session_id: &str) -> Option<(String, String, String
     Some((agent_id, project_key, work_id.to_owned()))
 }
 
+/// Build a deterministic session ID for a startup work item.
+///
+/// Format: `{agent_id}_startup_{idea_slug}`
+///
+/// This allows startup work (validation, strategy skills, etc.) to be tracked
+/// by the Work System — the agent harness detects the `_startup_` marker and
+/// sets `AgentSystemState::Working` while the startup task is running.
+pub fn startup_session_id(agent_id: &str, idea_slug: &str) -> String {
+    format!("{agent_id}_startup_{idea_slug}")
+}
+
+/// Try to parse a startup session ID back into its components.
+///
+/// Returns `Some((agent_id, idea_slug))` if the session_id matches the startup
+/// pattern `{agent}_startup_{slug}`, or `None` if it doesn't.
+pub fn parse_startup_session_id(session_id: &str) -> Option<(String, String)> {
+    let marker = session_id.find("_startup_")?;
+    let agent_id = &session_id[..marker];
+    let idea_slug = &session_id[marker + "_startup_".len()..];
+
+    if agent_id.is_empty() || idea_slug.is_empty() {
+        return None;
+    }
+    Some((agent_id.to_owned(), idea_slug.to_owned()))
+}
+
+/// Returns true if the session_id is a plugin work session (kanban or startup).
+///
+/// Plugin work sessions cause the agent harness to set `AgentSystemState::Working`
+/// instead of `AgentSystemState::Chatting`, and support session resumption (断点续传).
+pub fn is_plugin_work_session(session_id: &str) -> bool {
+    parse_work_session_id(session_id).is_some()
+        || parse_startup_session_id(session_id).is_some()
+}
+
 /// Resume a work item session from persisted JSONL events.
 ///
 /// Loads the session's event history, restores conversation history in the
@@ -135,5 +170,52 @@ mod tests {
         assert_eq!(agent, "minmax");
         assert_eq!(project, "aman");
         assert_eq!(work, "work-1780551635570");
+    }
+
+    // ── Startup session ID tests ──────────────────────────────────────
+
+    #[test]
+    fn startup_session_id_format() {
+        let id = startup_session_id("agent-1", "my-app-idea");
+        assert_eq!(id, "agent-1_startup_my-app-idea");
+    }
+
+    #[test]
+    fn parse_valid_startup_session_id() {
+        let (agent, slug) =
+            parse_startup_session_id("minmax_startup_cool-saas").expect("should parse");
+        assert_eq!(agent, "minmax");
+        assert_eq!(slug, "cool-saas");
+    }
+
+    #[test]
+    fn parse_startup_session_with_underscore_in_slug() {
+        let (agent, slug) =
+            parse_startup_session_id("agent-1_startup_my_app_idea").expect("should parse");
+        assert_eq!(agent, "agent-1");
+        assert_eq!(slug, "my_app_idea");
+    }
+
+    #[test]
+    fn parse_non_startup_session_id() {
+        assert!(parse_startup_session_id("minmax_idle_abc123").is_none());
+        assert!(parse_startup_session_id("some-uuid-here").is_none());
+        assert!(parse_startup_session_id("agent_proj_work-123").is_none());
+    }
+
+    #[test]
+    fn startup_roundtrip() {
+        let id = startup_session_id("my-agent", "validate-me");
+        let (agent, slug) = parse_startup_session_id(&id).expect("should parse");
+        assert_eq!(agent, "my-agent");
+        assert_eq!(slug, "validate-me");
+    }
+
+    #[test]
+    fn is_plugin_work_session_detects_both() {
+        assert!(is_plugin_work_session("minmax_aman_work-123"));
+        assert!(is_plugin_work_session("agent-1_startup_my-idea"));
+        assert!(!is_plugin_work_session("minmax_idle_abc123"));
+        assert!(!is_plugin_work_session("random-session-id"));
     }
 }

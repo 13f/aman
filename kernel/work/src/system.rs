@@ -342,6 +342,7 @@ fn source_name(source: &WorkItemSource) -> String {
         WorkItemSource::Kanban { .. } => "kanban".into(),
         WorkItemSource::Todo { .. } => "todo".into(),
         WorkItemSource::SeekResponse { .. } => "seek_response".into(),
+        WorkItemSource::Startup { .. } => "startup".into(),
         WorkItemSource::Custom { name, .. } => name.clone(),
     }
 }

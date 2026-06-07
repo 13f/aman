@@ -2395,93 +2395,153 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                     notify_on_complete: true,
                     created_at: kernel::types::Timestamp::now(),
                 };
+
+                let context = params.get("context").and_then(|v| v.as_object());
+                let source_type = context
+                    .and_then(|c| c.get("source"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("kanban");
+
                 let ws = self.agent_registry.get_work_system(&agent_id).await.ok_or_else(|| {
                     kernel::Error::NotFound {
                         name: format!("agent:{agent_id}"),
                     }
                 })?;
-                ws.push_work_item(item, work::WorkItemSource::Kanban {
-                    board_id: plugin_name.to_owned(),
-                    scheduler: "subprocess-plugin".to_owned(),
-                }).await.map_err(|e| kernel::Error::Unrecoverable {
-                    message: format!("push_work_item failed: {e:?}"),
-                })?;
 
-                // ── Trigger agent ReAct loop via MessageReceived event ──
-                // The WorkSystem/LifecycleEngine publishes WorkItemAssigned to the
-                // agent's local bus, but no subscriber routes it to ws.handle() yet.
-                // To actually wake the agent and process this work item NOW, we
-                // publish a MessageReceived event on the global bus — the same path
-                // used by the idle_run HTTP endpoint and the BoredomActor.
-                //
-                // The MessageReceivedHandler (subscribed below) will:
-                // 1. Ensure the session exists
-                // 2. Persist the incoming message to session JSONL
-                // 3. Spawn process_message → react_loop → actual LLM work
-                let context = params.get("context").and_then(|v| v.as_object());
-                let project_key = context
-                    .and_then(|c| c.get("project_key"))
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty());
-                let work_id = context
-                    .and_then(|c| c.get("work_id"))
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty());
-
-                if let (Some(pk), Some(wid)) = (project_key, work_id) {
-                    let session_id = super::session::work_session::work_session_id(
-                        &agent_id, pk, wid,
-                    );
-
-                    let stage_id = context
-                        .and_then(|c| c.get("stage_id"))
+                // ── Determine WorkItemSource and session info ──────────
+                if source_type == "startup" {
+                    let idea_slug = context
+                        .and_then(|c| c.get("idea_slug"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let work_context = context
-                        .and_then(|c| c.get("work_context"))
+                        .filter(|s| !s.is_empty());
+                    let skill = context
+                        .and_then(|c| c.get("skill"))
                         .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                        .unwrap_or("validate");
 
-                    // Publish a MessageReceived event with the kanban-worker skill.
-                    // The skill (in ~/.aman/skills/) defines the workflow; the backend
-                    // only passes data.
-                    //
-                    // NOTE: use push_str to build the text — work_context may contain
-                    // JSON tool-call payloads with { } that would panic format!().
-                    let mut text = format!(
-                        "[WORK ITEM — Kanban Act!]\n\
-                         Project: {pk}  Work ID: {wid}  Stage: {stage_id}\n\
-                         Title: {title}\n\
-                         Description: {description}\n"
-                    );
-                    if !work_context.is_empty() {
-                        text.push('\n');
-                        text.push_str(work_context);
-                    }
+                    ws.push_work_item(item, work::WorkItemSource::Startup {
+                        idea_slug: idea_slug.unwrap_or("unknown").to_owned(),
+                        skill: skill.to_owned(),
+                    }).await.map_err(|e| kernel::Error::Unrecoverable {
+                        message: format!("push_work_item failed: {e:?}"),
+                    })?;
 
-                    let event = kernel::event::Event::new(
-                        "gateway:push_work_item",
-                        kernel::event::EventType::MessageReceived,
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "agent_id": agent_id,
-                            "text": text,
-                            "project_key": pk,
-                            "work_id": wid,
-                            "stage_id": stage_id,
-                            "session_type": "background",
-                            "background": false,
-                            "skill_name": "kanban-worker",
-                        }),
-                    );
-                    if let Err(e) = self.bus.publish(event).await {
-                        tracing::warn!(
-                            agent_id = %agent_id,
-                            project_key = pk,
-                            work_id = wid,
-                            error = %e,
-                            "push_work_item: failed to publish MessageReceived event",
+                    if let Some(slug) = idea_slug {
+                        let session_id = super::session::work_session::startup_session_id(
+                            &agent_id, slug,
                         );
+
+                        let mut text = format!(
+                            "[WORK ITEM — Startup]\n\
+                             Idea: {slug}  Skill: {skill}\n\
+                             Title: {title}\n\
+                             Description: {description}\n"
+                        );
+
+                        let work_context = context
+                            .and_then(|c| c.get("work_context"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if !work_context.is_empty() {
+                            text.push('\n');
+                            text.push_str(work_context);
+                        }
+
+                        let event = kernel::event::Event::new(
+                            "gateway:push_work_item",
+                            kernel::event::EventType::MessageReceived,
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "text": text,
+                                "idea_slug": slug,
+                                "skill_name": "startup-worker",
+                                "session_type": "background",
+                                "background": false,
+                            }),
+                        );
+                        if let Err(e) = self.bus.publish(event).await {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                idea_slug = slug,
+                                error = %e,
+                                "push_work_item: failed to publish startup MessageReceived event",
+                            );
+                        }
+                    }
+                } else {
+                    // ── Kanban / default path ──────────────────────────
+                    ws.push_work_item(item, work::WorkItemSource::Kanban {
+                        board_id: plugin_name.to_owned(),
+                        scheduler: "subprocess-plugin".to_owned(),
+                    }).await.map_err(|e| kernel::Error::Unrecoverable {
+                        message: format!("push_work_item failed: {e:?}"),
+                    })?;
+
+                    let project_key = context
+                        .and_then(|c| c.get("project_key"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty());
+                    let work_id = context
+                        .and_then(|c| c.get("work_id"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty());
+
+                    if let (Some(pk), Some(wid)) = (project_key, work_id) {
+                        let session_id = super::session::work_session::work_session_id(
+                            &agent_id, pk, wid,
+                        );
+
+                        let stage_id = context
+                            .and_then(|c| c.get("stage_id"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let work_context = context
+                            .and_then(|c| c.get("work_context"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+
+                        // Publish a MessageReceived event with the kanban-worker skill.
+                        // The skill (in ~/.aman/skills/) defines the workflow; the backend
+                        // only passes data.
+                        //
+                        // NOTE: use push_str to build the text — work_context may contain
+                        // JSON tool-call payloads with { } that would panic format!().
+                        let mut text = format!(
+                            "[WORK ITEM — Kanban Act!]\n\
+                             Project: {pk}  Work ID: {wid}  Stage: {stage_id}\n\
+                             Title: {title}\n\
+                             Description: {description}\n"
+                        );
+                        if !work_context.is_empty() {
+                            text.push('\n');
+                            text.push_str(work_context);
+                        }
+
+                        let event = kernel::event::Event::new(
+                            "gateway:push_work_item",
+                            kernel::event::EventType::MessageReceived,
+                            serde_json::json!({
+                                "session_id": session_id,
+                                "agent_id": agent_id,
+                                "text": text,
+                                "project_key": pk,
+                                "work_id": wid,
+                                "stage_id": stage_id,
+                                "session_type": "background",
+                                "background": false,
+                                "skill_name": "kanban-worker",
+                            }),
+                        );
+                        if let Err(e) = self.bus.publish(event).await {
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                project_key = pk,
+                                work_id = wid,
+                                error = %e,
+                                "push_work_item: failed to publish MessageReceived event",
+                            );
+                        }
                     }
                 }
 

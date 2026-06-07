@@ -1156,10 +1156,10 @@ impl AgentHarness {
             .await?;
         self.registry.set_status(agent_id, AgentStatus::Busy).await?;
         // Pick the right system state for the UI:
-        // - Work-item sessions (kanban Act! / idle_run with work tag) → Working
+        // - Work-item sessions (kanban Act! / startup / idle_run with work tag) → Working
         // - Foreground user messages → Chatting
         // - Background boredom runs → already set by boredom actor, leave as-is
-        let is_work_session = super::session::work_session::parse_work_session_id(session_id).is_some();
+        let is_work_session = super::session::work_session::is_plugin_work_session(session_id);
         if is_work_session {
             self.registry.set_system_state(agent_id, AgentSystemState::Working).await;
         } else if !background {

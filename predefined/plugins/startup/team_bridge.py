@@ -29,6 +29,7 @@ def create_team_work_item(
     idea_slug: str,
     verdict: str,
     final_score: int,
+    agent_id: str = "",
     rat_experiment: Optional[dict] = None,
     description: str = "",
 ) -> Optional[dict]:
@@ -38,6 +39,11 @@ def create_team_work_item(
     """
     if verdict not in ("test", "pursue"):
         return None
+
+    # Resolve agent_id if not provided
+    if not agent_id:
+        from llm import get_agent_id
+        agent_id = get_agent_id()
 
     # Build title and context from the decision
     if verdict == "test" and rat_experiment:
@@ -64,7 +70,7 @@ def create_team_work_item(
 
     try:
         result = send_request("aman.push_work_item", {
-            "agent_id": "",  # Let Team dispatcher pick best agent
+            "agent_id": agent_id,
             "title": title,
             "description": desc,
             "priority": "high",

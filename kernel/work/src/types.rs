@@ -99,6 +99,11 @@ pub enum WorkItemSource {
     Kanban { board_id: String, scheduler: String },
     Todo { list_id: String },
     SeekResponse { request_id: String },
+    /// Startup plugin work item (idea validation, strategy, execution, etc.).
+    Startup {
+        idea_slug: String,
+        skill: String,
+    },
     Custom {
         name: String,
         #[serde(default)]

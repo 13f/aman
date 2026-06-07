@@ -253,7 +253,7 @@ def make_market_monitor(
                 if not slug or not desc:
                     continue
                 result = _http_post("/api/v1/startup/api/validate", {
-                    "idea_slug": f"{slug}-refresh",
+                    "idea_slug": f"{slug}-refresh-{int(time.time())}",
                     "description": f"Re-analysis: {desc}",
                 })
                 if result.get("ok"):

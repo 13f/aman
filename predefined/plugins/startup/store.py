@@ -56,9 +56,9 @@ IDEA_STATES = [
 VALID_TRANSITIONS = {
     "candidate":      ["in_validation", "dropped"],
     "in_validation":  ["scored", "dropped"],
-    "scored":         ["active", "paused", "dropped"],
-    "active":         ["paused", "dropped"],
-    "paused":         ["active", "dropped"],
+    "scored":         ["active", "paused", "dropped", "in_validation"],
+    "active":         ["paused", "dropped", "in_validation"],
+    "paused":         ["active", "dropped", "in_validation"],
     "dropped":        [],  # terminal
 }
 
@@ -192,20 +192,31 @@ class StartupStore:
         }
         result = self._create_or_update("competitor_analysis", idea_slug, snap)
 
-        # Build graph edges: idea -> competes_with -> competitor
+        # Remove old edges before creating new ones (re-validation
+        # would otherwise create duplicate competes_with edges).
         idea_rid = self._rid("idea", idea_slug)
+        try:
+            self.db.query(f"DELETE {idea_rid}->competes_with")
+        except Exception:
+            pass
+
         for comp in analysis.get("direct_competitors", []):
             comp_id = self._normalize_id(comp.get("name", ""))
             if not comp_id:
                 continue
             comp_rid = self._rid("competitor", comp_id)
-            # Ensure competitor node exists
-            self.db.query(f"""
-                CREATE {comp_rid} CONTENT $data
-            """, {"data": {
-                "name": comp.get("name", ""),
-                "platform": comp.get("platform", ""),
-            }})
+            # Ensure competitor node exists. During re-validation the
+            # competitor may already exist from a prior run — ignore
+            # duplicate rather than failing the pipeline.
+            try:
+                self.db.query(f"""
+                    CREATE {comp_rid} CONTENT $data
+                """, {"data": {
+                    "name": comp.get("name", ""),
+                    "platform": comp.get("platform", ""),
+                }})
+            except Exception:
+                pass  # already exists from prior validation
             # Create edge
             self.db.query(f"""
                 RELATE {idea_rid}->competes_with->{comp_rid}
@@ -280,10 +291,10 @@ class StartupStore:
 
     def store_market_insight(self, niche: str, platform: str, period: str,
                               insight: dict) -> dict:
-        """Store a market insight (append-only pattern)."""
+        """Store a market insight (upsert — same niche+platform+period overwrites)."""
         now = datetime.now(timezone.utc).isoformat()
         insight_id = f"{niche}-{platform}-{period}"
-        return self.db.create(self._rid("market_insight", insight_id), {
+        return self._create_or_update("market_insight", insight_id, {
             "niche": niche,
             "platform": platform,
             "period": period,
@@ -360,10 +371,10 @@ class StartupStore:
     # ── Reflection Layer ───────────────────────────────────────────
 
     def store_decision_entry(self, entry: dict) -> dict:
-        """Store a founder decision journal entry."""
+        """Store a founder decision journal entry (upsert by id)."""
         now = datetime.now(timezone.utc).isoformat()
         entry_id = entry.get("id") or f"decision-{int(datetime.now().timestamp())}"
-        return self.db.create(self._rid("decision_entry", entry_id), {
+        return self._create_or_update("decision_entry", entry_id, {
             "decision": entry.get("decision", ""),
             "info_at_the_time": entry.get("info_at_the_time", ""),
             "assumptions": entry.get("assumptions", []),
@@ -387,10 +398,10 @@ class StartupStore:
         ))
 
     def store_ikigai_check(self, check: dict) -> dict:
-        """Store an ikigai alignment check result."""
+        """Store an ikigai alignment check result (upsert by id)."""
         now = datetime.now(timezone.utc).isoformat()
         check_id = f"ikigai-{int(datetime.now().timestamp())}"
-        return self.db.create(self._rid("ikigai_check", check_id), {
+        return self._create_or_update("ikigai_check", check_id, {
             "alignment_score": check.get("alignment_score", 0),
             "overlapping_quadrants": check.get("overlapping_quadrants", []),
             "missing_quadrant": check.get("missing_quadrant", ""),

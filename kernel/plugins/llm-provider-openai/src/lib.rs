@@ -19,7 +19,7 @@ const DEFAULT_MODEL: &str = "gpt-4o";
 const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
 const DEFAULT_TEMPERATURE: f64 = 0.7;
 const DEFAULT_MAX_TOKENS: u32 = 4096;
-const REQUEST_TIMEOUT_SECS: u64 = 60;
+const REQUEST_TIMEOUT_SECS: u64 = 180;
 const STREAM_TIMEOUT_SECS: u64 = 600;
 
 // ---------------------------------------------------------------------------
@@ -149,6 +149,11 @@ impl LlmOpenaiProvider {
         if !openai_tools.is_empty() {
             request_body["tools"] = json!(openai_tools);
             request_body["tool_choice"] = json!("auto");
+        }
+        if let Some(ref fmt) = req.response_format {
+            if fmt == "json_object" {
+                request_body["response_format"] = json!({"type": "json_object"});
+            }
         }
 
         let client = reqwest::Client::builder()
@@ -321,6 +326,11 @@ impl LlmOpenaiProvider {
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
         }
+        if let Some(ref fmt) = req.response_format {
+            if fmt == "json_object" {
+                body["response_format"] = json!({"type": "json_object"});
+            }
+        }
 
         let url = format!("{}/chat/completions", self.base_url);
         let client = reqwest::Client::builder()
@@ -331,76 +341,108 @@ impl LlmOpenaiProvider {
                 message: format!("failed to build HTTP client: {e}"),
             })?;
 
-        let response = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .header("HTTP-Referer", "https://github.com/13f/aman")
-            .header("X-Title", "aman")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Unrecoverable {
-                message: format!("LLM API request failed: {e}"),
-            })?;
+        let mut last_error = String::new();
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+            }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            return Err(Error::ConfigInvalid {
-                message: format!("LLM API error HTTP {status}: {text}"),
-            });
+            let response = match client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("Content-Type", "application/json")
+                .header("HTTP-Referer", "https://github.com/13f/aman")
+                .header("X-Title", "aman")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    last_error = format!("LLM API request failed: {e}");
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                if status.is_client_error() {
+                    // 4xx — don't retry, these are permanent errors
+                    let text = response.text().await.unwrap_or_default();
+                    return Err(Error::ConfigInvalid {
+                        message: format!("LLM API error HTTP {status}: {text}"),
+                    });
+                }
+                // 5xx — retryable
+                last_error = format!("LLM API error HTTP {status}");
+                continue;
+            }
+
+            let response_text = match response.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    last_error = format!("failed to read LLM response body: {e}");
+                    continue;
+                }
+            };
+
+            match serde_json::from_str::<Value>(&response_text) {
+                Ok(v) => {
+                    let choice = &v["choices"][0];
+                    let message = &choice["message"];
+                    let finish_reason = choice["finish_reason"]
+                        .as_str()
+                        .unwrap_or("stop")
+                        .to_owned();
+                    let content = message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let reasoning_content = message
+                        .get("reasoning_content")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let tool_calls: Vec<ParsedToolCall> = message
+                        .get("tool_calls")
+                        .and_then(Value::as_array)
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|tc| {
+                                    let id = tc.get("id")?.as_str()?.to_owned();
+                                    let name = tc["function"]["name"].as_str()?.to_owned();
+                                    let args_str = tc["function"]["arguments"].as_str()?.to_owned();
+                                    let args: Value = serde_json::from_str(&args_str)
+                                        .unwrap_or(Value::Object(Default::default()));
+                                    Some(ParsedToolCall { id, tool_name: name, args })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    return Ok(LlmResponse {
+                        content,
+                        finish_reason,
+                        tool_calls,
+                        reasoning_content,
+                    });
+                }
+                Err(e) => {
+                    last_error = format!(
+                        "failed to parse LLM response: {e} — raw body (first 500 chars): {}",
+                        &response_text[..response_text.len().min(500)]
+                    );
+                    // Only retry parse errors if body looks incomplete/truncated
+                    if !response_text.trim().starts_with('{') {
+                        continue;
+                    }
+                    return Err(Error::ConfigInvalid { message: last_error });
+                }
+            }
         }
 
-        let response_body: Value = response.json().await.map_err(|e| Error::ConfigInvalid {
-            message: format!("failed to parse LLM response: {e}"),
-        })?;
-
-        let choice = &response_body["choices"][0];
-        let message = &choice["message"];
-        let finish_reason = choice["finish_reason"]
-            .as_str()
-            .unwrap_or("stop")
-            .to_owned();
-
-        let content = message
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-
-        let reasoning_content = message
-            .get("reasoning_content")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
-
-        let tool_calls: Vec<ParsedToolCall> = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|tc| {
-                        let id = tc.get("id")?.as_str()?.to_owned();
-                        let name = tc["function"]["name"].as_str()?.to_owned();
-                        let args_str = tc["function"]["arguments"].as_str()?.to_owned();
-                        let args: Value = serde_json::from_str(&args_str)
-                            .unwrap_or(Value::Object(Default::default()));
-                        Some(ParsedToolCall {
-                            id,
-                            tool_name: name,
-                            args,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        Ok(LlmResponse {
-            content,
-            finish_reason,
-            tool_calls,
-            reasoning_content,
+        Err(Error::Unrecoverable {
+            message: format!("llm_chat failed after 3 attempts: {last_error}"),
         })
     }
 }
@@ -1027,6 +1069,7 @@ mod tests {
             messages: vec![ChatMessage::user("Hello")],
             tools: vec![],
             max_output_tokens: 0,
+            response_format: None,
         };
 
         let result = provider.chat_completion(req, None).await.unwrap();
@@ -1070,6 +1113,7 @@ mod tests {
             messages: vec![ChatMessage::user("Hi")],
             tools: vec![],
             max_output_tokens: 0,
+            response_format: None,
         };
 
         let result = provider.chat_completion(req, Some(cb)).await.unwrap();

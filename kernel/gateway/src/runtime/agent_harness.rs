@@ -572,6 +572,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 messages: messages.clone(),
                 tools: tools.clone(),
                 max_output_tokens: max_tokens,
+                response_format: None,
             };
             let r = llm_provider.chat_completion(req, cb.clone()).await;
             let should_retry = r.is_err()

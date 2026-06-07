@@ -225,7 +225,7 @@
           'complete': 'Done ✓',
         };
         var attempts = 0;
-        var maxAttempts = 40; // ~3.3 min at 5s intervals
+        var maxAttempts = 90; // ~7.5 min at 5s intervals
 
         function tick() {
           fetch('/api/v1/startup/api/ideas/' + encodeURIComponent(slug) + '/validation-status')

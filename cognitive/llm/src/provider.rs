@@ -30,6 +30,9 @@ pub struct LlmChatRequest {
     pub messages: Vec<ChatMessage>,
     pub tools: Vec<ToolDescriptor>,
     pub max_output_tokens: u32,
+    /// When set, the provider should request structured JSON output from the
+    /// model (e.g. `response_format: { type: "json_object" }` for OpenAI).
+    pub response_format: Option<String>,
 }
 
 /// Response from an LLM provider after a chat completion.

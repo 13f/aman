@@ -2184,6 +2184,10 @@ impl Tool for LlmChatTool {
                     "max_tokens": {
                         "type": "integer",
                         "description": "Maximum tokens in the response (default 4000)"
+                    },
+                    "response_format": {
+                        "type": "string",
+                        "description": "When set to 'json_object', the model is constrained to output valid JSON"
                     }
                 }
             }))
@@ -2225,27 +2229,43 @@ impl Tool for LlmChatTool {
             .ok_or_else(|| Error::ConfigInvalid {
                 message: "user_prompt is required".to_owned(),
             })?;
-        let max_tokens = params
+        let requested_tokens = params
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(4000) as u32;
+        let response_format = params
+            .get("response_format")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
 
-        let provider = self
-            .agent_registry
-            .get()
-            .and_then(|reg| pollster::block_on(reg.get_llm_provider(agent_id)))
+        let reg = self.agent_registry.get().ok_or_else(|| Error::ConfigInvalid {
+            message: "agent_registry not wired".to_owned(),
+        })?;
+
+        let provider = reg
+            .get_llm_provider(agent_id)
+            .await
             .ok_or_else(|| Error::NotFound {
                 name: format!("LLM provider for agent '{agent_id}'"),
             })?;
 
-        // Resolve the agent's configured model — regular chat passes this,
-        // but the tool interface previously sent an empty string.
-        let model = self
-            .agent_registry
-            .get()
-            .and_then(|reg| pollster::block_on(reg.get(agent_id)))
-            .map(|instance| instance.descriptor.model.clone())
+        // Resolve the agent's configured model and token budget.
+        // Cap requested max_tokens to the agent's configured limit so
+        // plugins can't bypass the budget set in config.yaml.
+        let (model, configured_max_out) = reg
+            .get(agent_id)
+            .await
+            .map(|instance| {
+                let m = instance.descriptor.model.clone();
+                let out = instance.descriptor.max_output_tokens.unwrap_or(0) as u64;
+                (m, out)
+            })
             .unwrap_or_default();
+        let max_tokens = if configured_max_out > 0 && requested_tokens > configured_max_out as u32 {
+            configured_max_out as u32
+        } else {
+            requested_tokens
+        };
 
         let req = kernel::llm::LlmChatRequest {
             model,
@@ -2253,9 +2273,10 @@ impl Tool for LlmChatTool {
             messages: vec![kernel::react::ChatMessage::user(user_prompt.to_owned())],
             tools: vec![],
             max_output_tokens: max_tokens,
+            response_format,
         };
 
-        let resp = pollster::block_on(provider.chat_completion(req, None)).map_err(|e| {
+        let resp = provider.chat_completion(req, None).await.map_err(|e| {
             Error::Unrecoverable {
                 message: format!("llm_chat failed: {e}"),
             }

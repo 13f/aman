@@ -96,7 +96,7 @@ impl SubprocessPluginBridge {
         sandbox_config: Option<SandboxConfig>,
     ) -> AmanResult<Arc<Self>> {
         let mut command = Command::new(&config.command);
-        command.args(&config.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        command.args(&config.args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);
@@ -177,6 +177,9 @@ impl SubprocessPluginBridge {
         let stdout = child.stdout.take().ok_or_else(|| kernel::Error::Unrecoverable {
             message: format!("subprocess plugin `{plugin_name}`: stdout not available"),
         })?;
+        let stderr = child.stderr.take().ok_or_else(|| kernel::Error::Unrecoverable {
+            message: format!("subprocess plugin `{plugin_name}`: stderr not available"),
+        })?;
 
         let bridge = Arc::new(Self {
             plugin_name: plugin_name.to_owned(),
@@ -189,7 +192,7 @@ impl SubprocessPluginBridge {
             shutdown: AtomicBool::new(false),
         });
 
-        // Spawn reader thread for plugin → server messages
+        // Spawn reader thread for plugin → server messages (stdout)
         let bridge_clone = Arc::clone(&bridge);
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -206,6 +209,21 @@ impl SubprocessPluginBridge {
                 }
             }
             bridge_clone.shutdown.store(true, Ordering::Relaxed);
+        });
+
+        // Spawn reader thread for plugin stderr → TUI log panel
+        let pname = plugin_name.to_owned();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                match line {
+                    Ok(text) if text.trim().is_empty() => continue,
+                    Ok(text) => {
+                        tracing::info!(target: "plugin", plugin = %pname, "{}", text.trim());
+                    }
+                    Err(_) => break,
+                }
+            }
         });
 
         Ok(bridge)

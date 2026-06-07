@@ -174,9 +174,12 @@ class StartupStore:
     # ── Competitor Analysis ────────────────────────────────────────
 
     def store_competitor_analysis(self, idea_slug: str, analysis: dict) -> dict:
-        """Store full competitor analysis as a single document (no normalization)."""
+        """Store full competitor analysis as a single document (no normalization).
+
+        Uses update-or-create: during re-validation the record may already exist.
+        """
         now = datetime.now(timezone.utc).isoformat()
-        result = self.db.create(self._rid("competitor_analysis", idea_slug), {
+        snap = {
             "idea_slug": idea_slug,
             "direct_competitors": analysis.get("direct_competitors", []),
             "indirect_competitors": analysis.get("indirect_competitors", []),
@@ -186,7 +189,8 @@ class StartupStore:
             "saturation_score": analysis.get("saturation_score", {}),
             "market_saturation": analysis.get("market_saturation", ""),
             "reviewed_at": now,
-        })
+        }
+        result = self._create_or_update("competitor_analysis", idea_slug, snap)
 
         # Build graph edges: idea -> competes_with -> competitor
         idea_rid = self._rid("idea", idea_slug)
@@ -230,11 +234,13 @@ class StartupStore:
         return history[-1] if history else None
 
     def store_score_snapshot(self, idea_slug: str, scores: dict) -> dict:
-        """Store a scoring snapshot and update the idea's current state."""
-        now = datetime.now(timezone.utc).isoformat()
+        """Store a scoring snapshot and update the idea's current state.
 
-        # Store the snapshot
-        result = self.db.create(self._rid("score_snapshot", idea_slug), {
+        Uses update-or-create: during re-validation the snapshot may already
+        exist from a previous run, so we update in place instead of failing.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        snap = {
             "idea_slug": idea_slug,
             "dimension_scores": scores.get("dimension_scores", {}),
             "weights_applied": scores.get("weights_applied", {}),
@@ -246,7 +252,8 @@ class StartupStore:
             "confidence": scores.get("confidence", "low"),
             "killer_dimensions": scores.get("killer_dimensions", []),
             "snapshot_at": now,
-        })
+        }
+        result = self._create_or_update("score_snapshot", idea_slug, snap)
 
         # Update the idea record
         idea_rid = self._rid("idea", idea_slug)
@@ -301,10 +308,18 @@ class StartupStore:
 
     # ── Strategy Layer ─────────────────────────────────────────────
 
+    def _create_or_update(self, table: str, id_val: str, data: dict) -> dict:
+        """Insert a new record, or update if it already exists (re-validation safe)."""
+        rid = self._rid(table, id_val)
+        try:
+            return self.db.create(rid, data)
+        except Exception:
+            return self.db.update(rid, data)
+
     def store_landing_page(self, idea_slug: str, landing_page: dict) -> dict:
         """Store generated landing page copy."""
         now = datetime.now(timezone.utc).isoformat()
-        return self.db.create(self._rid("landing_page", idea_slug), {
+        return self._create_or_update("landing_page", idea_slug, {
             "idea_slug": idea_slug,
             "hero_variants": landing_page.get("hero_variants", []),
             "social_proof_strategy": landing_page.get("social_proof_strategy", ""),
@@ -317,7 +332,7 @@ class StartupStore:
     def store_gtm_narrative(self, idea_slug: str, gtm: dict) -> dict:
         """Store go-to-market narrative."""
         now = datetime.now(timezone.utc).isoformat()
-        return self.db.create(self._rid("gtm_narrative", idea_slug), {
+        return self._create_or_update("gtm_narrative", idea_slug, {
             "idea_slug": idea_slug,
             "product_hunt": gtm.get("product_hunt", {}),
             "reddit_plan": gtm.get("reddit_plan", []),
@@ -332,7 +347,7 @@ class StartupStore:
     def store_feedback_synthesis(self, idea_slug: str, synthesis: dict) -> dict:
         """Store user feedback synthesis."""
         now = datetime.now(timezone.utc).isoformat()
-        return self.db.create(self._rid("feedback_synthesis", idea_slug), {
+        return self._create_or_update("feedback_synthesis", idea_slug, {
             "idea_slug": idea_slug,
             "topic_clusters": synthesis.get("topic_clusters", []),
             "sentiment_trends": synthesis.get("sentiment_trends", []),

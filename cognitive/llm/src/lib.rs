@@ -277,6 +277,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
             messages,
             tools,
             max_output_tokens: self.config.max_output_tokens as u32,
+            response_format: None,
         };
 
         // Call the LLM provider

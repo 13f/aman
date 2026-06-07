@@ -106,8 +106,9 @@ class LlmClient:
         *,
         temperature: float = 0.3,
         max_tokens: int = 4000,
-        timeout: int = 120,
+        timeout: int = 300,
         retries: int = 1,
+        response_format: Optional[str] = None,
     ) -> str:
         """One-shot chat completion. Returns the model's text response."""
         body = {
@@ -117,6 +118,8 @@ class LlmClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if response_format:
+            body["response_format"] = response_format
         return self._call(body, timeout=timeout, retries=retries)
 
     def chat_json(
@@ -125,21 +128,32 @@ class LlmClient:
         user_prompt: str,
         *,
         temperature: float = 0.2,
-        max_tokens: int = 4000,
-        timeout: int = 120,
+        max_tokens: int = 8000,
+        timeout: int = 300,
         retries: int = 1,
+        response_format: str = "json_object",
     ) -> dict:
-        """One-shot chat completion, parse response as JSON."""
-        text = self.chat(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            retries=retries,
-        )
+        """One-shot chat completion, parse response as JSON.
+
+        Default max_tokens=8000 to leave headroom for reasoning models that
+        consume output quota on chain-of-thought before the final JSON.
+
+        By default sets ``response_format="json_object"`` so the model is
+        constrained to output valid JSON — no markdown fences to strip.
+        Set to ``None`` to disable this constraint.
+        """
+        body = {
+            "agent_id": self.agent_id,
+            "system_prompt": system_prompt,
+            "user_prompt": user_prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if response_format:
+            body["response_format"] = response_format
+        text = self._call(body, timeout=timeout, retries=retries)
         text = text.strip()
-        # Strip markdown code fences
+        # Strip markdown code fences (only needed when response_format is off)
         if text.startswith("```"):
             lines = text.split("\n")
             text = "\n".join(lines[1:-1]) if len(lines) > 2 else text

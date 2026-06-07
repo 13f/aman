@@ -45,7 +45,7 @@ on = bridge.on
 # Store & Scoring imports
 # ---------------------------------------------------------------------------
 
-from store import StartupStore, IDEA_STATES, VALID_TRANSITIONS
+from store import StartupStore, STARTUP_DIR, IDEA_STATES, VALID_TRANSITIONS
 from scoring import score_idea, Verdict, Confidence, ScoreResult
 
 # ---------------------------------------------------------------------------
@@ -454,7 +454,11 @@ def _handle_revalidate_idea(slug: str, agent_id: Optional[str] = None) -> dict:
 
 
 def _handle_validation_status(slug: str) -> dict:
-    """Return the current validation progress for an idea."""
+    """Return the current validation progress for an idea.
+
+    Reads both the store (for status) and the session log file (for phase
+    progress written by the background pipeline) so the UI stays in sync.
+    """
     if not _store:
         return _json_response({"error": "store not initialized"}, 500)
 
@@ -463,9 +467,39 @@ def _handle_validation_status(slug: str) -> dict:
         return _json_response({"error": f"idea '{slug}' not found"}, 404)
 
     status = idea.get("status", "candidate")
-    latest = _store.get_latest_snapshot(slug)
-    phase = latest.get("phase", "") if latest else ""
-    partial = latest.get("partial", False) if latest else False
+
+    # Read phase from session log (written by background re-validate pipeline).
+    # The store snapshot may be stale because bg_store is a separate connection.
+    phase = ""
+    sessions_dir = os.path.join(STARTUP_DIR, "sessions")
+    session_path = os.path.join(sessions_dir, f"{slug}.jsonl")
+    if os.path.isfile(session_path):
+        try:
+            with open(session_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+                    ev = entry.get("event", "")
+                    if ev == "phase_1_done":
+                        phase = "2/4"
+                    elif ev == "phase_2_done":
+                        phase = "3/4"
+                    elif ev == "phase_3_done":
+                        phase = "4/4"
+                    elif ev == "pipeline_done":
+                        phase = "complete"
+        except Exception:
+            pass
+
+    # If session log has no phase yet, fall back to store snapshot
+    if not phase:
+        latest = _store.get_latest_snapshot(slug)
+        phase = latest.get("phase", "") if latest else ""
 
     if status == "in_validation":
         if phase:
@@ -502,7 +536,7 @@ def _run_revalidate_pipeline(slug: str, idea: dict, agent_id: Optional[str] = No
         assess_complexity, detect_weaknesses, generate_pivots,
     )
     from scoring import score_idea, DEFAULT_WEIGHTS
-    from store import StartupStore, STARTUP_DIR
+    from store import StartupStore  # STARTUP_DIR now imported at module level
 
     # Open a dedicated SurrealDB connection for this background thread.
     # The global _store is NOT thread-safe — sharing it with the main
@@ -1343,6 +1377,20 @@ def handle_on_event(params: Any) -> None:
 
     event_type = params.get("event_type", "")
     payload = params.get("payload", {})
+
+    # Re-validation writes through bg_store (separate SurrealDB connection).
+    # When the pipeline finishes, bg_store is closed, flushing to disk.
+    # Reopen _store so the UI sees the updated data on next page load.
+    if event_type == "startup:decided":
+        slug = payload.get("idea_slug", "")
+        _log(f"Re-validation complete for {slug}, refreshing store…")
+        try:
+            if _store:
+                _store.close()
+                _store.connect()
+        except Exception as e:
+            _log(f"Store refresh failed: {e}")
+
     _log(f"Event: {event_type} — {json.dumps(payload, default=str)[:200]}")
 
 

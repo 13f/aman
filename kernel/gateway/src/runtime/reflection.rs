@@ -509,6 +509,7 @@ pub async fn session_extract_and_store_with_prompt(
         messages: vec![ChatMessage::user(conversation)],
         tools: Vec::new(),
         max_output_tokens: 1024,
+        response_format: None,
     };
 
     let resp = llm.chat_completion(req, None).await.map_err(|e| {

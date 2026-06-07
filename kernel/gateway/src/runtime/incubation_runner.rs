@@ -547,6 +547,7 @@ async fn extract_entities_batch(
         messages: vec![ChatMessage::user(numbered)],
         tools: Vec::new(),
         max_output_tokens: 2048,
+        response_format: None,
     };
 
     let resp = match llm.chat_completion(req, None).await {

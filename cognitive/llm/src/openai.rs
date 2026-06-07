@@ -155,6 +155,11 @@ impl LlmOpenaiProvider {
             request_body["tools"] = json!(openai_tools);
             request_body["tool_choice"] = json!("auto");
         }
+        if let Some(ref fmt) = req.response_format {
+            if fmt == "json_object" {
+                request_body["response_format"] = json!({"type": "json_object"});
+            }
+        }
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(STREAM_TIMEOUT_SECS))
@@ -313,6 +318,11 @@ impl LlmOpenaiProvider {
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
         }
+        if let Some(ref fmt) = req.response_format {
+            if fmt == "json_object" {
+                body["response_format"] = json!({"type": "json_object"});
+            }
+        }
 
         let url = format!("{}/chat/completions", self.base_url);
         let client = reqwest::Client::builder()
@@ -338,7 +348,13 @@ impl LlmOpenaiProvider {
             return Err(format!("LLM API error HTTP {status}: {text}"));
         }
 
-        let response_body: Value = response.json().await.map_err(|e| format!("parse: {e}"))?;
+        let response_text = response.text().await.map_err(|e| format!("read: {e}"))?;
+        let response_body: Value = serde_json::from_str(&response_text).map_err(|e| {
+            format!(
+                "parse: {e} — raw body (first 500 chars): {}",
+                &response_text[..response_text.len().min(500)]
+            )
+        })?;
 
         let choice = &response_body["choices"][0];
         let message = &choice["message"];
@@ -599,7 +615,17 @@ impl Tool for LlmOpenaiTool {
         };
 
         let status = response.status().as_u16();
-        let response_body: Value = match response.json().await {
+        let raw_text = match response.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(serde_json::json!({
+                    "error": format!("failed to read response: {e}"),
+                    "error_type": "parse_failed",
+                    "status_code": status
+                }))
+            }
+        };
+        let response_body: Value = match serde_json::from_str(&raw_text) {
             Ok(body) => body,
             Err(e) => {
                 return Ok(json!({

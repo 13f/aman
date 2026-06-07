@@ -863,10 +863,17 @@ impl AgentRuntimeBuilder {
                                 api_key: if api_key.is_empty() { None } else { Some(api_key) },
                                 model: emotion_cfg.model.clone(),
                             };
+                            // Read max_output_tokens from the existing models.<model> config.
+                            let max_tokens = cfg
+                                .models
+                                .get(&emotion_cfg.model)
+                                .map(|m| m.max_output_tokens as u64)
+                                .unwrap_or(0);
                             let eval_cfg = super::emotion_evaluator::EmotionEvalConfig {
                                 interval_secs: emotion_cfg.interval_secs,
                                 temperature: emotion_cfg.temperature,
                                 max_context_messages: emotion_cfg.max_context_messages,
+                                max_tokens,
                             };
                             let ss = pollster::block_on(agent_registry.get_session_store(agent_id));
                             let ts = pollster::block_on(agent_registry.get_trace_store(agent_id));

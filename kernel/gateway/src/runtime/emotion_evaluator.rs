@@ -45,8 +45,8 @@ const MAX_CONTEXT_TRACES: usize = 5;
 /// LLM call timeout.
 const LLM_TIMEOUT_SECS: u64 = 15;
 
-/// Max output tokens for the emotion evaluation (response is tiny JSON).
-const LLM_MAX_TOKENS: u64 = 256;
+/// Max retries for transient failures (empty responses, truncations).
+const MAX_RETRIES: usize = 2;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -79,6 +79,8 @@ pub struct EmotionEvalConfig {
     pub interval_secs: u64,
     pub temperature: f64,
     pub max_context_messages: usize,
+    /// Max output tokens, sourced from models.<model>.max_output_tokens.
+    pub max_tokens: u64,
 }
 
 // ── Evaluator ───────────────────────────────────────────────────────────
@@ -246,13 +248,42 @@ impl EmotionEvaluator {
         let system_prompt = build_system_prompt(&self.agent_id, &self.emotion_candidates);
         let user_prompt = build_user_prompt(&context, &self.emotion_candidates);
 
-        // ── 3. Call the LLM ────────────────────────────────────────────
+        // ── 3. Call the LLM (with retries for transient failures) ─────
+        let mut last_err = String::new();
+        for attempt in 0..=MAX_RETRIES {
+            match self.try_evaluate(&system_prompt, &user_prompt).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    last_err = e;
+                    if attempt < MAX_RETRIES {
+                        tracing::debug!(
+                            agent = %self.agent_id,
+                            attempt = attempt + 1,
+                            error = %last_err,
+                            "emotion evaluation retrying"
+                        );
+                        // Small backoff before retry
+                        tokio::time::sleep(Duration::from_millis(500 * (attempt + 1) as u64)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    /// Single attempt: call LLM → parse → validate.
+    async fn try_evaluate(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<Option<EmotionResponse>, String> {
+        // ── Call the LLM ────────────────────────────────────────────────
         let raw = self
-            .call_llm(&system_prompt, &user_prompt)
+            .call_llm(system_prompt, user_prompt)
             .await
             .map_err(|e| format!("LLM call failed: {e}"))?;
 
-        // ── 4. Parse & validate ────────────────────────────────────────
+        // ── Parse & validate ────────────────────────────────────────────
         let parsed: EmotionResponse = serde_json::from_str(&raw).map_err(|e| {
             format!("emotion JSON parse error: {e} — raw: {}", truncate(&raw, 200))
         })?;
@@ -373,7 +404,8 @@ impl EmotionEvaluator {
         let body = json!({
             "model": self.llm_config.model,
             "temperature": self.eval_config.temperature,
-            "max_tokens": LLM_MAX_TOKENS,
+            "max_tokens": self.eval_config.max_tokens,
+            "response_format": { "type": "json_object" },
             "messages": [
                 { "role": "system", "content": system_prompt },
                 { "role": "user", "content": user_prompt },
@@ -404,9 +436,27 @@ impl EmotionEvaluator {
         let v: serde_json::Value =
             serde_json::from_str(&raw_body).map_err(|e| format!("json: {e}"))?;
 
+        // Log finish_reason for diagnostics (truncation vs refusal vs stop)
+        let finish_reason = v["choices"][0]["finish_reason"]
+            .as_str()
+            .unwrap_or("unknown");
+
         let content = v["choices"][0]["message"]["content"]
             .as_str()
-            .ok_or_else(|| format!("unexpected response shape: {}", truncate(&raw_body, 200)))?;
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "empty content from LLM (finish_reason={finish_reason}, body={})",
+                    truncate(&raw_body, 200)
+                )
+            })?;
+
+        if finish_reason == "length" {
+            tracing::warn!(
+                agent = %self.agent_id,
+                "LLM response truncated (finish_reason=length) — consider raising max_tokens"
+            );
+        }
 
         // Robust JSON extraction: handle markdown fences
         Ok(extract_json(content))
@@ -477,7 +527,9 @@ fn build_system_prompt(agent_id: &str, candidates: &[EmotionCandidate]) -> Strin
          emotion from the list below.\n\n\
          Available emotions:\n{emotions}\n\n\
          Respond with valid JSON only, in this exact format:\n\
-         {{\"emotion_id\": \"<id>\", \"reasoning\": \"<one short sentence explaining why>\"}}",
+         {{\"emotion_id\": \"<id>\", \"reasoning\": \"<under 60 chars>\"}}\n\n\
+         CRITICAL: Keep reasoning under 60 characters. Return ONLY the JSON object, \
+         no markdown fences, no extra text.",
         agent_id = agent_id,
         emotions = emotion_list.join("\n"),
     )

@@ -780,9 +780,9 @@ pub struct LlmConfig {
 /// memory:
 ///   provider: yantrikdb
 ///   embedding:
-///     embedder: potion-multilingual-128M  # download mode fallback
-///     provider: lmstudio                 # cloud mode (optional)
-///     model: qwen3-embedding-8b-dwq     # cloud mode (optional)
+///     embedder: potion-multilingual-128M  # download mode (local ONNX)
+///     provider: ollama                   # remote mode (OpenAI /v1/embeddings)
+///     model: qwen3-embedding-8b          #   works with Ollama/oMLX/LM Studio/OpenAI
 ///   llm:
 ///     provider: deepseek
 ///     model: deepseek-v4-flash
@@ -809,17 +809,18 @@ fn default_memory_provider() -> String {
 /// Two modes (mutually exclusive):
 /// - **Download mode**: set `embedder` (default: "potion-multilingual-128M").
 ///   YantrikDB downloads and caches the model locally.
-/// - **Cloud mode**: set `provider` + `model`. Calls a remote embedding API
-///   (OpenAI-compatible `/v1/embeddings`).
+/// - **Remote mode**: set `provider` + `model`. Calls an OpenAI-compatible
+///   `/v1/embeddings` endpoint. Works with any OpenAI-compatible server
+///   (Ollama ≥v0.1.28, oMLX, LM Studio, OpenAI, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryEmbeddingConfig {
-    /// Named yantrikdb embedder for download mode.
+    /// Named yantrikdb embedder (download mode).
     #[serde(default = "default_embedder_name")]
     pub embedder: String,
-    /// Provider key in the `providers` map (cloud mode).
+    /// Provider key in the `providers` map (remote mode).
     #[serde(default)]
     pub provider: Option<String>,
-    /// Global model ID (cloud mode).
+    /// Global model ID (remote mode).
     #[serde(default)]
     pub model: Option<String>,
 }

@@ -1091,7 +1091,7 @@ pipeline 部分 (<1ms):
  3       ThinkConfig / ThinkResult        ✅ 已实现               core types               Sleep, Meditation, Incubation
  4       YantrikdbProvider (默认)         ✅ 已实现               MemoryProvider trait     所有 idle skill
  5       memory.llm / memory.embedding 配置✅ 已实现               config crate             Reflection, Sleep
- 6       RemoteEmbedder (云端 embedding)  ✅ 已实现               reqwest                   YantrikdbProvider
+ 6       OpenAiEmbedder (云端 embedding)  ✅ 已实现               reqwest                   YantrikdbProvider
  6a      MemoryStore MemoryProvider 适配   ✅ 已实现              memory_store.rs          in-memory 备选
  6b      QueueDrained 生产 (AgentIdleMgr)  ✅ 已实现              idle crate               Reflection
  6c      ReflectionRunner (session_extract)✅ 已实现              reflection.rs            Reflection
@@ -1146,7 +1146,7 @@ pipeline 部分 (<1ms):
 | CacheStore (文件系统 TTL) | 仍需要（文件系统操作，非 memory 范畴） |
 | MemoryHealthReporter | `stats()` 方法 |
 | KnowledgeGraph (手动实现) | yantrikdb 内置 knowledge graph |
-| EmbeddingEngine (外部 API) | `RemoteEmbedder` — 云端 embedding API，或 `potion-multilingual-128M` 本地下载 (dim=256, 101 语言) |
+| EmbeddingEngine (外部 API) | `OpenAiEmbedder` — 云端 embedding API，或 `potion-multilingual-128M` 本地下载 (dim=256, 101 语言) |
 | PatternExtractor (统计聚类) | `think()` pattern mining (已桥接) |
 | Conflict detection (手动) | `think()` conflict scan (已桥接) |
 
@@ -1162,7 +1162,7 @@ pipeline 部分 (<1ms):
 - [x] 根据 `memory.provider` 配置自动选择后端
 - [x] `AgentHarness` / `AgentRuntime` 注入 MemoryProvider
 - [x] `memory.llm` / `memory.embedding` 配置（config crate）
-- [x] `RemoteEmbedder` — 云端 embedding（零本地下载）
+- [x] `OpenAiEmbedder` — 云端 embedding（零本地下载）
 - [x] `AgentIdleManager` 产生 QueueDrained（busy→empty 转换 + 断路器）
 - [x] `ReflectionRunner` 实现（`crates/gateway/src/runtime/reflection.rs`）
 - [x] workspace build 通过

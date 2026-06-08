@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kimi and Grok code agents with icons, skills, and configs.
 - **Lifecycle engines**: `lifecycle`, `work`, `study`, `daily-life` crates — passive push queue
   models with config-driven script hooks, auto-discovery from `~/.aman/hooks/<name>/config.yaml`.
-- **Memory system**: `memory` crate with `MemoryProvider` trait, `YantrikdbProvider`, `RemoteEmbedder`,
+- **Memory system**: `memory` crate with `MemoryProvider` trait, `YantrikdbProvider`, `OpenAiEmbedder`,
   config-aware provider selection, plugin export hooks, `TraceStore` for idle cognitive runners.
 - **Tool system**: `read`/`write`/`edit`/`list`/`find`/`grep` (ripgrep) replacing legacy file tool,
   `web_fetch` tool with proxy support, `ExecutionModel` for automatic tool call parallelization,

@@ -269,9 +269,9 @@ agents:
 memory:
   provider: yantrikdb
   embedding:
-    embedder: potion-multilingual-128M   # Download mode
-    # provider: lmstudio                  # Cloud mode (alternative)
-    # model: qwen3-embedding-8b-dwq       # Cloud mode (alternative)
+    embedder: potion-multilingual-128M       # Download mode (local ONNX, zero network)
+    # provider: ollama                       # Remote mode (OpenAI-compatible /v1/embeddings)
+    # model: qwen3-embedding-8b              #   works: Ollama, oMLX, LM Studio, OpenAI
   llm:                                  # Memory extraction LLM
     provider: deepseek
     model: deepseek-v4-flash

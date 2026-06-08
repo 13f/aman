@@ -204,6 +204,7 @@ pub fn run() {
             // Multi-agent config/status (P2)
             commands::get_aman_config,
             commands::get_secrets_mode,
+            commands::get_mcp_enabled,
             commands::get_locale,
             commands::has_any_provider,
             commands::has_any_agent,

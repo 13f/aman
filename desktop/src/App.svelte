@@ -30,6 +30,7 @@
   let pluginPages = $state<{ id: string; label: string }[]>([]);
   let gatewayPort = $state(9999);
   let secretsMode = $state("env");
+  let mcpEnabled = $state(false);
   let teamPageVersion = $state(0);
   // NOT $state — postMessage updates must not trigger iframe src reload.
   // The path is read at render time (when teamPageVersion changes).
@@ -78,7 +79,8 @@
     menuGroups.map(g => ({
       ...g,
       items: g.items.filter(item => !(
-        (item.id === "integration" || item.id === "providers") && secretsMode === "env"
+        (item.id === "integration" || item.id === "providers") && secretsMode === "env" ||
+        (item.id === "mcp-servers") && !mcpEnabled
       )),
     })).filter(g => g.items.length > 0)
   );
@@ -213,6 +215,13 @@
       secretsMode = JSON.parse(await invoke<string>("get_secrets_mode"));
     } catch {
       secretsMode = "env";
+    }
+
+    // Read MCP enabled status to decide whether to show MCP Servers page.
+    try {
+      mcpEnabled = await invoke<boolean>("get_mcp_enabled");
+    } catch {
+      mcpEnabled = false;
     }
 
     // Get gateway port for plugin iframe URLs

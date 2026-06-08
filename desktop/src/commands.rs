@@ -2439,6 +2439,14 @@ pub async fn get_secrets_mode() -> Result<String, String> {
         .unwrap_or_else(|_| "\"env\"".to_owned()))
 }
 
+/// Return whether MCP (Model Context Protocol) server integration is enabled.
+#[tauri::command]
+pub async fn get_mcp_enabled() -> Result<bool, String> {
+    let cfg = config::AmanConfig::from_default_path()
+        .map_err(|e| format!("读取配置失败: {e}"))?;
+    Ok(cfg.runtime.mcp.enabled)
+}
+
 /// Return the current UI locale as `{ code: "en", display: "English" }`.
 #[tauri::command]
 pub async fn get_locale(state: State<'_, AppState>) -> Result<serde_json::Value, String> {

@@ -483,9 +483,30 @@ pub struct AgentConfig {
     /// Self-module configuration — Python prompt builders for agent self-evolution.
     #[serde(default)]
     pub self_module: SelfConfig,
+    /// MCP (Model Context Protocol) server integration.
+    /// When disabled, MCP connections are not initialized and the MCP
+    /// UI page is hidden. Default: disabled.
+    #[serde(default)]
+    pub mcp: McpConfig,
     /// UI / display configuration (locale, theme, etc.).
     #[serde(default)]
     pub ui: UiConfig,
+}
+
+/// MCP (Model Context Protocol) server integration configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpConfig {
+    /// Enable MCP server connections. When false, the gateway does not
+    /// initialize MCP clients and the desktop UI hides the MCP page.
+    /// Default: false (MCP is disabled by default).
+    pub enabled: bool,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
 }
 
 /// Context compression configuration.

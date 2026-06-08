@@ -4040,8 +4040,10 @@ impl AgentRuntime {
                 self.agent_registry.start_all_idle_loops().await;
                 // Start emotion evaluators (require Tokio runtime)
                 self.agent_registry.start_all_emotion_evaluators().await;
-                // Initialize MCP clients for all agents
-                self.agent_registry.init_mcp_all(self.tools()).await;
+                // Initialize MCP clients for all agents (only when enabled in config)
+                if self.config.mcp.enabled {
+                    self.agent_registry.init_mcp_all(self.tools()).await;
+                }
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {

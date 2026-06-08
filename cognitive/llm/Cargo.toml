@@ -21,3 +21,7 @@ tokio = { version = "1", features = ["sync", "time", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
 uuid.workspace = true
+# Embedding client (sync — yantrikdb's Embedder trait requires sync calls)
+ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
+yantrikdb = { version = "0.7", default-features = false }

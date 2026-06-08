@@ -1,18 +1,31 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+//! OpenAI-compatible embedding client (`/v1/embeddings`).
+//!
+//! Implements [`yantrikdb::types::Embedder`] so it can be plugged directly
+//! into YantrikDB's vector store. Works with any OpenAI-compatible server:
+//! OpenAI, Ollama (≥v0.1.28), oMLX, LM Studio, etc.
+
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::{debug, warn};
 
-/// A [`yantrikdb::types::Embedder`] that calls a remote OpenAI-compatible
-/// `/v1/embeddings` endpoint.
+use crate::net_proxy::agent_for;
+
+/// An embedder that calls a remote OpenAI-compatible `/v1/embeddings` endpoint.
 ///
-/// Useful when:
-/// - The bundled potion models are too large to download
-/// - You want to use a specific cloud embedding model (e.g. qwen3-embedding-8b)
-/// - You already have LM Studio / Ollama / OpenAI serving embeddings locally
-pub struct RemoteEmbedder {
+/// # Examples
+///
+/// ```ignore
+/// let embedder = OpenAiEmbedder::new(
+///     "http://127.0.0.1:11434/v1",  // Ollama
+///     "",                            // no API key for local
+///     "qwen3-embedding:8b",
+///     4096,
+/// );
+/// ```
+pub struct OpenAiEmbedder {
     agent: ureq::Agent,
     url: String,
     api_key: String,
@@ -21,23 +34,23 @@ pub struct RemoteEmbedder {
     fingerprint: String,
 }
 
-impl RemoteEmbedder {
-    /// Create a new remote embedder.
+impl OpenAiEmbedder {
+    /// Create a new OpenAI-compatible embedder.
     ///
     /// `base_url` should NOT include a trailing `/embeddings` segment
-    /// (e.g. `"http://localhost:1234/v1"`).
+    /// (e.g. `"http://localhost:11434/v1"`).
     pub fn new(base_url: &str, api_key: &str, model: &str, dim: usize) -> Self {
         let base = base_url.trim_end_matches('/');
         let url = format!("{base}/embeddings");
 
         let mut hasher = Sha256::new();
-        hasher.update(format!("remote:{base}:{model}").as_bytes());
+        hasher.update(format!("openai-embed:{base}:{model}").as_bytes());
         let fingerprint = format!("{:x}", hasher.finalize());
 
-        debug!(%url, %model, dim, "Created RemoteEmbedder");
+        debug!(%url, %model, dim, "Created OpenAiEmbedder");
 
         Self {
-            agent: ureq::Agent::new(),
+            agent: agent_for(base_url),
             url,
             api_key: api_key.to_owned(),
             model: model.to_owned(),
@@ -48,7 +61,8 @@ impl RemoteEmbedder {
 
     /// Detect the embedding dimension by making a single test API call.
     ///
-    /// Returns the dimension on success, or an error if the API is unreachable.
+    /// Returns the dimension on success, or an error if the API is unreachable
+    /// or returns an unexpected shape.
     pub fn detect_dim(
         base_url: &str,
         api_key: &str,
@@ -62,7 +76,9 @@ impl RemoteEmbedder {
             "model": model,
         });
 
-        let mut req = ureq::post(&url)
+        let agent = agent_for(base_url);
+        let mut req = agent
+            .post(&url)
             .set("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(3));
 
@@ -96,7 +112,7 @@ impl RemoteEmbedder {
     }
 }
 
-impl yantrikdb::types::Embedder for RemoteEmbedder {
+impl yantrikdb::types::Embedder for OpenAiEmbedder {
     fn embed(
         &self,
         text: &str,
@@ -118,12 +134,12 @@ impl yantrikdb::types::Embedder for RemoteEmbedder {
         let resp: Value = req
             .send_json(body)
             .map_err(|e| {
-                warn!(error = %e, url = %self.url, "Remote embedder HTTP error");
+                warn!(error = %e, url = %self.url, "Embedder HTTP error");
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?
             .into_json()
             .map_err(|e| {
-                warn!(error = %e, url = %self.url, "Remote embedder JSON parse error");
+                warn!(error = %e, url = %self.url, "Embedder JSON parse error");
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?;
 
@@ -152,6 +168,6 @@ impl yantrikdb::types::Embedder for RemoteEmbedder {
     }
 
     fn name(&self) -> Option<String> {
-        Some(format!("remote:{}", self.model))
+        Some(format!("openai-embed:{}", self.model))
     }
 }

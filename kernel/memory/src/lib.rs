@@ -14,13 +14,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 pub mod config;
-pub mod remote_embedder;
-pub mod ollama_embedder;
 pub mod yantrikdb;
 
 pub use config::{EmbeddingConfig, MemoryConfig};
-pub use remote_embedder::RemoteEmbedder;
-pub use ollama_embedder::OllamaEmbedder;
+// Re-export from cognitive_llm for convenience — embedder lives alongside
+// the other LLM communication implementations (openai, anthropic, embed).
+pub use cognitive_llm::embed::OpenAiEmbedder;
 pub use yantrikdb::YantrikdbProvider;
 
 /// Thread-safe registry for [`MemoryProvider`] instances.

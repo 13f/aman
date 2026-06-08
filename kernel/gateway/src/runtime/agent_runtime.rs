@@ -4862,25 +4862,9 @@ fn resolve_embedding_config(aman: &config::AmanConfig) -> memory::EmbeddingConfi
                 let api_key =
                     get_llm_api_key_or_inline(provider_key, Some(p));
 
-                // Try Ollama native /api/embed first, then OpenAI-compatible /v1/embeddings.
-                if let Ok(dim) = memory::OllamaEmbedder::detect_dim(
-                    &p.base_url,
-                    &api_model,
-                ) {
-                    tracing::info!(
-                        provider = %provider_key,
-                        model = %api_model,
-                        dim,
-                        "Resolved Ollama embedding config (dim auto-detected)"
-                    );
-                    return memory::EmbeddingConfig::Ollama {
-                        base_url: p.base_url.clone(),
-                        model: api_model,
-                        dim,
-                    };
-                }
-
-                match memory::RemoteEmbedder::detect_dim(
+                // OpenAI-compatible /v1/embeddings endpoint.
+                // Works with Ollama (since v0.1.28), oMLX, LM Studio, OpenAI, etc.
+                match memory::OpenAiEmbedder::detect_dim(
                     &p.base_url,
                     &api_key,
                     &api_model,

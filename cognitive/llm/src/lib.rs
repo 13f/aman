@@ -24,6 +24,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod anthropic;
+pub mod embed;
+pub(crate) mod net_proxy;
 pub mod openai;
 pub mod prompt;
 pub mod provider;

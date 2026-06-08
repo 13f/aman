@@ -16,6 +16,11 @@ pub struct MemoryConfig {
 }
 
 /// How to produce embeddings for the memory store.
+///
+/// Two modes:
+/// - **Download**: yantrikdb-managed local ONNX model (e.g. potion-multilingual-128M).
+/// - **Remote**: OpenAI-compatible `/v1/embeddings` endpoint. Works with any
+///   OpenAI-compatible server (OpenAI, Ollama ≥v0.1.28, oMLX, LM Studio, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode")]
 pub enum EmbeddingConfig {
@@ -27,24 +32,14 @@ pub enum EmbeddingConfig {
         /// Expected output dimension.
         dim: usize,
     },
-    /// Call a remote OpenAI-compatible embedding API.
+    /// Call a remote OpenAI-compatible `/v1/embeddings` endpoint.
     #[serde(rename = "remote")]
     Remote {
         /// API base URL (e.g. "http://localhost:1234/v1").
         base_url: String,
-        /// API key (empty for local servers like LM Studio).
+        /// API key (empty for local servers like Ollama/oMLX/LM Studio).
         api_key: String,
         /// Model name sent in the API request.
-        model: String,
-        /// Detected output dimension.
-        dim: usize,
-    },
-    /// Call Ollama's native `/api/embed` endpoint.
-    #[serde(rename = "ollama")]
-    Ollama {
-        /// Ollama base URL (e.g. "http://localhost:11434").
-        base_url: String,
-        /// Model name (e.g. "qwen3-embedding:8b").
         model: String,
         /// Detected output dimension.
         dim: usize,

@@ -14,8 +14,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::config::{EmbeddingConfig, MemoryConfig};
-use crate::ollama_embedder::OllamaEmbedder;
-use crate::remote_embedder::RemoteEmbedder;
+use cognitive_llm::embed::OpenAiEmbedder;
 
 // ---------------------------------------------------------------------------
 // YantrikdbProvider
@@ -28,7 +27,6 @@ type ThinkChannel = (
 
 enum EmbedKind {
     Remote,
-    Ollama,
     Download,
 }
 
@@ -36,7 +34,6 @@ impl EmbedKind {
     fn as_str(&self) -> &'static str {
         match self {
             EmbedKind::Remote => "remote",
-            EmbedKind::Ollama => "ollama",
             EmbedKind::Download => "download",
         }
     }
@@ -67,13 +64,12 @@ impl YantrikdbProvider {
     ///
     /// Embedding backend is determined by `config.embedding`:
     /// - [`EmbeddingConfig::Remote`]: probes the API to detect dimension,
-    ///   creates the database at that dim, and injects a [`RemoteEmbedder`].
+    ///   creates the database at that dim, and injects a [`OpenAiEmbedder`].
     /// - [`EmbeddingConfig::Download`]: creates the database at the embedder's
     ///   known dim, then calls [`yantrikdb::YantrikDB::set_embedder_named`].
     pub fn open(config: &MemoryConfig) -> AmanResult<Self> {
         let (dim, embed_kind): (usize, EmbedKind) = match &config.embedding {
             EmbeddingConfig::Remote { dim, .. } => (*dim, EmbedKind::Remote),
-            EmbeddingConfig::Ollama { dim, .. } => (*dim, EmbedKind::Ollama),
             EmbeddingConfig::Download { dim, .. } => (*dim, EmbedKind::Download),
         };
 
@@ -102,30 +98,13 @@ impl YantrikdbProvider {
                 else {
                     unreachable!()
                 };
-                let remote = RemoteEmbedder::new(base_url, api_key, model, dim);
+                let remote = OpenAiEmbedder::new(base_url, api_key, model, dim);
                 db.set_embedder(Box::new(remote)).map_err(|e| {
                     kernel::Error::Unrecoverable {
                         message: format!("yantrikdb set_embedder (remote): {e}"),
                     }
                 })?;
-                debug!("Attached RemoteEmbedder");
-            }
-            EmbedKind::Ollama => {
-                let EmbeddingConfig::Ollama {
-                    base_url,
-                    model,
-                    dim: _,
-                } = &config.embedding
-                else {
-                    unreachable!()
-                };
-                let ollama = OllamaEmbedder::new(base_url, model, dim);
-                db.set_embedder(Box::new(ollama)).map_err(|e| {
-                    kernel::Error::Unrecoverable {
-                        message: format!("yantrikdb set_embedder (ollama): {e}"),
-                    }
-                })?;
-                debug!("Attached OllamaEmbedder");
+                debug!("Attached OpenAiEmbedder");
             }
             EmbedKind::Download => {
                 let EmbeddingConfig::Download { name, dim: _ } = &config.embedding else {

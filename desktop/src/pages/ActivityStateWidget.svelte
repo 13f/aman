@@ -96,6 +96,7 @@
   const SS_LABEL: Record<string, string> = {
     idle: "Idle", working: "Working", chatting: "Chatting",
     studying: "Studying", daily_life: "Daily Life",
+    prize: "Prize",
     waiting: "Waiting",
   };
 
@@ -104,6 +105,7 @@
     working: "\u{1F6E0}\u{FE0F}",  // 🛠️
     studying: "\u{1F4DA}",   // 📚
     daily_life: "\u{1F3E0}", // 🏠
+    prize: "\u{1F3C6}",      // 🏆
     waiting: "\u{23F3}",     // ⏳
   };
 
@@ -114,6 +116,7 @@
     working:    { outer: "#f59e0b", inner: "#fbbf24" },
     studying:   { outer: "#a78bfa", inner: "#c4b5fd" },
     daily_life: { outer: "#fb923c", inner: "#fdba74" },
+    prize:      { outer: "#fbbf24", inner: "#f59e0b" },
     waiting:    { outer: "#f59e0b", inner: "#fbbf24" },
   };
 

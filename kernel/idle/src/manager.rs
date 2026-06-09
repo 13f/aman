@@ -452,6 +452,7 @@ impl AgentIdleManager {
                                     let state = match tag.as_str() {
                                         "work" => AgentSystemState::Working,
                                         "study" => AgentSystemState::Studying,
+                                        "prize" => AgentSystemState::Prize,
                                         "internet" | "entertainment" | "fun" => {
                                             AgentSystemState::DailyLife
                                         }

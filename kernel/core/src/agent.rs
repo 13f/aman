@@ -67,6 +67,8 @@ pub enum AgentSystemState {
     Studying,
     /// daily-life 系统掌控中
     DailyLife,
+    /// prize 系统掌控中
+    Prize,
     /// 等待长时任务完成（如 detached 子进程）
     Waiting,
 }

@@ -69,10 +69,11 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
     "give-up-vN"   → 放弃 vN，进入 thinking 模式
 -->
 
-**STATE: `give-up-v1`**
+**STATE: `thinking`**
 
 > v1 (Floyd rho q=1) 已完成验证。q≥4 暴力不可行，需要代数攻击。
-> 上次策略已标记放弃，进入 thinking 模式。
+> 进入深度思考模式。关键发现: cube root 在 𝔽_p 上是双射 (gcd(3,p-1)=1)，
+> 可以利用此性质逆向全轮。正在构思后向-前向结合 Newton 迭代法。
 
 ## 3. Decision Tree
 
@@ -201,7 +202,8 @@ This dramatically limits the algebraic degree growth and is THE attack surface.
 
 | # | Date | Hypothesis | Quick Analysis | Verdict | → Action |
 |---|------|-----------|----------------|---------|----------|
-| 1 | | | | | |
+| 1 | 2026-06-09 | "Cube root 是双射: gcd(3,p-1)=1" | p=2130706433, p%3=2, gcd(3,p-1)=1. 立方根指数 e=(2p-1)/3=1420470955. x→x³ 是排列！全轮可完全逆向。 | ✅ 已验证 | 利用此性质做后向攻击 |
+| 2 | 2026-06-09 | "Newton 迭代法求解 4×4 方程组" | 固定 Y=0, 固定 X[4..14]=0, 4变量 X[0..3]. 误差函数 E(X)=H(X)[:4]-T. Jacobian 4×4 有限差分. 每步~5次hash. 收敛性不确定但代价低。 | ⏳ **选定方案** | 实现 v2/attack.py: Newton 迭代
 
 *示例:*
 - *Hypothesis: "选择对角 MDS 矩阵 → 部分轮退化为 16 条独立路径 → 每个 s[i] 可独立求解"*
@@ -253,9 +255,13 @@ These approaches are proven infeasible for q=4. Skip them.
 - 代数方法固定部分变量 + 小规模暴力
 - 例如: 用 Gröbner 确定 10 个变量关系，暴力搜剩余 5 个
 
-### I: Agent-Invented
-- 基于以上数学结构，提出新思路
-- 记录假设、运行、结果
+### I: Agent-Invented — Backward-Forward Newton with Cube Root Bijection 🔥
+- **关键洞察**: gcd(3,p-1)=1 → x→x³ 在 𝔽_p 上是双射 → 全轮可完全逆向
+- 使用 Newton 迭代法: 固定11个输入变量，对剩余4个变量做数值寻根
+- 误差函数 E(X[0..3]) = H([X₀,X₁,X₂,X₃,0,...,0])[:4] - T
+- Jacobian 通过有限差分计算（每步5次hash）
+- 随机重启处理不收敛情况
+- **现代码实现**: attacks/v2/attack.py
 
 ## 10. Experiment Protocol
 

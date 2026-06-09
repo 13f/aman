@@ -42,6 +42,9 @@ pub mod target;
 // Strategies are implemented in submodules:
 pub mod strategies;
 
+// Session progress evaluation (lightweight heuristics, no LLM):
+pub mod session_progress;
+
 // Tools and hook for runtime integration:
 pub mod hook;
 pub mod tools;

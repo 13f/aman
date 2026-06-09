@@ -2134,8 +2134,70 @@ impl AgentHarness {
                         let _ = store.append_session_event(&ctx.session_id, &entry);
                     }
                 }
-                // In background mode, auto-continue silently (user is away).
-                if background && continuation_count < MAX_CONTINUATIONS {
+                // Evaluate progress before deciding to auto-continue.
+                let messages: Vec<(String, String)> = ctx.history.iter()
+                    .map(|m| {
+                        let role = match m.role {
+                            ChatMessageRole::System => "system",
+                            ChatMessageRole::User => "user",
+                            ChatMessageRole::Assistant => "assistant",
+                            ChatMessageRole::Tool => "tool",
+                        };
+                        (role.to_string(), m.content.clone())
+                    })
+                    .collect();
+                let progress = eval::session_progress::evaluate(&messages);
+                tracing::info!(
+                    agent_id = %ctx.agent_id,
+                    session_id = %ctx.session_id,
+                    turns = ctx.turn,
+                    collision_found = progress.collision_found,
+                    partial_match = progress.best_partial_match,
+                    stuck = progress.looks_stuck,
+                    unique_tools = progress.unique_tools.len(),
+                    "max turns — evaluating session progress"
+                );
+
+                // Stop if: collision found (done!), looks stuck, or exhausted continuations.
+                let should_continue = background
+                    && continuation_count < MAX_CONTINUATIONS
+                    && !progress.collision_found
+                    && !progress.looks_stuck;
+
+                if !should_continue && background {
+                    let reason = if progress.collision_found {
+                        "collision found — stopping"
+                    } else if progress.looks_stuck {
+                        "agent appears stuck — stopping"
+                    } else {
+                        "all continuations exhausted"
+                    };
+                    tracing::info!(
+                        agent_id = %ctx.agent_id,
+                        session_id = %ctx.session_id,
+                        reason,
+                        "auto-continue stopped"
+                    );
+                    let _ = self.bus.publish(Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:auto_continue_stopped".to_owned()),
+                        json!({
+                            "agent_id": ctx.agent_id,
+                            "session_id": ctx.session_id,
+                            "reason": reason,
+                            "collision_found": progress.collision_found,
+                            "best_partial_match": progress.best_partial_match,
+                            "looks_stuck": progress.looks_stuck,
+                            "total_turns": ctx.turn,
+                            "continuations": continuation_count,
+                        }),
+                    )).await;
+                    return Ok(ReactOutcome::MaxTurnsReached {
+                        turns: ctx.max_turns * (continuation_count + 1),
+                    });
+                }
+
+                if background {
                     continuation_count += 1;
                     tracing::info!(
                         agent_id = %ctx.agent_id,

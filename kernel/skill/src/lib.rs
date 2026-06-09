@@ -722,6 +722,9 @@ struct SkillSearchState {
     reader: IndexReader,
     writer: IndexWriter,
     skills: HashMap<String, IndexedSkill>,
+    /// Batch nesting depth. When > 0, `index_skill` and `remove_skill`
+    /// defer `commit()` + `reader.reload()` until `commit_batch()` is called.
+    batch_depth: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -745,8 +748,10 @@ impl SkillSearch {
         let schema = schema_builder.build();
 
         let index = Index::create_in_ram(schema);
+        // Single-threaded writer reduces compaction log noise. The in-RAM
+        // index has few documents so multi-threaded merging is unnecessary.
         let writer = index
-            .writer(15_000_000)
+            .writer_with_num_threads(1, 15_000_000)
             .expect("tantivy writer should initialize");
         let reader = index
             .reader()
@@ -764,6 +769,7 @@ impl SkillSearch {
                 reader,
                 writer,
                 skills: HashMap::new(),
+                batch_depth: 0,
             }),
         }
     }
@@ -777,6 +783,11 @@ impl Default for SkillSearch {
 
 impl SkillSearch {
     /// Index a skill for search.
+    ///
+    /// When inside a batch (see [`begin_batch`]), the document is added to the
+    /// writer but `commit()` and `reader.reload()` are deferred until
+    /// [`commit_batch`] is called. This avoids a cascade of tiny Tantivy
+    /// segment merges when many skills are indexed at once.
     pub fn index_skill(&self, skill: IndexedSkill) {
         let mut state = self.state.lock().expect("skill search state lock");
         state.writer.delete_term(Term::from_field_text(
@@ -798,14 +809,16 @@ impl SkillSearch {
             .writer
             .add_document(document)
             .expect("tantivy add_document should succeed");
-        state
-            .writer
-            .commit()
-            .expect("tantivy commit should succeed");
-        state
-            .reader
-            .reload()
-            .expect("tantivy reader reload should succeed");
+        if state.batch_depth == 0 {
+            state
+                .writer
+                .commit()
+                .expect("tantivy commit should succeed");
+            state
+                .reader
+                .reload()
+                .expect("tantivy reader reload should succeed");
+        }
         state.skills.insert(skill.name.clone(), skill);
     }
 
@@ -853,15 +866,50 @@ impl SkillSearch {
         state
             .writer
             .delete_term(Term::from_field_text(state.fields.name_raw, name));
-        state
-            .writer
-            .commit()
-            .expect("tantivy commit should succeed");
-        state
-            .reader
-            .reload()
-            .expect("tantivy reader reload should succeed");
+        if state.batch_depth == 0 {
+            state
+                .writer
+                .commit()
+                .expect("tantivy commit should succeed");
+            state
+                .reader
+                .reload()
+                .expect("tantivy reader reload should succeed");
+        }
         state.skills.remove(name);
+    }
+
+    /// Begin a batch of index changes. All subsequent [`index_skill`] and
+    /// [`remove_skill`] calls defer their `commit()` + `reader.reload()` until
+    /// [`commit_batch`] is called.
+    ///
+    /// Calls nest safely — only the outermost `commit_batch` flushes.
+    pub fn begin_batch(&self) {
+        let mut state = self.state.lock().expect("skill search state lock");
+        state.batch_depth = state.batch_depth.saturating_add(1);
+    }
+
+    /// Commit all pending index changes and reload the reader.
+    ///
+    /// Must be paired with a preceding [`begin_batch`] call. Panics if no batch
+    /// is active.
+    pub fn commit_batch(&self) {
+        let mut state = self.state.lock().expect("skill search state lock");
+        assert!(
+            state.batch_depth > 0,
+            "commit_batch called without matching begin_batch"
+        );
+        state.batch_depth -= 1;
+        if state.batch_depth == 0 {
+            state
+                .writer
+                .commit()
+                .expect("tantivy batch commit should succeed");
+            state
+                .reader
+                .reload()
+                .expect("tantivy reader reload should succeed");
+        }
     }
 
     #[must_use]
@@ -1126,6 +1174,9 @@ pub struct HotReloadManager {
     receiver: Mutex<Option<Receiver<notify::Result<notify::Event>>>>,
     last_reload_at: Mutex<Option<Instant>>,
     loaded_files: Mutex<HashMap<PathBuf, String>>,
+    /// Content hashes of previously loaded skill files (path → hash).
+    /// Used for incremental reload: unchanged files are skipped.
+    file_hashes: Mutex<HashMap<PathBuf, u64>>,
 }
 
 impl HotReloadManager {
@@ -1136,12 +1187,13 @@ impl HotReloadManager {
             registry,
             search,
             version_manager: None,
-            debounce_ms: 500,
+            debounce_ms: 2000,
             notifier: None,
             watcher: Mutex::new(None),
             receiver: Mutex::new(None),
             last_reload_at: Mutex::new(None),
             loaded_files: Mutex::new(HashMap::new()),
+            file_hashes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1224,9 +1276,33 @@ impl HotReloadManager {
             .loaded_files
             .lock()
             .expect("hot reload loaded_files lock");
+        let mut file_hashes = self
+            .file_hashes
+            .lock()
+            .expect("hot reload file_hashes lock");
+
+        // Batch all Tantivy index changes into a single commit to avoid
+        // cascading segment merges when many skills are indexed at once.
+        self.search.begin_batch();
 
         for file in files {
             let content = std::fs::read_to_string(&file).ok();
+            let content_hash = content.as_ref().map(|c| hash_str(c));
+
+            // Incremental reload: skip files whose content hasn't changed
+            // since the last successful load.
+            if let Some(hash) = content_hash {
+                if file_hashes.get(&file) == Some(&hash) {
+                    // Carry forward existing mapping so it isn't treated as stale.
+                    if let Some(name) = loaded_mapping.get(&file).cloned() {
+                        if !name.is_empty() {
+                            loaded_names.insert(name);
+                        }
+                    }
+                    continue;
+                }
+            }
+
             let loaded = match SkillLoader::load_from_path(&file) {
                 Ok(loaded) => loaded,
                 Err(_) => {
@@ -1245,6 +1321,10 @@ impl HotReloadManager {
                 {
                     let _ = version_manager.save_version(&name, &version, &content);
                 }
+            }
+            // Record content hash so we can skip this file on the next reload.
+            if let Some(hash) = content_hash {
+                file_hashes.insert(file.clone(), hash);
             }
             loaded_names.insert(name.clone());
             let outcome = self.registry.upsert_loaded(loaded);
@@ -1277,13 +1357,14 @@ impl HotReloadManager {
             }
         }
 
-        let stale_files = loaded_mapping
+        // Process removals (also batched).
+        let stale_files: Vec<PathBuf> = loaded_mapping
             .keys()
             .filter(|path| !discovered_set.contains(*path))
             .cloned()
-            .collect::<Vec<_>>();
-        for stale_file in stale_files {
-            if let Some(name) = loaded_mapping.remove(&stale_file) {
+            .collect();
+        for stale_file in &stale_files {
+            if let Some(name) = loaded_mapping.remove(stale_file) {
                 if loaded_names.contains(&name) {
                     continue;
                 }
@@ -1292,8 +1373,14 @@ impl HotReloadManager {
                     report.removed.push(name);
                 }
             }
+            file_hashes.remove(stale_file);
         }
+
+        // Single flush for all index changes — avoids per-skill commit storms.
+        self.search.commit_batch();
+
         drop(loaded_mapping);
+        drop(file_hashes);
 
         if report.changed() {
             if let Some(notifier) = &self.notifier {
@@ -1325,14 +1412,38 @@ fn notify_error(error: notify::Error) -> Error {
 }
 
 fn is_reload_worthy_event(event: &notify::Event) -> bool {
-    matches!(
+    if !matches!(
         event.kind,
         notify::EventKind::Create(_)
             | notify::EventKind::Modify(_)
             | notify::EventKind::Remove(_)
             | notify::EventKind::Any
             | notify::EventKind::Other
-    )
+    ) {
+        return false;
+    }
+    // Only trigger reload when a skill definition file changes.
+    // Ignore auxiliary files like __pycache__, checkpoint.json, .pyc, etc.
+    // An empty paths list (e.g. synthetic events) → reload to be safe.
+    event.paths.is_empty() || event.paths.iter().any(|p| is_skill_file(p))
+}
+
+/// Returns `true` if `path` is a skill definition file that should trigger a
+/// hot reload when changed.
+fn is_skill_file(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("yaml") | Some("yml") => true,
+        _ => path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md"),
+    }
+}
+
+/// Simple non-cryptographic hash of a string slice, used for incremental
+/// reload change detection.
+fn hash_str(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn sanitize_name(name: &str) -> String {

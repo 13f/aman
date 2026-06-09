@@ -1286,9 +1286,13 @@ impl AgentRuntimeBuilder {
                 }
 
                 // Spawn async ReAct processing — do not block the bus drain loop.
+                // ContinuationMode::Fresh — auto-detection inside process_message
+                // will upgrade to Continue if the last assistant message is a
+                // max-turns-reached marker.
                 self.agent_harness.spawn_process_message(
                     agent_id, session_id, text, model, soul_snapshot,
                     skill_name, react_mode, background,
+                    super::agent_harness::ContinuationMode::Fresh,
                 );
 
                 Ok(())
@@ -1803,6 +1807,7 @@ impl AgentRuntimeBuilder {
                     None,  // skill_name
                     None,  // react_mode
                     false, // background
+                    super::agent_harness::ContinuationMode::Fresh,
                 );
 
                 Ok(())

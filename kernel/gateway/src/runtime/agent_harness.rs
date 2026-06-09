@@ -58,6 +58,36 @@ pub enum ReactOutcome {
     },
 }
 
+/// Distinguishes "继续" (continue) from "恢复" (replay) — two fundamentally
+/// different session-resumption paths.
+///
+/// ## Continue ("继续")
+/// User clicks "继续" after `MaxTurnsReached`, or sends `/continue`.
+/// The agent compresses the raw session history into a structured summary
+/// (goals, progress, key findings, tool usage stats) and sends that
+/// compressed context to the LLM.  It does **not** replay events to the
+/// EventBus, and it does **not** dump raw tool outputs into the prompt.
+///
+/// ## Replay ("恢复")
+/// Used only after gateway restart or explicit session-restore.  The full
+/// conversation history is faithfully reconstructed from the JSONL event
+/// log via [`restore_session_history`] so the agent can pick up exactly
+/// where it left off.  This is the expensive path — it preserves every
+/// tool call/result pair.
+///
+/// ## Fresh
+/// Normal first message or mid-conversation message.  Append to existing
+/// history as-is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContinuationMode {
+    /// Normal fresh message — append to history.
+    Fresh,
+    /// User clicked "继续" — compress history into structured summary.
+    Continue,
+    /// Gateway-restart recovery — faithful full-history reconstruction.
+    Replay,
+}
+
 // ── Detached process helpers ──────────────────────────────────────────────
 
 /// Captures the completion event from a detached process monitor thread.
@@ -1051,7 +1081,16 @@ impl AgentHarness {
         }
     }
 
-    /// Rebuild session history from persisted JSONL events after a restart.
+    /// Rebuild session history from persisted JSONL events — **replay path**.
+    ///
+    /// This is the **replay** (恢复) operation, distinct from **continue** (继续):
+    /// - **Replay** (this function): faithfully reconstructs the full conversation
+    ///   history from the JSONL event log after a gateway restart. Every
+    ///   `MessageReceived` and `reply_ready` event is converted into a
+    ///   `ChatMessage` so the agent can pick up exactly where it left off.
+    /// - **Continue** ([`build_continuation_context`]): compresses session
+    ///   history into a structured summary for the LLM — does NOT replay events
+    ///   to the EventBus, and does NOT dump raw tool outputs into the prompt.
     ///
     /// Converts stored `MessageReceived` and `reply_ready` events into
     /// `ChatMessage` objects so the agent's conversation context is restored.
@@ -1114,6 +1153,10 @@ impl AgentHarness {
     }
 
     /// Spawn a background task running `process_message`, with error logging.
+    ///
+    /// `continuation_mode` distinguishes "继续" ([`ContinuationMode::Continue`])
+    /// from normal messages ([`ContinuationMode::Fresh`]) and gateway-restart
+    /// recovery ([`ContinuationMode::Replay`]).
     pub fn spawn_process_message(
         self: &Arc<Self>,
         agent_id: String,
@@ -1124,11 +1167,12 @@ impl AgentHarness {
         skill_name: Option<String>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
+        continuation_mode: ContinuationMode,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         self.runtime.spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background)
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background, continuation_mode)
                 .await
             {
                 tracing::error!(
@@ -1142,7 +1186,19 @@ impl AgentHarness {
     /// Process a user message through the full ReAct loop.
     ///
     /// This is the main entry point called when a `MESSAGE_RECEIVED` event arrives.
+    ///
+    /// ## `continuation_mode`
+    ///
+    /// Distinguishes three paths:
+    /// - [`ContinuationMode::Fresh`] — normal message, append to history.
+    /// - [`ContinuationMode::Continue`] — user clicked "继续" after max turns.
+    ///   Compresses session history into a structured summary via
+    ///   [`build_continuation_context`] instead of dumping raw tool outputs.
+    /// - [`ContinuationMode::Replay`] — gateway-restart recovery.  Full
+    ///   history is faithfully reconstructed by [`restore_session_history`]
+    ///   before this function is called.
     #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn process_message(
         self: &Arc<Self>,
         agent_id: &str,
@@ -1153,6 +1209,7 @@ impl AgentHarness {
         skill_name: Option<&str>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
+        continuation_mode: ContinuationMode,
     ) -> AmanResult<String> {
         // 1. Get AgentInstance from registry
         let instance = self
@@ -1209,13 +1266,34 @@ impl AgentHarness {
         // 3. Build tool descriptors from registered tools
         let available_tools = self.build_tool_descriptors(agent_id).await;
 
-        // 4. Build conversation history — load existing session history
-        // and append the new user message for cross-turn continuity.
+        // 4. Build conversation history.
+        //
+        // Three paths (see ContinuationMode docs for details):
+        //   Fresh    — load existing history, append user message.
+        //   Continue — compress session history into a structured summary;
+        //              do NOT dump raw tool outputs to the LLM.
+        //   Replay   — full history was already reconstructed by
+        //              `restore_session_history`; use it as-is.
         let mut history = self.session_history.get(session_id);
+
+        // Auto-detect continuation: if the last assistant message is a
+        // max-turns-reached marker, the user is clicking "继续".
+        let effective_mode = if continuation_mode == ContinuationMode::Continue
+            || history.last().map_or(false, |m| {
+                m.role == ChatMessageRole::Assistant
+                    && m.content.starts_with("[max ")
+                    && m.content.contains("turns reached")
+            })
+        {
+            ContinuationMode::Continue
+        } else {
+            continuation_mode
+        };
 
         // For work-item sessions, if in-memory history is empty (e.g. after
         // gateway restart), restore from the persisted JSONL so the agent
         // can resume ("断点续传") instead of starting from scratch.
+        // This is the **replay** path — full-history reconstruction.
         if history.is_empty()
             && super::session::work_session::parse_work_session_id(session_id).is_some()
         {
@@ -1228,7 +1306,31 @@ impl AgentHarness {
             }
         }
 
-        history.push(ChatMessage::user(user_text));
+        match effective_mode {
+            ContinuationMode::Continue => {
+                // ── Continue path ──
+                // Compress the raw session history into a structured summary
+                // so the LLM gets a concise context instead of a dump of every
+                // previous tool output.
+                tracing::info!(
+                    session_id = %session_id,
+                    agent_id = %agent_id,
+                    history_messages = history.len(),
+                    "continuation: compressing session history into summary"
+                );
+                let mut summary = build_continuation_context(&history);
+                // Append the new user message after the summary.
+                summary.push(ChatMessage::user(user_text));
+                history = summary;
+            }
+            ContinuationMode::Fresh | ContinuationMode::Replay => {
+                // ── Fresh / Replay path ──
+                // Normal message: append to existing history.
+                // Replay: history was already faithfully reconstructed
+                // by `restore_session_history` — use it as-is.
+                history.push(ChatMessage::user(user_text));
+            }
+        }
 
         // 5. Initialize model-aware token budget (M4)
         // Estimate history tokens immediately so the budget reflects the full
@@ -2435,6 +2537,182 @@ impl AgentHarness {
         Ok(())
     }
 }
+
+/// Build a compressed session summary for "继续" (continue).
+///
+/// ## Continue vs Replay
+///
+/// This is the **continue** path — it produces a structured, human-readable
+/// summary of the session history so the LLM can pick up the task without
+/// dumping every raw tool output into the prompt (which would waste tokens
+/// and flood the SSE channel with events from the new tool calls).
+///
+/// The **replay** path ([`restore_session_history`]) is different: it
+/// faithfully reconstructs the full conversation from the JSONL event log
+/// after a gateway restart, preserving every tool-call/result pair so the
+/// agent can resume exactly where it left off.
+///
+/// ## Summary structure
+///
+/// ```text
+/// [Previous Session Summary]
+/// Goal: <what the user originally asked for>
+/// Progress: <what has been accomplished>
+/// Key findings: <important discoveries from tool outputs>
+/// Tool usage: <N calls across M unique tools>
+/// Status: <complete | incomplete | collision_found | stuck>
+/// Last actions: <what was happening when the session paused>
+/// ```
+fn build_continuation_context(history: &[ChatMessage]) -> Vec<ChatMessage> {
+    use std::collections::BTreeMap;
+
+    let mut user_messages: Vec<&str> = Vec::new();
+    let mut assistant_replies: Vec<&str> = Vec::new();
+    let mut tool_calls: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total_tool_calls: usize = 0;
+    let mut key_findings: Vec<String> = Vec::new();
+    let mut last_assistant_reply: &str = "";
+
+    for msg in history {
+        match msg.role {
+            ChatMessageRole::User => {
+                let text = msg.content.trim();
+                if !text.is_empty()
+                    && text != "/continue"
+                    && text != "继续"
+                    && !text.starts_with("[ACTIVATED SKILL:")
+                {
+                    user_messages.push(text);
+                }
+            }
+            ChatMessageRole::Assistant => {
+                let text = msg.content.trim();
+                // Skip max-turns-reached markers — they're system-generated noise.
+                if text.starts_with("[max ") && text.contains("turns reached") {
+                    continue;
+                }
+                if !text.is_empty() {
+                    assistant_replies.push(text);
+                    last_assistant_reply = text;
+                }
+                // Count structured tool calls in this assistant message.
+                if let Some(ref tcs) = msg.tool_calls {
+                    for tc in tcs {
+                        if let Some(name) = tc["function"]["name"].as_str() {
+                            *tool_calls.entry(name.to_owned()).or_default() += 1;
+                            total_tool_calls += 1;
+                        }
+                    }
+                }
+            }
+            ChatMessageRole::Tool => {
+                let name = msg.tool_name.as_deref().unwrap_or("unknown");
+                *tool_calls.entry(name.to_owned()).or_default() += 1;
+                total_tool_calls += 1;
+
+                // Extract key findings: look for "COLLISION FOUND", "found: true",
+                // "error", exit codes, or other significant markers.
+                let content = &msg.content;
+                if content.contains("COLLISION FOUND")
+                    || content.contains("found\": true")
+                    || content.contains("found: true")
+                {
+                    key_findings.push(format!(
+                        "[{name}] COLLISION FOUND — goal achieved"
+                    ));
+                } else if let Some(line) = content
+                    .lines()
+                    .find(|l| {
+                        l.contains("best_residual")
+                            || l.contains("best_partial")
+                            || l.contains("elapsed_seconds")
+                    })
+                {
+                    key_findings.push(format!("[{name}] {}", line.trim()));
+                }
+            }
+            ChatMessageRole::System => {
+                // System messages are not user/assistant conversation;
+                // skip them — the soul prompt is injected separately.
+            }
+        }
+    }
+
+    // ── Build the structured summary ──
+
+    let mut summary = String::from("[Previous Session Summary]\n");
+
+    // Goal: first user message.
+    if let Some(first) = user_messages.first() {
+        summary.push_str(&format!("Goal: {}\n", first));
+    }
+
+    // Progress: summarize the conversation arc.
+    let msg_count = user_messages.len() + assistant_replies.len();
+    if msg_count > 0 {
+        summary.push_str(&format!(
+            "Progress: {} messages exchanged ({} user, {} assistant)\n",
+            msg_count,
+            user_messages.len(),
+            assistant_replies.len(),
+        ));
+    }
+
+    // Key findings.
+    if !key_findings.is_empty() {
+        summary.push_str("Key findings:\n");
+        for f in &key_findings {
+            summary.push_str(&format!("  - {}\n", f));
+        }
+    }
+
+    // Tool usage.
+    if total_tool_calls > 0 {
+        let unique = tool_calls.len();
+        summary.push_str(&format!(
+            "Tool usage: {} calls across {} unique tools\n",
+            total_tool_calls, unique
+        ));
+        if unique <= 8 {
+            for (name, count) in &tool_calls {
+                summary.push_str(&format!("  - {}: {} calls\n", name, count));
+            }
+        }
+    }
+
+    // Status: infer from last messages.
+    let status = if key_findings.iter().any(|f| f.contains("COLLISION FOUND")) {
+        "complete — collision found"
+    } else if last_assistant_reply.contains("stuck")
+        || last_assistant_reply.contains("no progress")
+    {
+        "stuck"
+    } else {
+        "incomplete — task still in progress"
+    };
+    summary.push_str(&format!("Status: {}\n", status));
+
+    // Last assistant context.
+    if !last_assistant_reply.is_empty() {
+        // Truncate very long replies.
+        let truncated = if last_assistant_reply.len() > 500 {
+            format!("{}…[truncated]", &last_assistant_reply[..500])
+        } else {
+            last_assistant_reply.to_owned()
+        };
+        summary.push_str(&format!("Last action: {}\n", truncated));
+    }
+
+    tracing::info!(
+        summary_len = summary.len(),
+        original_messages = history.len(),
+        original_tool_calls = total_tool_calls,
+        "continuation: built compressed session summary"
+    );
+
+    vec![ChatMessage::system(summary)]
+}
+// ──────────────────────────────────────────────────────────────────────────
 
 /// Extract [remember: ...] commands from agent reply text.
 ///

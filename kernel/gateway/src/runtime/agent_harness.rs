@@ -47,6 +47,8 @@ pub enum ReactOutcome {
     Finished(String),
     /// Loop was interrupted (user /stop), partial content if any.
     Interrupted(String),
+    /// Max turns reached — session should be saved and be resumable.
+    MaxTurnsReached { turns: u32 },
     /// Turn 1 completed and a tool spawned a detached process.
     /// The harness must run Turn 2 when the process exits.
     AwaitingDetach {
@@ -1424,10 +1426,19 @@ impl AgentHarness {
         // M6: Unregister interrupt flag
         self.unregister_interrupt(session_id);
 
-        // 9. Handle outcome — Finished, Interrupted, or Error
+        // 9. Handle outcome — Finished, Interrupted, MaxTurnsReached, or Error
+        let mut max_turns_reached = false;
         let (raw_reply, event_type): (String, &str) = match result {
             Ok(ReactOutcome::Finished(reply)) => (reply, "agent:reply_ready"),
             Ok(ReactOutcome::Interrupted(reply)) => (reply, "agent:reply_interrupted"),
+            Ok(ReactOutcome::MaxTurnsReached { turns }) => {
+                max_turns_reached = true;
+                let msg = format!(
+                    "[max {} turns reached — session saved, send /continue to resume]",
+                    turns
+                );
+                (msg, "agent:reply_ready")
+            }
             Err(e) => {
                 // Publish fallback error event so the frontend doesn't hang
                 let _ = self
@@ -1490,29 +1501,47 @@ impl AgentHarness {
             ))
             .await;
 
-        // 12. Update status to Idle
-        self.registry
-            .set_active_session(agent_id, None)
-            .await?;
-        self.registry
-            .set_status(agent_id, AgentStatus::Idle)
-            .await?;
-        self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+        // 12. Update status to Idle (skip for MaxTurnsReached — keep session alive)
+        if max_turns_reached {
+            // Session stays active; agent stays Busy; user can /continue.
+            // Publish a distinct event so the UI can show "turn limit reached".
+            let _ = self
+                .publish_to_agent_bus(
+                    agent_id,
+                    Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:max_turns_reached".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                        }),
+                    ),
+                )
+                .await;
+        } else {
+            self.registry
+                .set_active_session(agent_id, None)
+                .await?;
+            self.registry
+                .set_status(agent_id, AgentStatus::Idle)
+                .await?;
+            self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
 
-        // Publish agent:idle event to the agent's local bus
-        let _ = self
-            .publish_to_agent_bus(
-                agent_id,
-                Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:idle".to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                    }),
-                ),
-            )
-            .await;
+            // Publish agent:idle event to the agent's local bus
+            let _ = self
+                .publish_to_agent_bus(
+                    agent_id,
+                    Event::new(
+                        "agent:harness",
+                        EventType::Custom("agent:idle".to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                        }),
+                    ),
+                )
+                .await;
+        }
 
         Ok(final_reply)
     }
@@ -1815,6 +1844,9 @@ impl AgentHarness {
             Ok(ReactOutcome::Interrupted(reply)) => {
                 reply
             }
+            Ok(ReactOutcome::MaxTurnsReached { turns }) => {
+                format!("[max {} turns reached again — session saved]", turns)
+            }
             Ok(ReactOutcome::AwaitingDetach { .. }) => {
                 // Nested detach — unexpected, treat as error
                 tracing::error!(
@@ -2069,9 +2101,36 @@ impl AgentHarness {
         loop {
             // --- pre-turn checks ---
             if ctx.turn >= ctx.max_turns {
-                return Err(Error::ConfigInvalid {
-                    message: format!("max ReAct turns ({}) reached", ctx.max_turns),
-                });
+                // Compress and persist before yielding so the session is resumable.
+                let history_tokens: usize = ctx
+                    .history
+                    .iter()
+                    .map(|m| context_manager::TokenBudget::estimate_tokens(&m.content))
+                    .sum();
+                token_budget.set_history_tokens(history_tokens);
+                if token_budget.needs_trim() {
+                    let _ = compressor.compress_with_boundaries(
+                        &mut ctx.history,
+                        token_budget,
+                        &self.compression_config,
+                    );
+                }
+                // Persist final state to session store
+                if let Some(store) = self.registry.get_session_store(&ctx.agent_id).await {
+                    for msg in &ctx.history {
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        let entry = serde_json::json!({
+                            "role": msg.role,
+                            "content": msg.content,
+                            "timestamp_ms": ts,
+                        });
+                        let _ = store.append_session_event(&ctx.session_id, &entry);
+                    }
+                }
+                return Ok(ReactOutcome::MaxTurnsReached { turns: ctx.max_turns });
             }
 
             if let Some(flag) = interrupt

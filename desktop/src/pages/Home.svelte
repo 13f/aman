@@ -98,18 +98,21 @@
     working: "\u{1F6E0}\u{FE0F}",   // 🛠️ hammer & wrench
     studying: "\u{1F4DA}",          // 📚 books
     daily_life: "\u{1F3E0}",        // 🏠 house
+    prize: "\u{1F3C6}",             // 🏆 trophy
     waiting: "\u{23F3}",            // ⏳ hourglass
   };
   const STATE_COLOR: Record<string, string> = {
     working: "#4ade80",
     studying: "#a78bfa",
     daily_life: "#fbbf24",
+    prize: "#fbbf24",
     waiting: "#f59e0b",
   };
   const STATE_ANIM: Record<string, string> = {
     working: "anim-spin-slow",
     studying: "anim-float",
     daily_life: "anim-pulse-soft",
+    prize: "anim-pulse-soft",
     waiting: "anim-pulse-soft",
   };
 
@@ -230,6 +233,7 @@
     chatting: "Chatting",
     studying: "Studying",
     daily_life: "Daily Life",
+    prize: "Prize",
     waiting: "Waiting",
   };
 
@@ -239,6 +243,7 @@
     chatting: "ss-chatting",
     studying: "ss-studying",
     daily_life: "ss-dailylife",
+    prize: "ss-prize",
     waiting: "ss-waiting",
   };
 

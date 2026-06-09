@@ -4112,6 +4112,17 @@ async fn idle_run(
         sid
     };
 
+    // Set system state so the UI reflects what the agent is doing.
+    // Mirror the tag→state mapping from idle::manager::dispatch_one.
+    let ss = match tag.as_str() {
+        "work" => AgentSystemState::Working,
+        "study" => AgentSystemState::Studying,
+        "prize" => AgentSystemState::Prize,
+        "internet" | "entertainment" | "fun" => AgentSystemState::DailyLife,
+        _ => AgentSystemState::Waiting,
+    };
+    runtime.agent_registry().set_system_state(&agent_id, ss).await;
+
     // Publish MessageReceived event so the agent harness picks it up
     let event = Event::new(
         "idle.manual",

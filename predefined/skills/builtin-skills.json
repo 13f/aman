@@ -72,7 +72,9 @@
         "prize-game/poseidon/scripts/attacks/brute.py",
         "prize-game/poseidon/scripts/VERSIONS.md",
         "prize-game/poseidon/scripts/EXPERIMENTS.md",
-        "prize-game/poseidon/scripts/results.json"
+        "prize-game/poseidon/scripts/results.json",
+        "prize-game/poseidon/scripts/attacks/v1/attack.py",
+        "prize-game/poseidon/scripts/attacks/v1/checkpoint.json"
       ]
     },
     {

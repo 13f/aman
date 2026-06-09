@@ -550,7 +550,9 @@ fn event_loop(terminal: &mut DefaultTerminal, state: &mut TuiState) -> io::Resul
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match key.code {
-                        KeyCode::Char('q') => {
+                        KeyCode::Char('q')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
                             return Ok(());
                         }
                         KeyCode::Char('c')

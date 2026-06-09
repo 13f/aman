@@ -489,7 +489,7 @@ static EN: std::sync::LazyLock<Bundle> = std::sync::LazyLock::new(|| {
     b.insert("tui.footer.d_key", "d");
     b.insert("tui.footer.deny", "deny");
     b.insert("tui.footer.scroll", "scroll");
-    b.insert("tui.footer.q_key", "q");
+    b.insert("tui.footer.q_key", "Ctrl+Q");
     b.insert("tui.footer.quit", "quit");
     b.insert("tui.error.approve_failed", "Approve failed");
     b.insert("tui.error.deny_failed", "Deny failed");
@@ -605,7 +605,7 @@ static ZHS: std::sync::LazyLock<Bundle> = std::sync::LazyLock::new(|| {
     b.insert("tui.footer.d_key", "d");
     b.insert("tui.footer.deny", "拒绝");
     b.insert("tui.footer.scroll", "滚动");
-    b.insert("tui.footer.q_key", "q");
+    b.insert("tui.footer.q_key", "Ctrl+Q");
     b.insert("tui.footer.quit", "退出");
     b.insert("tui.error.approve_failed", "批准失败");
     b.insert("tui.error.deny_failed", "拒绝失败");

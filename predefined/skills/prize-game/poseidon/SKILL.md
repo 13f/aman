@@ -65,7 +65,7 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
 <!--
   STATE 取值:
     "thinking"     → 需要构思新策略，进入 §7 Thinking Log
-    "running-vN"   → 检查 vN/checkpoint.json，尝试断点续传
+    "running-vN"   → 检查 attacks/vN/checkpoint.json，尝试断点续传
     "give-up-vN"   → 放弃 vN，进入 thinking 模式
 -->
 
@@ -81,7 +81,7 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
     │
     ├─ "running-vN"
     │       │
-    │       ├─ vN/checkpoint.json 存在且 state="running"
+    │       ├─ attacks/vN/checkpoint.json 存在且 state="running"
     │       │       └─ 断点续传: 读 checkpoint，从上次位置继续
     │       │
     │       └─ checkpoint 不存在或 state="done"
@@ -112,12 +112,12 @@ cd ~/.aman/skills/prize-game/poseidon/scripts
 python3 run.py benchmark
 
 # 运行某个版本的攻击
-python3 v1/attack.py       # Floyd rho (已完成)
-python3 v2/attack.py       # 新策略
+python3 attacks/v1/attack.py       # Floyd rho (已完成)
+python3 attacks/v2/attack.py       # 新策略
 ```
 
 ```python
-# vN/attack.py 模板
+# attacks/vN/attack.py 模板
 import sys, os, time, json
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -135,12 +135,12 @@ from framework.mds import generate_mds_matrix
 | `framework/` | ❌ **禁止修改** | 哈希函数定义，改了就全错 |
 | `attacks/brute.py` | ❌ **禁止修改** | 已出局，保留作参考 |
 | `run.py` | ⚠️ 谨慎修改 | 可加新命令，不要删已有功能 |
-| `vN/attack.py` | ✅ **自由修改** | 这是 AI 写策略代码的地方 |
+| `attacks/vN/attack.py` | ✅ **自由修改** | 这是 AI 写策略代码的地方 |
 | `SKILL.md` | ✅ **每轮更新** | 记录结果、更新策略、追加 Dead Ends |
 
 **工作流 (Thinking-First)**:
 ```
-                     ┌─ 可行 → vN/attack.py → 运行 → 记录结果
+                     ┌─ 可行 → attacks/vN/attack.py → 运行 → 记录结果
                      │
 读 SKILL.md → 思考 → 假设 → 数学分析 → 判定
                      │
@@ -185,7 +185,7 @@ This dramatically limits the algebraic degree growth and is THE attack surface.
         ↓
 阶段 3: DESIGN   设计具体方案（变量选择、MDS 构造、消元顺序等）
         ↓
-阶段 4: CODE     在 vN/attack.py 中实现（仅当阶段 2-3 认为可行时）
+阶段 4: CODE     在 attacks/vN/attack.py 中实现（仅当阶段 2-3 认为可行时）
         ↓
 阶段 5: TEST     运行、计时、验证
         ↓
@@ -261,7 +261,7 @@ These approaches are proven infeasible for q=4. Skip them.
 
 ### 每次实验
 
-1. 在 `scripts/` 下新建 `vN/` 目录（`cp -r v$(($N-1)) v$N`，不修改旧代码）
+1. 在 `attacks/` 下新建 `vN/` 目录（`cp -r attacks/v$(($N-1)) attacks/v$N`，不修改旧代码）
 2. 写 attack 脚本，导入 `framework/`
 3. 运行、计时、记录结果
 
@@ -278,7 +278,7 @@ These approaches are proven infeasible for q=4. Skip them.
 
 ### 💾 断点续算
 
-长时间计算必须支持中断后恢复。在每个 `vN/` 目录下维护 `checkpoint.json`:
+长时间计算必须支持中断后恢复。在每个 `attacks/vN/` 目录下维护 `checkpoint.json`:
 
 ```json
 {
@@ -319,8 +319,6 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 ```
 ~/.aman/skills/prize-game/poseidon/scripts/
 ├── run.py                  ← CLI (benchmark)
-├── SKILL.md                ← 本文件 (AI 读写)
-│
 ├── framework/              ← ❌ 禁止修改
 │   ├── field.py            ← 𝔽_p 运算
 │   ├── grain_lfsr.py       ← Grain LFSR 轮常数
@@ -328,19 +326,17 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 │   └── poseidon.py         ← Poseidon 哈希 + 碰撞检测
 │
 ├── attacks/
-│   └── brute.py            ← ❌ 已出局，保留参考
-│
-├── v1/                     ← ✅ Floyd rho (已完成)
-│   ├── attack.py
-│   └── checkpoint.json
-│
-└── vN/                     ← ✅ AI 创建 (N=2,3,...)
-    ├── attack.py            ← 策略实现 (AI 写)
-    ├── checkpoint.json      ← 断点续算
-    └── notes.md             ← (可选) 策略思路
+│   ├── brute.py            ← ❌ 已出局，保留参考
+│   ├── v1/                 ← ✅ Floyd rho (已完成)
+│   │   ├── attack.py
+│   │   └── checkpoint.json
+│   └── vN/                 ← ✅ AI 创建 (N=2,3,...)
+│       ├── attack.py        ← 策略实现 (AI 写)
+│       ├── checkpoint.json  ← 断点续算
+│       └── notes.md         ← (可选) 策略思路
 ```
 
-**AI 写代码的范围**: 在 `vN/` 下创建 attack.py。从 `framework/` 导入原语，
+**AI 写代码的范围**: 在 `attacks/vN/` 下创建 attack.py。从 `framework/` 导入原语，
 实现 SKILL.md 中选定的策略。不要改 `framework/` 或 `attacks/brute.py`。
 
 ## 14. References

@@ -3839,6 +3839,7 @@ struct AgentAvailability {
     work: bool,
     study: bool,
     fun: bool,
+    prize: bool,
 }
 
 /// Return per-agent work/study/fun button availability.
@@ -3859,6 +3860,7 @@ async fn agents_idle_availability(
     let has_work_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "work"));
     let has_study_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "study"));
     let has_fun_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "fun"));
+    let has_prize_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "prize"));
 
     // -- Step 2 (global, "work" only): is the team plugin running? --
 
@@ -3897,9 +3899,12 @@ async fn agents_idle_availability(
         // fun: step 1 only
         let fun = has_fun_skills;
 
+        // prize: step 1 only
+        let prize = has_prize_skills;
+
         availabilities.insert(
             agent_id.clone(),
-            AgentAvailability { work, study, fun },
+            AgentAvailability { work, study, fun, prize },
         );
     }
 

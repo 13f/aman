@@ -1,55 +1,260 @@
 {
   "version": 1,
   "skills": [
-    { "name": "ipo-research",          "files": [
-      "investment/ipo-research/SKILL.md",
-      "investment/ipo-research/references/tuopu-cnc-07688-deep-dive.md",
-      "investment/ipo-research/scripts/extract_visible_text.py"
-    ]},
-    { "name": "unlisted-ecosystem-analysis", "files": [
-      "investment/unlisted-ecosystem-analysis/SKILL.md",
-      "investment/unlisted-ecosystem-analysis/references/unitree-case-study.md",
-      "investment/unlisted-ecosystem-analysis/references/unitree-example.md"
-    ]},
-    { "name": "chaotic-reasoning",     "files": ["reasoning/chaotic-reasoning/SKILL.md"] },
-    { "name": "plan",                  "files": ["agent/plan/SKILL.md"] },
-    { "name": "writing-plans",         "files": ["agent/writing-plans/SKILL.md"] },
-    { "name": "subagent-driven-development", "files": ["agent/subagent-driven-development/SKILL.md"] },
-    { "name": "todo",                  "files": ["agent/todo/SKILL.md"] },
-    { "name": "team",                  "files": ["agent/team/SKILL.md"] },
-    { "name": "discover-facts",        "files": ["research/discover-facts/SKILL.md"] },
-    { "name": "claude-code",           "files": ["code/claude-code/SKILL.md"] },
-    { "name": "codex-cli",             "files": ["code/codex-cli/SKILL.md"] },
-    { "name": "opencode",              "files": ["code/opencode/SKILL.md"] },
-    { "name": "gemini-cli",            "files": ["code/gemini-cli/SKILL.md"] },
-    { "name": "kimi",                  "files": ["code/kimi/SKILL.md"] },
-    { "name": "create-skill",         "files": ["agent/create-skill/SKILL.md"] },
-    { "name": "kanban-worker",        "files": ["agent/kanban-worker/SKILL.md"] },
-    { "name": "info-hub",             "files": ["agent/info-hub/SKILL.md"] },
-    { "name": "arxiv",                "files": [
-      "research/arxiv/SKILL.md",
-      "research/arxiv/scripts/arxiv_search.py"
-    ]},
-    { "name": "startup-desire-evaluator",     "files": ["startup/startup-desire-evaluator/SKILL.md"] },
-    { "name": "startup-competitor-mapping",   "files": ["startup/startup-competitor-mapping/SKILL.md"] },
-    { "name": "startup-pricing",              "files": ["startup/startup-pricing/SKILL.md"] },
-    { "name": "startup-decision-memo",        "files": ["startup/startup-decision-memo/SKILL.md"] },
-    { "name": "startup-tam-sam-som",          "files": ["startup/startup-tam-sam-som/SKILL.md"] },
-    { "name": "startup-cac-model",            "files": ["startup/startup-cac-model/SKILL.md"] },
-    { "name": "startup-distribution",         "files": ["startup/startup-distribution/SKILL.md"] },
-    { "name": "startup-retention",            "files": ["startup/startup-retention/SKILL.md"] },
-    { "name": "startup-complexity",           "files": ["startup/startup-complexity/SKILL.md"] },
-    { "name": "startup-weakness-detection",   "files": ["startup/startup-weakness-detection/SKILL.md"] },
-    { "name": "startup-trend-analysis",       "files": ["startup/startup-trend-analysis/SKILL.md"] },
-    { "name": "startup-pivot",                "files": ["startup/startup-pivot/SKILL.md"] },
-    { "name": "startup-landing-page",         "files": ["startup/startup-landing-page/SKILL.md"] },
-    { "name": "startup-gtm-narrative",        "files": ["startup/startup-gtm-narrative/SKILL.md"] },
-    { "name": "startup-pricing-page",         "files": ["startup/startup-pricing-page/SKILL.md"] },
-    { "name": "startup-cold-outreach",        "files": ["startup/startup-cold-outreach/SKILL.md"] },
-    { "name": "startup-mvp-scope",            "files": ["startup/startup-mvp-scope/SKILL.md"] },
-    { "name": "startup-feedback-synthesis",   "files": ["startup/startup-feedback-synthesis/SKILL.md"] },
-    { "name": "startup-decision-journal",     "files": ["startup/startup-decision-journal/SKILL.md"] },
-    { "name": "startup-ikigai",               "files": ["startup/startup-ikigai/SKILL.md"] },
-    { "name": "startup-what-if",              "files": ["startup/startup-what-if/SKILL.md"] }
+    {
+      "name": "ipo-research",
+      "files": [
+        "investment/ipo-research/SKILL.md",
+        "investment/ipo-research/references/tuopu-cnc-07688-deep-dive.md",
+        "investment/ipo-research/scripts/extract_visible_text.py"
+      ]
+    },
+    {
+      "name": "unlisted-ecosystem-analysis",
+      "files": [
+        "investment/unlisted-ecosystem-analysis/SKILL.md",
+        "investment/unlisted-ecosystem-analysis/references/unitree-case-study.md",
+        "investment/unlisted-ecosystem-analysis/references/unitree-example.md"
+      ]
+    },
+    {
+      "name": "chaotic-reasoning",
+      "files": [
+        "reasoning/chaotic-reasoning/SKILL.md"
+      ]
+    },
+    {
+      "name": "plan",
+      "files": [
+        "agent/plan/SKILL.md"
+      ]
+    },
+    {
+      "name": "writing-plans",
+      "files": [
+        "agent/writing-plans/SKILL.md"
+      ]
+    },
+    {
+      "name": "subagent-driven-development",
+      "files": [
+        "agent/subagent-driven-development/SKILL.md"
+      ]
+    },
+    {
+      "name": "todo",
+      "files": [
+        "agent/todo/SKILL.md"
+      ]
+    },
+    {
+      "name": "team",
+      "files": [
+        "agent/team/SKILL.md"
+      ]
+    },
+    {
+      "name": "discover-facts",
+      "files": [
+        "research/discover-facts/SKILL.md"
+      ]
+    },
+    {
+      "name": "poseidon-collision",
+      "files": [
+        "prize-game/poseidon/SKILL.md",
+        "prize-game/poseidon/scripts/run.py",
+        "prize-game/poseidon/scripts/framework/__init__.py",
+        "prize-game/poseidon/scripts/framework/field.py",
+        "prize-game/poseidon/scripts/framework/grain_lfsr.py",
+        "prize-game/poseidon/scripts/framework/mds.py",
+        "prize-game/poseidon/scripts/framework/poseidon.py",
+        "prize-game/poseidon/scripts/attacks/brute.py",
+        "prize-game/poseidon/scripts/VERSIONS.md",
+        "prize-game/poseidon/scripts/EXPERIMENTS.md",
+        "prize-game/poseidon/scripts/results.json"
+      ]
+    },
+    {
+      "name": "claude-code",
+      "files": [
+        "code/claude-code/SKILL.md"
+      ]
+    },
+    {
+      "name": "codex-cli",
+      "files": [
+        "code/codex-cli/SKILL.md"
+      ]
+    },
+    {
+      "name": "opencode",
+      "files": [
+        "code/opencode/SKILL.md"
+      ]
+    },
+    {
+      "name": "gemini-cli",
+      "files": [
+        "code/gemini-cli/SKILL.md"
+      ]
+    },
+    {
+      "name": "kimi",
+      "files": [
+        "code/kimi/SKILL.md"
+      ]
+    },
+    {
+      "name": "create-skill",
+      "files": [
+        "agent/create-skill/SKILL.md"
+      ]
+    },
+    {
+      "name": "kanban-worker",
+      "files": [
+        "agent/kanban-worker/SKILL.md"
+      ]
+    },
+    {
+      "name": "info-hub",
+      "files": [
+        "agent/info-hub/SKILL.md"
+      ]
+    },
+    {
+      "name": "arxiv",
+      "files": [
+        "research/arxiv/SKILL.md",
+        "research/arxiv/scripts/arxiv_search.py"
+      ]
+    },
+    {
+      "name": "startup-desire-evaluator",
+      "files": [
+        "startup/startup-desire-evaluator/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-competitor-mapping",
+      "files": [
+        "startup/startup-competitor-mapping/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-pricing",
+      "files": [
+        "startup/startup-pricing/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-decision-memo",
+      "files": [
+        "startup/startup-decision-memo/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-tam-sam-som",
+      "files": [
+        "startup/startup-tam-sam-som/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-cac-model",
+      "files": [
+        "startup/startup-cac-model/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-distribution",
+      "files": [
+        "startup/startup-distribution/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-retention",
+      "files": [
+        "startup/startup-retention/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-complexity",
+      "files": [
+        "startup/startup-complexity/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-weakness-detection",
+      "files": [
+        "startup/startup-weakness-detection/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-trend-analysis",
+      "files": [
+        "startup/startup-trend-analysis/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-pivot",
+      "files": [
+        "startup/startup-pivot/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-landing-page",
+      "files": [
+        "startup/startup-landing-page/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-gtm-narrative",
+      "files": [
+        "startup/startup-gtm-narrative/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-pricing-page",
+      "files": [
+        "startup/startup-pricing-page/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-cold-outreach",
+      "files": [
+        "startup/startup-cold-outreach/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-mvp-scope",
+      "files": [
+        "startup/startup-mvp-scope/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-feedback-synthesis",
+      "files": [
+        "startup/startup-feedback-synthesis/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-decision-journal",
+      "files": [
+        "startup/startup-decision-journal/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-ikigai",
+      "files": [
+        "startup/startup-ikigai/SKILL.md"
+      ]
+    },
+    {
+      "name": "startup-what-if",
+      "files": [
+        "startup/startup-what-if/SKILL.md"
+      ]
+    }
   ]
 }

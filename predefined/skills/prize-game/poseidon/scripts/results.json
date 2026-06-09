@@ -1,0 +1,149 @@
+{
+  "version": "v1",
+  "strategy": "Floyd rho (cycle detection)",
+  "last_run": {
+    "version": "v1",
+    "strategy": "floyd_rho",
+    "q": 1,
+    "found": true,
+    "hash_calls": 191046,
+    "elapsed_seconds": 98.7540819644928,
+    "collision": {
+      "x": [
+        403130345,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "y": [
+        696607256,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "hash_output": 74288258
+    }
+  },
+  "history": [
+    {
+      "version": "v1",
+      "strategy": "floyd_rho",
+      "timestamp": "2026-06-09T00:00:00Z",
+      "parameters": {
+        "q": 1,
+        "strategy": "floyd_rho"
+      },
+      "result": {
+        "found": true,
+        "hash_calls": 191046,
+        "elapsed_seconds": 100.39,
+        "collision": {
+          "x": [
+            403130345,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "y": [
+            696607256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "matching_outputs": 1,
+          "hash_output": 74288258
+        }
+      },
+      "analysis": "COLLISION FOUND! Verified with official poseidon-tools verifier."
+    },
+    {
+      "version": "v1",
+      "strategy": "floyd_rho",
+      "q": 1,
+      "found": true,
+      "hash_calls": 191046,
+      "elapsed_seconds": 98.7540819644928,
+      "collision": {
+        "x": [
+          403130345,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "y": [
+          696607256,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "hash_output": 74288258
+      }
+    }
+  ]
+}

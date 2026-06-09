@@ -96,7 +96,7 @@
   let idleRunningTag = $state<string | null>(null);
   let dailyLifeOpen = $state(false);
   let deletingSessionId = $state<string | null>(null);
-  let idleAvailability = $state<Record<string, { work: boolean; study: boolean; fun: boolean }>>({});
+  let idleAvailability = $state<Record<string, { work: boolean; study: boolean; fun: boolean; prize: boolean }>>({});
   // Track background idle-run sessions for toast-only notifications
   let backgroundIdleSessions = $state<Set<string>>(new Set());
   let backgroundSessionTags = $state<Map<string, string>>(new Map());
@@ -1787,6 +1787,9 @@
                 </button>
                 <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("fun"); }} disabled={!idleAvailability[activeAgentKey]?.fun}>
                   🎲 Fun
+                </button>
+                <button class="dropdown-item" onclick={() => { dailyLifeOpen = false; startIdleRun("prize"); }} disabled={!idleAvailability[activeAgentKey]?.prize}>
+                  🏆 Prize
                 </button>
               </div>
             {/if}

@@ -276,6 +276,27 @@ impl NotificationSubscriber {
                 );
             }
 
+            // ── Auto-continue after max turns (background idle) ─────
+            EventType::Custom(s) if s == "agent:auto_continue" => {
+                let agent_id = event
+                    .payload
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let continuation = event
+                    .payload
+                    .get("continuation")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                self.store.push(
+                    Notification::info(
+                        Category::Idle,
+                        format!("{agent_id} — 已达到 max turns"),
+                        format!("正在整理 context 后继续执行 (第 {continuation} 次)"),
+                    ),
+                );
+            }
+
             // ── Idle progress heartbeat ──────────────────────────────
             // Published by plugins/skills that want periodic progress
             // updates during long-running idle actions (e.g. games,
@@ -340,6 +361,7 @@ fn tag_icon(tag: &str) -> &'static str {
         "fun" => "🎮",
         "work" => "📋",
         "study" => "📖",
+        "prize" => "🏆",
         "exploration" => "🔍",
         "internet" => "🌐",
         "entertainment" => "🎬",

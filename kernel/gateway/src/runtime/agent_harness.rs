@@ -2144,6 +2144,20 @@ impl AgentHarness {
                         max = MAX_CONTINUATIONS,
                         "max turns reached — auto-continuing (background idle run)"
                     );
+                    // Publish event for notification (auto-dismiss after 3s).
+                    let _ = self
+                        .bus
+                        .publish(Event::new(
+                            "agent:harness",
+                            EventType::Custom("agent:auto_continue".to_owned()),
+                            json!({
+                                "agent_id": ctx.agent_id,
+                                "session_id": ctx.session_id,
+                                "continuation": continuation_count,
+                                "max_continuations": MAX_CONTINUATIONS,
+                            }),
+                        ))
+                        .await;
                     ctx.turn = 0;
                     continue;
                 }

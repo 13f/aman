@@ -7,8 +7,8 @@ Each version is self-contained: imports framework, implements strategy,
 saves checkpoints for resume.
 
 Usage:
-    python3 v1/attack.py               # Run
-    python3 v1/attack.py --resume      # Resume from checkpoint
+    python3 attacks/v1/attack.py               # Run
+    python3 attacks/v1/attack.py --resume      # Resume from checkpoint
 """
 
 import sys
@@ -20,7 +20,7 @@ import argparse
 
 # ── Setup: make framework importable ──────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(SCRIPT_DIR)  # scripts/
+ROOT_DIR = os.path.dirname(os.path.dirname(SCRIPT_DIR))  # scripts/ (up from attacks/v1/)
 sys.path.insert(0, ROOT_DIR)
 
 from framework.field import P, INPUT_WIDTH, random_element

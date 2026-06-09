@@ -7,7 +7,7 @@
     "q": 1,
     "found": true,
     "hash_calls": 191046,
-    "elapsed_seconds": 98.7540819644928,
+    "elapsed_seconds": 100.76074624061584,
     "collision": {
       "x": [
         403130345,
@@ -107,6 +107,51 @@
       "found": true,
       "hash_calls": 191046,
       "elapsed_seconds": 98.7540819644928,
+      "collision": {
+        "x": [
+          403130345,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "y": [
+          696607256,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "hash_output": 74288258
+      }
+    },
+    {
+      "version": "v1",
+      "strategy": "floyd_rho",
+      "q": 1,
+      "found": true,
+      "hash_calls": 191046,
+      "elapsed_seconds": 100.76074624061584,
       "collision": {
         "x": [
           403130345,

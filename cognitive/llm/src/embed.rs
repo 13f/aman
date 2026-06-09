@@ -9,9 +9,30 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::net_proxy::agent_for;
+
+// ---------------------------------------------------------------------------
+// Tuning knobs
+// ---------------------------------------------------------------------------
+
+/// Timeout for each individual embed request.
+const EMBED_TIMEOUT_SECS: u64 = 30;
+
+/// Maximum retry attempts for transient errors (connection reset, timeout, 5xx).
+const EMBED_MAX_RETRIES: u32 = 2;
+
+/// Backoff base in seconds — grows as `base * (attempt + 1)`.
+const RETRY_BACKOFF_BASE_SECS: u64 = 1;
+
+/// Number of consecutive failures before the circuit breaker engages.
+const CIRCUIT_BREAKER_THRESHOLD: u64 = 5;
+
+/// Cooldown duration when the circuit breaker is open.
+const CIRCUIT_COOLDOWN_SECS: u64 = 30;
 
 /// An embedder that calls a remote OpenAI-compatible `/v1/embeddings` endpoint.
 ///
@@ -32,6 +53,9 @@ pub struct OpenAiEmbedder {
     model: String,
     dim: usize,
     fingerprint: String,
+    /// Count of consecutive failures — reset on success. Guards against
+    /// hammering a broken backend (circuit breaker pattern).
+    consecutive_failures: AtomicU64,
 }
 
 impl OpenAiEmbedder {
@@ -56,6 +80,7 @@ impl OpenAiEmbedder {
             model: model.to_owned(),
             dim,
             fingerprint,
+            consecutive_failures: AtomicU64::new(0),
         }
     }
 
@@ -117,22 +142,105 @@ impl yantrikdb::types::Embedder for OpenAiEmbedder {
         &self,
         text: &str,
     ) -> std::result::Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+        // -- circuit breaker: if we've had N consecutive failures, pause ----
+        let fails = self.consecutive_failures.load(Ordering::Relaxed);
+        if fails >= CIRCUIT_BREAKER_THRESHOLD {
+            warn!(
+                consecutive_failures = fails,
+                cooldown_secs = CIRCUIT_COOLDOWN_SECS,
+                url = %self.url,
+                "Embedder circuit breaker open — backing off",
+            );
+            std::thread::sleep(Duration::from_secs(CIRCUIT_COOLDOWN_SECS));
+        }
+
+        // -- retry loop for transient errors -------------------------------
         let body = serde_json::json!({
             "input": text,
             "model": self.model,
         });
 
+        let mut last_error: Option<Box<dyn std::error::Error + Send + Sync>> = None;
+
+        for attempt in 0..=EMBED_MAX_RETRIES {
+            if attempt > 0 {
+                let delay = Duration::from_secs(RETRY_BACKOFF_BASE_SECS * attempt as u64);
+                debug!(
+                    attempt,
+                    delay_ms = delay.as_millis(),
+                    url = %self.url,
+                    "Retrying embed request",
+                );
+                std::thread::sleep(delay);
+            }
+
+            match self.try_embed(&body) {
+                Ok(vec) => {
+                    // Success — reset circuit breaker.
+                    self.consecutive_failures.store(0, Ordering::Relaxed);
+                    return Ok(vec);
+                }
+                Err(e) => {
+                    let is_transient = is_transient_error(e.as_ref());
+                    if !is_transient {
+                        // Non-transient error (e.g. 4xx, bad JSON, wrong
+                        // model name). Don't retry — fail fast.
+                        self.consecutive_failures
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Err(e);
+                    }
+                    if attempt == EMBED_MAX_RETRIES {
+                        // Exhausted retries — circuit breaker tick.
+                        let new_fails =
+                            self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+                        warn!(
+                            consecutive_failures = new_fails,
+                            url = %self.url,
+                            "Embedder exhausted retries; circuit breaker armed",
+                        );
+                        return Err(e);
+                    }
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        // Unreachable (loop always returns or breaks), but satisfy the
+        // compiler.
+        Err(last_error.unwrap())
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    fn fingerprint(&self) -> Option<String> {
+        Some(self.fingerprint.clone())
+    }
+
+    fn name(&self) -> Option<String> {
+        Some(format!("openai-embed:{}", self.model))
+    }
+}
+
+impl OpenAiEmbedder {
+    /// Single embed attempt (no retry, no circuit breaker).
+    fn try_embed(
+        &self,
+        body: &serde_json::Value,
+    ) -> std::result::Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
         let mut req = self
             .agent
             .post(&self.url)
-            .set("Content-Type", "application/json");
+            .set("Content-Type", "application/json")
+            .timeout(Duration::from_secs(EMBED_TIMEOUT_SECS));
 
         if !self.api_key.is_empty() {
             req = req.set("Authorization", &format!("Bearer {}", self.api_key));
         }
 
         let resp: Value = req
-            .send_json(body)
+            .send_json(body.clone())
             .map_err(|e| {
                 warn!(error = %e, url = %self.url, "Embedder HTTP error");
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
@@ -158,16 +266,43 @@ impl yantrikdb::types::Embedder for OpenAiEmbedder {
 
         Ok(vec)
     }
+}
 
-    fn dim(&self) -> usize {
-        self.dim
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+/// Decide whether an error from `try_embed` is transient (worth retrying).
+///
+/// Transient errors: network blips (connection reset, timeout, broken pipe,
+/// refused), DNS failures, 5xx server errors, 429 rate-limit.
+///
+/// Non-transient errors: 4xx client errors (bad model name, bad API key),
+/// JSON parse failures, unexpected response shape.
+fn is_transient_error(e: &(dyn std::error::Error + Send + Sync)) -> bool {
+    let msg = e.to_string().to_lowercase();
+
+    // IO / network signals worth retrying.
+    if msg.contains("connection reset")
+        || msg.contains("os error 54")
+        || msg.contains("connection refused")
+        || msg.contains("os error 61")
+        || msg.contains("broken pipe")
+        || msg.contains("os error 32")
+        || msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("dns error")
+        || msg.contains("network error")
+    {
+        return true;
     }
 
-    fn fingerprint(&self) -> Option<String> {
-        Some(self.fingerprint.clone())
+    // ureq boxes HTTP status responses — 5xx and 429 are transient.
+    if msg.contains("http 5") || msg.contains("http 429") || msg.contains("status 5") || msg.contains("status 429")
+    {
+        return true;
     }
 
-    fn name(&self) -> Option<String> {
-        Some(format!("openai-embed:{}", self.model))
-    }
+    // JSON parse errors, missing fields, 4xx responses — not transient.
+    false
 }

@@ -10,6 +10,7 @@
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -20,7 +21,11 @@ use crate::net_proxy::agent_for;
 // ---------------------------------------------------------------------------
 
 /// Timeout for each individual embed request.
-const EMBED_TIMEOUT_SECS: u64 = 30;
+///
+/// Set high enough to cover large payloads in eager mode (2924 tokens
+/// took ~27s on M4 w/ oMLX). Compiled mode should be faster, but eager
+/// fallback is common when `mx.compile` fails.
+const EMBED_TIMEOUT_SECS: u64 = 90;
 
 /// Maximum retry attempts for transient errors (connection reset, timeout, 5xx).
 const EMBED_MAX_RETRIES: u32 = 2;
@@ -56,6 +61,10 @@ pub struct OpenAiEmbedder {
     /// Count of consecutive failures — reset on success. Guards against
     /// hammering a broken backend (circuit breaker pattern).
     consecutive_failures: AtomicU64,
+    /// Serialize embedding requests so only one HTTP call is in flight
+    /// at a time. Prevents overwhelming local servers (oMLX, Ollama)
+    /// that process requests sequentially.
+    embed_lock: Mutex<()>,
 }
 
 impl OpenAiEmbedder {
@@ -81,6 +90,7 @@ impl OpenAiEmbedder {
             dim,
             fingerprint,
             consecutive_failures: AtomicU64::new(0),
+            embed_lock: Mutex::new(()),
         }
     }
 
@@ -142,6 +152,20 @@ impl yantrikdb::types::Embedder for OpenAiEmbedder {
         &self,
         text: &str,
     ) -> std::result::Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+        // -- concurrency gate: one embed request at a time -----------------
+        // Local embedding servers (oMLX, Ollama) process requests
+        // sequentially. Multiple concurrent agents sending large payloads
+        // (2924+ tokens) cause all but the first to time out. Serialize so
+        // each request gets the full attention of the server.
+        let _guard = match self.embed_lock.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                // Mutex poisoned — a previous holder panicked. Recover.
+                warn!("Embedder lock poisoned — recovering");
+                poisoned.into_inner()
+            }
+        };
+
         // -- circuit breaker: if we've had N consecutive failures, pause ----
         let fails = self.consecutive_failures.load(Ordering::Relaxed);
         if fails >= CIRCUIT_BREAKER_THRESHOLD {
@@ -247,7 +271,14 @@ impl OpenAiEmbedder {
             })?
             .into_json()
             .map_err(|e| {
-                warn!(error = %e, url = %self.url, "Embedder JSON parse error");
+                let err_str = e.to_string();
+                // Distinguish read timeouts (IO error while pulling the
+                // response body) from genuine JSON parse failures.
+                if err_str.contains("timed out") || err_str.contains("timeout") {
+                    warn!(error = %e, url = %self.url, "Embedder read timeout");
+                } else {
+                    warn!(error = %e, url = %self.url, "Embedder JSON parse error");
+                }
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?;
 

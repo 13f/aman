@@ -105,8 +105,6 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
 
 ## 4. How to Run
 
-**工作在用户数据目录，不动代码仓库：**
-
 ```bash
 cd ~/.aman/skills/prize-game/poseidon/scripts
 
@@ -115,11 +113,8 @@ python3 run.py benchmark
 
 # 运行某个版本的攻击
 python3 v1/attack.py       # Floyd rho (已完成)
-python3 v2/attack.py       # AI 在 ~/.aman/ 下创建
+python3 v2/attack.py       # 新策略
 ```
-
-**代码仓库** (`predefined/skills/prize-game/poseidon/`) 是只读种子，仅含 v1 基线。
-**所有迭代** 在 `~/.aman/skills/prize-game/poseidon/scripts/` 下进行。
 
 ```python
 # vN/attack.py 模板
@@ -322,12 +317,9 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 ## 13. Code Map
 
 ```
-代码仓库 (只读种子): predefined/skills/prize-game/poseidon/
-用户迭代目录:        ~/.aman/skills/prize-game/poseidon/scripts/
-
-scripts/
-├── run.py                  ← CLI (benchmark，可加新命令)
-├── SKILL.md                ← 本文件 (AI 读写 ~/.aman 下的副本)
+~/.aman/skills/prize-game/poseidon/scripts/
+├── run.py                  ← CLI (benchmark)
+├── SKILL.md                ← 本文件 (AI 读写)
 │
 ├── framework/              ← ❌ 禁止修改
 │   ├── field.py            ← 𝔽_p 运算
@@ -342,15 +334,14 @@ scripts/
 │   ├── attack.py
 │   └── checkpoint.json
 │
-└── vN/                     ← ✅ AI 创建 (~/.aman/ 下, N=2,3,...)
+└── vN/                     ← ✅ AI 创建 (N=2,3,...)
     ├── attack.py            ← 策略实现 (AI 写)
     ├── checkpoint.json      ← 断点续算
     └── notes.md             ← (可选) 策略思路
 ```
 
-**AI 写代码的范围**: 在 `~/.aman/skills/prize-game/poseidon/scripts/vN/` 下创建。
-从 `framework/` 导入原语，实现 SKILL.md 中选定的策略。
-不要改 `framework/` 或 `attacks/brute.py`。
+**AI 写代码的范围**: 在 `vN/` 下创建 attack.py。从 `framework/` 导入原语，
+实现 SKILL.md 中选定的策略。不要改 `framework/` 或 `attacks/brute.py`。
 
 ## 14. References
 

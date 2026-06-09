@@ -1,0 +1,8 @@
+{
+  "state": "running",
+  "outer": 20,
+  "calls": 3600,
+  "elapsed": 3.06831693649292,
+  "best_residual": 6274715,
+  "last_saved": "2026-06-09T20:42:32"
+}

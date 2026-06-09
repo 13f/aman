@@ -67,18 +67,47 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
     "thinking"     → 需要构思新策略，进入 §7 Thinking Log
     "running-vN"   → 检查 attacks/vN/checkpoint.json，尝试断点续传
     "give-up-vN"   → 放弃 vN，进入 thinking 模式
+    "done"         → 策略已实现、代码无 bug、可正常运行 → 停止，提示用户运行
 -->
 
 **STATE: `thinking`**
 
+## 🛑 CRITICAL: Termination Rule
+
+**此技能以探索新策略为主。一旦代码满足以下条件，LLM 必须立即停止思考，提示用户自行运行：**
+
+1. ✅ Python 语法正确（`python3 -c "import py_compile; py_compile.compile('attack.py', doraise=True)"` 通过）
+2. ✅ 导入正确（`python3 attack.py --help` 或 dry-run 不报 ImportError）
+3. ✅ 策略逻辑已实现完整，无明显 bug
+4. ✅ 实验日志和 STATE 已更新到 SKILL.md
+
+**为什么**: LLM 不能无限循环。运行实验（可能耗时数小时/数天）和调参是用户的工作。
+LLM 的职责是设计策略和编写代码——代码写好后，**停下来，告诉用户可以运行了**。
+
+**违反此规则的信号**（检测到以下情况应立即停止）:
+- 在多次对话轮次中反复微调同一个策略的同一份代码
+- 运行实验 → 失败 → 微小修改 → 再运行 → 循环超过 2 次
+- 在没有新数学洞察的情况下反复调参（学习率、步数、restart 次数等）
+- 代码已经能正常运行（无 crash/语法错误）但仍想 "再改一点"
+
 > v1 (Floyd rho q=1) 已完成验证。q≥4 暴力不可行，需要代数攻击。
-> 进入深度思考模式。关键发现: cube root 在 𝔽_p 上是双射 (gcd(3,p-1)=1)，
-> 可以利用此性质逆向全轮。正在构思后向-前向结合 Newton 迭代法。
+> v2 (Newton/Z3/Gröbner toy tests) 缺乏数学分析直接写代码，未找到q=4碰撞。
+> v3 (Inverse Permutation Newton) 刚测试，不收敛。
+> 正在搜索最新研究论文（2026/150 resultant, 2026/306 Skipping Class）寻找突破口。
+> **关键发现**: resultant-based 代数攻击已成功破解部分 bounty（CICO），
+> “Skipping Class” 论文利用弱矩阵跳过部分轮。q=3 碰撞已被 claim（Apr 6, 2026），
+> 攻击报告应已公开。
 
 ## 3. Decision Tree
 
 ```
 读取 §2 STATE
+    │
+    ├─ "done"
+    │       └─ 🛑 策略已实现、代码可编译、无明显 bug
+    │           → 不要继续思考！提示用户自行运行代码。
+    │           → 不要微调参数！不要 "再运行一次看看"！
+    │           → 用户运行后若有新发现，可以带着反馈回来。
     │
     ├─ "running-vN"
     │       │
@@ -188,13 +217,20 @@ This dramatically limits the algebraic degree growth and is THE attack surface.
         ↓
 阶段 4: CODE     在 attacks/vN/attack.py 中实现（仅当阶段 2-3 认为可行时）
         ↓
-阶段 5: TEST     运行、计时、验证
+阶段 5: TEST     语法检查、dry-run、验证代码可运行（不报 ImportError/语法错误）
         ↓
-阶段 6: RECORD   更新 SKILL.md: 实验日志 + 结果 + (如果失败) Dead Ends
+阶段 6: RECORD   更新 SKILL.md: 实验日志 + STATE="done" + 提示用户运行
+        ↓
+阶段 7: 🛑 STOP  代码可正常运行 → 停止。不要继续思考，不要微调，不要 "再改一点"。
+                 提示用户自行运行代码。用户运行后若有反馈，再继续。
 ```
 
 **关键原则**: 阶段 1-3 不写代码。在 Thinking Log 中完成数学分析，
 确认方向可行后才进入代码阶段。这样可以快速排除大量死胡同。
+
+**🛑 终止原则**: 一旦代码通过阶段 5（语法正确、可导入、逻辑完整），立即进入阶段 6-7
+并停止。LLM 的职责是设计策略和编写代码——不是运行实验或调参。
+同一个策略的代码不应跨对话轮次反复修改超过 2 次。
 
 ## 7. 🧠 Thinking Log
 
@@ -203,7 +239,10 @@ This dramatically limits the algebraic degree growth and is THE attack surface.
 | # | Date | Hypothesis | Quick Analysis | Verdict | → Action |
 |---|------|-----------|----------------|---------|----------|
 | 1 | 2026-06-09 | "Cube root 是双射: gcd(3,p-1)=1" | p=2130706433, p%3=2, gcd(3,p-1)=1. 立方根指数 e=(2p-1)/3=1420470955. x→x³ 是排列！全轮可完全逆向。 | ✅ 已验证 | 利用此性质做后向攻击 |
-| 2 | 2026-06-09 | "Newton 迭代法求解 4×4 方程组" | 固定 Y=0, 固定 X[4..14]=0, 4变量 X[0..3]. 误差函数 E(X)=H(X)[:4]-T. Jacobian 4×4 有限差分. 每步~5次hash. 收敛性不确定但代价低。 | ⏳ **选定方案** | 实现 v2/attack.py: Newton 迭代
+| 2 | 2026-06-09 | "Newton 迭代法求解 4×4 方程组" | 固定 Y=0, 固定 X[4..14]=0, 4变量 X[0..3]. 误差函数 E(X)=H(X)[:4]-T. Jacobian 4×4 有限差分. 每步~5次hash. 收敛性不确定但代价低。 | ❌ 不收敛 | v2 所有变体 (damped, fixed-point, two-level) 均失败 |
+| 3 | 2026-06-09 | "Inverse Permutation + Multi-start Newton" | v3: 利用逆置换 P⁻¹, 参数化 permutation 输出 S, 优化 S[1..3] 满足 feedforward 约束, 希望 E0 = P⁻¹(S)[0]-SEED = 0 碰巧成立 | ❌ 不收敛 | 200 restarts × 15 Newton iters, 最佳 error ~2×10¹⁷, 不收敛 |
+| 4 | 2026-06-09 | **文献调研: resultant attack + Skipping Class** | 论文 2026/150 (Bak et al.): resultant-based 代数攻击成功破解 CICO-1 和 CICO-2. 论文 2026/306 (Merz & García): 利用弱矩阵跳过轮, 碰撞攻击优于原像攻击, 提升 2^106 倍 | ✅ 理论方向 | 需 SageMath 实现 resultant/Gröbner; 纯 Python 不可行 |
+| 5 | 2026-06-09 | **"Zero s[0] 部分轮线性化"** | 如果部分轮前 s[0]=0, 则 S-Box 是恒等 (0³=0), 所有 20 个部分轮变为纯线性! 只剩 8 个全轮的非线性 (4 front + 4 back). 需要 20 个方程 s[0]=0, 但有 15 个自由变量 | ⏳ 需分析 | 超定系统, 需选弱 MDS 使约束相关 |
 
 *示例:*
 - *Hypothesis: "选择对角 MDS 矩阵 → 部分轮退化为 16 条独立路径 → 每个 s[i] 可独立求解"*
@@ -221,6 +260,7 @@ These approaches are proven infeasible for q=4. Skip them.
 | Meet-in-the-middle (naive) | O(p^(q/2)) = O(p^2) ≈ 4.5×10^18 — 同上 | 生日界限制 |
 | 纯暴力枚举 | p^15 搜索空间，无意义 | 天文数字 |
 | 固定部分输入 + 暴力剩余 | p^k 搜索代价，k 不够大 | 只是常数级加速 |
+| Inverse Permutation Newton (v3) | 只优化 S[1..3], E0=SEED 约束无法满足 | 200 restarts, best error 2×10¹⁷ |
 
 ## 9. ✅ Active Strategies — TRY THESE
 
@@ -262,6 +302,27 @@ These approaches are proven infeasible for q=4. Skip them.
 - Jacobian 通过有限差分计算（每步5次hash）
 - 随机重启处理不收敛情况
 - **现代码实现**: attacks/v2/attack.py
+- **🆕 已确认无效**: Newton/固定点不收敛，放弃此方向
+
+### M: Resultant-Based Elimination 🔥🔥 — 论文 2026/150 (Bak et al.)
+- **已成功破解 CICO-1/2 bounty（2025 年）**
+- 构建多项式系统 → 用 resultant 消去变量 → 求解单变量多项式
+- 需要 SageMath 实现 resultant/F4/F5 算法
+- **优势**: 对部分轮结构特别有效（只 s[0] 非线性）
+- **劣势**: 需要 CAS (SageMath/Magma), 纯 Python 不可行
+
+### N: Zero s[0] Partial Round Linearization 🔥🔥🔥 — **最有前途的新方向**
+- **核心洞察**: 如果部分轮前 s[0]=0, 则 S-Box 恒等 (0³=0), 全部 20 个部分轮变为纯线性!
+- 仅剩 8 个全轮的非线性 (RF=8), 碰撞搜索大幅简化
+- 需要 20 个约束: ∀i ∈ [0..19]: s_before_partial_round_i[0] = 0
+- 自由度: 15 个输入 X[0..14] + MDS 自由选择 → 可调参数充足
+- **关键**: 选 MDS 使部分轮 s[0] 路径可控, 约束相关化
+- **方法论**: 前向-后向结合 + 自定义 MDS 构造
+
+### O: 利用 q=3 已公开的攻击报告
+- q=3 claim 于 2026-04-06, 攻击报告应在 2026-05-06 前公开
+- 查找并复用 q=3 的攻击方法扩展到 q=4
+- 搜索关键词: "Poseidon q=3 partial collision KoalaBear"
 
 ## 10. Experiment Protocol
 
@@ -310,6 +371,9 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 | # | Date | Strategy | q | Time | Result | Insight |
 |---|------|----------|---|------|--------|---------|
 | 1 | 2026-06-09 | Floyd rho | 1 | 100s | ✅ | 官方验证器通过，框架验证完成 |
+| 2 | 2026-06-09 | v2: Newton variants | 4 | ~5s | ❌ | 所有变体均不收敛，best_error ~5×10⁶ |
+| 3 | 2026-06-09 | v3: Inverse Perm Newton | 4 | 10s | ❌ | E0 约束未优化，best_error ~2×10¹⁷ |
+| 4 | 2026-06-09 | Literature review | — | ~30min | 📚 | 确认方向：resultant (2026/150) / Skipping Class (2026/306) |
 
 ## 12. Current Target
 
@@ -317,8 +381,13 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 - **Deadline**: Jan 1, 2029（还有约 2.5 年）
 - **生日界**: ~4.5×10^18 — 暴力出局
 - **最大自由度**: MDS 矩阵可以任选 ← 🔥 突破口
-- **策略**: 选择一个弱 MDS + Gröbner basis / subspace trail
+- **当前最佳策略**: Zero s[0] linearization (N) + Resultant Elimination (M)
+- **下一步**: 获取 SageMath 环境 → 实现 resultant-based 攻击 → 构建自定义 MDS → q=4 collision
 - **关键参数**: 20 个部分轮中只有 s[0] 非线性 → 代数度增长缓慢
+- **最新文献**: 
+  - 2026/150: resultant 攻击成功破解 CICO bounty
+  - 2026/306: Skipping Class, 弱矩阵跳过轮, 碰撞攻击 2^106 加速
+  - 2025/954: Gröbner basis + subspace trail
 
 ## 13. Code Map
 

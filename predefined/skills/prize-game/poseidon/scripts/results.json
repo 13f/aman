@@ -2,49 +2,14 @@
   "version": "v1",
   "strategy": "Floyd rho (cycle detection)",
   "last_run": {
-    "version": "v1",
-    "strategy": "floyd_rho",
-    "q": 1,
-    "found": true,
-    "hash_calls": 191046,
-    "elapsed_seconds": 100.76074624061584,
-    "collision": {
-      "x": [
-        403130345,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
-      ],
-      "y": [
-        696607256,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0
-      ],
-      "hash_output": 74288258
-    }
+    "version": "v3",
+    "strategy": "inverse_permutation_newton",
+    "q": 4,
+    "found": false,
+    "elapsed_seconds": 10.165946960449219,
+    "restarts": 200,
+    "calls": 12000,
+    "best_error": 211496511827464874
   },
   "history": [
     {
@@ -189,6 +154,93 @@
         ],
         "hash_output": 74288258
       }
+    },
+    {
+      "version": "v2",
+      "strategy": "newton_iteration",
+      "q": 4,
+      "found": false,
+      "hash_calls": 500,
+      "elapsed_seconds": 0.20836997032165527,
+      "restarts": 5,
+      "best_error": 75425431
+    },
+    {
+      "version": "v2",
+      "strategy": "newton_damped",
+      "q": 4,
+      "found": false,
+      "hash_calls": 6700,
+      "elapsed_seconds": 4.871062994003296,
+      "restarts": 100,
+      "best_error": 8576262,
+      "best_X": [
+        302944665,
+        925430423,
+        29071048,
+        1102929211
+      ]
+    },
+    {
+      "version": "v2",
+      "strategy": "fixed_point",
+      "q": 4,
+      "found": false,
+      "iterations": 500,
+      "elapsed_seconds": 0.41492390632629395,
+      "restarts": 10,
+      "best_residual": 4963525,
+      "best_X": [
+        1491185851,
+        2012277067,
+        1562383138,
+        637886852
+      ],
+      "target": [
+        514397913,
+        1912742697,
+        800243870,
+        772658791
+      ],
+      "K": 501774581
+    },
+    {
+      "version": "v2",
+      "strategy": "cyclic_shift_mds",
+      "q": 4,
+      "found": false,
+      "best_residual": 190646223,
+      "best_X": [
+        1714950537,
+        1308222556,
+        1411341305,
+        1416082717
+      ],
+      "target": [
+        2093811660,
+        1906363993,
+        1221545525,
+        105800964
+      ]
+    },
+    {
+      "version": "v2",
+      "strategy": "two_level_newton",
+      "q": 4,
+      "found": false,
+      "calls": 3600,
+      "elapsed_seconds": 3.068556070327759,
+      "best_residual": 6274715
+    },
+    {
+      "version": "v3",
+      "strategy": "inverse_permutation_newton",
+      "q": 4,
+      "found": false,
+      "elapsed_seconds": 10.165946960449219,
+      "restarts": 200,
+      "calls": 12000,
+      "best_error": 211496511827464874
     }
   ]
 }

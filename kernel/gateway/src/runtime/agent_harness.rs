@@ -470,15 +470,26 @@ impl LlmReActEngine {
     fn is_retryable_llm_error(err: Option<&kernel::Error>) -> bool {
         let Some(e) = err else { return false };
         let msg = e.to_string().to_lowercase();
-        // HTTP 400 — bad request, don't retry
+        // ── permanent errors — don't retry ──
+        // HTTP 400 — bad request
         if msg.contains("400") || msg.contains("bad request") {
             return false;
         }
-        // Auth errors — don't retry
+        // Auth errors
         if msg.contains("401") || msg.contains("403") {
             return false;
         }
-        // Transient — retry
+        // HTTP 402 / billing / quota exhausted — not transient
+        if msg.contains("402")
+            || msg.contains("payment required")
+            || msg.contains("insufficient_quota")
+            || msg.contains("billing")
+        {
+            return false;
+        }
+        // ── transient — retry ──
+        // 429 is only retryable for rate-limiting; insufficient_quota is
+        // caught by the check above and won't reach here.
         msg.contains("error sending request")
             || msg.contains("timeout")
             || msg.contains("connection")
@@ -487,6 +498,12 @@ impl LlmReActEngine {
             || msg.contains("502")
             || msg.contains("503")
             || msg.contains("504")
+            // reqwest stream/decode errors — transient body corruption
+            || msg.contains("error decoding response body")
+            || msg.contains("error decoding chunk")
+            || msg.contains("stream closed")
+            || msg.contains("connection closed")
+            || msg.contains("unexpected eof")
     }
 
     /// Returns true if the error looks transient (worth retrying).

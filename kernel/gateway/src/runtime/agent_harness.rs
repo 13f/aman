@@ -1336,7 +1336,7 @@ impl AgentHarness {
             self.direct_act(&mut ctx, &mut token_budget, Some(&interrupt_flag))
                 .await
         } else {
-            self.react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag))
+            self.react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag), background)
                 .await
         };
 
@@ -1632,7 +1632,7 @@ impl AgentHarness {
                 }
 
                 // No detach — continue with shared ReAct loop for remaining turns
-                self.react_loop(ctx, token_budget, interrupt).await
+                self.react_loop(ctx, token_budget, interrupt, false).await
             }
             ReActTurn::Finished { content, .. } => {
                 // LLM chose not to use any tools — just return its response.
@@ -1839,7 +1839,7 @@ impl AgentHarness {
             max_output_tokens,
         );
         ctx.turn = turn;
-        let reply = match self.react_loop(&mut ctx, &mut token_budget, None).await {
+        let reply = match self.react_loop(&mut ctx, &mut token_budget, None, false).await {
             Ok(ReactOutcome::Finished(reply)) => reply,
             Ok(ReactOutcome::Interrupted(reply)) => {
                 reply
@@ -2092,16 +2092,20 @@ impl AgentHarness {
         ctx: &mut ReActContext,
         token_budget: &mut context_manager::TokenBudget,
         interrupt: Option<&InterruptFlag>,
+        background: bool,
     ) -> Result<ReactOutcome, Error> {
         let compressor = context_manager::HistoryCompressor::new(
             context_manager::CompressionStrategy::Truncate,
         );
         let mut loaded_skill_body: Option<String> = None;
+        /// Max auto-continuations for background idle runs (prevents infinite loop).
+        const MAX_CONTINUATIONS: u32 = 5;
+        let mut continuation_count: u32 = 0;
 
         loop {
             // --- pre-turn checks ---
             if ctx.turn >= ctx.max_turns {
-                // Compress and persist before yielding so the session is resumable.
+                // Compress and persist session state.
                 let history_tokens: usize = ctx
                     .history
                     .iter()
@@ -2115,7 +2119,7 @@ impl AgentHarness {
                         &self.compression_config,
                     );
                 }
-                // Persist final state to session store
+                // Persist to session store
                 if let Some(store) = self.registry.get_session_store(&ctx.agent_id).await {
                     for msg in &ctx.history {
                         let ts = std::time::SystemTime::now()
@@ -2130,7 +2134,22 @@ impl AgentHarness {
                         let _ = store.append_session_event(&ctx.session_id, &entry);
                     }
                 }
-                return Ok(ReactOutcome::MaxTurnsReached { turns: ctx.max_turns });
+                // In background mode, auto-continue silently (user is away).
+                if background && continuation_count < MAX_CONTINUATIONS {
+                    continuation_count += 1;
+                    tracing::info!(
+                        agent_id = %ctx.agent_id,
+                        session_id = %ctx.session_id,
+                        continuation = continuation_count,
+                        max = MAX_CONTINUATIONS,
+                        "max turns reached — auto-continuing (background idle run)"
+                    );
+                    ctx.turn = 0;
+                    continue;
+                }
+                return Ok(ReactOutcome::MaxTurnsReached {
+                    turns: ctx.max_turns * (continuation_count + 1),
+                });
             }
 
             if let Some(flag) = interrupt

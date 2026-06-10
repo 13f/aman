@@ -55,6 +55,7 @@ Find two distinct 15-element inputs `X ≠ Y` such that Poseidon compression
 - t = 16, α = 3 (cube), RF = 8, RP = 20
 - 压缩模式: `[SEED=0xc09de4, 15 inputs] → permutation → +feedforward → output`
 - 官方验证器: https://github.com/khovratovich/poseidon-tools
+- **本地副本**: `scripts/poseidon-tools/` (vendored, 2026-06-10 main branch)
 
 **🔥 MDS 矩阵可以任选！** 只需满足 "无不变子空间轨迹" 条件。
 Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱、更容易攻击的 MDS**——
@@ -398,6 +399,6 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 ## 14. References
 
 - Challenge spec: `docs/game/Poseidon/Poseidon.md`
-- Official tools: https://github.com/khovratovich/poseidon-tools
+- Official tools: https://github.com/khovratovich/poseidon-tools (vendored at `scripts/poseidon-tools/`)
 - Poseidon paper: https://eprint.iacr.org/2019/458
 - Gröbner basis: https://doc.sagemath.org/html/en/reference/polynomial_rings/

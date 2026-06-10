@@ -318,16 +318,25 @@ These approaches are proven infeasible for q=4. Skip them.
 2. 写 attack 脚本，导入 `framework/`
 3. 运行、计时、记录结果
 
-### 🔄 必须更新 SKILL.md
+### 🔄 必须更新的文件
 
-每次实验结束后，**必须用 Edit 工具更新本文件**：
+每次实验结束后，**必须用 Edit 工具更新以下文件**：
+
+**SKILL.md**:
 - 实验日志表 → 追加一行
 - 发现死胡同 → 追加到 §8 Dead Ends
 - 发现新策略 → 追加到 §9 Active Strategies
 - 当前最佳 → 更新 §12 Current Target
 - 有进展/洞察 → 更新实验日志的 Insight 列
 
-这是闭环：AI 读 SKILL.md → 选策略 → 运行 → 写回 SKILL.md → 下次读最新版。
+**VERSIONS.md** (`scripts/VERSIONS.md`):
+- 新建版本 → 在 Version Index 追加一行
+- 版本状态变化（running → done / give-up）→ 更新该版本的 Status 列
+- 发现碰撞 → 记录碰撞向量 (X, Y) 和 hash 值
+- verify_mds_matrix 结果 → 更新该版本的验证状态表
+- 每个版本必须包含：文件清单、策略描述、验证状态矩阵、运行命令
+
+这是闭环：AI 读 SKILL.md → 选策略 → 运行 → 写回 SKILL.md + VERSIONS.md → 下次读最新版。
 
 ### 💾 断点续算
 

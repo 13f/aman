@@ -97,10 +97,63 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
 | MDS 矩阵测试数 | ≤ 3 | 测试 >3 个 MDS 不会增加洞察 |
 | 每个实验的运行次数 | ≤ 2 | 运行 >2 次同一脚本只说明你在调参 |
 
-## 3. Decision Tree
+## 3. 🧱 Design Constraints — Read Before Designing Any Strategy
+
+**新策略必须通过以下检查后才允许进入 CODE 阶段。**
+
+### 规则 1: 先验证 MDS，再设计攻击 🔴
+
+**M=I 禁止使用。** 官方 `verify_mds_matrix(I)` 返回 False（A1–A4 四项检查全部失败）。
+`verify_collision_solution` 在检查碰撞之前（第 148 行）先调用 `verify_mds_matrix`，
+M=I 碰撞将被直接拒绝。
+
+| 要求 | 说明 |
+|------|------|
+| **M=I 禁止使用** | A1–A4 全部失败；位置独立 = 不安全的 MDS |
+| **新 MDS 必须预检** | 实现策略前先用 `scripts/poseidon-tools/` 验证 MDS 通过 |
+| **通过 MDS 清单** | Cauchy, Plonky3, companion, Fibonacci, Vandermonde, I+random-small |
+
+### 规则 2: 不要用数值方法在 GF(p) 上寻根 🔴
+
+Poseidon 输出在 GF(p) 上是高度非连续阶跃函数，有限差分 Jacobian 无意义。
+Newton、固定点迭代、坐标下降、Z3 SMT 均不适用于此问题。
+
+| 禁止 | 替代方案 |
+|------|----------|
+| Newton 迭代 / 固定点 / 坐标下降 | Gröbner basis (SageMath) |
+| Z3 SMT over GF(p) | Resultant elimination (论文 2026/150) |
+
+### 规则 3: 不要机械扫描 MDS 矩阵 🔴
+
+没有数学理由地测试 20+ 个 MDS 变体不会带来突破。
+每个 MDS 测试前必须在 Thinking Log 记录选择理由。最多测试 3 个 MDS。
+
+### 规则 4: q=1 方法不适用于 q=4 🔴
+
+Floyd rho / birthday 对 q=1 有效（退化为单元素检测），q=4 需要 4 个输出同时匹配。
+必须使用代数攻击（Gröbner / resultant）。
+
+### 规则 5: 纯 Python 无法做代数攻击 🔴
+
+SymPy Gröbner 太慢，Z3 在 GF(p) 上编码 28 轮导致变量爆炸。
+必须使用 CAS（SageMath / Magma / Maple）。
+
+### 新策略检查清单
+
+在进入 CODE 阶段前，必须在 Thinking Log 中确认：
 
 ```
-读取 §2 STATE + 检查变体预算（§2 变体预算表）
+□ 1. 目标 MDS 已通过 verify_mds_matrix? (不能是 M=I)
+□ 2. 攻击方法是代数的 (Gröbner/resultant)，不是数值的 (Newton)?
+□ 3. 选这个 MDS 有数学理由? (不是机械扫描)
+□ 4. 方法可扩展到 q=4? (不是 q=1 特例)
+□ 5. 有 CAS 工具支持? (SageMath/Magma，不是纯 Python)
+```
+
+## 3.1. Decision Tree
+
+```
+读取 §2 STATE + 检查变体预算
     │
     ├─ STATE="done" 或 变体预算超标？
     │       └─ 🛑 立即停止。提示用户自行运行代码。
@@ -122,9 +175,13 @@ Plonky3 循环矩阵只是示例。这意味着可以**选择一个结构更弱�
     │       │
     │       └─ 进入 THINKING 模式
     │               │
+    │               ├─ ⚠️ 先检查 §3 规则 1: MDS 是否通过 verify_mds_matrix?
+    │               │   → M=I 禁止！选通过验证的 MDS（Cauchy/companion/...）
+    │               │
     │               ├─ 阅读 §8 Dead Ends，排除已失败方案
     │               ├─ 阅读 §9 Active Strategies，选择 1 个策略
     │               ├─ 在 §7 Thinking Log 中记录分析
+    │               │   → 必须完成 §3 检查清单的 5 项
     │               ├─ 分析通过 → 实现，最多 2 个变体
     │               │   → 变体 1 失败 → 变体 2（修正后）失败 → 放弃
     │               ├─ 分析不通过 → 追加 Dead Ends，换策略
@@ -261,8 +318,13 @@ These approaches are proven infeasible for q=4. Skip them.
 | 固定部分输入 + 暴力剩余 | p^k 搜索代价，k 不够大 | 只是常数级加速 |
 | Inverse Permutation Newton | 只优化 S[1..3], E0=SEED 约束无法满足 | 数值实验不收敛 |
 | 纯 Python Gröbner/Z3 | SymPy 太慢，Z3 不适用于 GF(p) 上的多项式系统 | 需要 SageMath/Magma |
+| **M=I identity MDS** | 🛑 `verify_mds_matrix(I)` = False（A1–A4 全部失败）。官方 `verify_collision_solution` 第 148 行拒绝。位置独立 = 不安全的 MDS — 永远不要使用 | 即使找到了数学上有效的碰撞，官方验证器也会拒绝 |
 
 ## 9. ✅ Active Strategies — TRY THESE
+
+> **🛑 M=I (identity MDS) 已关闭。** 不要使用 M=I。`verify_mds_matrix(I)` = False，
+> 官方验证器第 148 行在检查碰撞之前先拒绝。详见 §8 Dead Ends 和 §3 规则 1。
+> 选择通过验证的 MDS（Cauchy / companion / Fibonacci / Vandermonde）。
 
 ### C: Gröbner Basis (SageMath) ← **首选**
 - 构建多项式方程组 → 计算 lex Gröbner 基 → 提取单变量多项式 → 在 𝔽_p 求根
@@ -385,11 +447,16 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 ```
 ~/.aman/skills/prize-game/poseidon/scripts/
 ├── run.py                  ← CLI (benchmark)
+├── VERSIONS.md             ← 版本注册表（每个版本的验证状态）
 ├── framework/              ← ❌ 禁止修改
 │   ├── field.py            ← 𝔽_p 运算
 │   ├── grain_lfsr.py       ← Grain LFSR 轮常数
 │   ├── mds.py              ← Cauchy / Plonky3 MDS
 │   └── poseidon.py         ← Poseidon 哈希 + 碰撞检测
+│
+├── poseidon-tools/         ← 官方验证器 (vendored)
+│   ├── poseidon/mds_matrix.py    ← verify_mds_matrix()
+│   └── bounties/partial_collision_verifier.py ← verify_collision_solution()
 │
 ├── attacks/
 │   ├── brute.py            ← ❌ 已出局，保留参考

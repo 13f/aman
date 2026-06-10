@@ -148,7 +148,7 @@ python3 run.py benchmark
 
 # 运行某个版本的攻击
 python3 attacks/v1/attack.py       # Floyd rho (已完成)
-python3 attacks/v2/attack.py       # 新策略
+# python3 attacks/vN/attack.py     ← AI 创建新策略后运行
 ```
 
 ```python

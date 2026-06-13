@@ -261,6 +261,29 @@ pub fn run() {
                     let _ = window.set_icon(icon);
                 }
 
+            // ── Native window vibrancy (frosted glass) ────────────
+            // macOS: NSVisualEffectView with Active state so the
+            //   blur intensity does NOT change when the window loses
+            //   focus (fixes the "mouse away → transparent" issue).
+            // Windows: apply_blur for a dark frosted-glass effect.
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+                let _ = apply_vibrancy(
+                    &window,
+                    NSVisualEffectMaterial::Sidebar,
+                    Some(NSVisualEffectState::Active),
+                    None,
+                );
+            }
+
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                use window_vibrancy::apply_blur;
+                // Dark tint matching the --bg colour: rgba(11,13,19,0.55)
+                let _ = apply_blur(&window, Some((11, 13, 19, 140)));
+            }
+
             // Build menu bar (i18n-aware via app state locale).
             let handle = app.handle();
             let t = app.state::<AppState>().locale;

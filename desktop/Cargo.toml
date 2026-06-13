@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 tauri = { version = "2", default-features = false, features = ["macos-private-api", "devtools", "wry", "image-png"] }
 tauri-plugin-dialog = "2"
+window-vibrancy = "0.7"
 rfd = "0.16"
 serde.workspace = true
 serde_json.workspace = true

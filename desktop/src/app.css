@@ -6,11 +6,11 @@
   --glass-blur: 28px;
   --glass-blur-strong: 44px;
 
-  --bg: rgba(11, 13, 19, 0.55);
-  --bg-elevated: rgba(17, 20, 28, 0.64);
-  --bg-card: rgba(22, 25, 35, 0.72);
-  --bg-hover: rgba(30, 33, 48, 0.78);
-  --bg-active: rgba(38, 42, 58, 0.86);
+  --bg: rgba(11, 13, 19, 0.38);
+  --bg-elevated: rgba(17, 20, 28, 0.48);
+  --bg-card: rgba(22, 25, 35, 0.58);
+  --bg-hover: rgba(30, 33, 48, 0.65);
+  --bg-active: rgba(38, 42, 58, 0.76);
 
   /* Text hierarchy */
   --fg: #e4e6f0;
@@ -76,7 +76,7 @@
   --space-3xl: 28px;
 
   /* Derived tokens */
-  --bg-input: rgba(11, 13, 19, 0.40);
+  --bg-input: rgba(11, 13, 19, 0.28);
 
   /* Global */
   font-family: var(--font-ui);
@@ -91,12 +91,12 @@
 /* ── Light glass palette (follows OS preference) ──────────────── */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: rgba(246, 246, 248, 0.58);
-    --bg-elevated: rgba(255, 255, 255, 0.66);
-    --bg-card: rgba(255, 255, 255, 0.74);
-    --bg-hover: rgba(240, 240, 243, 0.80);
-    --bg-active: rgba(232, 232, 237, 0.88);
-    --bg-input: rgba(246, 246, 248, 0.42);
+    --bg: rgba(246, 246, 248, 0.42);
+    --bg-elevated: rgba(255, 255, 255, 0.52);
+    --bg-card: rgba(255, 255, 255, 0.60);
+    --bg-hover: rgba(240, 240, 243, 0.68);
+    --bg-active: rgba(232, 232, 237, 0.78);
+    --bg-input: rgba(246, 246, 248, 0.30);
 
     --fg: #1c1c24;
     --fg-secondary: #5c5c6e;
@@ -149,12 +149,10 @@ body {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  /* Frosted glass across the entire window, including the
-     title bar area where traffic lights float. Sidebar and
-     main stack their own glass on top for layered depth. */
-  background: var(--bg-elevated);
-  backdrop-filter: blur(var(--glass-blur-strong));
-  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  /* Native NSVisualEffectView handles the base frosted glass.
+     Transparent here lets the vibrancy material show through;
+     sidebar/main/cards stack their own glass on top for depth. */
+  background: transparent;
   padding-top: 32px;
 }
 

@@ -1,11 +1,16 @@
 /* ── Design Tokens ───────────────────────────────────────────── */
 :root {
-  /* Surface hierarchy */
-  --bg: #0b0d13;
-  --bg-elevated: #11141c;
-  --bg-card: #161923;
-  --bg-hover: #1e2130;
-  --bg-active: #262a3a;
+  /* ── Frosted glass surface hierarchy ──
+   * High-opacity tint + strong blur. Desktop light passes through
+   * but shapes and content behind the window are not readable. */
+  --glass-blur: 28px;
+  --glass-blur-strong: 44px;
+
+  --bg: rgba(11, 13, 19, 0.55);
+  --bg-elevated: rgba(17, 20, 28, 0.64);
+  --bg-card: rgba(22, 25, 35, 0.72);
+  --bg-hover: rgba(30, 33, 48, 0.78);
+  --bg-active: rgba(38, 42, 58, 0.86);
 
   /* Text hierarchy */
   --fg: #e4e6f0;
@@ -25,9 +30,9 @@
   --red: #e55555;
   --red-muted: rgba(229, 85, 85, 0.12);
 
-  /* Borders */
-  --border: #1e2130;
-  --border-strong: #2e3142;
+  /* Borders — subtle light-on-glass for depth */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
 
   /* Radius scale */
   --radius-sm: 4px;
@@ -35,11 +40,11 @@
   --radius-lg: 8px;
   --radius-xl: 12px;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-  --shadow-xl: 0 12px 40px rgba(0, 0, 0, 0.6);
+  /* Shadows — lighter, depth comes from blur + border */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.18);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.45);
 
   /* Typography */
   --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -71,26 +76,27 @@
   --space-3xl: 28px;
 
   /* Derived tokens */
-  --bg-input: var(--bg);
+  --bg-input: rgba(11, 13, 19, 0.40);
 
   /* Global */
   font-family: var(--font-ui);
   font-size: var(--font-size-md);
   line-height: var(--line-height-base);
   color: var(--fg);
-  background: var(--bg);
+  background: transparent;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Light palette (follows OS preference) ────────────────────── */
+/* ── Light glass palette (follows OS preference) ──────────────── */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #f6f6f8;
-    --bg-elevated: #ffffff;
-    --bg-card: #ffffff;
-    --bg-hover: #f0f0f3;
-    --bg-active: #e8e8ed;
+    --bg: rgba(246, 246, 248, 0.58);
+    --bg-elevated: rgba(255, 255, 255, 0.66);
+    --bg-card: rgba(255, 255, 255, 0.74);
+    --bg-hover: rgba(240, 240, 243, 0.80);
+    --bg-active: rgba(232, 232, 237, 0.88);
+    --bg-input: rgba(246, 246, 248, 0.42);
 
     --fg: #1c1c24;
     --fg-secondary: #5c5c6e;
@@ -107,13 +113,13 @@
     --red: #d14343;
     --red-muted: rgba(209, 67, 67, 0.1);
 
-    --border: #e4e4ea;
-    --border-strong: #d0d0d8;
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.14);
 
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.07);
-    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.09);
-    --shadow-xl: 0 12px 40px rgba(0, 0, 0, 0.12);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.09);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.13);
+    --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.18);
   }
 }
 
@@ -135,7 +141,7 @@
 
 body {
   min-height: 100vh;
-  background: var(--bg);
+  background: transparent;
   color: var(--fg);
 }
 
@@ -143,6 +149,23 @@ body {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  /* Frosted glass across the entire window, including the
+     title bar area where traffic lights float. Sidebar and
+     main stack their own glass on top for layered depth. */
+  background: var(--bg-elevated);
+  backdrop-filter: blur(var(--glass-blur-strong));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  padding-top: 32px;
+}
+
+/* ── Titlebar drag strip ────────────────────────────────────── */
+.titlebar-drag-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 32px;
+  z-index: 100;
 }
 
 /* ── Focus visible ──────────────────────────────────────────── */
@@ -210,6 +233,8 @@ body {
 .sidebar {
   width: 220px;
   background: var(--bg-elevated);
+  backdrop-filter: blur(var(--glass-blur-strong));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -448,11 +473,15 @@ body {
   padding: 24px 28px;
   overflow-y: auto;
   background: var(--bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 
 /* ── Cards ──────────────────────────────────────────────────── */
 .card {
   background: var(--bg-card);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 20px;
@@ -575,6 +604,8 @@ input[type="text"],
 input:not([type]) {
   width: 100%;
   background: var(--bg-input);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 10px 12px;
@@ -601,6 +632,8 @@ input:focus {
   bottom: 20px;
   right: 20px;
   background: var(--bg-card);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   padding: 12px 20px;
@@ -650,6 +683,8 @@ input:focus {
 }
 .modal-content {
   background: var(--bg-card);
+  backdrop-filter: blur(var(--glass-blur-strong));
+  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   padding: var(--space-xl);
@@ -722,6 +757,8 @@ input:focus {
   box-shadow: var(--shadow-lg);
   animation: slideInRight 0.2s ease-out;
   line-height: var(--line-height-md);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
 }
 .toast-info {
   background: var(--accent-muted);

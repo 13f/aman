@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import * as i18n from "./lib/i18n.svelte";
   import Home from "./pages/Home.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
@@ -160,6 +161,10 @@
     }
   }
 
+  function startWindowDrag() {
+    getCurrentWindow().startDragging();
+  }
+
   function navigateTo(pageId: string) {
     currentPage = pageId;
     // Force iframe recreation when navigating to team or plugin pages.
@@ -295,7 +300,15 @@
   });
 </script>
 
-<nav class="sidebar" class:compact={sidebarCompact}>
+<!-- Transparent drag strip at the very top of the window.
+     With titleBarStyle: Overlay, WebView content fills the entire
+     window including the title bar area. This strip catches
+     mousedown events in the title bar zone and initiates a native
+     window drag via startDragging(). Traffic-light buttons are
+     rendered by the OS above the WebView, so they still work. -->
+<div class="titlebar-drag-strip" onmousedown={startWindowDrag}></div>
+
+<nav class="sidebar" class:compact={sidebarCompact} onmousedown={startWindowDrag}>
   {#if sidebarCompact}
     <!-- Compact mode: flat icon-only items -->
     {#each sidebarGroups as group}

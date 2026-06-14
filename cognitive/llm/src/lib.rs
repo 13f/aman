@@ -125,8 +125,13 @@ impl LlmCognitiveEngine {
     }
 
     /// Emit a cognitive event to all registered listeners.
-    #[allow(dead_code)]
-    fn emit(&self, event: CognitiveEvent) {
+    ///
+    /// Exposed as `pub` so that streaming integrations (and the contract
+    /// tests in `tests/cognitive_engine_contract.rs`) can drive the
+    /// listener registry directly. Production callers should treat this
+    /// as a building block for a future streaming PR — `process()` does
+    /// not yet invoke `emit` automatically.
+    pub fn emit(&self, event: CognitiveEvent) {
         if let Ok(listeners) = self.listeners.lock() {
             for listener in listeners.iter() {
                 listener.on_cognitive_event(event.clone());

@@ -54,7 +54,31 @@ impl FakeEventBus {
 
     /// Return all events published so far.
     pub fn published_events(&self) -> Vec<Event> {
-        self.published.lock().unwrap().clone()
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
+    /// Return the number of events published so far. Cheap — no clone.
+    pub fn event_count(&self) -> usize {
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len()
+    }
+
+    /// Return `true` if at least one published event matches the given
+    /// predicate. Short-circuits on the first match.
+    pub fn has_event<F>(&self, f: F) -> bool
+    where
+        F: Fn(&Event) -> bool,
+    {
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .any(f)
     }
 
     /// Return events matching a predicate.
@@ -64,7 +88,7 @@ impl FakeEventBus {
     {
         self.published
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .iter()
             .filter(|e| pred(e))
             .cloned()
@@ -73,13 +97,23 @@ impl FakeEventBus {
 
     /// Clear all recorded events.
     pub fn clear_events(&self) {
-        self.published.lock().unwrap().clear();
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         self.queue_depth.store(0, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Inject an event directly (for test setup).
-    pub fn inject_event(&self, event: Event) {
-        self.published.lock().unwrap().push(event);
+    /// Append an event to the recorded history **without** dispatching it
+    /// to subscribers. Use this when a test wants to seed the recorded
+    /// event list (e.g. to assert that a downstream handler saw an event
+    /// that was published out-of-band, or to set up fixtures). Subscribers
+    /// will *not* see the event; use `publish` for that.
+    pub fn record_event_in_history_only(&self, event: Event) {
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(event);
     }
 
     fn compute_backpressure(&self, depth: usize) -> BackpressureLevel {
@@ -99,7 +133,10 @@ impl FakeEventBus {
 impl EventBus for FakeEventBus {
     async fn publish(&self, event: Event) -> AmanResult<()> {
         let _depth = self.queue_depth.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as usize + 1;
-        self.published.lock().unwrap().push(event.clone());
+        self.published
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(event.clone());
         self.inner.publish(event).await
     }
 
@@ -144,7 +181,6 @@ impl EventBus for FakeEventBus {
 mod tests {
     use super::*;
     use kernel::event::EventType;
-    use uuid::Uuid;
 
     fn make_event(event_type: &str) -> Event {
         Event::new(

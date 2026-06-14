@@ -25,6 +25,26 @@ impl DeterministicClock {
         self.elapsed = Duration::ZERO;
     }
 
+    /// Advance the clock to the given absolute target time. The clock's
+    /// elapsed value becomes `target - UNIX_EPOCH`; if `target` is earlier
+    /// than the current simulated time this is a no-op (does not panic).
+    /// Useful for tests that want to jump to a known wall-clock instant
+    /// without tracking the delta themselves.
+    pub fn advance_to(&mut self, target: SystemTime) {
+        if let Ok(d) = target.duration_since(UNIX_EPOCH)
+            && d > self.elapsed
+        {
+            self.elapsed = d;
+        }
+    }
+
+    /// Convenience constructor: a clock whose `now()` returns
+    /// `UNIX_EPOCH + secs`. Equivalent to `new()` followed by
+    /// `tick(Duration::from_secs(secs))` but is `&self` and chainable.
+    pub fn at(&self, secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
     /// Return the simulated wall clock time.
     /// Always returns a time relative to UNIX_EPOCH so callers
     /// can use it anywhere `SystemTime` is expected.

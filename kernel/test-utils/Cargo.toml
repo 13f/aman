@@ -15,6 +15,9 @@ kernel = { path = "../core", version = "0.1.0" }
 event-bus = { path = "../event-bus", version = "0.1.0" }
 serde_json.workspace = true
 uuid = { version = "1.18.1", features = ["v7"] }
+# `time` is required for the async `MockLLMProvider::simulate_delay`.
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
+# `rt` and `macros` are needed by `#[tokio::test]` in the inline test mods.
 tokio = { version = "1", features = ["rt", "macros"] }

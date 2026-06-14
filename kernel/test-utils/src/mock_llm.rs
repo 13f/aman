@@ -61,7 +61,8 @@ pub struct MockCallConfig {
 pub struct MockCallRecord {
     pub prompt: String,
     pub messages: Vec<LlmMessage>,
-    pub timestamp_ms: u64,
+    /// Monotonically increasing call sequence number (0-indexed).
+    pub seq: u64,
 }
 
 /// A mock LLM provider for testing. Supports predefined responses,
@@ -73,7 +74,7 @@ pub struct MockLLMProvider {
     call_count: AtomicUsize,
     error_on_call: AtomicUsize,
     delay_ms: AtomicU64,
-    tick: AtomicUsize,
+    call_seq: AtomicUsize,
 }
 
 impl MockLLMProvider {
@@ -85,7 +86,7 @@ impl MockLLMProvider {
             call_count: AtomicUsize::new(0),
             error_on_call: AtomicUsize::new(0),
             delay_ms: AtomicU64::new(0),
-            tick: AtomicUsize::new(0),
+            call_seq: AtomicUsize::new(0),
         }
     }
 
@@ -98,31 +99,54 @@ impl MockLLMProvider {
     }
 
     pub fn set_call_configs(&self, configs: Vec<MockCallConfig>) {
-        *self.call_configs.lock().unwrap() = configs;
+        *self.call_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = configs;
     }
 
     pub fn call_history(&self) -> Vec<MockCallRecord> {
-        self.call_history.lock().unwrap().clone()
+        self.call_history
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub fn call_count(&self) -> usize {
         self.call_count.load(Ordering::SeqCst)
     }
 
-    fn simulate_delay(&self) {
+    /// Clear recorded call history, the call counter, and the sequence
+    /// counter. Useful when a single `MockLLMProvider` is shared across
+    /// multiple sub-tests or test phases.
+    pub fn reset_history(&self) {
+        self.call_history
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        self.call_count.store(0, Ordering::SeqCst);
+        self.call_seq.store(0, Ordering::SeqCst);
+    }
+
+    /// Asynchronously simulate a per-call delay. Replaces the previous
+    /// `std::thread::sleep` implementation, which blocked the tokio
+    /// worker thread and broke any test using `#[tokio::test]`.
+    async fn simulate_delay(&self) {
         let ms = self.delay_ms.load(Ordering::SeqCst);
         if ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(ms));
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
         }
     }
 
     fn record_call(&self, prompt: &str, messages: Vec<LlmMessage>) {
-        let tick = self.tick.fetch_add(1, Ordering::SeqCst);
-        self.call_history.lock().unwrap().push(MockCallRecord {
-            prompt: prompt.to_owned(),
-            messages,
-            timestamp_ms: tick as u64,
-        });
+        let seq = self.call_seq.fetch_add(1, Ordering::SeqCst);
+        self.call_history
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(MockCallRecord {
+                prompt: prompt.to_owned(),
+                messages,
+                seq: seq as u64,
+            });
         self.call_count.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -154,7 +178,7 @@ impl MockLLMProvider {
 #[async_trait]
 impl LlmProvider for MockLLMProvider {
     async fn complete(&self, prompt: &str) -> LlmResult {
-        self.simulate_delay();
+        self.simulate_delay().await;
         let idx = self.call_count.load(Ordering::SeqCst);
         let should_err = self.error_on_call.load(Ordering::SeqCst) > 0
             && idx + 1 == self.error_on_call.load(Ordering::SeqCst);
@@ -169,7 +193,9 @@ impl LlmProvider for MockLLMProvider {
         }
 
         let cfg = {
-            let configs = self.call_configs.lock().unwrap();
+            let configs = self.call_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             configs.get(idx).cloned()
         };
 
@@ -178,7 +204,7 @@ impl LlmProvider for MockLLMProvider {
     }
 
     async fn chat(&self, messages: &[LlmMessage], tools: &[LlmToolDef]) -> LlmResult {
-        self.simulate_delay();
+        self.simulate_delay().await;
         let idx = self.call_count.load(Ordering::SeqCst);
         let should_err = self.error_on_call.load(Ordering::SeqCst) > 0
             && idx + 1 == self.error_on_call.load(Ordering::SeqCst);
@@ -209,7 +235,9 @@ impl LlmProvider for MockLLMProvider {
         }
 
         let cfg = {
-            let configs = self.call_configs.lock().unwrap();
+            let configs = self.call_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             configs.get(idx).cloned()
         };
 

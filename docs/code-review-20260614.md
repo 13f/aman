@@ -329,11 +329,27 @@ pub enum Kind {
 
 **建议**: 用 `Iterator::skip()` 替代下标魔法。
 
+**✅ 已修复 (2026-06-14)**:
+
+- `config_cmd` 重写为 `args.split_first()` + `rest.iter()` 模式 — `sub` 通过 `split_first().ok_or(2)?` 取出，剩下用 `rest_iter.next()` 走 flag/value 配对。
+- 行为对支持的调用（`aman config show --config foo.yaml`）完全不变；off-by-one 风险点消除。如果将来要加 `--help` 这类「subcommand 前后都能用」的 flag，不会再因为这个魔数翻车。
+- 拒绝未知 flag 的行为保留（`_ => return Err(2)` 不变）— 纯重构，零行为变化。
+
+**验证**：`cargo build -p cli` 干净；`cargo test -p cli` lib 2/2 通过。
+
 ### 19. 死代码/不可达逻辑
 
 - `plugin/src/lib.rs:1853` `manifest.isolation.unwrap_or(...)` 永远不触发（前面已经 `continue`）
 - `plugin/src/lib.rs:1380-1381` 三个连续 `loaded.state = ...` 只最后一个有效
 - `cli/main.rs:115-116` `let _daemon: bool = false;` / `let _log_level: Option<String> = None;` 写而不读
+
+**✅ 已修复 (2026-06-14)** — 三个站点，结论各自不同：
+
+- **`plugin/src/lib.rs:1853` `manifest.isolation.unwrap_or(...)`**：**没动**。Doc 的「永远不触发」判断与当前代码不符。`PluginManifest::isolation` 是 `Option<PluginIsolationMode>` 且 `#[serde(default)]` — 没写 `isolation:` 的 YAML 反序列化成 `None`，`unwrap_or(InProcess)` 正是过滤掉 `None` + `Some(InProcess)` 的关键（只剩 `Some(Subprocess)` 进 `if isolation != Subprocess { continue; }`）。load-bearing，没碰。
+- **`plugin/src/lib.rs:1380-1381` 三个连续 `loaded.state = ...`**：**已清理**。struct 字面量直接用 `state: PluginLifecycleState::Running`，删掉两个中间赋值（`Loaded` / `Enabled`）和随附的 `let mut` → `let`。语义零变化，删 4 行死代码。
+- **`cli/main.rs:115-116` `_daemon` / `_log_level` 写而不读**：**已清理**。同时删 `--daemon` / `--log-level` 两个 parse arm 和 `print_usage` 里对应的两个 entry。理由：原代码是「广告里说支持、解析后悄悄扔掉」— 比「不支持」更糟（用户以为生效）。删后用户传这两个 flag 会得到标准 `Err 2`（unknown argument），行为诚实。**breaking CLI change** 但只影响「以为这两个 flag 能用」的用户 — 真要用时再加回 + 配 wiring。
+
+**验证**：`cargo build -p cli -p plugin` 干净；`cargo test -p cli` lib 2/2 通过；plugin lib 编译干净（pre-existing 的 `plugin (lib test)` 缺 `aman_data_dir` 字段和 cli 集成测试的 `env!` macro 用法问题与本次改动无关）。
 
 ---
 

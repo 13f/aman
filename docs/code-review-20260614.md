@@ -188,11 +188,29 @@ fn kill_process(...) {
 2. `cognitive/engine` + `cognitive/llm` - trait 抽象的契约必须可被测试
 3. messaging 插件 - 至少加 happy-path 集成测试
 
+**✅ 部分修复 (2026-06-14)**:
+
+- **CognitiveEngine trait 合约测试落地**：`cognitive/llm/tests/cognitive_engine_contract.rs` 新增 7 个合约测试 + 1 个 stub 自测（共 8 个测试），用 inline `StubLlmProvider` 实现 `cognitive_llm::provider::LlmProvider`。覆盖 `process` 的空观测短路、provider 错误的 `EngineError` 包装、text/tool-call 决策、`subscribe`/`unsubscribe` 的 `Arc::as_ptr` 身份比较、`reset_session` 幂等性。同时把 `LlmCognitiveEngine::emit` 从 private `#[allow(dead_code)]` 升为 `pub fn`，让外部 tests/ 能直接驱动 listener 注册表（生产代码路径不变 — `process` 仍不调用 `emit`，那是后续 streaming PR 的工作）。
+- **范围**：`agent_runtime.rs` / `http.rs` / `agent_harness.rs` / 5 个 messaging 插件都仍未加测试 — 这条 P1 只完成 1/3（cognitive 部分），整体"测试覆盖率"仍是结构性问题。
+- **Stub 选型说明**：inline 而不是 `test_utils::MockLLMProvider` 复用，因为 `test_utils::MockLLMProvider` 实现的是 kernel-style trait（`complete`/`chat`），而 `LlmCognitiveEngine` 需要 `cognitive_llm::provider::LlmProvider`（`chat_completion(LlmChatRequest, Option<callback>)`）— 两者是 P0-1 已识别的并行重复 trait。桥接会引入新 kernel→cognitive-llm 边，**反转 P0-1 刚建立的解耦**。
+
+**验证**：`cargo test -p cognitive-llm --test cognitive_engine_contract` 8/8 通过；`cargo build -p cognitive-llm --tests` 干净。
+
 ### 7. `test-utils` crate 是死代码
 
 `kernel/test-utils/` 已声明并提供 `DeterministicClock` / `MockLLMProvider` / `FakeEventBus`，但全工作区**零处导入使用**。
 
 **建议**: 让 `event-bus`、`dispatcher`、`skill`、`idle`、`gateway/runtime/*` 通过 dev-dependency 引入 `test-utils`，用 `DeterministicClock` 替换测试中的 `tokio::time::sleep`。
+
+**✅ 部分修复 (2026-06-14)**:
+
+- **卫生修正**（同时把 test-utils 拉齐到 P0 刚建立的约定）：fake_event_bus.rs 的 5 处 `lock().unwrap()` + mock_llm.rs 的 4 处 `lock().unwrap()` 全部换成 `.lock().unwrap_or_else(|e| e.into_inner())`；`MockLLMProvider::simulate_delay` 从 sync 升 `async fn`，`std::thread::sleep` → `tokio::time::sleep(...).await`（与 P0 修的 `agent_harness::kill_process` 同一反模式）；`tick: AtomicUsize` 改名 `call_seq`（不是 wall-clock ts）；`MockCallRecord.timestamp_ms` 改名 `seq`。`Cargo.toml` 加 `tokio` 的 `time` feature 到 `[dependencies]`（不是 dev）— 让下游 consumer 拿到的是 async-clean 的 mock。
+- **API 易用性补全**：`DeterministicClock::advance_to(target)` + `at(secs)`；`FakeEventBus::event_count()` + `has_event(predicate)` + `inject_event` 改名 `record_event_in_history_only`（明确它不发到 subscribers）；`MockLLMProvider::reset_history()`；crate-level `//!` 文档带 doctest 展示典型用法。
+- **第一批消费者上线**：`kernel/event-bus/Cargo.toml` 和 `kernel/dispatcher/Cargo.toml` 加 `test-utils` dev-dep；`kernel/dispatcher/tests/dispatcher_event_bus_integration.rs` 新增 2 个集成测试（dispatcher→bus 发布路径 + FakeEventBus 背压 smoke）。event-bus 自身没新增测试 — 现有 44 测试已用 `InMemoryBus`，50ms 协调 sleep 是 load-bearing 的（防止 `notify_one` 在 consumer 到达 await 之前触发），不动。
+- **未做**：`skill` / `idle` / `gateway/runtime/*` 仍没接 test-utils。`idle` 被 `DeterministicClock` 不会和 `tokio::time::pause()` 集成这件事卡住（8 处 `tokio::time::sleep` 在 `incubation.rs`），需要先引入 `Clock` trait 或全工作区切到 paused-runtime 测试 harness — 是后续工作。
+- **清理**：`kernel/plugins/llm-provider-openai/Cargo.toml` 删除一条从未 `use` 的 `test-utils` dev-dep（不是这次工作的必须项，但既然在 `git grep` 看到了就一起清掉）。
+
+**验证**：`cargo test -p test-utils` 13 unit + 1 doctest 全过；`cargo test -p event-bus`（15）/ `cargo test -p dispatcher`（46 + 2 新增）全过；`cargo clippy -p test-utils --all-targets -- -D warnings` 干净。
 
 ### 8. `desktop/src/commands.rs` 国际化 bug
 

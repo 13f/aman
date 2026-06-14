@@ -284,6 +284,20 @@ pub enum Kind {
 
 **建议**: 统一一个 `ApiError` enum + `IntoResponse` 实现。
 
+**✅ 已修复 (2026-06-14)**:
+
+- 新增 `ApiError` enum（`BadRequest` / `NotFound` / `Conflict` / `Forbidden` / `Unprocessable` / `Internal`，每个带 `String` message），带 6 个 constructor helper（`bad_request` / `not_found` / `conflict` / `forbidden` / `unprocessable` / `internal`，接受 `impl Into<String>`）。
+- 实现 `From<kernel::Error>`，保留旧 `error_response` 的状态码映射（`NotFound{name}` → 404；`AlreadyExists` / `InvalidStateTransition` → 409；`PermissionDenied` → 403；`ConfigInvalid` → 400；`Unrecoverable` → 422；其它 → 500）。注意 `kernel::Error::NotFound` 字段是 `name`（不是 `message`），From impl 映射成 `"{name} not found"` 以让响应体可读。
+- 实现 `IntoResponse`，产出 `(status, Json({"error": msg}))` — 统一用 `error` 字段（消除了旧 `ErrorBody` 的 `message` 字段名和 `json!` 的 `error` 字段名分歧）。
+- 迁移 ~95 个站点：
+  - `error_response(e)` (37) → `ApiError::from(e).into_response()`
+  - `(StatusCode::XXX, Json(ErrorBody{message: Y}))` (12) → `ApiError::xxx(Y).into_response()`
+  - `(StatusCode::XXX, Json(json!({"error": Y})))` (43, 含 8 个在 handler 签名里) → `ApiError::xxx(Y).into_response()`
+- 4 个 `mcp_*` handler 的返回类型从 `Result<Json<T>, (StatusCode, Json<Value>)>` 改为 `Result<Json<T>, ApiError>` — 这是 axum 原生支持的形状，`?` 运算符直接透过。
+- 删除 `error_response` 函数、`ErrorBody` struct、`From<kernel::Error> for ErrorBody` impl。
+
+**净改动**：-233 行（+176, -409）。`cargo build -p gateway` 干净；`cargo test -p gateway --lib` 74/74 通过。
+
 ### 15. `cli/main.rs` 16 个 `*_cmd` 重复模式
 
 每个 `*_cmd` 函数结构几乎一致（"build request → send → check status → print body"），HTTP 15+ 份、gRPC 25+ 份。

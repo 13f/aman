@@ -39,6 +39,15 @@ use super::AgentRegistry;
 /// Default maximum ReAct loop iterations.
 const DEFAULT_MAX_REACT_TURNS: u32 = 64;
 
+/// Bounded capacity for the per-turn LLM stream forwarder channel.
+///
+/// Caps memory at 128 in-flight `StreamEvent`s per turn. If a slow
+/// consumer (e.g. a stalled event-bus subscriber) ever lets the
+/// forwarder fall behind, the producer (the LLM streaming callback)
+/// drops the overflow chunk with a `tracing::warn!` rather than
+/// growing the buffer without bound.
+const STREAM_FORWARDER_CAP: usize = 128;
+
 /// Default agent router — selects the first enabled agent.
 pub struct FirstEnabledAgentRouter;
 
@@ -2562,15 +2571,44 @@ impl AgentHarness {
     /// draining the channel.  Callers MUST await this handle after clearing
     /// [`ReActContext::stream_cb`] and BEFORE publishing `reply_ready` or `idle`,
     /// so that `reply_stream_done` is guaranteed to appear first in the event log.
+    ///
+    /// # Bounded buffer
+    ///
+    /// The channel is bounded to [`STREAM_FORWARDER_CAP`] entries. If the
+    /// forwarder task falls behind the LLM stream producer, the callback
+    /// drops the overflow chunk and logs a `tracing::warn!` so the loss
+    /// is visible in diagnostics. This is preferable to an unbounded
+    /// channel, which would let memory grow without limit if a slow
+    /// consumer (e.g. a stalled event-bus handler) ever appeared.
     fn spawn_stream_forwarder(
         &self,
         ctx: &mut ReActContext,
     ) -> tokio::task::JoinHandle<()> {
-        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+        // Capture agent/session ids for the producer-side log path before
+        // they are moved into the spawn block below.
+        let aid_for_log = ctx.agent_id.clone();
+        let sid_for_log = ctx.session_id.clone();
+        let (stream_tx, mut stream_rx) =
+            tokio::sync::mpsc::channel::<StreamEvent>(STREAM_FORWARDER_CAP);
         {
             let tx = stream_tx.clone();
             ctx.stream_cb = Some(Arc::new(move |event| {
-                let _ = tx.send(event);
+                use tokio::sync::mpsc::error::TrySendError;
+                match tx.try_send(event) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        tracing::warn!(
+                            agent = %aid_for_log,
+                            session = %sid_for_log,
+                            cap = STREAM_FORWARDER_CAP,
+                            "stream forwarder buffer full, dropping chunk"
+                        );
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        // Forwarder task has ended (turn complete or shutdown);
+                        // expected, no log needed.
+                    }
+                }
             }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
         }
         // Publish streaming events to the global bus so that cross-cutting

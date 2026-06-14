@@ -682,7 +682,22 @@ impl WorkflowEngine {
             .is_some();
         if existed {
             // Best-effort removal from the persistent store.
-            let _ = self.store.delete(instance_id);
+            // P3-22c: the previous `let _ =` silently dropped the
+            // result; a persistent-store failure here would leave
+            // the in-memory state and the on-disk state out of sync
+            // (the workflow instance is gone from the engine but
+            // still appears in the durable record). Surface the
+            // failure via tracing::warn! so the operator can see
+            // it and reconcile manually if needed.
+            if let Err(e) = self.store.delete(instance_id) {
+                tracing::warn!(
+                    instance_id = %instance_id,
+                    error = %e,
+                    "failed to delete workflow instance from persistent \
+                     store; in-memory state is consistent but the durable \
+                     record is stale"
+                );
+            }
         }
         Ok(existed)
     }

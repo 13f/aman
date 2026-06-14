@@ -112,8 +112,6 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
     let mut bind: SocketAddr = "127.0.0.1:8080".parse().expect("default bind");
     let mut api_token: Option<String> = std::env::var("AMAN_API_TOKEN").ok();
     let mut soul_path: Option<PathBuf> = None;
-    let mut _daemon: bool = false;
-    let mut _log_level: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -126,15 +124,6 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
             "--soul" => {
                 let path = args.get(i + 1).ok_or(2)?;
                 soul_path = Some(PathBuf::from(path));
-                i += 2;
-            }
-            "--daemon" => {
-                _daemon = true;
-                i += 1;
-            }
-            "--log-level" => {
-                let raw = args.get(i + 1).ok_or(2)?;
-                _log_level = Some(raw.to_owned());
                 i += 2;
             }
             "--bind" => {
@@ -2065,27 +2054,32 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
 }
 
 async fn config_cmd(args: &[String]) -> Result<(), i32> {
-    let Some(sub) = args.first().map(String::as_str) else {
-        return Err(2);
-    };
+    // Iterator-based parsing: the first entry is the inner subcommand
+    // (`show` | `validate` | `set`); the rest are the flag/value pairs.
+    // Using `split_first` + a `rest_iter` removes the `let mut i = 1;`
+    // index magic that the code review flagged as asymmetric vs
+    // `run_cmd` (which uses `i = 0`). The asymmetry was harmless — both
+    // functions receive `&args[1..]` from the dispatcher, but in
+    // `config_cmd` the first slot is the subcommand while in `run_cmd`
+    // the first slot is already a flag — but the magic-numbered offset
+    // is a bug surface waiting to happen.
+    let (sub, rest) = args.split_first().ok_or(2)?;
+    let sub = sub.as_str();
     let mut config_path: Option<PathBuf> = None;
     let mut runtime_override: Option<PathBuf> = None;
     let mut patch_json: Option<String> = None;
 
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
+    let mut rest_iter = rest.iter();
+    while let Some(arg) = rest_iter.next() {
+        match arg.as_str() {
             "--config" => {
-                config_path = Some(PathBuf::from(args.get(i + 1).ok_or(2)?));
-                i += 2;
+                config_path = Some(PathBuf::from(rest_iter.next().ok_or(2)?));
             }
             "--override" => {
-                runtime_override = Some(PathBuf::from(args.get(i + 1).ok_or(2)?));
-                i += 2;
+                runtime_override = Some(PathBuf::from(rest_iter.next().ok_or(2)?));
             }
             "--json" => {
-                patch_json = Some(args.get(i + 1).ok_or(2)?.to_owned());
-                i += 2;
+                patch_json = Some(rest_iter.next().ok_or(2)?.to_owned());
             }
             _ => return Err(2),
         }
@@ -2139,7 +2133,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 
 fn print_usage() {
     safe_eprintln!(
-        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--daemon] [--log-level <level>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
+        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }
 

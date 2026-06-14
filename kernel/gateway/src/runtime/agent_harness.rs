@@ -299,6 +299,26 @@ impl ToolExecutor {
         }
     }
 
+    /// Like [`Self::publish_to_agent_bus`] but logs the error via
+    /// `tracing::warn!` and returns `()` instead of `AmanResult<()>`.
+    ///
+    /// Use this at the call sites that previously had
+    /// `let _ = self.publish_to_agent_bus(...).await;` — the
+    /// doc's "silent data-loss" smell is that an event-bus
+    /// publish failure (queue full, serialization, etc.) was
+    /// happening without any operator-visible signal. The warn
+    /// surfaces the failure in the diagnostic log without changing
+    /// the call-site type signature.
+    async fn try_publish_to_agent_bus(&self, agent_id: &str, event: Event) {
+        if let Err(e) = self.publish_to_agent_bus(agent_id, event).await {
+            tracing::warn!(
+                agent_id,
+                error = %e,
+                "publish_to_agent_bus failed; event dropped"
+            );
+        }
+    }
+
     /// Execute a tool call, publishing lifecycle events.
     pub async fn execute(
         &self,
@@ -311,8 +331,8 @@ impl ToolExecutor {
         let tool_name = call.tool_name.clone();
 
         // Publish tool:dispatched to local bus
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -326,6 +346,7 @@ impl ToolExecutor {
                     }),
                 ),
             )
+
             .await;
 
         // ── Security checks ──────────────────────────────────────────
@@ -340,8 +361,8 @@ impl ToolExecutor {
 
         // Publish security denied events to local bus.
         if let Some(reason) = hardline_blocked {
-            let _ = self
-                .publish_to_agent_bus(
+            self
+                .try_publish_to_agent_bus(
                     agent_id,
                     Event::new(
                         SOURCE_AGENT_HARNESS,
@@ -356,11 +377,12 @@ impl ToolExecutor {
                         }),
                     ),
                 )
+
                 .await;
         }
         if let Some(ref reason) = config_blocked {
-            let _ = self
-                .publish_to_agent_bus(
+            self
+                .try_publish_to_agent_bus(
                     agent_id,
                     Event::new(
                         SOURCE_AGENT_HARNESS,
@@ -375,6 +397,7 @@ impl ToolExecutor {
                         }),
                     ),
                 )
+
                 .await;
         }
 
@@ -443,8 +466,8 @@ impl ToolExecutor {
         } else {
             "tool:failed"
         };
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -460,6 +483,7 @@ impl ToolExecutor {
                     }),
                 ),
             )
+
             .await;
 
         react::ToolCallResult {
@@ -511,6 +535,26 @@ impl LlmReActEngine {
         match self.agent_registry.get_local_bus(agent_id).await {
             Some(local_bus) => local_bus.publish(event).await,
             None => self.bus.publish(event).await,
+        }
+    }
+
+    /// Like [`Self::publish_to_agent_bus`] but logs the error via
+    /// `tracing::warn!` and returns `()` instead of `AmanResult<()>`.
+    ///
+    /// Use this at the call sites that previously had
+    /// `let _ = self.publish_to_agent_bus(...).await;` — the
+    /// doc's "silent data-loss" smell is that an event-bus
+    /// publish failure (queue full, serialization, etc.) was
+    /// happening without any operator-visible signal. The warn
+    /// surfaces the failure in the diagnostic log without changing
+    /// the call-site type signature.
+    async fn try_publish_to_agent_bus(&self, agent_id: &str, event: Event) {
+        if let Err(e) = self.publish_to_agent_bus(agent_id, event).await {
+            tracing::warn!(
+                agent_id,
+                error = %e,
+                "publish_to_agent_bus failed; event dropped"
+            );
         }
     }
 
@@ -592,8 +636,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         messages: Vec<ChatMessage>,
     ) -> Result<ReActTurn, kernel::react::ReActError> {
         // Publish llm:call_started to local bus
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -605,6 +649,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                     }),
                 ),
             )
+
             .await;
 
         // Build the system prompt from soul + conversation history
@@ -663,8 +708,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         };
 
         // Publish llm:call_ended to local bus
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -677,6 +722,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                     }),
                 ),
             )
+
             .await;
 
         match result {
@@ -684,8 +730,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 if response.tool_calls.is_empty() {
                     // Publish token usage estimate to local bus
                     let estimated_tokens = (response.content.len() / 4) as u64;
-                    let _ = self
-                        .publish_to_agent_bus(
+                    self
+                        .try_publish_to_agent_bus(
                             &ctx.agent_id,
                             Event::new(
                                 SOURCE_AGENT_HARNESS,
@@ -698,6 +744,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                                 }),
                             ),
                         )
+
                         .await;
 
                     Ok(ReActTurn::Finished {
@@ -869,8 +916,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 // a more complete version to the global bus (with
                 // skill_name / background context).
                 pending_detach = Some((pid, result.id.clone()));
-                let _ = self
-                    .publish_to_agent_bus(
+                self
+                    .try_publish_to_agent_bus(
                         &ctx.agent_id,
                         Event::new(
                             SOURCE_AGENT_HARNESS,
@@ -884,6 +931,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                             }),
                         ),
                     )
+
                     .await;
                 continue;
             }
@@ -891,8 +939,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             // ── Blocking path (react_loop) ────────────────────────
 
             // Publish awaiting event so the UI knows the session is alive
-            let _ = self
-                .publish_to_agent_bus(
+            self
+                .try_publish_to_agent_bus(
                     &ctx.agent_id,
                     Event::new(
                         SOURCE_AGENT_HARNESS,
@@ -906,6 +954,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                         }),
                     ),
                 )
+
                 .await;
 
             // Get agent's local bus for the completion subscription
@@ -1066,6 +1115,26 @@ impl AgentHarness {
         match self.registry.get_local_bus(agent_id).await {
             Some(local_bus) => local_bus.publish(event).await,
             None => self.bus.publish(event).await,
+        }
+    }
+
+    /// Like [`Self::publish_to_agent_bus`] but logs the error via
+    /// `tracing::warn!` and returns `()` instead of `AmanResult<()>`.
+    ///
+    /// Use this at the call sites that previously had
+    /// `let _ = self.publish_to_agent_bus(...).await;` — the
+    /// doc's "silent data-loss" smell is that an event-bus
+    /// publish failure (queue full, serialization, etc.) was
+    /// happening without any operator-visible signal. The warn
+    /// surfaces the failure in the diagnostic log without changing
+    /// the call-site type signature.
+    async fn try_publish_to_agent_bus(&self, agent_id: &str, event: Event) {
+        if let Err(e) = self.publish_to_agent_bus(agent_id, event).await {
+            tracing::warn!(
+                agent_id,
+                error = %e,
+                "publish_to_agent_bus failed; event dropped"
+            );
         }
     }
 
@@ -1354,8 +1423,8 @@ impl AgentHarness {
 
         // 8. Execute — route to DirectAct or ReAct loop based on skill mode
         let result = if react_mode == Some(skill::ReactMode::Direct) {
-            let _ = self
-                .publish_to_agent_bus(
+            self
+                .try_publish_to_agent_bus(
                     agent_id,
                     Event::new(
                         SOURCE_AGENT_HARNESS,
@@ -1367,6 +1436,7 @@ impl AgentHarness {
                         }),
                     ),
                 )
+
                 .await;
             self.direct_act(&mut ctx, &mut token_budget, Some(&interrupt_flag))
                 .await
@@ -1540,8 +1610,8 @@ impl AgentHarness {
         if max_turns_reached {
             // Session stays active; agent stays Busy; user can /continue.
             // Publish a distinct event so the UI can show "turn limit reached".
-            let _ = self
-                .publish_to_agent_bus(
+            self
+                .try_publish_to_agent_bus(
                     agent_id,
                     Event::new(
                         SOURCE_AGENT_HARNESS,
@@ -1552,6 +1622,7 @@ impl AgentHarness {
                         }),
                     ),
                 )
+
                 .await;
         } else {
             self.registry
@@ -1563,8 +1634,8 @@ impl AgentHarness {
             self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
 
             // Publish agent:idle event to the agent's local bus
-            let _ = self
-                .publish_to_agent_bus(
+            self
+                .try_publish_to_agent_bus(
                     agent_id,
                     Event::new(
                         SOURCE_AGENT_HARNESS,
@@ -1575,6 +1646,7 @@ impl AgentHarness {
                         }),
                     ),
                 )
+
                 .await;
         }
 
@@ -1643,8 +1715,8 @@ impl AgentHarness {
         }
 
         // Publish agent:busy event to the agent's local bus
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -1655,6 +1727,7 @@ impl AgentHarness {
                     }),
                 ),
             )
+
             .await;
 
         Ok(instance)
@@ -1830,8 +1903,8 @@ impl AgentHarness {
                 });
 
                 // Publish got_tool_calls for UI consistency
-                let _ = self
-                    .publish_to_agent_bus(
+                self
+                    .try_publish_to_agent_bus(
                         &ctx.agent_id,
                         Event::new(
                             SOURCE_AGENT_HARNESS,
@@ -1844,6 +1917,7 @@ impl AgentHarness {
                             }),
                         ),
                     )
+
                     .await;
 
                 // Execute tools — non-blocking for detach (direct_act)
@@ -1956,8 +2030,8 @@ impl AgentHarness {
         let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
         self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
         self.registry.set_activity(agent_id, "").await;
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -1968,6 +2042,7 @@ impl AgentHarness {
                     }),
                 ),
             )
+
             .await;
     }
 
@@ -2267,8 +2342,8 @@ impl AgentHarness {
 
     /// Publish agent:got_tool_calls event.
     async fn publish_tool_calls_event(&self, ctx: &ReActContext, calls: &[ParsedToolCall]) {
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -2281,13 +2356,14 @@ impl AgentHarness {
                     }),
                 ),
             )
+
             .await;
     }
 
     /// Publish agent:tool_results_fed_back event.
     async fn publish_tool_results_event(&self, ctx: &ReActContext, result_count: usize) {
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -2300,13 +2376,14 @@ impl AgentHarness {
                     }),
                 ),
             )
+
             .await;
     }
 
     /// Publish llm_error event.
     async fn publish_llm_error(&self, ctx: &ReActContext, error: &str) {
-        let _ = self
-            .publish_to_agent_bus(
+        self
+            .try_publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
                     SOURCE_AGENT_HARNESS,
@@ -2319,6 +2396,7 @@ impl AgentHarness {
                     }),
                 ),
             )
+
             .await;
     }
 
@@ -2465,8 +2543,8 @@ impl AgentHarness {
 
             if let Some(flag) = interrupt
                 && flag.is_interrupted() {
-                    let _ = self
-                        .publish_to_agent_bus(
+                    self
+                        .try_publish_to_agent_bus(
                             &ctx.agent_id,
                             Event::new(
                                 SOURCE_AGENT_HARNESS,
@@ -2478,6 +2556,7 @@ impl AgentHarness {
                                 }),
                             ),
                         )
+
                         .await;
                     return Ok(ReactOutcome::Interrupted(String::new()));
                 }
@@ -2498,8 +2577,8 @@ impl AgentHarness {
                     &config,
                 );
                 if result.messages_removed > 0 || result.tokens_saved > 0 {
-                    let _ = self
-                        .publish_to_agent_bus(
+                    self
+                        .try_publish_to_agent_bus(
                             &ctx.agent_id,
                             Event::new(
                                 SOURCE_AGENT_HARNESS,
@@ -2518,6 +2597,7 @@ impl AgentHarness {
                                 }),
                             ),
                         )
+
                         .await;
                 }
             }

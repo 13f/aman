@@ -181,8 +181,24 @@ impl EmotionEvaluator {
                 return;
             }
 
-            // Evaluate
-            match self.evaluate().await {
+            // Evaluate, racing the cancel token so a shutdown signal
+            // during a long LLM call (10-30s with retries) does not have
+            // to wait for the call to return. `biased;` makes the cancel
+            // branch preferred when both are ready so we don't sit on a
+            // completed evaluation if the operator has already asked to
+            // stop. The bus publish after the select is fast enough
+            // (single queue push) that wrapping it is not worth the
+            // added complexity.
+            let evaluation: Result<Option<EmotionResponse>, String> = tokio::select! {
+                biased;
+                _ = self.cancel.cancelled() => {
+                    tracing::info!(agent = %self.agent_id, "emotion evaluator stopped");
+                    return;
+                }
+                r = self.evaluate() => r,
+            };
+
+            match evaluation {
                 Ok(Some(result)) => {
                     // Store for SSE
                     {

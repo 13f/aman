@@ -296,11 +296,32 @@ pub enum Kind {
 
 **建议**: 改 `mpsc::channel(128)`，让 LLM callback 受背压。
 
+**✅ 已修复 (2026-06-14)**:
+
+- `spawn_stream_forwarder` 改用 `mpsc::channel(STREAM_FORWARDER_CAP)`，cap = 128。新增 `STREAM_FORWARDER_CAP` 常量（`agent_harness.rs` 顶部）说明选用 128 的理由（每个 `StreamEvent` 是个小 enum，128 × ~100 bytes ≈ 12 KB worst case per turn）。
+- Sync 的 `LlmProvider` callback 不能 `.await` 受限 `send`，所以 producer 改用 `try_send`：
+  - `Ok(())` — 正常入队
+  - `TrySendError::Full(_)` — chunk 丢弃，伴随 `tracing::warn!`（带 `agent` / `session` / `cap` 字段，可在 dashboard 看到丢弃率）
+  - `TrySendError::Closed(_)` — receiver 已退出（turn 完成 / agent 关闭），静默忽略
+- 消费者侧（`tokio::spawn` 里的 `while let Some(event) = stream_rx.recv().await`）不变 — sender drop 时 `recv()` 返回 `None`，forwarder task 自然结束。
+- 语义变化：unbounded → bounded = 慢消费者场景下可能丢 chunk。unbounded 是隐藏的内存增长 bug；bounded + log 是显式背压。可接受，因为 128 cap 在正常 forwarder 速率下永远到不了上限。
+
+**验证**：`cargo build -p gateway` 干净；`cargo test -p gateway --lib` 74/74 通过。
+
 ### 17. emotion evaluator 取消延迟 10-30 秒
 
 `emotion_evaluator.rs:174-237` `tokio::select!` 只包装 sleep 不包装 LLM 调用，shutdown 期间需要等当前 LLM 调用完成。
 
 **建议**: 整个 `evaluate() + publish` 块用 `select!` 包裹 cancel token。
+
+**✅ 已修复 (2026-06-14)**:
+
+- `run_loop` 把 `self.evaluate()` future 包进 `tokio::select!`，另一边是 `self.cancel.cancelled()`。
+- `biased;` 让 cancel 分支在两边都 ready 时优先 — 否则一个刚好完成的 evaluation 会把 cancel 推到下一个循环，shutdown 还是要等多 ~10s。
+- 仅包 `evaluate()`，不包后面的 match + publish。理由：bus publish 是个单 queue push（微秒级），包它会增加复杂度（需要把 match arm 包成 async block + 引入 `ControlFlow` 之类的标志类型），换来不可观察的收益。
+- 循环顶部的早期 `if self.cancel.is_cancelled()` 保留 — 是 sleep 返回到 select 启动之间微秒窗口的 O(1) 防御。
+
+**验证**：`cargo build -p gateway` 干净；`cargo test -p gateway --lib` 74/74 通过。
 
 ### 18. CLI 真实 bug 嫌疑
 

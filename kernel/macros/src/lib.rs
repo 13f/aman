@@ -5,6 +5,7 @@
 
 use proc_macro::TokenStream;
 
+mod noop;
 mod plugin;
 mod skill;
 
@@ -16,4 +17,11 @@ pub fn skill(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn plugin(attr: TokenStream, item: TokenStream) -> TokenStream {
     plugin::expand(attr.into(), item.into()).into()
+}
+
+/// Generate a no-op `PluginExportRegistrar` impl for the annotated
+/// struct. See [`noop`] for details.
+#[proc_macro_derive(Noop)]
+pub fn noop_derive(input: TokenStream) -> TokenStream {
+    noop::expand(input.into()).into()
 }

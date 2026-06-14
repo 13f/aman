@@ -1,6 +1,15 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+//! ⚠️ DEPRECATED SHIM — kept only because `cognitive-llm` depends on this
+//! crate. The source of truth for ReAct types now lives in
+//! `cognitive_llm::react` (see `cognitive/llm/src/react.rs`). New code should
+//! depend on `cognitive-llm` directly and use those types.
+//!
+//! Full migration requires extracting these types into a leaf crate with no
+//! `kernel` dependency — see the note in `kernel/core/src/llm.rs` and the
+//! P1 roadmap in `docs/code-review-20260614.md`.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;

@@ -26,7 +26,10 @@ impl SystemPromptCache {
         session_id: &str,
         build_fn: impl FnOnce() -> String,
     ) -> String {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         if let Some(cached) = cache.get(session_id) {
             cached.clone()
         } else {
@@ -38,7 +41,10 @@ impl SystemPromptCache {
 
     /// Remove a cached prompt (e.g. when a session is deleted).
     pub fn invalidate(&self, session_id: &str) {
-        let mut cache = self.cache.lock().unwrap();
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         cache.remove(session_id);
     }
 }

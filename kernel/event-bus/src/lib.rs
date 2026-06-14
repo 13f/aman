@@ -521,10 +521,26 @@ impl InMemoryBus {
         state.update_signal(next_signal, queue_depth);
     }
 
+    /// Rate-limit check against the per-source token bucket.
+    ///
+    /// Called *before* `state` is locked to avoid a nested-lock deadlock (the
+    /// rate-limiter mutex must not be acquired while holding `state`). If no
+    /// limiter is configured, this is a no-op.
+    fn check_rate_limit(&self, source: &crate::SourceId) -> AmanResult<()> {
+        let mut guard = self
+            .rate_limiter
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(ref mut limiter) = *guard {
+            limiter.check(source)?;
+        }
+        Ok(())
+    }
+
     fn lock_state(&self) -> MutexGuard<'_, BusState> {
         self.state
             .lock()
-            .expect("in-memory event bus mutex should not be poisoned")
+            .unwrap_or_else(|err| err.into_inner())
     }
 
     fn admit_event(&self, mut event: Event, state: &mut BusState) -> AmanResult<PublishAdmission> {
@@ -548,10 +564,9 @@ impl InMemoryBus {
             });
         }
 
-        // ── Layer 4: Rate limiting ────────────────────────────────────
-        if let Some(ref mut limiter) = *self.rate_limiter.lock().expect("rate limiter lock") {
-            limiter.check(&event.source)?;
-        }
+        // Note: rate-limit check is performed by `check_rate_limit` *before*
+        // `state` is locked (see `publish`). Holding `state` while acquiring a
+        // second mutex here was a nested-lock deadlock risk.
 
         self.refresh_signal(state);
         event = self
@@ -709,6 +724,9 @@ impl InMemoryBus {
 impl EventBus for InMemoryBus {
     #[instrument(skip(self, event), fields(event_id = %event.id, source = %event.source))]
     async fn publish(&self, event: Event) -> AmanResult<()> {
+        // Rate-limit check must run *before* we take `state`, otherwise we'd
+        // acquire two mutexes in nested fashion (deadlock risk).
+        self.check_rate_limit(&event.source)?;
         {
             let mut state = self.lock_state();
             match self.admit_event(event, &mut state)? {

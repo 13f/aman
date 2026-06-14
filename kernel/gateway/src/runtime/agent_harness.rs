@@ -25,6 +25,15 @@ use tool::security;
 use tool::ToolRegistry;
 use tool::ToolSecurityConfig;
 
+use super::event_consts::{
+    SOURCE_AGENT_HARNESS, EVT_AGENT_AWAITING_DETACH, EVT_AGENT_BUSY, EVT_AGENT_IDLE,
+    EVT_AGENT_MAX_TURNS_REACHED, EVT_AGENT_REPLY_READY, EVT_AGENT_REPLY_STREAM_ERROR,
+    EVT_AGENT_TOKEN_USED, EVT_AGENT_TOOL_RESULTS_FED_BACK, EVT_AGENT_GOT_TOOL_CALLS,
+    EVT_AGENT_AUTO_CONTINUE, EVT_AGENT_AUTO_CONTINUE_STOPPED, EVT_AGENT_DIRECT_ACT_STARTED,
+    EVT_AGENT_HISTORY_COMPRESSED, EVT_AGENT_REPLY_INTERRUPTED, EVT_AGENT_CONFIG_WARNING,
+    EVT_LLM_CALL_ENDED, EVT_LLM_CALL_STARTED, EVT_LLM_ERROR, EVT_SKILL_COMPLETED,
+    EVT_TOOL_COMPLETED, EVT_TOOL_DISPATCHED, EVT_TOOL_SECURITY_DENIED,
+};
 use super::AgentRegistry;
 
 /// Default maximum ReAct loop iterations.
@@ -297,8 +306,8 @@ impl ToolExecutor {
             .publish_to_agent_bus(
                 agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("tool:dispatched".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_TOOL_DISPATCHED.to_owned()),
                     json!({
                         "agent_id": agent_id,
                         "session_id": session_id,
@@ -326,8 +335,8 @@ impl ToolExecutor {
                 .publish_to_agent_bus(
                     agent_id,
                     Event::new(
-                        "agent:harness",
-                        EventType::Custom("tool:security_denied".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_TOOL_SECURITY_DENIED.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -345,8 +354,8 @@ impl ToolExecutor {
                 .publish_to_agent_bus(
                     agent_id,
                     Event::new(
-                        "agent:harness",
-                        EventType::Custom("tool:security_denied".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_TOOL_SECURITY_DENIED.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -421,7 +430,7 @@ impl ToolExecutor {
         let duration_ms = start.elapsed().as_millis() as u64;
 
         let event_type = if success {
-            "tool:completed"
+            EVT_TOOL_COMPLETED
         } else {
             "tool:failed"
         };
@@ -429,7 +438,7 @@ impl ToolExecutor {
             .publish_to_agent_bus(
                 agent_id,
                 Event::new(
-                    "agent:harness",
+                    SOURCE_AGENT_HARNESS,
                     EventType::Custom(event_type.to_owned()),
                     json!({
                         "agent_id": agent_id,
@@ -578,8 +587,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             .publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("llm:call_started".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_LLM_CALL_STARTED.to_owned()),
                     json!({
                         "agent_id": ctx.agent_id,
                         "session_id": ctx.session_id,
@@ -649,8 +658,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             .publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("llm:call_ended".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_LLM_CALL_ENDED.to_owned()),
                     json!({
                         "agent_id": ctx.agent_id,
                         "session_id": ctx.session_id,
@@ -670,8 +679,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                         .publish_to_agent_bus(
                             &ctx.agent_id,
                             Event::new(
-                                "agent:harness",
-                                EventType::Custom("agent:token_used".to_owned()),
+                                SOURCE_AGENT_HARNESS,
+                                EventType::Custom(EVT_AGENT_TOKEN_USED.to_owned()),
                                 json!({
                                     "agent_id": ctx.agent_id,
                                     "session_id": ctx.session_id,
@@ -855,8 +864,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                     .publish_to_agent_bus(
                         &ctx.agent_id,
                         Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:awaiting_detach".to_owned()),
+                            SOURCE_AGENT_HARNESS,
+                            EventType::Custom(EVT_AGENT_AWAITING_DETACH.to_owned()),
                             json!({
                                 "agent_id": ctx.agent_id,
                                 "session_id": ctx.session_id,
@@ -877,8 +886,8 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                 .publish_to_agent_bus(
                     &ctx.agent_id,
                     Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:awaiting_detach".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_AWAITING_DETACH.to_owned()),
                         json!({
                             "agent_id": ctx.agent_id,
                             "session_id": ctx.session_id,
@@ -900,7 +909,7 @@ impl kernel::react::ReActEngine for LlmReActEngine {
             let capture = Arc::new(DetachCapture::new());
             let sub_filter = event_bus::SubscriptionFilter {
                 event_types: Some(vec![
-                    EventType::Custom("tool:completed".to_owned()),
+                    EventType::Custom(EVT_TOOL_COMPLETED.to_owned()),
                 ]),
                 sources: Some(vec![
                     SourceId::from("tool:detached"),
@@ -1211,57 +1220,16 @@ impl AgentHarness {
         background: bool,
         continuation_mode: ContinuationMode,
     ) -> AmanResult<String> {
-        // 1. Get AgentInstance from registry
+        // 1 + 2. Look up the agent, flip status to Busy, and announce on the bus.
         let instance = self
-            .registry
-            .get(agent_id)
-            .await
-            .ok_or_else(|| Error::ConfigInvalid {
-                message: format!("agent '{agent_id}' not found"),
-            })?;
-
-        if instance.status == AgentStatus::Disabled {
-            return Err(Error::ConfigInvalid {
-                message: format!("agent '{agent_id}' is disabled"),
-            });
-        }
-
-        // 2. Update status to Busy
-        self.registry
-            .set_active_session(agent_id, Some(session_id.to_owned()))
+            .prepare_agent_session(agent_id, session_id, background)
             .await?;
-        self.registry.set_status(agent_id, AgentStatus::Busy).await?;
-        // Pick the right system state for the UI:
-        // - Work-item sessions (kanban Act! / startup / idle_run with work tag) → Working
-        // - Foreground user messages → Chatting
-        // - Background boredom runs → already set by boredom actor, leave as-is
-        let is_work_session = super::session::work_session::is_plugin_work_session(session_id);
-        if is_work_session {
-            self.registry.set_system_state(agent_id, AgentSystemState::Working).await;
-        } else if !background {
-            self.registry.set_system_state(agent_id, AgentSystemState::Chatting).await;
-        }
 
         // Cancel any running idle workflows for this agent and boost arousal
         if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {
             coord.reset_idle_signal().await;
             coord.arousal.boost(0.3);
         }
-
-        // Publish agent:busy event to the agent's local bus
-        let _ = self
-            .publish_to_agent_bus(
-                agent_id,
-                Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:busy".to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                    }),
-                ),
-            )
-            .await;
 
         // 3. Build tool descriptors from registered tools
         let available_tools = self.build_tool_descriptors(agent_id).await;
@@ -1332,87 +1300,26 @@ impl AgentHarness {
             }
         }
 
-        // 5. Initialize model-aware token budget (M4)
+        // 5. Initialize model-aware token budget (M4).
         // Estimate history tokens immediately so the budget reflects the full
         // session history before the first react_loop iteration. Without this,
         // needs_trim() returns false on the first pass regardless of history
         // size, and the full context is sent to the LLM unfiltered.
         // Values must come from config, never silently defaulted.
-        let mut token_budget = match (instance.descriptor.max_context_tokens, instance.descriptor.max_output_tokens) {
-            (Some(ctx), Some(out)) => {
-                context_manager::TokenBudget::with_window(model, ctx, out)
-            }
-            (Some(ctx), None) => {
-                context_manager::TokenBudget::with_window(model, ctx, self.budget_policy.max_output_tokens(model, instance.descriptor.max_output_tokens))
-            }
-            _ => {
-                let ctx = self.budget_policy.context_window(model);
-                let out = self.budget_policy.max_output_tokens(model, None);
-                context_manager::TokenBudget::with_window(model, ctx, out)
-            }
-        };
-        // Emit config warning events when token budget values are 0 (not configured).
-        if token_budget.max_output_tokens == 0 {
-            let _ = self
-                .bus
-                .publish(Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:config_warning".to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                        "config_key": "max_output_tokens",
-                        "message": "max_output_tokens is 0 (not configured) — LLM API will use its provider default, which may truncate long responses",
-                    }),
-                ))
-                .await;
-        }
-        if token_budget.context_window == 0 {
-            let _ = self
-                .bus
-                .publish(Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:config_warning".to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                        "config_key": "max_context_tokens",
-                        "message": "max_context_tokens is 0 (not configured) — token budgeting is disabled",
-                    }),
-                ))
-                .await;
-        }
-        // Estimate system prompt tokens
-        token_budget.set_system_tokens(context_manager::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
-        // Estimate tool schema tokens
-        let tool_schema_text: String = available_tools
-            .iter()
-            .map(|t| format!("{}: {}", t.name, t.parameters))
-            .collect::<Vec<_>>()
-            .join("\n");
-        token_budget.set_tool_schema_tokens(context_manager::TokenBudget::estimate_tokens(&tool_schema_text));
-        // Estimate history tokens from loaded session history so the budget
-        // check in react_loop triggers compression before the first LLM call.
-        let initial_history_tokens: usize = history
-            .iter()
-            .map(|m| context_manager::TokenBudget::estimate_tokens(&m.content))
-            .sum();
-        token_budget.set_history_tokens(initial_history_tokens);
+        let mut token_budget = self
+            .init_token_budget(
+                agent_id,
+                session_id,
+                model,
+                &instance,
+                &soul_snapshot,
+                &history,
+                &available_tools,
+            )
+            .await;
 
-        // 6. Retrieve memories relevant to user input (M5 T5.1)
-        let memory_results = match self.registry.get_memory_provider(agent_id).await {
-            Some(provider) => provider.recall(agent_id, user_text, 10).await,
-            None => Vec::new(),
-        };
-        let memory_context = if memory_results.is_empty() {
-            None
-        } else {
-            let mem_text: Vec<String> = memory_results
-                .iter()
-                .map(|m| format!("- {} (tags: {})", m.content, m.tags.join(", ")))
-                .collect();
-            Some(mem_text.join("\n"))
-        };
+        // 6. Retrieve memories relevant to user input (M5 T5.1).
+        let memory_context = self.retrieve_relevant_memories(agent_id, user_text).await;
 
         // 7. Create ReAct context with the config-correct max_output_tokens
         let max_output_tokens = token_budget.max_output_tokens as u64;
@@ -1442,8 +1349,8 @@ impl AgentHarness {
                 .publish_to_agent_bus(
                     agent_id,
                     Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:direct_act_started".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_DIRECT_ACT_STARTED.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -1476,8 +1383,8 @@ impl AgentHarness {
             let _ = self
                 .bus
                 .publish(Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:awaiting_detach".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_AWAITING_DETACH.to_owned()),
                     json!({
                         "agent_id": agent_id,
                         "session_id": detach_sid,
@@ -1548,23 +1455,23 @@ impl AgentHarness {
         // 9. Handle outcome — Finished, Interrupted, MaxTurnsReached, or Error
         let mut max_turns_reached = false;
         let (raw_reply, event_type): (String, &str) = match result {
-            Ok(ReactOutcome::Finished(reply)) => (reply, "agent:reply_ready"),
-            Ok(ReactOutcome::Interrupted(reply)) => (reply, "agent:reply_interrupted"),
+            Ok(ReactOutcome::Finished(reply)) => (reply, EVT_AGENT_REPLY_READY),
+            Ok(ReactOutcome::Interrupted(reply)) => (reply, EVT_AGENT_REPLY_INTERRUPTED),
             Ok(ReactOutcome::MaxTurnsReached { turns }) => {
                 max_turns_reached = true;
                 let msg = format!(
                     "[max {} turns reached — session saved, send /continue to resume]",
                     turns
                 );
-                (msg, "agent:reply_ready")
+                (msg, EVT_AGENT_REPLY_READY)
             }
             Err(e) => {
                 // Publish fallback error event so the frontend doesn't hang
                 let _ = self
                     .bus
                     .publish(Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:reply_stream_error".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_REPLY_STREAM_ERROR.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -1614,7 +1521,7 @@ impl AgentHarness {
         let _ = self
             .bus
             .publish(Event::new(
-                "agent:harness",
+                SOURCE_AGENT_HARNESS,
                 EventType::Custom(event_type.to_owned()),
                 reply_payload,
             ))
@@ -1628,8 +1535,8 @@ impl AgentHarness {
                 .publish_to_agent_bus(
                     agent_id,
                     Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:max_turns_reached".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_MAX_TURNS_REACHED.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -1651,8 +1558,8 @@ impl AgentHarness {
                 .publish_to_agent_bus(
                     agent_id,
                     Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:idle".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_IDLE.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -1663,6 +1570,206 @@ impl AgentHarness {
         }
 
         Ok(final_reply)
+    }
+
+    // ── process_message helpers ──────────────────────────────────────
+    //
+    // These methods were extracted from the previously 465-line
+    // `process_message` (P0-5 in `docs/code-review-20260614.md`) to keep
+    // the high-level orchestration legible. Each helper is a single
+    // responsibility and can be tested in isolation once unit tests are
+    // added (tracked in P1 #6).
+
+    /// Look up the agent, flip status to Busy, and announce on the bus.
+    ///
+    /// Performs steps 1 + 2 of the original `process_message`:
+    /// 1. Fetch the `AgentInstance` from the registry, refusing if the
+    ///    agent is missing or disabled.
+    /// 2. Mark the agent Busy in the registry, pick the right system
+    ///    state for the UI (Working / Chatting), and publish
+    ///    `agent:busy` on the local bus.
+    ///
+    /// The caller still owns the subsequent idle-coordination reset
+    /// (boosting arousal) because that step touches subsystems outside
+    /// the registry.
+    async fn prepare_agent_session(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        background: bool,
+    ) -> AmanResult<AgentInstance> {
+        // 1. Get AgentInstance from registry
+        let instance = self
+            .registry
+            .get(agent_id)
+            .await
+            .ok_or_else(|| Error::ConfigInvalid {
+                message: format!("agent '{agent_id}' not found"),
+            })?;
+
+        if instance.status == AgentStatus::Disabled {
+            return Err(Error::ConfigInvalid {
+                message: format!("agent '{agent_id}' is disabled"),
+            });
+        }
+
+        // 2. Update status to Busy
+        self.registry
+            .set_active_session(agent_id, Some(session_id.to_owned()))
+            .await?;
+        self.registry.set_status(agent_id, AgentStatus::Busy).await?;
+        // Pick the right system state for the UI:
+        // - Work-item sessions (kanban Act! / startup / idle_run with work tag) → Working
+        // - Foreground user messages → Chatting
+        // - Background boredom runs → already set by boredom actor, leave as-is
+        let is_work_session = super::session::work_session::is_plugin_work_session(session_id);
+        if is_work_session {
+            self.registry
+                .set_system_state(agent_id, AgentSystemState::Working)
+                .await;
+        } else if !background {
+            self.registry
+                .set_system_state(agent_id, AgentSystemState::Chatting)
+                .await;
+        }
+
+        // Publish agent:busy event to the agent's local bus
+        let _ = self
+            .publish_to_agent_bus(
+                agent_id,
+                Event::new(
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_BUSY.to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                    }),
+                ),
+            )
+            .await;
+
+        Ok(instance)
+    }
+    //
+    // These methods were extracted from the previously 465-line
+    // `process_message` (P0-5 in `docs/code-review-20260614.md`) to keep
+    // the high-level orchestration legible. Each helper is a single
+    // responsibility and can be tested in isolation once unit tests are
+    // added (tracked in P1 #6).
+
+    /// Initialize the model-aware token budget (M4).
+    ///
+    /// Pulls the context window and max-output tokens from the agent
+    /// descriptor, falling back to `budget_policy` for the model-specific
+    /// defaults. Emits a `agent:config_warning` event when either value
+    /// resolves to 0 (so operators see misconfiguration in the SSE feed).
+    /// Finally estimates system/tool-schema/history tokens so the very
+    /// first `react_loop` iteration can apply compression if needed.
+    #[allow(clippy::too_many_arguments)]
+    async fn init_token_budget(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        model: &str,
+        instance: &AgentInstance,
+        soul_snapshot: &SoulSnapshot,
+        history: &[ChatMessage],
+        available_tools: &[ToolDescriptor],
+    ) -> context_manager::TokenBudget {
+        let mut token_budget = match (
+            instance.descriptor.max_context_tokens,
+            instance.descriptor.max_output_tokens,
+        ) {
+            (Some(ctx), Some(out)) => context_manager::TokenBudget::with_window(model, ctx, out),
+            (Some(ctx), None) => context_manager::TokenBudget::with_window(
+                model,
+                ctx,
+                self.budget_policy.max_output_tokens(
+                    model,
+                    instance.descriptor.max_output_tokens,
+                ),
+            ),
+            _ => {
+                let ctx = self.budget_policy.context_window(model);
+                let out = self.budget_policy.max_output_tokens(model, None);
+                context_manager::TokenBudget::with_window(model, ctx, out)
+            }
+        };
+
+        if token_budget.max_output_tokens == 0 {
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_CONFIG_WARNING.to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "config_key": "max_output_tokens",
+                        "message": "max_output_tokens is 0 (not configured) — LLM API will use its provider default, which may truncate long responses",
+                    }),
+                ))
+                .await;
+        }
+        if token_budget.context_window == 0 {
+            let _ = self
+                .bus
+                .publish(Event::new(
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_CONFIG_WARNING.to_owned()),
+                    json!({
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "config_key": "max_context_tokens",
+                        "message": "max_context_tokens is 0 (not configured) — token budgeting is disabled",
+                    }),
+                ))
+                .await;
+        }
+
+        // Estimate system prompt tokens
+        token_budget
+            .set_system_tokens(context_manager::TokenBudget::estimate_tokens(&soul_snapshot.system_prompt));
+        // Estimate tool schema tokens
+        let tool_schema_text: String = available_tools
+            .iter()
+            .map(|t| format!("{}: {}", t.name, t.parameters))
+            .collect::<Vec<_>>()
+            .join("\n");
+        token_budget.set_tool_schema_tokens(
+            context_manager::TokenBudget::estimate_tokens(&tool_schema_text),
+        );
+        // Estimate history tokens so the budget check in react_loop can
+        // trigger compression before the first LLM call.
+        let initial_history_tokens: usize = history
+            .iter()
+            .map(|m| context_manager::TokenBudget::estimate_tokens(&m.content))
+            .sum();
+        token_budget.set_history_tokens(initial_history_tokens);
+
+        token_budget
+    }
+
+    /// Retrieve memories relevant to `user_text` and format them as a
+    /// bullet list suitable for `ReActContext::memory_context` (M5 T5.1).
+    ///
+    /// Returns `None` when no memory provider is registered or when the
+    /// recall returned an empty set, so the caller can short-circuit.
+    async fn retrieve_relevant_memories(
+        &self,
+        agent_id: &str,
+        user_text: &str,
+    ) -> Option<String> {
+        let provider = self.registry.get_memory_provider(agent_id).await?;
+        let results = provider.recall(agent_id, user_text, 10).await;
+        if results.is_empty() {
+            return None;
+        }
+        let mem_text: Vec<String> = results
+            .iter()
+            .map(|m| format!("- {} (tags: {})", m.content, m.tags.join(", ")))
+            .collect();
+        Some(mem_text.join("\n"))
     }
 
     /// Direct execution mode for skills that only invoke a fixed script/API.
@@ -1718,8 +1825,8 @@ impl AgentHarness {
                     .publish_to_agent_bus(
                         &ctx.agent_id,
                         Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:got_tool_calls".to_owned()),
+                            SOURCE_AGENT_HARNESS,
+                            EventType::Custom(EVT_AGENT_GOT_TOOL_CALLS.to_owned()),
                             json!({
                                 "agent_id": ctx.agent_id,
                                 "session_id": ctx.session_id,
@@ -1790,7 +1897,7 @@ impl AgentHarness {
 
         let capture = Arc::new(DetachCapture::new());
         let sub_filter = event_bus::SubscriptionFilter {
-            event_types: Some(vec![EventType::Custom("tool:completed".to_owned())]),
+            event_types: Some(vec![EventType::Custom(EVT_TOOL_COMPLETED.to_owned())]),
             sources: Some(vec![SourceId::from("tool:detached")]),
             ..Default::default()
         };
@@ -1844,8 +1951,8 @@ impl AgentHarness {
             .publish_to_agent_bus(
                 agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:idle".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_IDLE.to_owned()),
                     json!({
                         "agent_id": agent_id,
                         "session_id": session_id,
@@ -1925,8 +2032,8 @@ impl AgentHarness {
                 format!("{sn} failed — exit {hook_exit_code}")
             };
             let _ = self.bus.publish(Event::new(
-                "agent:harness",
-                EventType::Custom("skill:completed".to_owned()),
+                SOURCE_AGENT_HARNESS,
+                EventType::Custom(EVT_SKILL_COMPLETED.to_owned()),
                 json!({
                     "agent_id": agent_id,
                     "session_id": session_id,
@@ -1979,8 +2086,8 @@ impl AgentHarness {
                 let _ = self
                     .bus
                     .publish(Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:reply_stream_error".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_REPLY_STREAM_ERROR.to_owned()),
                         json!({
                             "agent_id": agent_id,
                             "session_id": session_id,
@@ -2020,8 +2127,8 @@ impl AgentHarness {
         let _ = self
             .bus
             .publish(Event::new(
-                "agent:harness",
-                EventType::Custom("agent:reply_ready".to_owned()),
+                SOURCE_AGENT_HARNESS,
+                EventType::Custom(EVT_AGENT_REPLY_READY.to_owned()),
                 reply_payload,
             ))
             .await;
@@ -2155,8 +2262,8 @@ impl AgentHarness {
             .publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:got_tool_calls".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_GOT_TOOL_CALLS.to_owned()),
                     json!({
                         "agent_id": ctx.agent_id,
                         "session_id": ctx.session_id,
@@ -2174,8 +2281,8 @@ impl AgentHarness {
             .publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("agent:tool_results_fed_back".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_AGENT_TOOL_RESULTS_FED_BACK.to_owned()),
                     json!({
                         "agent_id": ctx.agent_id,
                         "session_id": ctx.session_id,
@@ -2193,8 +2300,8 @@ impl AgentHarness {
             .publish_to_agent_bus(
                 &ctx.agent_id,
                 Event::new(
-                    "agent:harness",
-                    EventType::Custom("llm_error".to_owned()),
+                    SOURCE_AGENT_HARNESS,
+                    EventType::Custom(EVT_LLM_ERROR.to_owned()),
                     json!({
                         "agent_id": ctx.agent_id,
                         "session_id": ctx.session_id,
@@ -2298,8 +2405,8 @@ impl AgentHarness {
                         "auto-continue stopped"
                     );
                     let _ = self.bus.publish(Event::new(
-                        "agent:harness",
-                        EventType::Custom("agent:auto_continue_stopped".to_owned()),
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_AGENT_AUTO_CONTINUE_STOPPED.to_owned()),
                         json!({
                             "agent_id": ctx.agent_id,
                             "session_id": ctx.session_id,
@@ -2329,8 +2436,8 @@ impl AgentHarness {
                     let _ = self
                         .bus
                         .publish(Event::new(
-                            "agent:harness",
-                            EventType::Custom("agent:auto_continue".to_owned()),
+                            SOURCE_AGENT_HARNESS,
+                            EventType::Custom(EVT_AGENT_AUTO_CONTINUE.to_owned()),
                             json!({
                                 "agent_id": ctx.agent_id,
                                 "session_id": ctx.session_id,
@@ -2353,8 +2460,8 @@ impl AgentHarness {
                         .publish_to_agent_bus(
                             &ctx.agent_id,
                             Event::new(
-                                "agent:harness",
-                                EventType::Custom("agent:reply_interrupted".to_owned()),
+                                SOURCE_AGENT_HARNESS,
+                                EventType::Custom(EVT_AGENT_REPLY_INTERRUPTED.to_owned()),
                                 json!({
                                     "agent_id": ctx.agent_id,
                                     "session_id": ctx.session_id,
@@ -2386,8 +2493,8 @@ impl AgentHarness {
                         .publish_to_agent_bus(
                             &ctx.agent_id,
                             Event::new(
-                                "agent:harness",
-                                EventType::Custom("agent:history_compressed".to_owned()),
+                                SOURCE_AGENT_HARNESS,
+                                EventType::Custom(EVT_AGENT_HISTORY_COMPRESSED.to_owned()),
                                 json!({
                                     "agent_id": ctx.agent_id,
                                     "session_id": ctx.session_id,
@@ -2486,11 +2593,11 @@ impl AgentHarness {
                         ("agent:reply_stream_done", json!({"finish_reason": finish_reason}))
                     }
                     StreamEvent::Error(err) => {
-                        ("agent:reply_stream_error", json!({"error": err}))
+                        (EVT_AGENT_REPLY_STREAM_ERROR, json!({"error": err}))
                     }
                 };
                 let e = Event::new(
-                    "agent:harness",
+                    SOURCE_AGENT_HARNESS,
                     EventType::Custom(etype.to_owned()),
                     json!({
                         "agent_id": aid,
@@ -2530,7 +2637,7 @@ impl AgentHarness {
         };
         let payload = serde_json::to_value(msg)?;
         self.bus.publish(Event::new(
-            "agent:harness",
+            SOURCE_AGENT_HARNESS,
             EventType::AgentMessage,
             payload,
         )).await?;

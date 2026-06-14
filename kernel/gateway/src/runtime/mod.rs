@@ -8,6 +8,7 @@ mod agent_harness;
 mod agent_registry;
 mod agent_runtime;
 mod date_util;
+mod event_consts;
 mod reflection;
 mod sleep;
 mod exploration;
@@ -36,7 +37,8 @@ mod emotion_evaluator;
 pub use agent_registry::AgentRegistry;
 pub use date_util::current_date_string;
 pub use agent_runtime::{
-    AgentRuntime, AgentRuntimeBuilder, PendingApprovalInfo, RuntimePhase, RuntimeStatus,
+    AgentRuntime, AgentRuntimeBuilder, PendingApprovalInfo, RuntimeLifecycle, RuntimePhase,
+    RuntimeStatus,
 };
 pub use audit::{AuditLogger, AuditRecord};
 pub use event_store::EventStore;

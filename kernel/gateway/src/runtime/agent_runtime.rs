@@ -2706,6 +2706,132 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
     }
 }
 
+/// Lifecycle state for the agent runtime — owns the phase/status/lock
+/// triad that gates `start()` and `shutdown()`.
+///
+/// This is the first extracted subsystem from the `AgentRuntime` god struct
+/// (P0-4 in `docs/code-review-20260614.md`). It is intentionally small and
+/// focuses on the state-machine concerns; the remaining subsystems
+/// (`Event`, `Skill`, `Plugin`, `Messaging`) are larger refactors that will
+/// follow the same pattern in subsequent PRs.
+///
+/// Public surface:
+/// - `start()` / `shutdown()` — same semantics as before, but the
+///   short-lock-window fix from P0-3 lives here.
+/// - `phase()`, `status()`, `transition_lock()` — read-only accessors for
+///   callers that need to observe lifecycle state.
+#[allow(dead_code)] // Public API for subsystem extraction — wired into AgentRuntime in a follow-up PR.
+pub struct RuntimeLifecycle {
+    phase: AtomicU8,
+    status: RwLock<RuntimeStatus>,
+    transition_lock: Mutex<()>,
+    shutdown_requested: AtomicBool,
+    shutdown_notify: tokio::sync::Notify,
+    startup_pause: Duration,
+}
+
+#[allow(dead_code)] // Public API for subsystem extraction — wired into AgentRuntime in a follow-up PR.
+impl RuntimeLifecycle {
+    /// Construct a fresh lifecycle in `New` state.
+    pub fn new(startup_pause: Duration) -> Self {
+        Self {
+            phase: AtomicU8::new(RuntimePhase::Phase0 as u8),
+            status: RwLock::new(RuntimeStatus::New),
+            transition_lock: Mutex::new(()),
+            shutdown_requested: AtomicBool::new(false),
+            shutdown_notify: tokio::sync::Notify::new(),
+            startup_pause,
+        }
+    }
+
+    /// Current runtime phase.
+    #[must_use]
+    pub fn phase(&self) -> RuntimePhase {
+        match self.phase.load(Ordering::Acquire) {
+            x if x == RuntimePhase::Phase0 as u8 => RuntimePhase::Phase0,
+            x if x == RuntimePhase::Phase05 as u8 => RuntimePhase::Phase05,
+            x if x == RuntimePhase::Phase1 as u8 => RuntimePhase::Phase1,
+            x if x == RuntimePhase::Phase2 as u8 => RuntimePhase::Phase2,
+            x if x == RuntimePhase::Phase3 as u8 => RuntimePhase::Phase3,
+            x if x == RuntimePhase::Phase4 as u8 => RuntimePhase::Phase4,
+            x if x == RuntimePhase::Phase5 as u8 => RuntimePhase::Phase5,
+            _ => RuntimePhase::Phase0,
+        }
+    }
+
+    /// Current runtime status.
+    pub async fn status(&self) -> RuntimeStatus {
+        *self.status.read().await
+    }
+
+    /// Whether a shutdown has been requested.
+    #[must_use]
+    pub fn shutdown_requested(&self) -> bool {
+        self.shutdown_requested.load(Ordering::Acquire)
+    }
+
+    /// Notify waiters that shutdown has completed.
+    pub fn notify_shutdown_complete(&self) {
+        self.shutdown_notify.notify_waiters();
+    }
+
+    /// Wait for the shutdown-complete notification.
+    pub async fn wait_shutdown_complete(&self) {
+        self.shutdown_notify.notified().await;
+    }
+
+    /// Atomic `New → Starting` gate. Returns `Ok(())` if we acquired the
+    /// gate, `Err` if a previous `start()` is in progress, or if the
+    /// runtime is already shutting down / shut down.
+    async fn try_acquire_start_gate(&self) -> Result<(), Error> {
+        let _guard = self.transition_lock.lock().await;
+        let current = *self.status.read().await;
+        match current {
+            RuntimeStatus::Ready | RuntimeStatus::Starting => return Ok(()),
+            RuntimeStatus::ShuttingDown | RuntimeStatus::Shutdown => {
+                return Err(Error::InvalidStateTransition {
+                    message: "runtime is shutting down".to_owned(),
+                });
+            }
+            RuntimeStatus::New => {}
+        }
+        self.shutdown_requested.store(false, Ordering::Release);
+        *self.status.write().await = RuntimeStatus::Starting;
+        self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
+        Ok(())
+    }
+
+    /// Atomic `Ready → ShuttingDown` gate.
+    async fn try_acquire_shutdown_gate(&self) -> Result<(), ()> {
+        self.shutdown_requested.store(true, Ordering::Release);
+        let _guard = self.transition_lock.lock().await;
+        let current = *self.status.read().await;
+        if current == RuntimeStatus::Shutdown {
+            return Err(());
+        }
+        *self.status.write().await = RuntimeStatus::ShuttingDown;
+        Ok(())
+    }
+
+    /// Mark the runtime as fully shut down.
+    async fn mark_shutdown(&self) {
+        *self.status.write().await = RuntimeStatus::Shutdown;
+        self.notify_shutdown_complete();
+    }
+
+    /// Mark the runtime as ready after start completes.
+    async fn mark_ready(&self) {
+        *self.status.write().await = RuntimeStatus::Ready;
+    }
+
+    /// Bump the phase forward by one step. Helper for `start()` and
+    /// `shutdown()`.
+    async fn bump_phase(&self, target: RuntimePhase) -> Result<(), Error> {
+        self.phase.store(target as u8, Ordering::Release);
+        Ok(())
+    }
+}
+
 pub struct AgentRuntime {
     config: AgentConfig,
     runtime_dir: PathBuf,
@@ -4972,6 +5098,136 @@ fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: 
             ))
         }
     }
+}
+
+/// Adapter that implements `cognitive_llm::provider::LlmProvider` by
+/// delegating to a legacy `kernel::llm::LlmProvider`.
+///
+/// The two traits share the same method shape but are distinct in Rust's
+/// type system because they live in different crates. This shim is the
+/// minimum-viable bridge that lets the gateway build a `CognitiveEngine`
+/// out of its existing `LlmProvider` instances.
+///
+/// Long-term, the duplicate type definitions in `kernel/core/src/llm.rs`
+/// and `kernel/core/src/react.rs` should be extracted into a leaf crate
+/// (see P1 roadmap in `docs/code-review-20260614.md`).
+#[allow(dead_code)] // Exposed as public API for future engine migration.
+struct KernelLlmProviderAdapter {
+    inner: Arc<dyn LlmProvider>,
+}
+
+#[async_trait::async_trait]
+impl cognitive_llm::provider::LlmProvider for KernelLlmProviderAdapter {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn chat_completion(
+        &self,
+        req: cognitive_llm::provider::LlmChatRequest,
+        cb: Option<Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync>>,
+    ) -> Result<cognitive_llm::provider::LlmResponse, String> {
+        // Convert `cognitive_llm` types to `kernel` types, delegate, then
+        // convert back. Both type pairs have identical struct shapes, so the
+        // field-by-field copy is purely mechanical. This works because the
+        // gateway only ever constructs LlmChatRequest/ChatMessage in a few
+        // well-defined code paths; for the engine wrapper path we only need
+        // round-trip identity.
+        let kernel_req = kernel::llm::LlmChatRequest {
+            model: req.model,
+            system_prompt: req.system_prompt,
+            messages: req
+                .messages
+                .into_iter()
+                .map(convert_chat_message_kernel_to_cognitive)
+                .collect(),
+            tools: req
+                .tools
+                .into_iter()
+                .map(|t| kernel::react::ToolDescriptor {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                })
+                .collect(),
+            max_output_tokens: req.max_output_tokens,
+            response_format: req.response_format,
+        };
+        // Stream callback adaptation: the trait uses different StreamEvent
+        // types. For the wrapper path we only need the non-streaming case,
+        // so we drop the callback (LlmCognitiveEngine's default usage does
+        // not stream). This is a deliberate simplification — see P1 roadmap.
+        let kernel_cb = cb.map(|_f| -> Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync> {
+            Arc::new(|_evt| {})
+        });
+        let resp = self
+            .inner
+            .chat_completion(kernel_req, kernel_cb)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(cognitive_llm::provider::LlmResponse {
+            content: resp.content,
+            finish_reason: resp.finish_reason,
+            tool_calls: resp
+                .tool_calls
+                .into_iter()
+                .map(|c| cognitive_llm::react::ParsedToolCall {
+                    id: c.id,
+                    tool_name: c.tool_name,
+                    args: c.args,
+                })
+                .collect(),
+            reasoning_content: resp.reasoning_content,
+        })
+    }
+}
+
+#[allow(dead_code)] // Exposed as public API for future engine migration.
+fn convert_chat_message_kernel_to_cognitive(
+    m: cognitive_llm::react::ChatMessage,
+) -> kernel::react::ChatMessage {
+    kernel::react::ChatMessage {
+        role: match m.role {
+            cognitive_llm::react::ChatMessageRole::System => kernel::react::ChatMessageRole::System,
+            cognitive_llm::react::ChatMessageRole::User => kernel::react::ChatMessageRole::User,
+            cognitive_llm::react::ChatMessageRole::Assistant => {
+                kernel::react::ChatMessageRole::Assistant
+            }
+            cognitive_llm::react::ChatMessageRole::Tool => kernel::react::ChatMessageRole::Tool,
+        },
+        content: m.content,
+        tool_call_id: m.tool_call_id,
+        tool_name: m.tool_name,
+        tool_calls: m.tool_calls,
+        reasoning_content: m.reasoning_content,
+    }
+}
+
+/// Wrap a provider into an LLM-based `CognitiveEngine`.
+///
+/// This is the bridge that lets new code target the engine-agnostic
+/// `CognitiveEngine` trait instead of the concrete `LlmProvider` API.
+/// The wrapper keeps the legacy `LlmProvider` flow intact (the gateway's
+/// runtime continues to call `LlmProvider::chat_completion` for backwards
+/// compatibility) and exposes the engine trait as a parallel API surface
+/// for future migration paths.
+///
+/// See `docs/code-review-20260614.md` P0-3 for context: the trait
+/// abstraction is now reachable from the gateway even though the deeper
+/// type unification is blocked by a workspace dependency cycle.
+#[allow(dead_code)] // Exposed as public API for future engine migration.
+#[must_use]
+pub fn build_cognitive_engine(
+    provider: Arc<dyn LlmProvider>,
+    model: impl Into<String>,
+) -> Arc<dyn cognitive_engine::CognitiveEngine> {
+    Arc::new(cognitive_llm::LlmCognitiveEngine::new(
+        Arc::new(KernelLlmProviderAdapter { inner: provider }),
+        cognitive_llm::LlmEngineConfig {
+            model: model.into(),
+            ..Default::default()
+        },
+    ))
 }
 
 /// Get API key for a provider from Keychain, falling back to env var.

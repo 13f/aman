@@ -452,7 +452,16 @@ pub enum Kind {
 - `kernel/config/src/lib.rs:991` `eprintln!` 违反 CLAUDE.md 规则（虽带 `#[allow]`，但应改 `tracing::warn!`）
 - `agent_runtime.rs:235-249` `tracing::warn!` + `let _ = ...` 吞 `sync_builtin_*` 失败
 
-### 24. SDK 抽象泄漏
+**✅ 部分修复 (2026-06-14)** — 第一个站点修了；第二个站点经调查**代码已经是正确模式**，doc 描述与现状不符，**不动**。
+
+- **#23a `kernel/config/src/lib.rs:991` `eprintln!`**（**真 bug** — 绕过 `RedactWriter`，可能漏 API key / 路径里的 secret）：`eprintln!("invalid hook manifest at {}: {e}", ...)` → `tracing::warn!(manifest_path = %..., error = %e, "invalid hook manifest");`。`tracing::warn!` 走 redacting subscriber，结构化字段（`manifest_path` / `error`）会被 redact_writer 按字段过滤 — YAML 错误消息里夹带的 secret 会被脱敏后再输出。控制流（`continue`）不变。
+
+  新增 `tracing.workspace = true` 到 `kernel/config/Cargo.toml`（之前缺，第一个实际 emit 的站点）。
+- **#23b `agent_runtime.rs:235-249` doc 误判**：当前代码用的是正确的 `if let Err(e) = super::skill_sync::sync_builtin_skills() { tracing::error!(error = %e, "failed to sync built-in skills"); }` 模式，**4 个 sync_builtin_* 站点都已经正确 log**。Doc 描述的「`tracing::warn!` + `let _ = ...`」组合与实际代码不符 — 推测是 doc 写时基于更早版本的代码，现在 `let _ =` 已经被替换。**不动**。
+
+  顺便注意到文件里**其他** `let _ =` 站点（lines 251/253/255/269/278/282/296），其中 `seed_builtin_agents` / `discover_filesystem_agents` / `create_dir_all` / `tools.register` 等 — 但这些**不在 doc 的 235-249 范围**内，属于 P3 doc 的「其他代码异味」段。后续如果要全面清理这些 silent-swallow，可以做一轮 follow-up。
+
+**验证**：`cargo build -p config` 干净。
 
 `kernel/sdk/src/lib.rs` 同时提供 `sdk::Tool` 和 `sdk::prelude::Tool`，两条路径到达同一类型。
 

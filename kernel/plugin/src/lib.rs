@@ -1371,14 +1371,12 @@ impl PluginLoader {
             }
         };
 
-        let mut loaded = LoadedPlugin {
+        let loaded = LoadedPlugin {
             manifest,
             runtime,
-            state: PluginLifecycleState::Loaded,
+            state: PluginLifecycleState::Running,
             exports,
         };
-        loaded.state = PluginLifecycleState::Enabled;
-        loaded.state = PluginLifecycleState::Running;
         self.loaded.insert(plugin_name.to_owned(), loaded);
         self.load_order.push(plugin_name.to_owned());
         self.health.entry(plugin_name.to_owned()).or_default();

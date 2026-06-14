@@ -988,7 +988,19 @@ pub fn discover_hooks(hooks_dir: &std::path::Path) -> Vec<HookConfig> {
         let manifest: HookManifest = match serde_yaml::from_str(&content) {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("invalid hook manifest at {}: {e}", manifest_path.display());
+                // P3-23a: use tracing::warn! instead of eprintln!.
+                // CLAUDE.md forbids eprintln!/println! at the
+                // workspace level because the bare stderr writer
+                // bypasses `kernel::redactor::RedactWriter` and can
+                // leak secrets in the YAML error message (paths,
+                // values, etc.). tracing::warn! routes through
+                // the redacting subscriber installed at gateway
+                // startup.
+                tracing::warn!(
+                    manifest_path = %manifest_path.display(),
+                    error = %e,
+                    "invalid hook manifest"
+                );
                 continue;
             }
         };

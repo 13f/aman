@@ -1251,6 +1251,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "study",
+ "tracing",
  "uuid",
  "work",
 ]
@@ -11201,6 +11202,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "tracing",
  "uuid",
  "xid",
 ]

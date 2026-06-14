@@ -20,6 +20,7 @@ daily-life = { path = "../daily-life", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = "0.9.34"
+tracing.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true

@@ -278,6 +278,18 @@ pub enum Kind {
 
 **建议**: 写 `#[derive(Noop)]` proc-macro 统一生成。
 
+**✅ 部分修复 (2026-06-14)**:
+
+- 新增 `#[proc_macro_derive(Noop)]`（`kernel/macros/src/noop.rs`），生成 10 个方法的 `PluginExportRegistrar` impl（5 个 `register_*` + 5 个 `unregister_*`），每个都是 `_` 参数 + `Ok(())`。
+- `NoopPluginRegistrar` 从 40 行手写 impl 折叠成 `#[derive(Default, macros::Noop)] pub struct NoopPluginRegistrar;`。**净 -37 行**。
+- 宏用绝对路径 `crate::PluginExportRegistrar` / `kernel::skill::Skill` / `kernel::tool::Tool` / ... / `kernel::AmanResult`，与调用点的 `use` 无关。代价是宏只能在 `plugin` crate 内用（trait 所在处）；未来要泛化可以让 `#[derive(Noop(trait_path))]` 接受 trait 路径作参数。
+- trybuild pass-test `tests/ui/noop_pass.rs` 验证展开：派生后的结构体能塞进 `Box<dyn PluginExportRegistrar>`。
+- 依赖：plugin 加 `macros = { path = "../macros" }`；macros 加 `quote = "1"` + dev-deps `kernel` / `plugin`。
+
+**未做**：`register_exports` / `unregister_exports` 里那 5 块重复的「for + push + register_* + 错误回滚」代码没动 — 这是函数内重复，proc-macro derive 不适用（derive 只能给 struct/enum 加方法，不能改 free function）。需要的重构是表驱动（按 `ExportKind` 数组迭代）或 trait-object 化，跟 derive 完全是两套机制。**属于独立 follow-up**。
+
+**验证**：`cargo build -p plugin -p macros` 干净；`cargo test -p macros --test ui` 3/3 trybuild 通过。
+
 ### 14. `http.rs` 三个不同的 error 响应结构
 
 代码中混用 `error_response(error)` / `(StatusCode, Json(ErrorBody{...}))` / `Json(json!({"error":...}))` 三种错误返回。

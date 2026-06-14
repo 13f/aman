@@ -265,7 +265,7 @@ async fn agent_start(State(runtime): State<Arc<AgentRuntime>>) -> Response {
             runtime
                 .audit()
                 .record("api", "agent.start", "agent", "error", error.to_string());
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -277,13 +277,7 @@ async fn agent_shutdown(State(runtime): State<Arc<AgentRuntime>>, headers: Heade
         runtime
             .audit()
             .record(operator, "agent.shutdown", "agent", "confirm_required", "");
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
     match runtime.shutdown().await {
         Ok(()) => {
@@ -296,7 +290,7 @@ async fn agent_shutdown(State(runtime): State<Arc<AgentRuntime>>, headers: Heade
             runtime
                 .audit()
                 .record(operator, "agent.shutdown", "agent", "error", error.to_string());
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -322,7 +316,7 @@ async fn source_pause(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -348,7 +342,7 @@ async fn source_resume(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -375,7 +369,7 @@ async fn source_config(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -405,7 +399,7 @@ async fn im_channel_reload(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -492,13 +486,7 @@ async fn skill_search(
 
 async fn skill_info(State(runtime): State<Arc<AgentRuntime>>, Path(name): Path<String>) -> Response {
     let Some(item) = runtime.skills().snapshot(&name) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("skill not found: {name}"),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found(format!("skill not found: {name}"),).into_response();
     };
     Json(item).into_response()
 }
@@ -515,13 +503,7 @@ async fn skill_content(
 ) -> Response {
     match runtime.read_skill(&name) {
         Some(content) => Json(SkillContentResponse { name, content }).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("skill not found: {name}"),
-            }),
-        )
-            .into_response(),
+        None => ApiError::not_found(format!("skill not found: {name}"),).into_response(),
     }
 }
 
@@ -550,7 +532,7 @@ async fn skill_enable(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -580,7 +562,7 @@ async fn skill_disable(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -602,7 +584,7 @@ async fn skill_versions(
 ) -> Response {
     let history = match runtime.skill_versions().history(&name) {
         Ok(items) => items,
-        Err(error) => return error_response(error),
+        Err(error) => return ApiError::from(error).into_response(),
     };
     Json(SkillVersionsResponse {
         items: history
@@ -636,13 +618,7 @@ async fn skill_rollback(
             "confirm_required",
             "",
         );
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
 
     let destination = runtime
@@ -659,7 +635,7 @@ async fn skill_rollback(
             "error",
             error.to_string(),
         );
-        return error_response(error);
+        return ApiError::from(error).into_response();
     }
 
     let _ = runtime.reload_skills_now();
@@ -690,13 +666,7 @@ async fn workflow_info(
     Path(name): Path<String>,
 ) -> Response {
     let Some(workflow) = runtime.workflow_engine().get_workflow(&name) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("workflow not found: {name}"),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found(format!("workflow not found: {name}"),).into_response();
     };
     Json(workflow).into_response()
 }
@@ -733,7 +703,7 @@ async fn workflow_create(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -755,13 +725,7 @@ async fn workflow_instance(
     Path(id): Path<String>,
 ) -> Response {
     let Some(instance) = runtime.workflow_engine().get_instance(&id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("workflow instance not found: {id}"),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found(format!("workflow instance not found: {id}"),).into_response();
     };
     Json(instance).into_response()
 }
@@ -789,13 +753,7 @@ async fn workflow_retry(
             "confirm_required",
             "",
         );
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
     let event = Event::new(
         "workflow:control",
@@ -828,7 +786,7 @@ async fn workflow_retry(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -847,13 +805,7 @@ async fn workflow_cancel(
             "confirm_required",
             "",
         );
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
     let event = Event::new(
         "workflow:control",
@@ -886,7 +838,7 @@ async fn workflow_cancel(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -916,7 +868,7 @@ async fn plugin_enable(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -953,7 +905,7 @@ async fn plugin_list(State(runtime): State<Arc<AgentRuntime>>, headers: HeaderMa
                     "error",
                     error.to_string(),
                 );
-                return error_response(error);
+                return ApiError::from(error).into_response();
             }
         };
         installed.insert(
@@ -1011,13 +963,7 @@ async fn plugin_disable(
             "confirm_required",
             "",
         );
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
     match runtime.disable_plugin(&name).await {
         Ok(()) => {
@@ -1038,7 +984,7 @@ async fn plugin_disable(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1068,7 +1014,7 @@ async fn plugin_uninstall(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1095,38 +1041,20 @@ async fn plugin_install(
                             break;
                         }
                         Err(error) => {
-                            return (
-                                StatusCode::BAD_REQUEST,
-                                Json(ErrorBody {
-                                    message: format!("failed to read multipart field: {error}"),
-                                }),
-                            )
-                                .into_response();
+                            return ApiError::bad_request(format!("failed to read multipart field: {error}"),).into_response();
                         }
                     }
                 }
             }
             Ok(None) => break,
             Err(error) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorBody {
-                        message: format!("invalid multipart payload: {error}"),
-                    }),
-                )
-                    .into_response();
+                return ApiError::bad_request(format!("invalid multipart payload: {error}"),).into_response();
             }
         }
     }
 
     let Some(archive_bytes) = archive_bytes else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                message: "multipart must contain `plugin` file field".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::bad_request("multipart must contain `plugin` file field".to_owned(),).into_response();
     };
 
     let installer = runtime.plugin_installer();
@@ -1154,15 +1082,9 @@ async fn plugin_install(
         }
         Ok(Err(error)) => {
             runtime.audit().record(operator, "plugin.install", "plugin", "error", error.to_string());
-            error_response(error)
+            ApiError::from(error).into_response()
         }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                message: format!("install task join error: {error}"),
-            }),
-        )
-            .into_response(),
+        Err(error) => ApiError::internal(format!("install task join error: {error}"),).into_response(),
     }
 }
 
@@ -1189,7 +1111,7 @@ async fn cron_add(
             runtime
                 .audit()
                 .record(caller, "cron.add", "cron", "error", error.to_string());
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1216,7 +1138,7 @@ async fn cron_update(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1242,7 +1164,7 @@ async fn cron_remove(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1281,7 +1203,7 @@ async fn inject_event(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1331,11 +1253,7 @@ async fn push_event(
     let operator = operator_from_headers(&headers).unwrap_or("api");
 
     if req.source.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "source cannot be empty"})),
-        )
-            .into_response();
+        return ApiError::bad_request("source cannot be empty").into_response();
     }
 
     let event_type = EventType::from(req.event_type.clone());
@@ -1366,7 +1284,7 @@ async fn push_event(
                         "error",
                         error.to_string(),
                     );
-                    return error_response(error);
+                    return ApiError::from(error).into_response();
                 }
             }
         }
@@ -1381,7 +1299,7 @@ async fn push_event(
                         "error",
                         error.to_string(),
                     );
-                    return error_response(error);
+                    return ApiError::from(error).into_response();
                 }
             }
         }
@@ -1464,7 +1382,7 @@ async fn dlq_list(
             }),
         )
             .into_response(),
-        Err(error) => error_response(error),
+        Err(error) => ApiError::from(error).into_response(),
     }
 }
 
@@ -1518,13 +1436,7 @@ async fn dlq_retry(
             "confirm_required",
             "",
         );
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
     let reason = payload.reason.unwrap_or_else(|| "manual retry".to_owned());
     let event = match runtime.dlq().retry(&id, operator, reason) {
@@ -1537,7 +1449,7 @@ async fn dlq_retry(
                 "error",
                 error.to_string(),
             );
-            return error_response(error);
+            return ApiError::from(error).into_response();
         }
     };
     match runtime.publish_event(event).await {
@@ -1559,7 +1471,7 @@ async fn dlq_retry(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1589,7 +1501,7 @@ async fn dlq_discard(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -1865,13 +1777,7 @@ async fn config_set(
             "confirm_required",
             "",
         );
-        return (
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                message: "confirmation required".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::conflict("confirmation required".to_owned(),).into_response();
     }
     runtime.log_config_change(operator, &req.changed_fields);
     (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
@@ -1884,13 +1790,7 @@ async fn event_dump(
 ) -> Response {
     match runtime.event_store().get(&id) {
         Some(event) => (StatusCode::OK, Json(event)).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("event not found: {id}"),
-            }),
-        )
-            .into_response(),
+        None => ApiError::not_found(format!("event not found: {id}"),).into_response(),
     }
 }
 
@@ -1932,13 +1832,7 @@ async fn event_trace(
 ) -> Response {
     let events = runtime.event_store().trace(&trace_id);
     if events.is_empty() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("trace not found: {trace_id}"),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found(format!("trace not found: {trace_id}"),).into_response();
     }
     let (cycle_detected, cycle_path) = detect_trace_cycle(&events);
     (
@@ -2049,13 +1943,7 @@ struct SoulInfoResponse {
 
 async fn soul_info(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     let Some(soul) = runtime.soul_runtime() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: "no soul configured".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found("no soul configured".to_owned(),).into_response();
     };
     let current = soul.current_soul();
     let changed = soul.last_soul_changed_event();
@@ -2073,13 +1961,7 @@ struct SoulRawResponse {
 
 async fn soul_raw(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     let Some(soul) = runtime.soul_runtime() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: "no soul configured".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found("no soul configured".to_owned(),).into_response();
     };
     Json(SoulRawResponse {
         raw: soul.current_soul().raw.clone(),
@@ -2113,7 +1995,7 @@ async fn soul_update(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -2142,11 +2024,7 @@ async fn tool_auth_respond(
     if resolved {
         (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "auth_id not found or already expired"})),
-        )
-            .into_response()
+        ApiError::not_found("auth_id not found or already expired").into_response()
     }
 }
 
@@ -2204,11 +2082,7 @@ async fn plugin_auth_respond(
                             error = %e,
                             "failed to persist plugin capability approval"
                         );
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error": format!("failed to save approval: {e}")})),
-                        )
-                            .into_response();
+                        return ApiError::internal(format!("failed to save approval: {e}")).into_response();
                     }
                     tracing::info!(
                         plugin = %plugin_name,
@@ -2232,11 +2106,7 @@ async fn plugin_auth_respond(
                             error = %e,
                             "failed to load plugin after approval"
                         );
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(serde_json::json!({"error": format!("failed to load plugin: {e}")})),
-                        )
-                            .into_response()
+                        ApiError::internal(format!("failed to load plugin: {e}")).into_response()
                     }
                 }
             }
@@ -2245,11 +2115,7 @@ async fn plugin_auth_respond(
                     plugin = %plugin_name,
                     "plugin_auth_respond: no pending candidate found"
                 );
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "no pending approval found for plugin"})),
-                )
-                    .into_response()
+                ApiError::not_found("no pending approval found for plugin").into_response()
             }
         }
     } else {
@@ -2273,11 +2139,7 @@ async fn tool_execute(
     let tool = match tools.get(&name) {
         Some(t) => t,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("tool not found: {name}")})),
-            )
-                .into_response();
+            return ApiError::not_found(format!("tool not found: {name}")).into_response();
         }
     };
     let ctx = ToolContext {
@@ -2292,11 +2154,7 @@ async fn tool_execute(
             "duration_ms": started.elapsed().as_millis(),
             "output": output,
         })).into_response(),
-        Err(e) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": e.to_string()})),
-        )
-            .into_response(),
+        Err(e) => ApiError::bad_request(e.to_string()).into_response(),
     }
 }
 
@@ -2342,11 +2200,7 @@ async fn explore_start(
     }) {
         Some(k) => k,
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "no agent configured"})),
-            )
-                .into_response();
+            return ApiError::bad_request("no agent configured").into_response();
         }
     };
 
@@ -2354,11 +2208,7 @@ async fn explore_start(
     let aman_cfg = match config::AmanConfig::from_default_path() {
         Ok(c) => c,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("failed to read config: {e}")})),
-            )
-                .into_response();
+            return ApiError::internal(format!("failed to read config: {e}")).into_response();
         }
     };
 
@@ -2370,11 +2220,7 @@ async fn explore_start(
 
     let sources = info_hub_config.sources;
     if sources.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "no info-hub data sources configured"})),
-        )
-            .into_response();
+        return ApiError::bad_request("no info-hub data sources configured").into_response();
     }
 
     let mut rng = rand::thread_rng();
@@ -2395,11 +2241,7 @@ async fn explore_start(
     let instance = match runtime.workflow_engine().create_instance("message-session", data) {
         Ok(i) => i,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("failed to create session: {e}")})),
-            )
-                .into_response();
+            return ApiError::internal(format!("failed to create session: {e}")).into_response();
         }
     };
     let session_id = instance.id.clone();
@@ -2791,7 +2633,7 @@ async fn chat_session_create(
 
     match runtime.session_manager().create_session(operator, agent_id, session_type).await {
         Ok(id) => (StatusCode::OK, Json(json!({ "id": id }))).into_response(),
-        Err(error) => error_response(error),
+        Err(error) => ApiError::from(error).into_response(),
     }
 }
 
@@ -2927,7 +2769,7 @@ async fn chat_session_delete(
                 "error",
                 error.to_string(),
             );
-            return error_response(error);
+            return ApiError::from(error).into_response();
         }
     };
 
@@ -2948,13 +2790,7 @@ async fn chat_session_delete(
             "not_found",
             "",
         );
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("session not found: {id}"),
-            }),
-        )
-            .into_response()
+        ApiError::not_found(format!("session not found: {id}"),).into_response()
     }
 }
 
@@ -3005,13 +2841,7 @@ async fn chat_session_state(
             let version = stored.len() as u64;
             ("closed".to_owned(), version, stored)
         } else {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    message: format!("session not found: {id}"),
-                }),
-            )
-                .into_response();
+            return ApiError::not_found(format!("session not found: {id}"),).into_response();
         };
 
     Json(ChatSessionStateResponse {
@@ -3084,13 +2914,7 @@ async fn chat_session_send(
             match runtime.restore_chat_session(&id).await {
                 Some(()) => runtime.workflow_engine().get_instance(&id).expect("just restored"),
                 None => {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(ErrorBody {
-                            message: format!("session not found: {id}"),
-                        }),
-                    )
-                        .into_response();
+                    return ApiError::not_found(format!("session not found: {id}"),).into_response();
                 }
             }
         }
@@ -3102,16 +2926,10 @@ async fn chat_session_send(
         .unwrap_or(0);
     if let Some(expected) = req.expected_version
         && current_ver != expected {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    message: format!(
+            return ApiError::conflict(format!(
                         "version conflict: expected {}, got {}",
                         expected, current_ver
-                    ),
-                }),
-            )
-                .into_response();
+                    ),).into_response();
         }
 
     // Sanitize input.
@@ -3125,13 +2943,7 @@ async fn chat_session_send(
                 "blocked",
                 format!("matched:{}", matched_patterns.join(",")),
             );
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorBody {
-                    message: format!("Message blocked: matched {}", matched_patterns.join(", ")),
-                }),
-            )
-                .into_response();
+            return ApiError::bad_request(format!("Message blocked: matched {}", matched_patterns.join(", ")),).into_response();
         }
         SanitizeResult::ReplaceMessage { matched_patterns } => {
             runtime.audit().record(
@@ -3256,7 +3068,7 @@ async fn chat_session_send(
             "error",
             error.to_string(),
         );
-        return error_response(error);
+        return ApiError::from(error).into_response();
     }
 
     // Touch session (update timestamp + version).
@@ -3390,7 +3202,7 @@ async fn chat_session_close(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -3410,7 +3222,7 @@ async fn chat_session_stop(
         }),
     );
     if let Err(error) = runtime.publish_event(event).await {
-        return error_response(error);
+        return ApiError::from(error).into_response();
     }
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
@@ -3457,7 +3269,7 @@ async fn chat_session_retry(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -3482,13 +3294,7 @@ async fn chat_session_edit(
     let instance = match runtime.workflow_engine().get_instance(&id) {
         Some(inst) => inst,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorBody {
-                    message: format!("session not found: {id}"),
-                }),
-            )
-                .into_response();
+            return ApiError::not_found(format!("session not found: {id}"),).into_response();
         }
     };
     let current_ver = instance
@@ -3498,27 +3304,15 @@ async fn chat_session_edit(
         .unwrap_or(0);
     if let Some(expected) = req.expected_version
         && current_ver != expected {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    message: format!(
+            return ApiError::conflict(format!(
                         "version conflict: expected {}, got {}",
                         expected, current_ver
-                    ),
-                }),
-            )
-                .into_response();
+                    ),).into_response();
         }
 
     // Verify the message exists in event store.
     if runtime.event_store().get(&req.message_event_id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("message not found: {}", req.message_event_id),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found(format!("message not found: {}", req.message_event_id),).into_response();
     }
 
     let event = Event::new(
@@ -3539,7 +3333,7 @@ async fn chat_session_edit(
             "error",
             error.to_string(),
         );
-        return error_response(error);
+        return ApiError::from(error).into_response();
     }
     let _ = runtime.workflow_engine().update_instance_data(&id, |data| {
         let now_ms = std::time::SystemTime::now()
@@ -3591,7 +3385,7 @@ async fn skills_reload(
                 "error",
                 error.to_string(),
             );
-            error_response(error)
+            ApiError::from(error).into_response()
         }
     }
 }
@@ -3616,13 +3410,7 @@ async fn events_recent(
 
 async fn soul_system_prompt(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     let Some(soul) = runtime.soul_runtime() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: "no soul configured".to_owned(),
-            }),
-        )
-            .into_response();
+        return ApiError::not_found("no soul configured".to_owned(),).into_response();
     };
     let soul = soul.current_soul();
     let prompt = runtime.self_bridge()
@@ -3718,17 +3506,77 @@ fn require_confirmation(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("yes"))
 }
 
-fn error_response(error: kernel::Error) -> Response {
-    let status = match &error {
-        Error::NotFound { .. } => StatusCode::NOT_FOUND,
-        Error::AlreadyExists { .. } => StatusCode::CONFLICT,
-        Error::InvalidStateTransition { .. } => StatusCode::CONFLICT,
-        Error::PermissionDenied { .. } => StatusCode::FORBIDDEN,
-        Error::ConfigInvalid { .. } => StatusCode::BAD_REQUEST,
-        Error::Unrecoverable { .. } => StatusCode::UNPROCESSABLE_ENTITY,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    (status, Json(ErrorBody::from(error))).into_response()
+/// Unified API error response.
+///
+/// All HTTP handlers in this file produce errors in this shape so
+/// clients see a consistent `{"error": "<message>"}` body with an
+/// appropriate status code. The previous code mixed three styles
+/// — `error_response()` returning `ErrorBody { message }`, inline
+/// `(StatusCode, Json(ErrorBody{...}))` tuples, and bare
+/// `(StatusCode, Json(json!({"error":...})))` — and used two
+/// different field names (`message` vs `error`) for the body.
+///
+/// `IntoResponse` makes `ApiError` usable directly as a handler
+/// return type: `Result<Json<T>, ApiError>` is the axum-idiomatic
+/// shape and the `?` operator flows through unchanged.
+#[derive(Debug)]
+pub enum ApiError {
+    BadRequest(String),
+    NotFound(String),
+    Conflict(String),
+    Forbidden(String),
+    Unprocessable(String),
+    Internal(String),
+}
+
+impl ApiError {
+    pub fn bad_request(msg: impl Into<String>) -> Self {
+        Self::BadRequest(msg.into())
+    }
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Self::NotFound(msg.into())
+    }
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self::Conflict(msg.into())
+    }
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self::Forbidden(msg.into())
+    }
+    pub fn unprocessable(msg: impl Into<String>) -> Self {
+        Self::Unprocessable(msg.into())
+    }
+    pub fn internal(msg: impl Into<String>) -> Self {
+        Self::Internal(msg.into())
+    }
+}
+
+impl From<kernel::Error> for ApiError {
+    fn from(error: kernel::Error) -> Self {
+        match error {
+            Error::NotFound { name } => Self::not_found(format!("{name} not found")),
+            Error::AlreadyExists { .. } | Error::InvalidStateTransition { .. } => {
+                Self::conflict(error.to_string())
+            }
+            Error::PermissionDenied { .. } => Self::forbidden(error.to_string()),
+            Error::ConfigInvalid { .. } => Self::bad_request(error.to_string()),
+            Error::Unrecoverable { .. } => Self::unprocessable(error.to_string()),
+            _ => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            Self::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            Self::Conflict(m) => (StatusCode::CONFLICT, m),
+            Self::Forbidden(m) => (StatusCode::FORBIDDEN, m),
+            Self::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+            Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+        };
+        (status, Json(json!({"error": message}))).into_response()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3755,19 +3603,6 @@ struct InstallPluginResponse {
     install_dir: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ErrorBody {
-    message: String,
-}
-
-impl From<kernel::Error> for ErrorBody {
-    fn from(error: kernel::Error) -> Self {
-        Self {
-            message: error.to_string(),
-        }
-    }
-}
-
 // ── Agent management ──────────────────────────────────────────────────
 
 async fn agent_list(State(runtime): State<Arc<AgentRuntime>>) -> Response {
@@ -3780,13 +3615,7 @@ async fn agent_get(
 ) -> Response {
     match runtime.agent_registry().get(&agent_id).await {
         Some(instance) => Json(instance).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(ErrorBody {
-                message: format!("agent not found: {agent_id}"),
-            }),
-        )
-            .into_response(),
+        None => ApiError::not_found(format!("agent not found: {agent_id}"),).into_response(),
     }
 }
 
@@ -3802,7 +3631,7 @@ async fn agent_set_status(
 ) -> Response {
     match runtime.agent_registry().set_status(&agent_id, body.status).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
+        Err(e) => ApiError::bad_request(e.to_string()).into_response(),
     }
 }
 
@@ -3813,13 +3642,7 @@ async fn agent_reload(
     let config = match config::AmanConfig::from_default_path() {
         Ok(c) => c,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorBody {
-                    message: format!("failed to read config: {e}"),
-                }),
-            )
-                .into_response();
+            return ApiError::internal(format!("failed to read config: {e}"),).into_response();
         }
     };
     match runtime
@@ -3828,7 +3651,7 @@ async fn agent_reload(
         .await
     {
         Ok(()) => Json(json!({ "ok": true, "agent_id": agent_id })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(ErrorBody::from(e))).into_response(),
+        Err(e) => ApiError::bad_request(e.to_string()).into_response(),
     }
 }
 
@@ -3924,11 +3747,7 @@ async fn idle_run(
         .to_lowercase();
 
     if tag.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "missing 'tag' field"})),
-        )
-            .into_response();
+        return ApiError::bad_request("missing 'tag' field").into_response();
     }
 
     // Resolve agent
@@ -3943,11 +3762,7 @@ async fn idle_run(
         }) {
         Some(k) => k,
         None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "no agent configured"})),
-            )
-                .into_response();
+            return ApiError::bad_request("no agent configured").into_response();
         }
     };
 
@@ -3960,11 +3775,7 @@ async fn idle_run(
         .collect();
 
     if candidates.is_empty() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "执行失败，还没有实装有关的技能"})),
-        )
-            .into_response();
+        return ApiError::not_found("执行失败，还没有实装有关的技能").into_response();
     }
 
     // Pick a random skill (scope RNG so it's dropped before any await)
@@ -3977,11 +3788,7 @@ async fn idle_run(
     };
 
     let Some(skill) = runtime.skills().get(&skill_name) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "执行失败，还没有实装有关的技能"})),
-        )
-            .into_response();
+        return ApiError::not_found("执行失败，还没有实装有关的技能").into_response();
     };
 
     // Pick an idle_prompt (no RNG needed — use the pre-rolled index)
@@ -4047,11 +3854,7 @@ async fn idle_run(
             .ensure_session(&sid, &agent_id, session_type)
             .await
         {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("failed to ensure work session: {e}")})),
-            )
-                .into_response();
+            return ApiError::internal(format!("failed to ensure work session: {e}")).into_response();
         }
 
         // Resume: load previous history, apply compression if needed
@@ -4085,11 +3888,7 @@ async fn idle_run(
         {
             Ok(i) => i,
             Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": format!("failed to create session: {e}")})),
-                )
-                    .into_response();
+                return ApiError::internal(format!("failed to create session: {e}")).into_response();
             }
         };
         let sid = instance.id.clone();
@@ -4138,11 +3937,7 @@ async fn idle_run(
         }),
     );
     if let Err(e) = runtime.publish_event(event).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("failed to publish event: {e}")})),
-        )
-            .into_response();
+        return ApiError::internal(format!("failed to publish event: {e}")).into_response();
     }
 
     (
@@ -4162,16 +3957,13 @@ async fn idle_run(
 async fn mcp_list_servers(
     State(runtime): State<Arc<AgentRuntime>>,
     Path(agent_key): Path<String>,
-) -> Result<Json<Vec<mcp_client::McpServerStatus>>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Vec<mcp_client::McpServerStatus>>, ApiError> {
     let manager = runtime
         .agent_registry()
         .get_mcp_manager(&agent_key)
         .await
         .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("MCP manager not found for agent '{agent_key}'")})),
-            )
+            ApiError::not_found(format!("MCP manager not found for agent '{agent_key}'"))
         })?;
 
     let statuses = manager.list_servers().await;
@@ -4181,41 +3973,26 @@ async fn mcp_list_servers(
 async fn mcp_connect_server(
     State(runtime): State<Arc<AgentRuntime>>,
     Path((agent_key, name)): Path<(String, String)>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, ApiError> {
     let manager = runtime
         .agent_registry()
         .get_mcp_manager(&agent_key)
         .await
         .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("MCP manager not found for agent '{agent_key}'")})),
-            )
+            ApiError::not_found(format!("MCP manager not found for agent '{agent_key}'"))
         })?;
 
-    let merged = mcp_client::McpClientManager::load_merged_config(&agent_key).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e})),
-        )
-    })?;
+    let merged = mcp_client::McpClientManager::load_merged_config(&agent_key)
+        .map_err(|e| ApiError::internal(e))?;
 
     let config = merged.iter().find(|c| c.name == name).cloned().ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": format!("MCP server '{name}' not found in config")})),
-        )
+        ApiError::not_found(format!("MCP server '{name}' not found in config"))
     })?;
 
     manager
         .connect(&config)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e.to_string()})),
-            )
-        })?;
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     Ok(Json(json!({"ok": true, "server": name, "agent": agent_key})))
 }
@@ -4223,24 +4000,19 @@ async fn mcp_connect_server(
 async fn mcp_disconnect_server(
     State(runtime): State<Arc<AgentRuntime>>,
     Path((agent_key, name)): Path<(String, String)>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, ApiError> {
     let manager = runtime
         .agent_registry()
         .get_mcp_manager(&agent_key)
         .await
         .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": format!("MCP manager not found for agent '{agent_key}'")})),
-            )
+            ApiError::not_found(format!("MCP manager not found for agent '{agent_key}'"))
         })?;
 
-    manager.disconnect(&name).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()})),
-        )
-    })?;
+    manager
+        .disconnect(&name)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
 
     Ok(Json(json!({"ok": true, "server": name, "agent": agent_key})))
 }
@@ -4248,17 +4020,12 @@ async fn mcp_disconnect_server(
 async fn mcp_reload(
     State(runtime): State<Arc<AgentRuntime>>,
     Path(agent_key): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, ApiError> {
     runtime
         .agent_registry()
         .reload_mcp_for_agent(&agent_key)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": e})),
-            )
-        })?;
+        .map_err(|e| ApiError::internal(e))?;
 
     Ok(Json(json!({"ok": true, "agent": agent_key})))
 }

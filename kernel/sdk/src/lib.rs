@@ -23,6 +23,14 @@ use sdk::prelude::*;
 "]
 
 /// Core types and traits (Event, EventType, Skill, Tool, Pipeline, etc.)
+///
+/// **Internal-use path.** External Skill and Plugin authors should
+/// prefer [`prelude`], which is a curated subset. The crate-level
+/// re-export stays for internal use (e.g. `sdk::kernel::tool::Tool`)
+/// and for advanced cases where the curated subset is too narrow.
+///
+/// See the [P3-24 note in docs/code-review-20260614.md] for the
+/// rationale behind the two-tier surface.
 pub use kernel;
 
 /// Agent configuration

@@ -1994,6 +1994,7 @@ dependencies = [
  "pollster",
  "serde",
  "serde_json",
+ "test-utils",
  "tokio",
 ]
 
@@ -2313,6 +2314,7 @@ dependencies = [
  "kernel",
  "pollster",
  "serde_json",
+ "test-utils",
  "tokio",
  "tracing",
  "uuid",
@@ -4303,7 +4305,6 @@ dependencies = [
  "kernel",
  "reqwest 0.12.28",
  "serde_json",
- "test-utils",
  "tokio",
 ]
 

@@ -21,4 +21,5 @@ tokio = { version = "1", features = ["sync", "time", "macros"] }
 
 [dev-dependencies]
 pollster.workspace = true
+test-utils = { path = "../test-utils" }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }

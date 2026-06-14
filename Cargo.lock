@@ -4401,7 +4401,10 @@ checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
 name = "macros"
 version = "0.1.0"
 dependencies = [
+ "kernel",
+ "plugin",
  "proc-macro2",
+ "quote",
  "syn 2.0.117",
  "trybuild",
 ]
@@ -5898,6 +5901,7 @@ dependencies = [
  "futures",
  "futures-timer",
  "kernel",
+ "macros",
  "pollster",
  "sandbox",
  "semver",

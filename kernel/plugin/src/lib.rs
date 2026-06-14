@@ -950,50 +950,8 @@ pub trait PluginExportRegistrar: Send + Sync {
     fn unregister_memory_provider(&self, provider_name: &str) -> AmanResult<()>;
 }
 
-#[derive(Default)]
+#[derive(Default, macros::Noop)]
 pub struct NoopPluginRegistrar;
-
-impl PluginExportRegistrar for NoopPluginRegistrar {
-    fn register_skill(&self, _skill: Arc<dyn Skill>) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn unregister_skill(&self, _skill_name: &str) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn register_tool(&self, _tool: Arc<dyn Tool>) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn unregister_tool(&self, _tool_name: &str) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn register_event_source(&self, _source: Arc<dyn EventSource>) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn unregister_event_source(&self, _source_id: &str) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn register_hook(&self, _hook: Arc<dyn Hook>) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn unregister_hook(&self, _hook_name: &str) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn register_memory_provider(&self, _provider: Arc<dyn MemoryProvider>) -> AmanResult<()> {
-        Ok(())
-    }
-
-    fn unregister_memory_provider(&self, _provider_name: &str) -> AmanResult<()> {
-        Ok(())
-    }
-}
 
 pub struct PluginLoader {
     registrar: Arc<dyn PluginExportRegistrar>,

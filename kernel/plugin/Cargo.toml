@@ -16,6 +16,7 @@ async-trait.workspace = true
 flate2 = "1.1.5"
 futures = "0.3.31"
 futures-timer = "3.0.3"
+macros = { path = "../macros" }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

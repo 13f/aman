@@ -316,6 +316,29 @@ pub enum Kind {
 
 **建议**: 表驱动 `&[(&str, async fn)]` 注册表；抽 `fn arg(args, i) -> Result<String, i32>` helper 替代 `args.get(i + 1).ok_or(2)?.to_owned()` 的 71 处复制。
 
+**✅ 已修复 (2026-06-14)**:
+
+- 新增 `fn arg(args: &[String], i: usize) -> Result<String, i32>`（file-local helper in `kernel/cli/src/main.rs`），把「`+1` 偏移 + `ok_or(2)?` + `.to_owned()`」三件套藏进 helper — 调用点从 `args.get(i + 1).ok_or(2)?.to_owned()` 缩成 `arg(args, i)?`。
+- 替换 **51 处**（doc 说 71，但 P2-18 的 `config_cmd` 迭代器化已经删了 20 个，加上几个 `PathBuf::from(...)` 站点不直接调 `.to_owned()`，剩 51）。`rest.get(i + 1).ok_or(2)?.to_owned()`（`rest` 是 `Vec<String>`）变成 `arg(&rest, i)?`。
+- 新增 `dispatch!` 宏（`macro_rules!`）把 `main()` 里的 16-arm `match` 折叠成声明式表：
+
+  ```rust
+  dispatch!(
+      args,
+      "run" => run_cmd,
+      "health" => health_cmd,
+      "agent" => agent_cmd,
+      // ... 11 more
+  );
+  ```
+
+  宏里同时处理 `--version` / `-V` 和默认 `print_usage() + exit(2)` 分支，所以宏调用是 top-level match 的完全 drop-in。
+- `config_cmd` 里 `rest_iter.next().ok_or(2)?.to_owned()`（P2-18 引入的迭代器风格）保留不动 — `arg` helper 是 index-based，不适合迭代器场景。
+
+**净 -29 行**（+105, -134）。`cargo build -p cli` 干净；`cargo test -p cli --bin aman-cli` 2/2 通过；`cargo build --workspace` 干净。
+
+**未做**：16 个 `*_cmd` 函数**本身**没合并成表驱动 — doc 提到的「`async fn` 注册表」方案需要把每个 cmd 包成 `fn(&[String]) -> BoxFuture<...>` 或用 `async-trait`，改动面比 dispatch 宏 + arg helper 大得多，而且 cmd 内部差异（HTTP 15+ 份 / gRPC 25+ 份；不同 sub-args 解析；不同返回类型）也意味着表驱动的实际收益有限。**这是 P3 范围**。
+
 ### 16. unbounded channel 在 LLM streaming
 
 `agent_harness.rs:2462` `mpsc::unbounded_channel()`，慢消费者会让 buffer 无限增长（event-bus 已有 6 级背压，stream 不应有例外）。

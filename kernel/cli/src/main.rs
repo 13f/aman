@@ -18,93 +18,64 @@ static _AI_SIGNAL: () = {
     let _ = std::any::TypeId::of::<AmanSignalV1>();
 };
 
+
+// ── CLI helpers (P2-15) ────────────────────────────────────────────
+
+/// Read the value following a flag at position `i` in `args`.
+/// Replaces the `arg(args, i)?` boilerplate
+/// that was repeated 52 times across the 16 `*_cmd` functions.
+#[inline]
+fn arg(args: &[String], i: usize) -> Result<String, i32> {
+    args.get(i + 1)
+        .map(String::as_str)
+        .map(str::to_owned)
+        .ok_or(2)
+}
+
+/// Dispatch a top-level subcommand to its `*_cmd` function and exit
+/// the process on any non-Ok return. Replaces the 16-arm `match`
+/// block that repeated `if let Err(code) = xxx_cmd(&args[1..]).await
+/// { std::process::exit(code); }` once per subcommand.
+macro_rules! dispatch {
+    ( $args:ident, $( $name:literal => $fn:path ),+ $(,)? ) => {
+        match $args.first().map(String::as_str) {
+            $( Some($name) => {
+                if let Err(code) = $fn(&$args[1..]).await {
+                    std::process::exit(code);
+                }
+            } )+
+            Some("--version") | Some("-V") => {
+                safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
+            }
+            _ => {
+                print_usage();
+                std::process::exit(2);
+            }
+        }
+    };
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let Some(cmd) = args.first().map(String::as_str) else {
-        print_usage();
-        std::process::exit(2);
-    };
 
-    match cmd {
-        "run" => {
-            if let Err(code) = run_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "health" => {
-            if let Err(code) = health_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "agent" => {
-            if let Err(code) = agent_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "metrics" => {
-            if let Err(code) = metrics_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "audit-log" => {
-            if let Err(code) = audit_log_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "event" => {
-            if let Err(code) = event_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "dlq" => {
-            if let Err(code) = dlq_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "source" => {
-            if let Err(code) = source_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "plugin" => {
-            if let Err(code) = plugin_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "skill" => {
-            if let Err(code) = skill_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "workflow" => {
-            if let Err(code) = workflow_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "cron" => {
-            if let Err(code) = cron_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "serve" => {
-            if let Err(code) = serve_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "config" => {
-            if let Err(code) = config_cmd(&args[1..]).await {
-                std::process::exit(code);
-            }
-        }
-        "--version" | "-V" => {
-            safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
-        }
-        _ => {
-            print_usage();
-            std::process::exit(2);
-        }
-    }
+    dispatch!(
+        args,
+        "run" => run_cmd,
+        "health" => health_cmd,
+        "agent" => agent_cmd,
+        "metrics" => metrics_cmd,
+        "audit-log" => audit_log_cmd,
+        "event" => event_cmd,
+        "dlq" => dlq_cmd,
+        "source" => source_cmd,
+        "plugin" => plugin_cmd,
+        "skill" => skill_cmd,
+        "workflow" => workflow_cmd,
+        "cron" => cron_cmd,
+        "serve" => serve_cmd,
+        "config" => config_cmd,
+    );
 }
 
 async fn run_cmd(args: &[String]) -> Result<(), i32> {
@@ -449,11 +420,11 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
     while i < rest.len() {
         match rest[i].as_str() {
             "--action" => {
-                action = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                action = Some(arg(&rest, i)?);
                 i += 2;
             }
             "--operator" => {
-                operator = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                operator = Some(arg(&rest, i)?);
                 i += 2;
             }
             "--since-ms" => {
@@ -550,11 +521,11 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--source" => {
-                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        source = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--type" => {
-                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        event_type = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--payload" => {
@@ -601,11 +572,11 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--source" => {
-                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        source = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--type" => {
-                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        event_type = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--payload" => {
@@ -616,15 +587,15 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
                         i += 2;
                     }
                     "--agent" => {
-                        agent_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        agent_id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--priority" => {
-                        priority = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        priority = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--delivery" => {
-                        delivery = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        delivery = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--ttl-ms" => {
@@ -706,7 +677,7 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -734,7 +705,7 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--trace-id" => {
-                        trace_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        trace_id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -771,11 +742,11 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--source" => {
-                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        source = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--type" => {
-                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        event_type = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--payload" => {
@@ -804,11 +775,11 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--source" => {
-                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        source = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--type" => {
-                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        event_type = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--payload" => {
@@ -817,7 +788,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                         i += 2;
                     }
                     "--agent" => {
-                        agent_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        agent_id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--priority" | "--delivery" | "--ttl-ms" => {
@@ -857,7 +828,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -876,7 +847,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--trace-id" => {
-                        trace_id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        trace_id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -959,11 +930,11 @@ async fn dlq_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--reason" => {
-                        reason = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        reason = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -990,7 +961,7 @@ async fn dlq_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1025,15 +996,15 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--reason" => {
-                        reason = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        reason = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--source" => {
-                        source = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        source = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--event-type" => {
-                        event_type = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        event_type = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--limit" => {
@@ -1061,11 +1032,11 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--reason" => {
-                        reason = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        reason = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1082,7 +1053,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1115,7 +1086,7 @@ async fn source_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1145,7 +1116,7 @@ async fn source_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--json" => {
@@ -1188,7 +1159,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1205,7 +1176,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1223,7 +1194,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--json" => {
@@ -1280,7 +1251,7 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--name" => {
-                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        name = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1311,7 +1282,7 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--name" => {
-                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        name = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1416,7 +1387,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--name" => {
-                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        name = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1502,7 +1473,7 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--q" => {
-                        q = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        q = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--limit" => {
@@ -1541,11 +1512,11 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--name" => {
-                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        name = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--version" => {
-                        version = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        version = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1608,7 +1579,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--q" => {
-                        q = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        q = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--limit" => {
@@ -1633,11 +1604,11 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--name" => {
-                        name = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        name = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--version" => {
-                        version = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        version = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1796,7 +1767,7 @@ async fn workflow_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1852,7 +1823,7 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1895,11 +1866,11 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--expression" => {
-                        expression = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        expression = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1927,7 +1898,7 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--json" => {
@@ -1959,7 +1930,7 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -1991,11 +1962,11 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--expression" => {
-                        expression = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        expression = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),
@@ -2013,7 +1984,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     "--json" => {
@@ -2038,7 +2009,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             while i < rest.len() {
                 match rest[i].as_str() {
                     "--id" => {
-                        id = Some(rest.get(i + 1).ok_or(2)?.to_owned());
+                        id = Some(arg(&rest, i)?);
                         i += 2;
                     }
                     _ => return Err(2),

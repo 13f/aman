@@ -463,9 +463,27 @@ pub enum Kind {
 
 **验证**：`cargo build -p config` 干净。
 
+### 24. SDK 抽象泄漏
+
 `kernel/sdk/src/lib.rs` 同时提供 `sdk::Tool` 和 `sdk::prelude::Tool`，两条路径到达同一类型。
 
 **建议**: 外部代码只暴露 `prelude`，内部代码保留 crate 级路径。
+
+**✅ 已修复 (2026-06-14)** — 通过文档注释澄清两层约定，**不修改公共 API**。
+
+经调查：
+- `sdk::prelude::Tool` = `kernel::prelude::Tool` = `kernel::tool::Tool`（trait，定义在 `kernel/core/src/tool.rs:14`）
+- `sdk::kernel::tool::Tool` = `pub use kernel;` 暴露的 crate 级路径，到的是同一个 trait
+
+两个使用 SDK 的 crate（`sdk/examples/hello-skill/src/lib.rs` 和 `sdk/src/lib.rs` 自己）都已经在用 `use sdk::prelude::*;`。**没有外部代码在用 crate 级路径** — "泄漏"是理论风险，不是实际问题。
+
+修复：给 `pub use kernel;` 加 doc 注释，明确说明「外部用 `prelude`、内部用 crate 级路径」的两层约定，引用本节做 rationale。Re-export 全部保留 — 内部代码继续走短路径，外部作者走 `prelude`。
+
+**未做**：
+- 没有删除 `pub use kernel;` / `pub use tool;` / `pub use config;` 等 crate 级 re-export。删除会破坏「SDK 是单依赖入口」的设计意图，且没有任何外部消费者在用这些路径 — 删了反倒是改了 API。
+- 没有把 `prelude` 设为 `pub use` 之外的形式（例如 trait 自动 re-export）。curated subset + wildcard `prelude::*` 是 Rust 社区惯例，没有替代品更优。
+
+**验证**：`cargo build -p sdk` 干净；`cargo build -p hello-skill`（唯一一个外部消费者）干净。
 
 ### 25. 其他代码异味汇总（按文件）
 

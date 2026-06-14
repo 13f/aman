@@ -435,6 +435,18 @@ pub enum Kind {
 
 **建议**: 引入 `tracing::warn!` 包装 `let _ =` 模式；为 `version_manager.save_version` 失败发出告警事件。
 
+**✅ 已修复 (2026-06-14)** — 三个 `let _ =` 站点全部处理（数据丢失风险 + 静默失败）。`unwrap_or("untitled")` 经调查是 intentional UX default，**不动**。
+
+- **#22a `skill/src/lib.rs:1322` save_version**（**真 bug**，数据丢失风险）：`let _ = version_manager.save_version(...);` → `if let Err(e) = ... { tracing::warn!(skill, version, error, "failed to persist skill version snapshot; in-memory version is loaded but the on-disk history is incomplete"); }`。Skill 仍然能加载到内存（核心功能不中断），但 warn 让操作员知道有 snapshot 没写盘 — 可以对应排查「磁盘满 / 权限丢失」等根因。
+- **#22b `agent_harness.rs` 20 个 `publish_to_agent_bus` 站点**（高频静默吞）：在 3 个 impl（`ToolExecutor` / `LlmReActEngine` / `AgentHarness`）里各加一个 `try_publish_to_agent_bus` 兄弟方法。语义：`publish_to_agent_bus` 保留原 `AmanResult<()>` 签名（给将来的 error-aware 调用方用），新方法内部 `tracing::warn!` 后返回 `()`。20 个调用点从 `let _ = self.publish_to_agent_bus(...).await;` 改成 `self.try_publish_to_agent_bus(...).await;`，类型签名自动「清干净」（不再需要 `let _ =`）。
+- **#22c `workflow/src/lib.rs:685` store.delete**（内存/磁盘状态不一致风险）：`let _ = self.store.delete(instance_id);` → `if let Err(e) = ... { tracing::warn!(instance_id, error, "failed to delete workflow instance from persistent store; in-memory state is consistent but the durable record is stale"); }`。warn 明说「内存一致、磁盘陈旧」— 操作员知道下一步要么手工删行，要么接受下次重启会「复活」这个 instance。
+- **#22d `unwrap_or("untitled")` 经调查是 intentional UX default**：
+  - `agent_runtime.rs:2382` 是 `aman.push_work_item` JSON-RPC 方法的 `title` 参数。同一个方法里 `agent_id` 用 `.ok_or_else(...)`（缺失就报错），`title` 用 `.unwrap_or("untitled")`（缺失就默认名）。**作者明显是设计成 title 可选**（work item 可以先建、再改名）。**这不是 bug**。
+  - `http.rs:2362` 是 info-hub 搜索结果展示：`item.get("title")` → `unwrap_or("(untitled)")` 显示占位符。**纯展示层 fallback**，不是错误路径。
+  - **结论：不动。** 已在对应 commit message 里说明 design rationale。
+
+**验证**：`cargo build -p skill -p workflow -p gateway` 干净；`cargo test -p gateway --lib` 74/74 通过。`cargo test -p skill -p workflow` 0 tests / 0 failed（这两个 crate 当前没有 lib 测试）。
+
 ### 23. 日志安全违规
 
 - `kernel/config/src/lib.rs:991` `eprintln!` 违反 CLAUDE.md 规则（虽带 `#[allow]`，但应改 `tracing::warn!`）

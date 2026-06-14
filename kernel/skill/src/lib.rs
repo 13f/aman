@@ -1319,7 +1319,26 @@ impl HotReloadManager {
                     .ok()
                     .is_none_or(|records| !records.iter().any(|record| record.version == version))
                 {
-                    let _ = version_manager.save_version(&name, &version, &content);
+                    // Surface save_version failures via tracing::warn!.
+                    // P3-22 from docs/code-review-20260614.md: a previous
+                    // `let _ = ...` here silently dropped the result,
+                    // which is a data-loss risk if the version_manager
+                    // couldn't persist the snapshot (disk full, perms,
+                    // etc.). The skill is still loaded into memory; only
+                    // the versioned snapshot is missing, but the operator
+                    // needs to know.
+                    if let Err(e) =
+                        version_manager.save_version(&name, &version, &content)
+                    {
+                        tracing::warn!(
+                            skill = %name,
+                            version = %version,
+                            error = %e,
+                            "failed to persist skill version snapshot; in-memory \
+                             version is loaded but the on-disk history is \
+                             incomplete — investigate disk space / permissions"
+                        );
+                    }
                 }
             }
             // Record content hash so we can skip this file on the next reload.

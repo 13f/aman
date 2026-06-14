@@ -20,6 +20,7 @@ serde_yaml = "0.9.34"
 skm-core = "0.1.0"
 tantivy = "0.22.0"
 tool = { path = "../tool", version = "0.1.0" }
+tracing.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true

@@ -54,6 +54,7 @@ pub struct LifecycleEngine<S: SystemSpec> {
 impl<S: SystemSpec> LifecycleEngine<S> {
     /// Create a new lifecycle engine.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agent_id: impl Into<String>,
         spec: S,
@@ -158,17 +159,17 @@ impl<S: SystemSpec> LifecycleEngine<S> {
         // Notify global bus if the item requested it.
         {
             let ctx = self.ctx.lock().await;
-            if let Some(ref item) = ctx.current {
-                if S::notify_on_complete(item) {
-                    let _ = self
-                        .global_bus
-                        .publish(Event::new(
-                            S::event_source(),
-                            EventType::Custom(format!("{}.result", S::event_source())),
-                            S::make_result_notify(item_id, &result, &self.agent_id),
-                        ))
-                        .await;
-                }
+            if let Some(ref item) = ctx.current
+                && S::notify_on_complete(item)
+            {
+                let _ = self
+                    .global_bus
+                    .publish(Event::new(
+                        S::event_source(),
+                        EventType::Custom(format!("{}.result", S::event_source())),
+                        S::make_result_notify(item_id, &result, &self.agent_id),
+                    ))
+                    .await;
             }
         }
 

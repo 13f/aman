@@ -342,7 +342,7 @@ impl AgentRuntimeBuilder {
 
         // Load the built-in memory-store plugin (in-memory keyword-based provider).
         let memory_store_plugin = MemoryStorePlugin::new();
-        let memory_store_candidate = PluginCandidate {
+        let memory_store_candidate = PluginCandidate::InProcess {
             manifest: PluginManifest {
                 name: "memory-store".to_owned(),
                 version: memory_store_plugin.version().clone(),
@@ -365,9 +365,6 @@ impl AgentRuntimeBuilder {
                 security: load_security(include_str!("../../../plugins/memory-store/plugin.yaml")),
             },
             plugin: Box::new(memory_store_plugin),
-            isolation: PluginIsolationMode::InProcess,
-            subprocess: None,
-            wasm_module_bytes: None,
         };
 
         // Resolve LLM config for info-hub (first try info_hub.llm, fall back to memory.llm)
@@ -399,7 +396,7 @@ impl AgentRuntimeBuilder {
             aman_cfg.as_ref().and_then(|c| c.info_hub.as_ref()),
             info_hub_llm,
         );
-        let info_hub_candidate = PluginCandidate {
+        let info_hub_candidate = PluginCandidate::InProcess {
             manifest: PluginManifest {
                 name: "info-hub".to_owned(),
                 version: info_hub_plugin.version().clone(),
@@ -421,9 +418,6 @@ impl AgentRuntimeBuilder {
                 security: load_security(include_str!("../../../plugins/info-hub/plugin.yaml")),
             },
             plugin: Box::new(info_hub_plugin),
-            isolation: PluginIsolationMode::InProcess,
-            subprocess: None,
-            wasm_module_bytes: None,
         };
 
         // ── Hook registry (created early so SkillEventDispatcher can drive it) ─
@@ -604,19 +598,19 @@ impl AgentRuntimeBuilder {
         let mut pending_approvals: Vec<(PluginCandidate, CapabilitySet)> = Vec::new();
 
         for candidate in all_candidates {
-            let plugin_name = candidate.manifest.name.clone();
-            let needs_approval = match (&approval_cache_runtime, &candidate.manifest.security) {
+            let plugin_name = plugin::plugin_manifest_name(&candidate).to_string();
+            let needs_approval = match (&approval_cache_runtime, plugin::plugin_manifest_security(&candidate)) {
                 (Some(cache), Some(sec)) => {
                     match cache.check_approval(
                         &plugin_name,
                         &sec.requested_capabilities,
-                        &candidate.manifest.version,
+                        &plugin::plugin_manifest_version(&candidate),
                     ) {
                         Ok(Some(needed_caps)) => {
                             if auto_approve {
                                 // Auto-approve: persist and proceed
                                 let mut caps = ApprovedCapabilities {
-                                    plugin_version: candidate.manifest.version.to_string(),
+                                    plugin_version: plugin::plugin_manifest_version(&candidate).to_string(),
                                     capabilities: sec.requested_capabilities.clone(),
                                     approved_at_ms: now_ms,
                                     approved_by: "auto".to_owned(),
@@ -2961,7 +2955,7 @@ impl AgentRuntime {
         let mut guard = self.pending_plugin_approvals.lock().await;
         let idx = guard
             .iter()
-            .position(|(c, _)| c.manifest.name == plugin_name);
+            .position(|(c, _)| plugin::plugin_manifest_name(c) == plugin_name);
         idx.map(|i| guard.remove(i))
     }
 
@@ -2969,7 +2963,7 @@ impl AgentRuntime {
     pub async fn remove_pending_plugin_candidate(&self, plugin_name: &str) -> bool {
         let mut guard = self.pending_plugin_approvals.lock().await;
         let before = guard.len();
-        guard.retain(|(c, _)| c.manifest.name != plugin_name);
+        guard.retain(|(c, _)| plugin::plugin_manifest_name(c) != plugin_name);
         guard.len() != before
     }
 
@@ -2989,8 +2983,8 @@ impl AgentRuntime {
             .await
             .iter()
             .map(|(candidate, caps)| PendingApprovalInfo {
-                plugin_name: candidate.manifest.name.clone(),
-                version: candidate.manifest.version.to_string(),
+                plugin_name: plugin::plugin_manifest_name(&candidate).to_string(),
+                version: plugin::plugin_manifest_version(&candidate).to_string(),
                 capabilities_summary: caps.summary(),
                 capabilities: caps.clone(),
             })
@@ -3011,8 +3005,8 @@ impl AgentRuntime {
                 .iter()
                 .map(|(candidate, needed_caps)| {
                     (
-                        candidate.manifest.name.clone(),
-                        candidate.manifest.version.to_string(),
+                        plugin::plugin_manifest_name(&candidate).to_string(),
+                        plugin::plugin_manifest_version(&candidate).to_string(),
                         needed_caps.summary(),
                         needed_caps.clone(),
                     )
@@ -3085,7 +3079,7 @@ impl AgentRuntime {
                                 .unwrap_or_default()
                                 .as_millis() as u64;
                             let mut caps = ApprovedCapabilities {
-                                plugin_version: candidate.manifest.version.to_string(),
+                                plugin_version: plugin::plugin_manifest_version(&candidate).to_string(),
                                 capabilities: approved_caps,
                                 approved_at_ms: now_ms,
                                 approved_by: "tui".to_owned(),
@@ -5364,3 +5358,4 @@ fn build_semantic_strategy(
 
     Some((provider, index, config))
 }
+

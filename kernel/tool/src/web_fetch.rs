@@ -196,7 +196,7 @@ impl Tool for WebFetchTool {
         };
 
         Ok(json!({
-            "ok": status >= 200 && status < 400,
+            "ok": (200..400).contains(&status),
             "status": status,
             "content_type": content_type,
             "headers": response_headers,

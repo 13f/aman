@@ -32,7 +32,6 @@ pub fn build_telegram_client() -> reqwest::Client {
 }
 
 /// Build a teloxide [`Bot`] using the proxy-aware client.
-#[must_use]
 pub fn build_telegram_bot(bot_token: &str) -> Bot {
     Bot::with_client(bot_token, build_telegram_client())
 }
@@ -51,7 +50,6 @@ impl TelegramSender {
     }
 
     /// Return a clone of the inner [`Bot`] for use in dispatcher handlers.
-    #[must_use]
     pub fn bot(&self) -> Bot {
         self.bot.clone()
     }
@@ -68,7 +66,7 @@ fn parse_chat_id(chat_id: &str) -> Result<ChatId, String> {
 impl MessageSender for TelegramSender {
     async fn send_text(&self, target: &ChatTarget, text: &str) -> AmanResult<()> {
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         self.bot
             .send_message(Recipient::Id(chat_id), text)
             .await
@@ -80,7 +78,7 @@ impl MessageSender for TelegramSender {
 
     async fn send_markdown(&self, target: &ChatTarget, text: &str) -> AmanResult<()> {
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         self.bot
             .send_message(Recipient::Id(chat_id), text)
             .parse_mode(ParseMode::MarkdownV2)
@@ -99,7 +97,7 @@ impl MessageSender for TelegramSender {
     ) -> AmanResult<()> {
         use teloxide::types::{MessageId, ReplyParameters};
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         let reply_to: i32 = reply_to_message_id
             .parse()
             .map_err(|e| kernel::Error::config_invalid(format!("invalid message_id: {e}")))?;
@@ -117,7 +115,7 @@ impl MessageSender for TelegramSender {
     async fn send_typing(&self, target: &ChatTarget) -> AmanResult<()> {
         use teloxide::types::ChatAction;
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         self.bot
             .send_chat_action(Recipient::Id(chat_id), ChatAction::Typing)
             .await
@@ -131,7 +129,7 @@ impl MessageSender for TelegramSender {
 
     async fn begin_stream(&self, target: &ChatTarget) -> AmanResult<StreamHandle> {
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         // Send a minimal placeholder so the user sees immediate feedback.
         // Plain-text only — no parse_mode, to avoid unclosed-marker errors.
         let msg = self
@@ -152,7 +150,7 @@ impl MessageSender for TelegramSender {
         finalize: bool,
     ) -> AmanResult<()> {
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         let msg_id: i32 = handle
             .parse()
             .map_err(|e| kernel::Error::config_invalid(format!("invalid stream handle: {e}")))?;
@@ -176,7 +174,7 @@ impl MessageSender for TelegramSender {
 
     async fn cancel_stream(&self, target: &ChatTarget, handle: &str) -> AmanResult<()> {
         let chat_id = parse_chat_id(&target.chat_id)
-            .map_err(|e| kernel::Error::config_invalid(e))?;
+            .map_err(kernel::Error::config_invalid)?;
         let msg_id: i32 = handle
             .parse()
             .map_err(|e| kernel::Error::config_invalid(format!("invalid stream handle: {e}")))?;

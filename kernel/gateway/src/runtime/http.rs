@@ -2070,7 +2070,7 @@ async fn plugin_auth_respond(
                         .unwrap_or_default()
                         .as_millis() as u64;
                     let mut caps = ApprovedCapabilities {
-                        plugin_version: candidate.manifest.version.to_string(),
+                        plugin_version: plugin::plugin_manifest_version(&candidate).to_string(),
                         capabilities: approved_caps.clone(),
                         approved_at_ms: now_ms,
                         approved_by: "user".to_owned(),

@@ -695,11 +695,11 @@ fn shell_split(input: &str) -> Vec<String> {
             }
             '\\' if in_double => {
                 // Backslash only escapes special chars inside double quotes.
-                if let Some(&next) = chars.peek() {
-                    if matches!(next, '"' | '\\' | '$' | '`') {
-                        current.push(chars.next().unwrap());
-                        continue;
-                    }
+                if let Some(&next) = chars.peek()
+                    && matches!(next, '"' | '\\' | '$' | '`')
+                {
+                    current.push(chars.next().unwrap());
+                    continue;
                 }
                 current.push(ch);
             }

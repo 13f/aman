@@ -588,12 +588,74 @@ pub enum PluginLifecycleState {
     Shutdown,
 }
 
-pub struct PluginCandidate {
-    pub manifest: PluginManifest,
-    pub plugin: Box<dyn Plugin>,
-    pub isolation: PluginIsolationMode,
-    pub subprocess: Option<SubprocessPluginConfig>,
-    pub wasm_module_bytes: Option<Vec<u8>>,
+/// A plugin ready to be loaded, with the variant dictating which
+/// isolation mode the gateway will use.
+///
+/// P3-21 from docs/code-review-20260614.md: the previous flat
+/// struct exposed `Box<dyn Plugin> + PluginIsolationMode flag +
+/// 3 Option<*>` as independent public fields, leaving the
+/// invariant "an InProcess candidate has `subprocess = None`
+/// and `wasm_module_bytes = None`; a Subprocess candidate has
+/// the Box and the config; a Wasm candidate has the Box and
+/// the bytes" entirely implicit and unenforced. Encoding as
+/// an enum makes the variants explicit: each variant carries
+/// only the data it actually needs, and `load_plugin_inner`
+/// dispatches on the variant directly (no more "what does
+/// `isolation = InProcess` but `subprocess = Some(_)` even
+/// mean?" questions).
+pub enum PluginCandidate {
+    /// In-process plugin: the trait object is loaded and ready
+    /// to call `on_load` synchronously at load time.
+    InProcess {
+        manifest: PluginManifest,
+        plugin: Box<dyn Plugin>,
+    },
+    /// Subprocess-isolated plugin: the gateway will spawn a
+    /// subprocess when the plugin is loaded. The `stub` is a
+    /// lightweight `Box<dyn Plugin>` used only by the discovery
+    /// / pre-registration path (so `register_exports` sees a
+    /// consistent set of names); the actual plugin logic lives
+    /// in the subprocess spawned via `config`.
+    Subprocess {
+        manifest: PluginManifest,
+        config: SubprocessPluginConfig,
+        stub: Box<dyn Plugin>,
+    },
+    /// WASM-isolated plugin: the gateway will instantiate the
+    /// module from `bytes` at load time. Same stub-vs-actual
+    /// split as `Subprocess`.
+    Wasm {
+        manifest: PluginManifest,
+        bytes: Vec<u8>,
+        stub: Box<dyn Plugin>,
+    },
+}
+
+/// Get the manifest name from a `PluginCandidate` variant.
+pub fn plugin_manifest_name(c: &PluginCandidate) -> &str {
+    match c {
+        PluginCandidate::InProcess { manifest, .. } => &manifest.name,
+        PluginCandidate::Subprocess { manifest, .. } => &manifest.name,
+        PluginCandidate::Wasm { manifest, .. } => &manifest.name,
+    }
+}
+
+/// Get the manifest version from a `PluginCandidate` variant.
+pub fn plugin_manifest_version(c: &PluginCandidate) -> &semver::Version {
+    match c {
+        PluginCandidate::InProcess { manifest, .. } => &manifest.version,
+        PluginCandidate::Subprocess { manifest, .. } => &manifest.version,
+        PluginCandidate::Wasm { manifest, .. } => &manifest.version,
+    }
+}
+
+/// Get the security manifest from a `PluginCandidate` variant.
+pub fn plugin_manifest_security(c: &PluginCandidate) -> &Option<PluginSecurityManifest> {
+    match c {
+        PluginCandidate::InProcess { manifest, .. } => &manifest.security,
+        PluginCandidate::Subprocess { manifest, .. } => &manifest.security,
+        PluginCandidate::Wasm { manifest, .. } => &manifest.security,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,6 +892,7 @@ async fn install_plugin_handler(
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RegisteredExports {
     pub skills: Vec<String>,
     pub tools: Vec<String>,
@@ -1132,10 +1195,15 @@ impl PluginLoader {
     /// # Errors
     /// Returns `NotFound` if a declared dependency is not yet loaded.
     pub async fn load_plugin(&mut self, candidate: PluginCandidate) -> AmanResult<()> {
-        let plugin_name = candidate.manifest.name.clone();
+        let manifest = match &candidate {
+            PluginCandidate::InProcess { manifest, .. } => manifest,
+            PluginCandidate::Subprocess { manifest, .. } => manifest,
+            PluginCandidate::Wasm { manifest, .. } => manifest,
+        };
+        let plugin_name = manifest.name.clone();
 
         // Validate dependencies are already loaded
-        for dep in &candidate.manifest.depends_on {
+        for dep in &manifest.depends_on {
             if !self.loaded.contains_key(&dep.name) {
                 return Err(Error::NotFound {
                     name: format!(
@@ -1169,9 +1237,18 @@ impl PluginLoader {
     async fn load_plugin_inner(
         &mut self,
         plugin_name: &str,
-        mut candidate: PluginCandidate,
+        candidate: PluginCandidate,
     ) -> AmanResult<()> {
-        if candidate.plugin.name() != candidate.manifest.name {
+        // The name/version check uses the variant's stub Box<dyn Plugin>
+        // — for InProcess it's the real plugin, for Subprocess/Wasm
+        // it's a discovery-path stub. The validation contract is the
+        // same: stub name/version must match the manifest.
+        let (manifest, stub) = match &candidate {
+            PluginCandidate::InProcess { manifest, plugin } => (manifest.clone(), plugin.as_ref()),
+            PluginCandidate::Subprocess { manifest, stub, .. } => (manifest.clone(), stub.as_ref()),
+            PluginCandidate::Wasm { manifest, stub, .. } => (manifest.clone(), stub.as_ref()),
+        };
+        if stub.name() != manifest.name {
             self.audit(
                 plugin_name,
                 PluginAuditEventType::LoadFailed,
@@ -1180,34 +1257,33 @@ impl PluginLoader {
             return Err(Error::ConfigInvalid {
                 message: format!(
                     "plugin implementation name `{}` does not match manifest `{}`",
-                    candidate.plugin.name(),
-                    candidate.manifest.name
+                    stub.name(),
+                    manifest.name
                 ),
             });
         }
 
-        if candidate.plugin.version() != &candidate.manifest.version {
+        if stub.version() != &manifest.version {
             self.audit(
                 plugin_name,
                 PluginAuditEventType::LoadFailed,
                 "plugin implementation version mismatch",
             );
             return Err(Error::VersionMismatch {
-                expected: candidate.manifest.version.to_string(),
-                found: candidate.plugin.version().to_string(),
+                expected: manifest.version.to_string(),
+                found: stub.version().to_string(),
             });
         }
 
-        let manifest = candidate.manifest;
-        let (runtime, exports) = match candidate.isolation {
-            PluginIsolationMode::InProcess => {
+        let (runtime, exports) = match candidate {
+            PluginCandidate::InProcess { manifest, mut plugin } => {
                 let ctx = PluginContext {
                     base: BaseContext::new(TraceId::new()),
                     plugin_name: Some(manifest.name.clone()),
                     ..PluginContext::default()
                 };
                 let tracker = Arc::clone(&ctx.resource_tracker);
-                if let Err(error) = candidate.plugin.on_load(ctx).await {
+                if let Err(error) = plugin.on_load(ctx).await {
                     let released = release_tracked_resources(&tracker);
                     self.audit(
                         plugin_name,
@@ -1222,12 +1298,12 @@ impl PluginLoader {
                     return Err(error);
                 }
 
-                let exports = match self.register_exports(candidate.plugin.as_ref()) {
+                let exports = match self.register_exports(plugin.as_ref()) {
                     Ok(exports) => exports,
                     Err(error) => {
                         let _ = self.unregister_exports(&RegisteredExports::default(), plugin_name);
                         let released = release_tracked_resources(&tracker);
-                        let _ = candidate.plugin.on_unload().await;
+                        let _ = plugin.on_unload().await;
                         self.audit(
                             plugin_name,
                             PluginAuditEventType::OnLoadInterrupted,
@@ -1241,13 +1317,13 @@ impl PluginLoader {
                         return Err(error);
                     }
                 };
-                (LoadedPluginRuntime::InProcess(candidate.plugin), exports)
+                (LoadedPluginRuntime::InProcess(plugin), exports)
             }
-            PluginIsolationMode::Subprocess => {
-                let mut config = candidate.subprocess.ok_or_else(|| Error::ConfigInvalid {
-                    message: format!("subprocess config is required for plugin `{plugin_name}`"),
-                })?;
-
+            PluginCandidate::Subprocess {
+                manifest,
+                mut config,
+                stub: _,
+            } => {
                 // Auto-derive subprocess config from manifest runtime/entrypoint if needed
                 if let Some(runtime) = &manifest.runtime {
                     if config.command.is_empty() {
@@ -1307,15 +1383,16 @@ impl PluginLoader {
                 }
                 (LoadedPluginRuntime::Subprocess(bridge), RegisteredExports::default())
             }
-            PluginIsolationMode::Wasm => {
+            PluginCandidate::Wasm {
+                manifest,
+                bytes,
+                stub: _,
+            } => {
                 if has_manifest_exports(&manifest) {
                     return Err(Error::ConfigInvalid {
                         message: "wasm plugin exports bridging is not implemented yet".to_owned(),
                     });
                 }
-                let wasm_bytes = candidate.wasm_module_bytes.ok_or_else(|| Error::ConfigInvalid {
-                    message: format!("wasm module bytes are required for plugin `{plugin_name}`"),
-                })?;
                 let wasm_security = manifest.security.as_ref().map(|s| {
                     let caps = &s.requested_capabilities;
                     WasmSecurityConfig {
@@ -1323,7 +1400,7 @@ impl PluginLoader {
                         ..WasmSecurityConfig::default()
                     }
                 });
-                let runtime = WasmPluginRuntime::from_wasm_bytes(&wasm_bytes, wasm_security)?;
+                let runtime = WasmPluginRuntime::from_wasm_bytes(&bytes, wasm_security)?;
                 runtime.on_load()?;
                 (LoadedPluginRuntime::Wasm(runtime), RegisteredExports::default())
             }
@@ -1356,14 +1433,24 @@ impl PluginLoader {
         let graph = DependencyGraph::new(
             candidates
                 .iter()
-                .map(|candidate| candidate.manifest.clone())
+                .map(|candidate| match candidate {
+                    PluginCandidate::InProcess { manifest, .. } => manifest,
+                    PluginCandidate::Subprocess { manifest, .. } => manifest,
+                    PluginCandidate::Wasm { manifest, .. } => manifest,
+                })
+                .cloned()
                 .collect(),
         )?;
         let order = graph.topological_order()?;
 
         let mut by_name = HashMap::new();
         for candidate in candidates {
-            let name = candidate.manifest.name.clone();
+            let name = match &candidate {
+                PluginCandidate::InProcess { manifest, .. } => &manifest.name,
+                PluginCandidate::Subprocess { manifest, .. } => &manifest.name,
+                PluginCandidate::Wasm { manifest, .. } => &manifest.name,
+            }
+            .clone();
             if by_name.insert(name.clone(), candidate).is_some() {
                 return Err(Error::AlreadyExists {
                     name: format!("plugin:{name}"),
@@ -1827,15 +1914,13 @@ pub fn discover_subprocess_plugins(plugins_dir: &Path) -> Vec<PluginCandidate> {
             })
         });
 
-        let candidate = PluginCandidate {
+        let candidate = PluginCandidate::Subprocess {
             manifest: manifest.clone(),
-            plugin: Box::new(SubprocessStubPlugin {
+            config: subprocess_config.expect("subprocess config resolved above"),
+            stub: Box::new(SubprocessStubPlugin {
                 name: manifest.name.clone(),
                 version: manifest.version.clone(),
             }),
-            isolation: PluginIsolationMode::Subprocess,
-            subprocess: subprocess_config,
-            wasm_module_bytes: None,
         };
 
         tracing::info!(
@@ -2045,12 +2130,12 @@ mod tests {
 
     impl PluginExportRegistrar for RecordingRegistrar {
         fn register_skill(&self, skill: Arc<dyn Skill>) -> AmanResult<()> {
-            if let Some(fail_name) = self.fail_skill.lock().expect("fail_skill lock").clone() {
-                if skill.name() == fail_name {
-                    return Err(Error::Unrecoverable {
-                        message: "forced register failure".to_owned(),
-                    });
-                }
+            if let Some(fail_name) = self.fail_skill.lock().expect("fail_skill lock").clone()
+                && skill.name() == fail_name
+            {
+                return Err(Error::Unrecoverable {
+                    message: "forced register failure".to_owned(),
+                });
             }
             self.skills
                 .lock()
@@ -2156,7 +2241,7 @@ mod tests {
         let sources = vec![Arc::new(DummySource {
             id: format!("{name}-source"),
         }) as Arc<dyn EventSource>];
-        PluginCandidate {
+        PluginCandidate::InProcess {
             manifest: PluginManifest {
                 name: name.to_owned(),
                 version: version.clone(),
@@ -2189,9 +2274,6 @@ mod tests {
                 unload_log,
                 dependency_notifications,
             }),
-            isolation: PluginIsolationMode::InProcess,
-            subprocess: None,
-            wasm_module_bytes: None,
         }
     }
 
@@ -2202,37 +2284,50 @@ mod tests {
         subprocess: Option<SubprocessPluginConfig>,
         wasm_module_bytes: Option<Vec<u8>>,
     ) -> PluginCandidate {
-        PluginCandidate {
-            manifest: PluginManifest {
-                name: name.to_owned(),
-                version: version.clone(),
-                depends_on: vec![],
-                lifecycle: super::PluginLifecycleConfig::default(),
-                exports: super::PluginExports::default(),
-                config_schema: None,
-                isolation: None,
-                subprocess: None,
-                wasm_path: None,
-                capabilities: vec![],
-                ui: None, runtime: None, min_version: None, entrypoint: None,
-                security: None,
+        let manifest = PluginManifest {
+            name: name.to_owned(),
+            version: version.clone(),
+            depends_on: vec![],
+            lifecycle: super::PluginLifecycleConfig::default(),
+            exports: super::PluginExports::default(),
+            config_schema: None,
+            isolation: None,
+            subprocess: None,
+            wasm_path: None,
+            capabilities: vec![],
+            ui: None, runtime: None, min_version: None, entrypoint: None,
+            security: None,
+        };
+        let stub = Box::new(TestPlugin {
+            name: name.to_owned(),
+            version,
+            deps: vec![],
+            skills: vec![],
+            tools: vec![],
+            sources: vec![],
+            load_calls: Arc::new(Mutex::new(0)),
+            unload_calls: Arc::new(Mutex::new(0)),
+            unload_delay_ms: 0,
+            unload_log: Arc::new(Mutex::new(Vec::new())),
+            dependency_notifications: Arc::new(Mutex::new(Vec::new())),
+        });
+        match isolation {
+            PluginIsolationMode::InProcess => PluginCandidate::InProcess {
+                manifest,
+                plugin: stub,
             },
-            plugin: Box::new(TestPlugin {
-                name: name.to_owned(),
-                version,
-                deps: vec![],
-                skills: vec![],
-                tools: vec![],
-                sources: vec![],
-                load_calls: Arc::new(Mutex::new(0)),
-                unload_calls: Arc::new(Mutex::new(0)),
-                unload_delay_ms: 0,
-                unload_log: Arc::new(Mutex::new(Vec::new())),
-                dependency_notifications: Arc::new(Mutex::new(Vec::new())),
-            }),
-            isolation,
-            subprocess,
-            wasm_module_bytes,
+            PluginIsolationMode::Subprocess => PluginCandidate::Subprocess {
+                manifest,
+                config: subprocess
+                    .expect("subprocess config required for Subprocess variant"),
+                stub,
+            },
+            PluginIsolationMode::Wasm => PluginCandidate::Wasm {
+                manifest,
+                bytes: wasm_module_bytes
+                    .expect("wasm bytes required for Wasm variant"),
+                stub,
+            },
         }
     }
 
@@ -2618,6 +2713,7 @@ config_schema:
                 PluginLoaderConfig {
                     unload_timeout: Duration::from_millis(10),
                     unstable_after_timeouts: 3,
+                    ..Default::default()
                 },
             );
             let unload_log = Arc::new(Mutex::new(Vec::new()));
@@ -2699,6 +2795,7 @@ config_schema:
                 PluginLoaderConfig {
                     unload_timeout: Duration::from_millis(5),
                     unstable_after_timeouts: 1,
+                    ..Default::default()
                 },
             )
             .with_audit_logger(audit.clone());

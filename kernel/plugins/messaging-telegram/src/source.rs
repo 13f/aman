@@ -88,15 +88,14 @@ async fn message_handler(
 
     // If no agent could be resolved, prompt the user to @mention one.
     if !resolution.agent_resolved {
-        let reply = format!(
-            "👋 Hi! I don't know which agent to route your message to.\n\
+        let reply = "👋 Hi! I don't know which agent to route your message to.\n\
              \n\
              Please @mention an agent in your message, for example:\n\
              @minmax Hello!\n\
              @health How are you?\n\
              \n\
              After your first @mention, I'll remember your preference for future messages."
-        );
+            .to_string();
         let _ = bot
             .send_message(teloxide::types::Recipient::Id(teloxide::types::ChatId(chat_id)), reply)
             .await;
@@ -292,16 +291,15 @@ impl EventSource for TelegramSource {
                     offset = offset.max(update_id + 1);
 
                     // Process messages only.
-                    if let UpdateKind::Message(msg) = update.kind {
-                        if let Err(e) = message_handler(
+                    if let UpdateKind::Message(msg) = update.kind
+                        && let Err(e) = message_handler(
                             bot.clone(),
                             msg,
                             Arc::clone(&handler_state),
                         )
                         .await
-                        {
-                            tracing::warn!(error = %e, "telegram: message handler error");
-                        }
+                    {
+                        tracing::warn!(error = %e, "telegram: message handler error");
                     }
                 }
 

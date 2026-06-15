@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn safe_println_redacts() {
         // Just verify the macro compiles and redacts
-        let msg = format!("Key: sk-proj-abc123def456ghi789");
+        let msg = "Key: sk-proj-abc123def456ghi789".to_string();
         let result = redact_sensitive_data(&msg);
         assert!(result.contains("REDACTED"), "expected redaction in: {result}");
         assert!(!result.contains("sk-proj-abc123"));
@@ -303,12 +303,12 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        /// Property: redaction is idempotent. Applying redact twice
-        /// yields the same result as applying it once. This is the
-        /// foundational safety property — if a redaction step runs
-        /// in a pipeline twice (e.g. a log is processed by two
-        /// subscribers, each of which runs the redactor), the
-        /// output must be stable.
+        // Property: redaction is idempotent. Applying redact twice
+        // yields the same result as applying it once. This is the
+        // foundational safety property — if a redaction step runs
+        // in a pipeline twice (e.g. a log is processed by two
+        // subscribers, each of which runs the redactor), the
+        // output must be stable.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(256))]
             #[test]
@@ -319,14 +319,14 @@ mod tests {
             }
         }
 
-        /// Property: `contains_sensitive_data` is consistent with
-        /// `redact_sensitive_data`. If the detector says "no secrets
-        /// here", the redactor must return the input unchanged.
-        /// This is the no-false-positive property — the detector
-        /// is used as a fast-path gate; if it returns false but
-        /// the redactor would still modify the string, downstream
-        /// pipelines that skip redaction based on the detector
-        /// would leak secrets.
+        // Property: `contains_sensitive_data` is consistent with
+        // `redact_sensitive_data`. If the detector says "no secrets
+        // here", the redactor must return the input unchanged.
+        // This is the no-false-positive property — the detector
+        // is used as a fast-path gate; if it returns false but
+        // the redactor would still modify the string, downstream
+        // pipelines that skip redaction based on the detector
+        // would leak secrets.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(256))]
             #[test]
@@ -344,13 +344,13 @@ mod tests {
             }
         }
 
-        /// Property: when a known secret pattern is present, the
-        /// output is strictly shorter than the input (we always
-        /// replace at least the secret value with a placeholder).
-        /// If a redaction step produces output ≥ input length, the
-        /// placeholder is longer than the secret — a sign the
-        /// pattern changed or a new pattern was added that no
-        /// longer shortens.
+        // Property: when a known secret pattern is present, the
+        // output is strictly shorter than the input (we always
+        // replace at least the secret value with a placeholder).
+        // If a redaction step produces output ≥ input length, the
+        // placeholder is longer than the secret — a sign the
+        // pattern changed or a new pattern was added that no
+        // longer shortens.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
             #[test]

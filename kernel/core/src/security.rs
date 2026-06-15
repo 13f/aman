@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// that must be explicitly approved by the operator before the plugin can
 /// run. When a plugin is sandboxed (TrustLevel::Sandboxed), these caps
 /// are enforced by the security harness.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CapabilitySet {
     #[serde(flatten)]
     pub flags: CapabilityFlags,
@@ -184,16 +184,6 @@ fn default_max_events_per_second() -> f64 {
 // CapabilityLimits' Eq impl. We never store NaN or infinity in
 // max_events_per_second, so reflexivity holds.
 impl Eq for CapabilitySet {}
-
-impl Default for CapabilitySet {
-    fn default() -> Self {
-        Self {
-            flags: CapabilityFlags::default(),
-            paths: CapabilityPaths::default(),
-            limits: CapabilityLimits::default(),
-        }
-    }
-}
 
 impl CapabilitySet {
     /// Returns the list of human-readable capability names that are granted
@@ -715,7 +705,6 @@ mod tests {
                 max_memory_mb: 500,
                 ..Default::default()
             },
-            ..CapabilitySet::default()
         };
 
         let diff = old.diff(&new);
@@ -735,7 +724,6 @@ mod tests {
                 allowed_write_paths: vec![
                     "${project.work_dir}/aman_team".to_string(),
                 ],
-                ..Default::default()
             },
             ..CapabilitySet::default()
         };

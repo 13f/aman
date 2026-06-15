@@ -1196,7 +1196,7 @@ async fn plugin_auth_respond(runtime: &AgentRuntime, params: Option<&Value>) -> 
                         .unwrap_or_default()
                         .as_millis() as u64;
                     let mut caps = kernel::security::ApprovedCapabilities {
-                        plugin_version: candidate.manifest.version.to_string(),
+                        plugin_version: plugin::plugin_manifest_version(&candidate).to_string(),
                         capabilities: approved_caps,
                         approved_at_ms: now_ms,
                         approved_by: "user".to_owned(),

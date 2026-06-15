@@ -152,8 +152,12 @@ pub struct ThinkResult {
 /// session management, knowledge graph, temporal queries, procedural memory,
 /// and health stats.
 ///
-/// Every method has a default that panics via `unimplemented!()` so providers
-/// can implement only the subset they support.
+/// # Default implementations
+///
+/// Only [`name`](Self::name), [`store`](Self::store), and [`recall`](Self::recall)
+/// are required (no default body). All other methods have safe no-op defaults
+/// returning empty results or `Ok(())`. Implementors can override only the
+/// subset they support — no `unimplemented!()` panics.
 #[async_trait]
 pub trait MemoryProvider: Send + Sync {
     // -- Identity ----------------------------------------------------------
@@ -181,80 +185,86 @@ pub trait MemoryProvider: Send + Sync {
     }
 
     /// List memories, optionally filtered.
-    fn list(&self, agent_id: &str, filter: Option<&MemoryFilter>) -> Vec<MemoryRecord> {
-        let _ = (agent_id, filter);
-        unimplemented!("MemoryProvider::list")
+    fn list(&self, _agent_id: &str, _filter: Option<&MemoryFilter>) -> Vec<MemoryRecord> {
+        vec![]
     }
 
     /// Delete a memory record by id. Returns true if removed.
-    fn forget(&self, agent_id: &str, rid: &str) -> bool {
-        let _ = (agent_id, rid);
-        unimplemented!("MemoryProvider::forget")
+    fn forget(&self, _agent_id: &str, _rid: &str) -> bool {
+        false
     }
 
     // -- Session management ------------------------------------------------
 
     /// Start a new session. Returns the session id.
-    async fn session_start(&self, agent_id: &str, session_type: &str) -> AmanResult<String> {
-        let _ = (agent_id, session_type);
-        unimplemented!("MemoryProvider::session_start")
+    async fn session_start(&self, _agent_id: &str, _session_type: &str) -> AmanResult<String> {
+        Ok(String::new())
     }
 
     /// End a session, returning its summary.
-    async fn session_end(&self, agent_id: &str, session_id: &str) -> AmanResult<SessionSummary> {
-        let _ = (agent_id, session_id);
-        unimplemented!("MemoryProvider::session_end")
+    async fn session_end(
+        &self,
+        _agent_id: &str,
+        _session_id: &str,
+    ) -> AmanResult<SessionSummary> {
+        Ok(SessionSummary {
+            session_id: String::new(),
+            memory_count: 0,
+            duration_secs: 0.0,
+            topics: vec![],
+        })
     }
 
     /// List recent sessions with their summaries.
     async fn session_history(
         &self,
-        agent_id: &str,
-        limit: usize,
+        _agent_id: &str,
+        _limit: usize,
     ) -> AmanResult<Vec<SessionSummary>> {
-        let _ = (agent_id, limit);
-        unimplemented!("MemoryProvider::session_history")
+        Ok(vec![])
     }
 
     // -- Knowledge graph ---------------------------------------------------
 
     /// Create a directed relationship between two entities.
-    async fn relate(&self, from: &str, to: &str, rel_type: &str) -> AmanResult<()> {
-        let _ = (from, to, rel_type);
-        unimplemented!("MemoryProvider::relate")
+    async fn relate(&self, _from: &str, _to: &str, _rel_type: &str) -> AmanResult<()> {
+        Ok(())
     }
 
     /// Get all edges originating from an entity.
     /// Returns `(from, to, rel_type)` tuples.
-    async fn get_edges(&self, entity: &str) -> AmanResult<Vec<(String, String, String)>> {
-        let _ = entity;
-        unimplemented!("MemoryProvider::get_edges")
+    async fn get_edges(&self, _entity: &str) -> AmanResult<Vec<(String, String, String)>> {
+        Ok(vec![])
     }
 
     /// Search for entities whose names match the query.
-    async fn search_entities(&self, query: &str, limit: usize) -> AmanResult<Vec<String>> {
-        let _ = (query, limit);
-        unimplemented!("MemoryProvider::search_entities")
+    async fn search_entities(&self, _query: &str, _limit: usize) -> AmanResult<Vec<String>> {
+        Ok(vec![])
     }
 
     /// Get the full profile of a named entity.
-    async fn entity_profile(&self, entity: &str) -> AmanResult<Option<EntityProfile>> {
-        let _ = entity;
-        unimplemented!("MemoryProvider::entity_profile")
+    async fn entity_profile(&self, _entity: &str) -> AmanResult<Option<EntityProfile>> {
+        Ok(None)
     }
 
     // -- Temporal queries --------------------------------------------------
 
     /// Return high-importance memories not accessed in `days` days.
-    async fn stale_memories(&self, agent_id: &str, days: u32) -> AmanResult<Vec<MemoryRecord>> {
-        let _ = (agent_id, days);
-        unimplemented!("MemoryProvider::stale_memories")
+    async fn stale_memories(
+        &self,
+        _agent_id: &str,
+        _days: u32,
+    ) -> AmanResult<Vec<MemoryRecord>> {
+        Ok(vec![])
     }
 
     /// Return memories with approaching deadlines within `days` days.
-    async fn upcoming_memories(&self, agent_id: &str, days: u32) -> AmanResult<Vec<MemoryRecord>> {
-        let _ = (agent_id, days);
-        unimplemented!("MemoryProvider::upcoming_memories")
+    async fn upcoming_memories(
+        &self,
+        _agent_id: &str,
+        _days: u32,
+    ) -> AmanResult<Vec<MemoryRecord>> {
+        Ok(vec![])
     }
 
     // -- Procedural memory -------------------------------------------------
@@ -262,32 +272,35 @@ pub trait MemoryProvider: Send + Sync {
     /// Store a procedural memory (strategy / pattern).
     async fn store_procedural(
         &self,
-        agent_id: &str,
-        name: &str,
-        schema: &str,
-        kind: &str,
+        _agent_id: &str,
+        _name: &str,
+        _schema: &str,
+        _kind: &str,
     ) -> AmanResult<String> {
-        let _ = (agent_id, name, schema, kind);
-        unimplemented!("MemoryProvider::store_procedural")
+        Ok(String::new())
     }
 
     /// Find procedural memories relevant to a context.
     async fn surface_procedural(
         &self,
-        agent_id: &str,
-        context: &str,
-        limit: usize,
+        _agent_id: &str,
+        _context: &str,
+        _limit: usize,
     ) -> AmanResult<Vec<MemoryRecord>> {
-        let _ = (agent_id, context, limit);
-        unimplemented!("MemoryProvider::surface_procedural")
+        Ok(vec![])
     }
 
     // -- Health & stats ----------------------------------------------------
 
     /// Return a snapshot of memory store statistics.
-    async fn stats(&self, agent_id: &str) -> AmanResult<MemoryStats> {
-        let _ = agent_id;
-        unimplemented!("MemoryProvider::stats")
+    async fn stats(&self, _agent_id: &str) -> AmanResult<MemoryStats> {
+        Ok(MemoryStats {
+            total_entries: 0,
+            index_size_bytes: 0,
+            graph_nodes: 0,
+            graph_edges: 0,
+            pending_conflicts: 0,
+        })
     }
 
     // -- Cognitive processing ----------------------------------------------
@@ -311,8 +324,7 @@ pub trait MemoryProvider: Send + Sync {
     // -- Lifecycle ---------------------------------------------------------
 
     /// One-time initialisation (open database, run migrations, etc.).
-    async fn initialize(&self, opts: &MemoryInitOpts) -> AmanResult<()> {
-        let _ = opts;
+    async fn initialize(&self, _opts: &MemoryInitOpts) -> AmanResult<()> {
         Ok(())
     }
 

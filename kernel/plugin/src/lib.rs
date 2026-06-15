@@ -1741,7 +1741,8 @@ fn has_manifest_exports(manifest: &PluginManifest) -> bool {
     !(manifest.exports.skills.is_empty()
         && manifest.exports.tools.is_empty()
         && manifest.exports.event_sources.is_empty()
-        && manifest.exports.hooks.is_empty())
+        && manifest.exports.hooks.is_empty()
+        && manifest.exports.memory_providers.is_empty())
 }
 
 #[must_use]
@@ -1816,7 +1817,12 @@ pub fn validate_manifest_exports(manifest: &PluginManifest) -> bool {
         .hooks
         .iter()
         .all(|name| all.insert(format!("h:{name}")));
-    unique_skills && unique_tools && unique_sources && unique_hooks
+    let unique_memory = manifest
+        .exports
+        .memory_providers
+        .iter()
+        .all(|name| all.insert(format!("m:{name}")));
+    unique_skills && unique_tools && unique_sources && unique_hooks && unique_memory
 }
 
 // ---------------------------------------------------------------------------

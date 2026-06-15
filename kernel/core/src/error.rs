@@ -6,6 +6,37 @@ use thiserror::Error;
 
 pub type AmanResult<T> = Result<T, Error>;
 
+/// Semantic category for message-bearing error variants.
+///
+/// Can be used to programmatically inspect error *categories* without
+/// matching on variant names or parsing display strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    CompensationFailed,
+    Unrecoverable,
+    ConfigInvalid,
+    MacroUsage,
+    PermissionDenied,
+    SecurityViolation,
+    SandboxError,
+    InvalidStateTransition,
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CompensationFailed => write!(f, "compensation failed"),
+            Self::Unrecoverable => write!(f, "unrecoverable error"),
+            Self::ConfigInvalid => write!(f, "invalid configuration"),
+            Self::MacroUsage => write!(f, "macro usage is invalid"),
+            Self::PermissionDenied => write!(f, "permission denied"),
+            Self::SecurityViolation => write!(f, "security violation"),
+            Self::SandboxError => write!(f, "sandbox error"),
+            Self::InvalidStateTransition => write!(f, "invalid state transition"),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("[AmanExistence] event bus is full")]
@@ -57,16 +88,34 @@ impl Error {
             message: message.into(),
         }
     }
+
+    /// Return the semantic [`ErrorKind`] for message-bearing variants.
+    ///
+    /// Returns `None` for structural variants (`NotFound`, `Io`, etc.)
+    /// whose semantics are already encoded in their variant names.
+    #[must_use]
+    pub fn kind(&self) -> Option<ErrorKind> {
+        match self {
+            Self::CompensationFailed { .. } => Some(ErrorKind::CompensationFailed),
+            Self::Unrecoverable { .. } => Some(ErrorKind::Unrecoverable),
+            Self::ConfigInvalid { .. } => Some(ErrorKind::ConfigInvalid),
+            Self::MacroUsage { .. } => Some(ErrorKind::MacroUsage),
+            Self::PermissionDenied { .. } => Some(ErrorKind::PermissionDenied),
+            Self::SecurityViolation { .. } => Some(ErrorKind::SecurityViolation),
+            Self::SandboxError { .. } => Some(ErrorKind::SandboxError),
+            Self::InvalidStateTransition { .. } => Some(ErrorKind::InvalidStateTransition),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Error;
+    use super::{Error, ErrorKind};
     use crate::types::BackpressureLevel;
 
     #[test]
     fn provenance_prefix_present_in_all_variants() {
-        // Every non-transparent error must contain the provenance marker.
         assert!(Error::BusFull.to_string().contains("[AmanExistence]"));
         assert!(Error::Timeout.to_string().contains("[AmanExistence]"));
         assert!(Error::NotFound { name: "x".into() }.to_string().contains("[AmanExistence]"));
@@ -83,10 +132,16 @@ mod tests {
     }
 
     #[test]
+    fn error_kind_is_accessible() {
+        let error = Error::config_invalid("test");
+        assert_eq!(error.kind(), Some(ErrorKind::ConfigInvalid));
+        assert_eq!(Error::NotFound { name: "x".into() }.kind(), None);
+    }
+
+    #[test]
     fn io_error_converts_into_error() {
         let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
         let error: Error = io_error.into();
-        // Io variant uses #[error(transparent)], so no provenance prefix
         assert_eq!(error.to_string(), "missing");
     }
 
@@ -127,8 +182,6 @@ mod tests {
 
     #[test]
     fn provenance_marker_type_exists() {
-        // AmanExistence is a real type exported from lib.rs — removing it
-        // breaks this test AND every crate that references it.
         let _marker = crate::AmanExistence;
         assert_eq!(crate::PROVENANCE, "AmanExistence");
     }

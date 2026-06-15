@@ -296,4 +296,76 @@ mod tests {
         assert!(result.contains("REDACTED"), "expected redaction in: {result}");
         assert!(!result.contains("sk-proj-abc123"));
     }
+
+    // ── Property-based tests (proptest) ─────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Property: redaction is idempotent. Applying redact twice
+        /// yields the same result as applying it once. This is the
+        /// foundational safety property — if a redaction step runs
+        /// in a pipeline twice (e.g. a log is processed by two
+        /// subscribers, each of which runs the redactor), the
+        /// output must be stable.
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+            #[test]
+            fn redact_is_idempotent(input in ".*") {
+                let once = redact_sensitive_data(&input).into_owned();
+                let twice = redact_sensitive_data(&once).into_owned();
+                prop_assert_eq!(once, twice);
+            }
+        }
+
+        /// Property: `contains_sensitive_data` is consistent with
+        /// `redact_sensitive_data`. If the detector says "no secrets
+        /// here", the redactor must return the input unchanged.
+        /// This is the no-false-positive property — the detector
+        /// is used as a fast-path gate; if it returns false but
+        /// the redactor would still modify the string, downstream
+        /// pipelines that skip redaction based on the detector
+        /// would leak secrets.
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(256))]
+            #[test]
+            fn detector_agrees_with_redactor(input in "[a-zA-Z0-9 _,.!?]{0,200}") {
+                // Restrict to a clean alphabet so we don't accidentally
+                // generate a string that matches a redaction pattern.
+                let result = redact_sensitive_data(&input);
+                if !contains_sensitive_data(&input) {
+                    prop_assert_eq!(
+                        result.as_ref(),
+                        input.as_str(),
+                        "redactor modified input but detector said clean"
+                    );
+                }
+            }
+        }
+
+        /// Property: when a known secret pattern is present, the
+        /// output is strictly shorter than the input (we always
+        /// replace at least the secret value with a placeholder).
+        /// If a redaction step produces output ≥ input length, the
+        /// placeholder is longer than the secret — a sign the
+        /// pattern changed or a new pattern was added that no
+        /// longer shortens.
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+            #[test]
+            fn known_secret_is_shortened(
+                suffix in "[a-zA-Z0-9_-]{20,40}"
+            ) {
+                // sk- + 20+ chars matches the OpenAI/Anthropic pattern.
+                let input = format!("sk-{suffix}");
+                let result = redact_sensitive_data(&input);
+                prop_assert!(
+                    result.len() < input.len(),
+                    "redaction of sk-* should shorten; in={} out={}",
+                    input.len(), result.len()
+                );
+            }
+        }
+    }
 }

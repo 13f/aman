@@ -39,6 +39,11 @@ use tar::Archive;
 use uuid::Uuid;
 use wasmtime::{Config as WasmConfig, Engine, Instance, Module, Store};
 
+/// Default subprocess timeout in milliseconds (30 seconds).
+const PLUGIN_TIMEOUT_MS: u64 = 30_000;
+/// Maximum WASM manifest and stack size in bytes (1 MB).
+const MAX_MANIFEST_SIZE: usize = 1_048_576;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub name: String,
@@ -295,7 +300,7 @@ pub struct SubprocessPluginConfig {
 }
 
 const fn default_subprocess_timeout_ms() -> u64 {
-    30_000
+    PLUGIN_TIMEOUT_MS
 }
 
 #[derive(Debug, Clone)]
@@ -503,7 +508,7 @@ impl WasmPluginRuntime {
         // Enable epoch-based interruption for runaway modules
         config.epoch_interruption(true);
         // Stack depth limit
-        config.max_wasm_stack(1_048_576); // 1 MB stack
+        config.max_wasm_stack(MAX_MANIFEST_SIZE); // 1 MB stack
 
         let engine = Engine::new(&config).map_err(|error| Error::ConfigInvalid {
             message: format!("failed to create wasmtime engine with security config: {error}"),
@@ -1439,7 +1444,7 @@ impl PluginLoader {
                 let wasm_security = manifest.security.as_ref().map(|s| {
                     let caps = &s.requested_capabilities;
                     WasmSecurityConfig {
-                        max_memory_bytes: caps.limits.max_memory_mb * 1_048_576,
+                        max_memory_bytes: caps.limits.max_memory_mb * MAX_MANIFEST_SIZE as u64,
                         ..WasmSecurityConfig::default()
                     }
                 });
@@ -1896,7 +1901,7 @@ pub fn discover_subprocess_plugins(plugins_dir: &Path) -> Vec<PluginCandidate> {
                     command: runtime.clone(),
                     args,
                     cwd: Some(plugin_dir.clone()),
-                    timeout_ms: 30_000,
+                    timeout_ms: PLUGIN_TIMEOUT_MS,
                 }
             })
         });
@@ -1929,6 +1934,7 @@ mod tests {
         NoopPluginRegistrar, PluginAuditEventType, PluginCandidate, PluginExportRegistrar,
         PluginInstaller, PluginIsolationMode, PluginLifecycleState, PluginLoader, PluginLoaderConfig,
         PluginManifest, SubprocessPluginClient, SubprocessPluginConfig, WasmPluginRuntime,
+        PLUGIN_TIMEOUT_MS,
     };
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
@@ -2838,7 +2844,7 @@ while True:
             command: "python3".to_owned(),
             args: vec!["-c".to_owned(), script.to_owned()],
             cwd: None,
-            timeout_ms: 30_000,
+            timeout_ms: PLUGIN_TIMEOUT_MS,
         });
         let result = client
             .on_load("subproc", &Version::new(1, 0, 0))
@@ -2871,7 +2877,7 @@ while True:
             command: "python3".to_owned(),
             args: vec!["-c".to_owned(), script.to_owned()],
             cwd: None,
-            timeout_ms: 30_000,
+            timeout_ms: PLUGIN_TIMEOUT_MS,
         });
         let error = client
             .on_unload("subproc")
@@ -2941,7 +2947,7 @@ while True:
                     command: "python3".to_owned(),
                     args: vec!["-c".to_owned(), script.to_owned()],
                     cwd: None,
-                    timeout_ms: 30_000,
+                    timeout_ms: PLUGIN_TIMEOUT_MS,
                 }),
                 None,
             );

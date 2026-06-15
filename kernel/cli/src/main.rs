@@ -14,6 +14,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
+
 static _AI_SIGNAL: () = {
     let _ = std::any::TypeId::of::<AmanSignalV1>();
 };
@@ -80,7 +82,7 @@ async fn main() {
 
 async fn run_cmd(args: &[String]) -> Result<(), i32> {
     let mut config_path: Option<PathBuf> = None;
-    let mut bind: SocketAddr = "127.0.0.1:8080".parse().expect("default bind");
+    let mut bind: SocketAddr = DEFAULT_BIND_ADDR.parse().expect("default bind");
     let mut api_token: Option<String> = std::env::var("AMAN_API_TOKEN").ok();
     let mut soul_path: Option<PathBuf> = None;
 
@@ -266,7 +268,7 @@ async fn connect_grpc(addr: SocketAddr) -> Result<GrpcClient, i32> {
 }
 
 fn parse_api_opts(args: &[String]) -> Result<(ApiOpts, Vec<String>), i32> {
-    let mut addr: SocketAddr = "127.0.0.1:8080".parse().expect("default addr");
+    let mut addr: SocketAddr = DEFAULT_BIND_ADDR.parse().expect("default addr");
     let mut token: Option<String> = std::env::var("AMAN_API_TOKEN").ok();
     let mut operator: Option<String> = None;
     let mut confirm = false;
@@ -2110,12 +2112,12 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_api_opts;
+    use super::{parse_api_opts, DEFAULT_BIND_ADDR};
 
     #[test]
     fn parse_api_opts_defaults() {
         let (opts, rest) = parse_api_opts(&[]).expect("default opts");
-        assert_eq!(opts.addr.to_string(), "127.0.0.1:8080");
+        assert_eq!(opts.addr.to_string(), DEFAULT_BIND_ADDR);
         assert!(rest.is_empty());
     }
 

@@ -24,3 +24,4 @@ uuid.workspace = true
 [dev-dependencies]
 pollster.workspace = true
 proptest.workspace = true
+insta.workspace = true

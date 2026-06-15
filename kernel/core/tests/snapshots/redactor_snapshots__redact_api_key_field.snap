@@ -1,0 +1,6 @@
+---
+source: kernel/core/tests/redactor_snapshots.rs
+expression: "format!(\"input:  {input}\\noutput: {output}\")"
+---
+input:  {"api_key": "my-secret-api-key-12345", "user": "alice"}
+output: {"api_key": "[REDACTED]", "user": "alice"}

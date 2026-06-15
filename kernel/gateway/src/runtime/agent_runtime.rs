@@ -252,7 +252,9 @@ impl AgentRuntimeBuilder {
         // Discover any agents manually copied into ~/.aman/agents/.
         let _discovered = super::agent_seed::discover_filesystem_agents();
         let skills_dir = super::skill_sync::aman_data_dir().join("skills");
-        let _ = std::fs::create_dir_all(&skills_dir);
+        if let Err(e) = std::fs::create_dir_all(&skills_dir) {
+            tracing::warn!(path = %skills_dir.display(), error = %e, "failed to create skills directory");
+        }
         let llm_skills = skill::discover_llm_skills(&skills_dir);
         let llm_skills_arc = Arc::new(StdMutex::new(llm_skills.clone()));
         tracing::info!(count = llm_skills.len(), "discovered LLM instruction skills");
@@ -266,7 +268,9 @@ impl AgentRuntimeBuilder {
         );
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
-        let _ = tool::install_builtin_tools(&tools);
+        if let Err(e) = tool::install_builtin_tools(&tools) {
+            tracing::warn!(error = %e, "failed to install builtin tools");
+        }
         // Register code agent tools for available CLI coding tools (claude, codex, etc.)
         tool::install_code_agent_tools(&tools);
         // Register read_skill tool so the LLM can load SKILL.md instructions on demand.
@@ -275,11 +279,15 @@ impl AgentRuntimeBuilder {
             skills: llm_skills.clone(),
             agent_registry: OnceLock::new(),
         });
-        let _ = tools.register(Arc::clone(&read_skill_tool) as Arc<dyn Tool>);
+        if let Err(e) = tools.register(Arc::clone(&read_skill_tool) as Arc<dyn Tool>) {
+            tracing::warn!(error = %e, "failed to register read_skill tool");
+        }
         let llm_chat_tool = Arc::new(LlmChatTool {
             agent_registry: OnceLock::new(),
         });
-        let _ = tools.register(Arc::clone(&llm_chat_tool) as Arc<dyn Tool>);
+        if let Err(e) = tools.register(Arc::clone(&llm_chat_tool) as Arc<dyn Tool>) {
+            tracing::warn!(error = %e, "failed to register llm_chat tool");
+        }
         let skill_search = Arc::new(skill::SkillSearch::new());
         let skill_versions = Arc::new(skill::SkillVersionManager::from_root(
             self.runtime_dir.join("skill-history"),
@@ -293,7 +301,9 @@ impl AgentRuntimeBuilder {
             .with_version_manager(Arc::clone(&skill_versions)),
         );
         let workflows_dir = self.runtime_dir.join("workflows");
-        let _ = std::fs::create_dir_all(&workflows_dir);
+        if let Err(e) = std::fs::create_dir_all(&workflows_dir) {
+            tracing::warn!(path = %workflows_dir.display(), error = %e, "failed to create workflows directory");
+        }
         let workflow_engine = Arc::new(WorkflowEngine::new());
         super::session::SessionManager::register_workflow(&workflow_engine);
 
@@ -741,7 +751,9 @@ impl AgentRuntimeBuilder {
 
                 // Register eval tools directly with the tool registry
                 for t in eval::tools::create_eval_tools(Arc::clone(&engine)) {
-                    let _ = tools.register(t);
+                    if let Err(e) = tools.register(t) {
+                        tracing::warn!(error = %e, "failed to register eval tool");
+                    }
                 }
 
                 // Register eval hook
@@ -802,8 +814,12 @@ impl AgentRuntimeBuilder {
                 let memory_dir = agents_dir.join("memory");
                 if memory_dir.is_file() {
                     let bak = memory_dir.with_extension("memory.bak");
-                    let _ = std::fs::rename(&memory_dir, &bak);
-                    let _ = std::fs::create_dir_all(&memory_dir);
+                    if let Err(e) = std::fs::rename(&memory_dir, &bak) {
+                        tracing::warn!(from = %memory_dir.display(), to = %bak.display(), error = %e, "yantrikdb migration: failed to back up memory dir");
+                    }
+                    if let Err(e) = std::fs::create_dir_all(&memory_dir) {
+                        tracing::warn!(path = %memory_dir.display(), error = %e, "yantrikdb migration: failed to recreate memory dir");
+                    }
                     let new_path = memory_dir.join("yantrik.db");
                     if let Err(e) = std::fs::rename(&bak, &new_path) {
                         tracing::warn!(from = %bak.display(), to = %new_path.display(), error = %e, "failed to migrate yantrikdb");
@@ -1839,7 +1855,9 @@ impl AgentRuntimeBuilder {
 
             // 1. Auto-discover global hooks from ~/.aman/hooks/<name>/config.yaml
             let hooks_dir = super::skill_sync::aman_data_dir().join("hooks");
-            let _ = std::fs::create_dir_all(&hooks_dir);
+            if let Err(e) = std::fs::create_dir_all(&hooks_dir) {
+                tracing::warn!(path = %hooks_dir.display(), error = %e, "failed to create hooks directory");
+            }
             let discovered = config::discover_hooks(&hooks_dir);
             let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
             for cfg in &discovered {
@@ -3587,7 +3605,9 @@ impl AgentRuntime {
             .join("agents")
             .join(agent_id)
             .join("hooks");
-        let _ = std::fs::create_dir_all(&hooks_dir);
+        if let Err(e) = std::fs::create_dir_all(&hooks_dir) {
+            tracing::warn!(path = %hooks_dir.display(), error = %e, "failed to create agent hooks directory");
+        }
         let discovered = config::discover_hooks(&hooks_dir);
         if discovered.is_empty() {
             return;
@@ -4138,7 +4158,9 @@ impl AgentRuntime {
                     let _loader = self.plugin_loader.lock().await;
                 }
                 tracing::info!("Phase2: refresh_capabilities");
-                let _ = self.refresh_capabilities().await;
+                if let Err(e) = self.refresh_capabilities().await {
+                    tracing::warn!(error = %e, "Phase2: failed to refresh capabilities; capabilities may be stale");
+                }
                 tracing::info!("Phase2: load agents from config");
                 match config::AmanConfig::from_default_path() {
                     Ok(aman_cfg) => {
@@ -4157,7 +4179,9 @@ impl AgentRuntime {
                 self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);
             }
             RuntimePhase::Phase3 => {
-                let _ = self.load_workflows_once();
+                if let Err(e) = self.load_workflows_once() {
+                    tracing::warn!(error = %e, "Phase3: failed to load workflows; no workflows available");
+                }
                 self.phase.store(RuntimePhase::Phase3 as u8, Ordering::Release);
             }
             RuntimePhase::Phase4 => {
@@ -4646,7 +4670,9 @@ fn secret_resolver_config(runtime_dir: &Path) -> SecretResolverConfig {
         .filter(|v| !v.is_empty());
     if let Some(key_hex) = key_hex {
         let dir = runtime_dir.join("secret-cache");
-        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            tracing::warn!(path = %dir.display(), error = %e, "failed to create secret cache directory");
+        }
         config.cache_fallback = Some(SecretCacheFallbackConfig {
             dir,
             ttl_ms: 7 * 24 * 60 * 60 * 1000,
@@ -5328,7 +5354,9 @@ fn build_semantic_strategy(
     skm_select::SemanticConfig,
 )> {
     let cache_dir = super::skill_sync::aman_data_dir().join("cache");
-    let _ = std::fs::create_dir_all(&cache_dir);
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        tracing::warn!(path = %cache_dir.display(), error = %e, "failed to create embedding cache directory");
+    }
     let cache_path = cache_dir.join("embeddings.bin");
 
     let provider = Arc::new(skm_embed::BgeM3Provider::new().ok()?);

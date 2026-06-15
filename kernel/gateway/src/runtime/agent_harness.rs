@@ -1514,7 +1514,9 @@ impl AgentHarness {
             // Keep status as Busy so the idle detector doesn't kick in
             // while the detached process is still running. system_state
             // shows Waiting so the UI can reflect the detach-pending state.
-            let _ = self.registry.set_active_session(agent_id, None).await;
+            if let Err(e) = self.registry.set_active_session(agent_id, None).await {
+                tracing::warn!(agent_id = %agent_id, error = %e, "failed to reset active session on detach");
+            }
             self.registry.set_system_state(agent_id, AgentSystemState::Waiting).await;
             // Reset the idle signal so the boredom timer doesn't fire
             // during the detach wait (which can last several minutes).
@@ -1560,8 +1562,12 @@ impl AgentHarness {
                     .await;
                 // Still go to Idle on error — reset both status and system_state
                 // so the agent doesn't get stuck in Chatting/Working.
-                let _ = self.registry.set_active_session(agent_id, None).await;
-                let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+                if let Err(e) = self.registry.set_active_session(agent_id, None).await {
+                    tracing::warn!(agent_id = %agent_id, error = %e, "failed to reset active session on error");
+                }
+                if let Err(e) = self.registry.set_status(agent_id, AgentStatus::Idle).await {
+                    tracing::warn!(agent_id = %agent_id, error = %e, "failed to set idle status on error");
+                }
                 self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
                 self.registry.set_activity(agent_id, "").await;
                 return Err(e);
@@ -1878,7 +1884,9 @@ impl AgentHarness {
             Ok(t) => t,
             Err(e) => {
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed on tool-selection error");
+                }
                 return Err(Error::ConfigInvalid {
                     message: format!("direct act tool-selection failed: {e}"),
                 });
@@ -1889,7 +1897,9 @@ impl AgentHarness {
                 ctx.stream_cb = None;
                 // Wait for the forwarder to drain so reply_stream_done
                 // is published before tool execution and Turn 2.
-                let _ = stream_handle.await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed after tool calls");
+                }
 
                 // Record the assistant message with tool calls
                 let formatted_calls = llm::format_tool_calls_for_history(&calls);
@@ -1946,13 +1956,17 @@ impl AgentHarness {
             ReActTurn::Finished { content, .. } => {
                 // LLM chose not to use any tools — just return its response.
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed on finish");
+                }
                 ctx.history.push(ChatMessage::assistant(content.clone()));
                 Ok(ReactOutcome::Finished(content))
             }
             ReActTurn::Error(e) => {
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed on direct-act error");
+                }
                 Err(Error::ConfigInvalid {
                     message: format!("direct act failed: {e}"),
                 })
@@ -2026,8 +2040,12 @@ impl AgentHarness {
     /// Publish final reply and set agent to idle.
     async fn cleanup_session(&self, agent_id: &str, session_id: &str) {
         self.unregister_interrupt(session_id);
-        let _ = self.registry.set_active_session(agent_id, None).await;
-        let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+        if let Err(e) = self.registry.set_active_session(agent_id, None).await {
+            tracing::warn!(agent_id = %agent_id, session_id = %session_id, error = %e, "cleanup: failed to reset active session");
+        }
+        if let Err(e) = self.registry.set_status(agent_id, AgentStatus::Idle).await {
+            tracing::warn!(agent_id = %agent_id, session_id = %session_id, error = %e, "cleanup: failed to set idle status");
+        }
         self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
         self.registry.set_activity(agent_id, "").await;
         self
@@ -2115,7 +2133,7 @@ impl AgentHarness {
             } else {
                 format!("{sn} failed — exit {hook_exit_code}")
             };
-            let _ = self.bus.publish(Event::new(
+            if let Err(e) = self.bus.publish(Event::new(
                 SOURCE_AGENT_HARNESS,
                 EventType::Custom(EVT_SKILL_COMPLETED.to_owned()),
                 json!({
@@ -2128,7 +2146,9 @@ impl AgentHarness {
                     "stdout": hook_stdout,
                     "message": message,
                 }),
-            )).await;
+            )).await {
+                tracing::warn!(agent_id = %agent_id, session_id = %session_id, skill = %sn, error = %e, "failed to publish skill:completed event");
+            }
         }
 
         let history =
@@ -2244,7 +2264,9 @@ impl AgentHarness {
         match self.engine.execute_turn(ctx, turn_messages).await {
             Ok(ReActTurn::Finished { ref content, .. }) => {
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed on react-loop finish");
+                }
                 ctx.history.push(ChatMessage::assistant(content.clone()));
                 let completion_tokens =
                     context_manager::TokenBudget::estimate_tokens(content);
@@ -2253,7 +2275,9 @@ impl AgentHarness {
             }
             Ok(ReActTurn::ToolCalls { content: tool_text, calls, reasoning_content }) => {
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed on tool calls");
+                }
 
                 let tool_names: Vec<&str> = calls.iter().map(|c| c.tool_name.as_str()).collect();
                 self.registry.set_activity(
@@ -2323,16 +2347,20 @@ impl AgentHarness {
             }
             Ok(ReActTurn::Error(react_err)) => {
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
-                let _ = self.publish_llm_error(ctx, &react_err.to_string()).await;
+                if let Err(e) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "stream forwarder task failed on react error");
+                }
+                self.publish_llm_error(ctx, &react_err.to_string()).await;
                 Err(Error::ConfigInvalid {
                     message: format!("ReAct turn error at {}: {react_err}", ctx.turn),
                 })
             }
             Err(e) => {
                 ctx.stream_cb = None;
-                let _ = stream_handle.await;
-                let _ = self.publish_llm_error(ctx, &e.to_string()).await;
+                if let Err(join_err) = stream_handle.await {
+                    tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %join_err, "stream forwarder task failed on engine error");
+                }
+                self.publish_llm_error(ctx, &e.to_string()).await;
                 Err(Error::ConfigInvalid {
                     message: format!("ReAct loop error at turn {}: {e}", ctx.turn),
                 })
@@ -2444,7 +2472,9 @@ impl AgentHarness {
                             "content": msg.content,
                             "timestamp_ms": ts,
                         });
-                        let _ = store.append_session_event(&ctx.session_id, &entry);
+                        if let Err(e) = store.append_session_event(&ctx.session_id, &entry) {
+                            tracing::warn!(session_id = %ctx.session_id, agent_id = %ctx.agent_id, error = %e, "failed to append session event; session history data loss");
+                        }
                     }
                 }
                 // Evaluate progress before deciding to auto-continue.
@@ -2491,7 +2521,7 @@ impl AgentHarness {
                         reason,
                         "auto-continue stopped"
                     );
-                    let _ = self.bus.publish(Event::new(
+                    if let Err(e) = self.bus.publish(Event::new(
                         SOURCE_AGENT_HARNESS,
                         EventType::Custom(EVT_AGENT_AUTO_CONTINUE_STOPPED.to_owned()),
                         json!({
@@ -2504,7 +2534,9 @@ impl AgentHarness {
                             "total_turns": ctx.turn,
                             "continuations": continuation_count,
                         }),
-                    )).await;
+                    )).await {
+                        tracing::warn!(agent_id = %ctx.agent_id, session_id = %ctx.session_id, error = %e, "failed to publish auto-continue-stopped event");
+                    }
                     return Ok(ReactOutcome::MaxTurnsReached {
                         turns: ctx.max_turns * (continuation_count + 1),
                     });
@@ -2727,10 +2759,14 @@ impl AgentHarness {
                 );
                 // Always publish to the global bus — IM streaming consumers
                 // (StreamingChatReplyHandler) and SSE listen here.
-                let _ = global_bus.publish(e.clone()).await;
+                if let Err(err) = global_bus.publish(e.clone()).await {
+                    tracing::warn!(agent_id = %aid, session_id = %sid, error = %err, "failed to publish event to global bus");
+                }
                 // Also push to the local bus when available.
                 if let Some(ref local_bus) = registry.get_local_bus(&aid).await {
-                    let _ = local_bus.publish(e).await;
+                    if let Err(err) = local_bus.publish(e).await {
+                        tracing::warn!(agent_id = %aid, session_id = %sid, error = %err, "failed to publish event to local bus");
+                    }
                 }
             }
         })

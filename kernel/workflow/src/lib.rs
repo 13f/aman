@@ -14,6 +14,19 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Standard workflow state name constants.
+#[allow(dead_code)]
+const STATE_ARCHIVED: &str = "ARCHIVED";
+#[allow(dead_code)]
+const STATE_APPROVED: &str = "APPROVED";
+#[allow(dead_code)]
+const STATE_CANCELLED: &str = "CANCELLED";
+#[allow(dead_code)]
+const STATE_REJECTED: &str = "REJECTED";
+/// Standard workflow transition token constants.
+const TOKEN_RETRY: &str = "RETRY";
+const TOKEN_CANCEL: &str = "CANCEL";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDef {
     pub name: String,
@@ -728,10 +741,10 @@ impl WorkflowEngine {
         let from_state = instance.current_state.clone();
         instance.last_user_event_at = Some(event.timestamp);
 
-        if workflow.is_error_state(&from_state) && normalize_token(event.event_type.as_str()) == "RETRY" {
+        if workflow.is_error_state(&from_state) && normalize_token(event.event_type.as_str()) == TOKEN_RETRY {
             return self.retry_from_error(&workflow, instance, event).await;
         }
-        if workflow.is_error_state(&from_state) && normalize_token(event.event_type.as_str()) == "CANCEL" {
+        if workflow.is_error_state(&from_state) && normalize_token(event.event_type.as_str()) == TOKEN_CANCEL {
             return self.cancel_from_error(&workflow, instance).await;
         }
 
@@ -908,7 +921,7 @@ impl WorkflowEngine {
             let instance = self.load_instance(&id)?;
             let workflow = self.workflow(&instance.workflow_name)?;
             let state = normalize_token(&instance.current_state);
-            if state == "ARCHIVED" {
+            if state == STATE_ARCHIVED {
                 continue;
             }
             if !matches!(state.as_str(), "APPROVED" | "REJECTED" | "CANCELLED") {
@@ -917,7 +930,7 @@ impl WorkflowEngine {
             if elapsed_ms(instance.state_entered_at, now) < self.runtime_config.terminal_archive_after_ms {
                 continue;
             }
-            if !workflow.states.iter().any(|state| normalize_token(&state.name) == "ARCHIVED") {
+            if !workflow.states.iter().any(|state| normalize_token(&state.name) == STATE_ARCHIVED) {
                 continue;
             }
             let result = self
@@ -925,7 +938,7 @@ impl WorkflowEngine {
                     workflow,
                     instance.clone(),
                     instance.current_state.clone(),
-                    "ARCHIVED".to_owned(),
+                    STATE_ARCHIVED.to_owned(),
                     TransitionReason::Timeout,
                 )
                 .await?;
@@ -938,7 +951,7 @@ impl WorkflowEngine {
         let mut instances = self.instances.lock().expect("instances lock");
         let before = instances.len();
         instances.retain(|_, instance| {
-            !(normalize_token(&instance.current_state) == "ARCHIVED"
+            !(normalize_token(&instance.current_state) == STATE_ARCHIVED
                 && elapsed_ms(instance.state_entered_at, now) >= self.runtime_config.archived_retention_ms)
         });
         before.saturating_sub(instances.len())
@@ -987,7 +1000,7 @@ impl WorkflowEngine {
         let from_state = instance.current_state.clone();
         if instance.total_retry_count >= workflow.error_recovery.max_retry_count {
             let target = match workflow.error_recovery.on_retry_failure {
-                RetryFailurePolicy::Archive => "ARCHIVED".to_owned(),
+                RetryFailurePolicy::Archive => STATE_ARCHIVED.to_owned(),
                 RetryFailurePolicy::ManualOnly => workflow.error_state.clone(),
             };
             return self
@@ -1061,9 +1074,9 @@ impl WorkflowEngine {
         let target = if workflow
             .states
             .iter()
-            .any(|state| normalize_token(&state.name) == "CANCELLED")
+            .any(|state| normalize_token(&state.name) == STATE_CANCELLED)
         {
-            "CANCELLED".to_owned()
+            STATE_CANCELLED.to_owned()
         } else {
             workflow.error_state.clone()
         };

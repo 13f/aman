@@ -1,0 +1,6 @@
+---
+source: kernel/core/tests/redactor_snapshots.rs
+expression: "format!(\"input:  {input}\\noutput: {output}\")"
+---
+input:  AMAN_API_TOKEN=my-aman-token-value-here
+output: AMAN_API_TOKEN=[REDACTED]

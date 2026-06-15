@@ -203,12 +203,12 @@ daily_life:
 
 # ── Context Compression ──────────────────────────────────────────
 compression:
-  threshold: 0.8049               # Fraction of context window to trigger compression
-  tail_budget_ratio: 0.2051       # Fraction of tokens reserved for TAIL
+  threshold: 0.80                 # Fraction of context window to trigger compression (80%)
+  tail_budget_ratio: 0.20         # Fraction of tokens reserved for TAIL (20%)
   protect_head_messages: 2        # Messages at start always kept
   min_tail_messages: 3            # Messages at end always kept
   anti_thrashing: true            # Pause if 2 consecutive runs save < min_savings_pct
-  min_savings_pct: 10.0102
+  min_savings_pct: 10.0           # Minimum savings percentage for effective compression
   max_tool_args_chars: 500
   dedup_tool_outputs: true
   summarize_tool_results: true

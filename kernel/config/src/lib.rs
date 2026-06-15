@@ -555,12 +555,12 @@ pub struct CompressionConfig {
 impl Default for CompressionConfig {
     fn default() -> Self {
         Self {
-            threshold: 0.8049,
-            tail_budget_ratio: 0.2051,
+            threshold: 0.80,
+            tail_budget_ratio: 0.20,
             protect_head_messages: 2,
             min_tail_messages: 3,
             anti_thrashing: true,
-            min_savings_pct: 10.0102,
+            min_savings_pct: 10.0,
             max_tool_args_chars: 500,
             dedup_tool_outputs: true,
             summarize_tool_results: true,

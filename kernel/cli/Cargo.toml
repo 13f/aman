@@ -27,6 +27,10 @@ prost.workspace = true
 [build-dependencies]
 tonic-build = "0.13"
 
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread"] }
+
 [[bin]]
 name = "aman-cli"
 path = "src/main.rs"

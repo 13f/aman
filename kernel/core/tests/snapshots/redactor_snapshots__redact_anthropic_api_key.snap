@@ -1,0 +1,6 @@
+---
+source: kernel/core/tests/redactor_snapshots.rs
+expression: "format!(\"input:  {input}\\noutput: {output}\")"
+---
+input:  x-api-key: sk-ant-api03-abc123def456ghi789jkl012mno345pqr678stu901vwx
+output: x-api-key: [REDACTED_API_KEY]

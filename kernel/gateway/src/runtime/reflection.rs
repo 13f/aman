@@ -111,7 +111,9 @@ impl ReflectionRunner {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64;
-            let _ = store.mark_reflected(&session.id, now);
+            if let Err(e) = store.mark_reflected(&session.id, now) {
+                tracing::warn!(session_id = %session.id, error = %e, "failed to mark session as reflected; may be re-processed");
+            }
             return;
         }
 
@@ -133,7 +135,9 @@ impl ReflectionRunner {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as i64;
-                let _ = store.mark_reflected(&session.id, now);
+                if let Err(e) = store.mark_reflected(&session.id, now) {
+                tracing::warn!(session_id = %session.id, error = %e, "failed to mark session as reflected; may be re-processed");
+            }
                 info!(
                     agent_id,
                     session_id = %session.id,
@@ -539,9 +543,12 @@ pub async fn session_extract_and_store_with_prompt(
     if let Some(entities) = summary.get("entities").and_then(|e| e.as_array()) {
         for entity in entities {
             if let Some(name) = entity.as_str() {
-                let _ = memory
+                if let Err(e) = memory
                     .relate(name, session_id, "appears_in")
-                    .await;
+                    .await
+                {
+                    tracing::warn!(entity = %name, session_id = %session_id, error = %e, "failed to create KG relationship");
+                }
             }
         }
     }

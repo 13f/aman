@@ -61,7 +61,7 @@ impl SessionManager {
     ///
     /// Called once during gateway startup.
     pub fn register_workflow(engine: &workflow::WorkflowEngine) {
-        let _ = engine.register_workflow(WorkflowDef {
+        if let Err(e) = engine.register_workflow(WorkflowDef {
             name: "message-session".to_owned(),
             states: vec![
                 StateDef { name: "ACTIVE".to_owned() },
@@ -217,7 +217,9 @@ impl SessionManager {
                 on_retry_failure: workflow::RetryFailurePolicy::ManualOnly,
                 retry_backoff: kernel::retry::RetryBackoff::Fixed(1000),
             },
-        });
+        }) {
+            tracing::warn!(error = %e, "failed to register message-session workflow; session state machine unavailable");
+        }
     }
 }
 
@@ -410,7 +412,9 @@ impl SessionManager {
         );
 
         // Publish to global bus.
-        let _ = self.bus.publish(session_started_event.clone()).await;
+        if let Err(e) = self.bus.publish(session_started_event.clone()).await {
+            tracing::warn!(session_id = %id, agent_id = %agent_id, error = %e, "failed to publish session:started event");
+        }
 
         // Persist to the agent's session store.
         let created_at = instance.data.get("created_at")
@@ -418,7 +422,7 @@ impl SessionManager {
         let last_active_at = instance.data.get("last_active_at")
             .and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
-            let _ = store.upsert(&session_store::SessionRecord {
+            if let Err(e) = store.upsert(&session_store::SessionRecord {
                 id: id.clone(),
                 agent_id: agent_id.to_owned(),
                 state: instance.current_state,
@@ -428,7 +432,9 @@ impl SessionManager {
                 session_type: session_type.to_owned(),
                 reflected_at: None,
                 title: None,
-            });
+            }) {
+                tracing::warn!(session_id = %id, agent_id = %agent_id, error = %e, "failed to persist new session record");
+            }
         }
 
         Ok(id)
@@ -484,7 +490,7 @@ impl SessionManager {
         );
 
         // Publish session:started event
-        let _ = self
+        if let Err(e) = self
             .bus
             .publish(Event::new(
                 "session:control",
@@ -495,11 +501,14 @@ impl SessionManager {
                     "operator": "system",
                 }),
             ))
-            .await;
+            .await
+        {
+            tracing::warn!(session_id = %session_id, agent_id = %agent_id, error = %e, "failed to publish session:started event");
+        }
 
         // Persist to the agent's session store
         if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
-            let _ = store.upsert(&session_store::SessionRecord {
+            if let Err(e) = store.upsert(&session_store::SessionRecord {
                 id: session_id.to_owned(),
                 agent_id: agent_id.to_owned(),
                 state: instance.current_state,
@@ -509,7 +518,9 @@ impl SessionManager {
                 session_type: session_type.to_owned(),
                 reflected_at: None,
                 title: None,
-            });
+            }) {
+                tracing::warn!(session_id = %session_id, agent_id = %agent_id, error = %e, "failed to persist session record");
+            }
         }
 
         Ok(())
@@ -532,18 +543,22 @@ impl SessionManager {
                 "agent_id": agent_id,
             }),
         );
-        let _ = self.workflow_engine.handle_event(session_id, transition_event).await;
+        if let Err(e) = self.workflow_engine.handle_event(session_id, transition_event).await {
+            tracing::warn!(session_id = %session_id, error = %e, "failed to transition session workflow state");
+        }
 
         // Update instance metadata
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        let _ = self.workflow_engine.update_instance_data(session_id, |data| {
+        if let Err(e) = self.workflow_engine.update_instance_data(session_id, |data| {
             data["last_active_at"] = json!(now_ms);
             let mc = data.get("message_count").and_then(|v| v.as_u64()).unwrap_or(0);
             data["message_count"] = json!(mc + 1);
-        });
+        }) {
+            tracing::warn!(session_id = %session_id, error = %e, "failed to update workflow instance data");
+        }
 
         // Persist updated session record to SQLite
         if let Some(store) = self.agent_registry.get_session_store(agent_id).await
@@ -554,8 +569,8 @@ impl SessionManager {
                     .and_then(|v| v.as_i64()).unwrap_or(0);
                 let message_count = inst.data.get("message_count")
                     .and_then(|v| v.as_i64()).unwrap_or(0);
-                let _ = store.upsert(&session_store::SessionRecord {
-                    id: inst.id,
+                if let Err(e) = store.upsert(&session_store::SessionRecord {
+                    id: inst.id.clone(),
                     agent_id: agent_id.to_owned(),
                     state: inst.current_state,
                     message_count,
@@ -564,7 +579,9 @@ impl SessionManager {
                     session_type: session_type.to_owned(),
                     reflected_at: None,
                 title: None,
-                });
+                }) {
+                    tracing::warn!(session_id = %inst.id, agent_id = %agent_id, error = %e, "failed to persist session record after reply");
+                }
             }
     }
 }

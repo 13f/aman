@@ -244,6 +244,15 @@ fn kill_process(...) {
 - 拆分为子 trait：`MemoryCRUD` / `MemorySessions` / `KnowledgeGraph` / `TemporalQueries` / `ProceduralMemory` / `CognitiveProcessing`
 - 实现者只实现支持的子 trait；不支持的返回 `AmanResult::Unimplemented`
 
+**✅ 已修复 (2026-06-15)**:
+
+- 15 个 `unimplemented!()` 替换为安全 no-op 默认值（空 vec / `Ok(())` / `false`）。
+  仅 `store()` 和 `recall()` 保留为必需方法（无默认体）。新实现者只需覆盖支持的子集，
+  不会遇到运行时 panic。
+- 同步新增 `ErrorKind` enum（P1-11），提供 `fn kind()` 方法用于程序化错误内省。
+
+**验证**：`cargo build --workspace` 干净；`cargo test -p kernel -p memory -p memory-store` 全过。
+
 ### 11. `Error` 类型 21 个 variant 多数是 message-only
 
 `kernel/core/src/error.rs:9-51` 中 8 个 variant 是 `{ message: String }`，把"种类"和"消息"混在一起，调用方无法精确 match。
@@ -259,6 +268,13 @@ pub enum Kind {
     // ...
 }
 ```
+
+**✅ 部分修复 (2026-06-15)**:
+
+- 新增 `ErrorKind` enum（8 个语义类别：`ConfigInvalid`, `Unrecoverable`, `PermissionDenied` 等）
+- 新增 `fn kind(&self) -> Option<ErrorKind>` 方法用于程序化错误分类
+- 所有现有 variant 形状保持不变 — 零破坏性变更
+- 完整的 `Kind + source` 重构（将 8 个 variant 合并为 `Generic { kind, message }`）推迟到后续 breaking-change 窗口
 
 ### 12. 配置系统的"三层重复"
 
@@ -287,6 +303,8 @@ pub enum Kind {
 - 依赖：plugin 加 `macros = { path = "../macros" }`；macros 加 `quote = "1"` + dev-deps `kernel` / `plugin`。
 
 **未做**：`register_exports` / `unregister_exports` 里那 5 块重复的「for + push + register_* + 错误回滚」代码没动 — 这是函数内重复，proc-macro derive 不适用（derive 只能给 struct/enum 加方法，不能改 free function）。需要的重构是表驱动（按 `ExportKind` 数组迭代）或 trait-object 化，跟 derive 完全是两套机制。**属于独立 follow-up**。
+
+**✅ Bugfix (2026-06-15)**：`has_manifest_exports()` 和 `validate_manifest_exports()` 补上遗漏的 `memory_providers` 检查。之前仅导出 `memory_providers` 的插件会被错误拒绝。
 
 **验证**：`cargo build -p plugin -p macros` 干净；`cargo test -p macros --test ui` 3/3 trybuild 通过。
 
@@ -418,6 +436,13 @@ pub enum Kind {
 - 给 `serde` 派生类型加 `arbitrary::Arbitrary`，建立 fuzz 基础
 - CLI 测试引入 `wiremock` / `mockito`
 
+**✅ 部分修复 (2026-06-15)**:
+
+- **Fuzzing**：`kernel/core/fuzz/` — 2 个 fuzz targets（`redactor` + `pipeline_serde`），`cargo +nightly fuzz build` 通过
+- **Snapshot**：`kernel/core/tests/redactor_snapshots.rs` — 8 个 insta 快照测试覆盖全部 7 种敏感模式 + 1 个干净文本
+- **HTTP mock**：`kernel/cli/tests/http_mock_integration.rs` — 3 个 wiremock 测试（200/401/404），使用 raw TCP 确保兼容性
+- **未做**：loom 异步竞态检测（需要 event-bus 同步原语泛型化，属于架构改造）
+
 ### 21. god-struct 数据建模
 
 `CapabilitySet` 9 字段 + 手写 `contains`/`diff` (35+ 行/方法)，新增 capability 需改 3 处。
@@ -446,6 +471,12 @@ pub enum Kind {
   - **结论：不动。** 已在对应 commit message 里说明 design rationale。
 
 **验证**：`cargo build -p skill -p workflow -p gateway` 干净；`cargo test -p gateway --lib` 74/74 通过。`cargo test -p skill -p workflow` 0 tests / 0 failed（这两个 crate 当前没有 lib 测试）。
+
+**✅ 扩展修复 (2026-06-15)** — 额外 ~27 处 `let _ =` 静默吞全部替换为 `tracing::warn!`：
+
+- **数据丢失风险 (3 处)**：YantrikDB 迁移 `rename`/`create_dir_all` (`agent_runtime.rs:805-806`)、`store.append_session_event` (`agent_harness.rs:2447`)
+- **状态不一致 (7 处)**：`refresh_capabilities` / `load_workflows_once`、session 工作流注册/持久化/状态转换
+- **可观测性 (~17 处)**：`stream_handle.await` JoinError (8 处)、`bus.publish` 失败、`registry.set_active_session/set_status`、`mark_reflected`、`memory.relate`、`create_dir_all` 等
 
 ### 23. 日志安全违规
 
@@ -486,6 +517,14 @@ pub enum Kind {
 **验证**：`cargo build -p sdk` 干净；`cargo build -p hello-skill`（唯一一个外部消费者）干净。
 
 ### 25. 其他代码异味汇总（按文件）
+
+**✅ 部分修复 (2026-06-15)** — 幻数/幻字符串常量提取：
+
+- `plugin/src/lib.rs`: `PLUGIN_TIMEOUT_MS` + `MAX_MANIFEST_SIZE` 常量（7 处替换）
+- `cli/src/main.rs`: `DEFAULT_BIND_ADDR` 常量（3 处替换）
+- `workflow/src/lib.rs`: `STATE_*` / `TOKEN_*` 状态名常量（10 处生产代码替换）
+- `config/src/lib.rs` + `CONFIG.md`: 压缩默认值对齐文档（0.8049→0.80, 0.2051→0.20, 10.0102→10.0）
+- 大类方法拆分（`build()` 4372 行等）仍属于后续工作
 
 #### `kernel/gateway/src/runtime/agent_runtime.rs` (5110 行)
 

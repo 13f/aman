@@ -79,7 +79,7 @@ pub enum CognitiveEvent {
 /// # Design
 ///
 /// This trait abstracts over the underlying model type. Today's
-/// implementation is LLM-based ([`LlmCognitiveEngine`] in `cognitive-llm`),
+/// implementation is LLM-based (`LlmCognitiveEngine` in `cognitive-llm`),
 /// but future implementations could use world models, hybrid systems,
 /// or other architectures — all behind the same trait.
 ///

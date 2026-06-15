@@ -898,11 +898,10 @@ impl GatewayClient {
             // Try to extract the server error message from the response body
             let status = resp.status();
             let body_text = resp.text().await.unwrap_or_default();
-            if let Ok(val) = serde_json::from_str::<Value>(&body_text) {
-                if let Some(msg) = val.get("error").and_then(|v| v.as_str()) {
+            if let Ok(val) = serde_json::from_str::<Value>(&body_text)
+                && let Some(msg) = val.get("error").and_then(|v| v.as_str()) {
                     return Err(msg.to_owned());
                 }
-            }
             Err(format!("idle_run failed: {status}"))
         }
     }

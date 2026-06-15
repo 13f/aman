@@ -95,7 +95,7 @@ impl Plugin for DiscordPlugin {
             return vec![];
         }
 
-        let source_id = format!("chat:discord:bot");
+        let source_id = "chat:discord:bot".to_string();
         let sender = Arc::new(DiscordSender::new(&config.bot_token));
         if let Some(registry) = &self.channel_registry {
             registry.register(source_id.clone(), sender);

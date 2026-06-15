@@ -5,7 +5,7 @@
 //! `/v1/messages` API.
 //!
 //! TODO: Implement the full Anthropic Messages API:
-//! - POST https://api.anthropic.com/v1/messages
+//! - POST <https://api.anthropic.com/v1/messages>
 //! - x-api-key header, anthropic-version header
 //! - Streaming via SSE
 //! - Tool use blocks

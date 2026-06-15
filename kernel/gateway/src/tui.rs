@@ -203,11 +203,10 @@ impl TuiState {
     }
 
     fn select_next(&mut self) {
-        if let Some(i) = self.selected {
-            if i + 1 < self.pending.len() {
+        if let Some(i) = self.selected
+            && i + 1 < self.pending.len() {
                 self.selected = Some(i + 1);
             }
-        }
     }
 
     fn select_prev(&mut self) {
@@ -375,8 +374,8 @@ fn render_approval_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
     frame.render_stateful_widget(list, area, &mut list_state);
 
     // Render detail for selected item below the list.
-    if let Some(idx) = state.selected {
-        if let Some(item) = state.pending.get(idx) {
+    if let Some(idx) = state.selected
+        && let Some(item) = state.pending.get(idx) {
             // Calculate detail area below the list
             let detail_y = area.y + 2 + state.pending.len().min(20) as u16;
             if detail_y < area.bottom() {
@@ -409,7 +408,6 @@ fn render_approval_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
                 frame.render_widget(detail, detail_area);
             }
         }
-    }
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, state: &TuiState) {

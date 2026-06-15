@@ -170,22 +170,22 @@ impl WorkSystem {
                 // Notify global bus if requested.
                 {
                     let snap = self.engine.snapshot().await;
-                    if let Some(ref item) = snap.current {
-                        if item.notify_on_complete {
-                            let _ = self
-                                .global_bus
-                                .publish(Event::new(
-                                    WORK_SOURCE,
-                                    EventType::Custom("work.item.result".into()),
-                                    serde_json::to_value(WorkItemResultEvent {
-                                        item_id,
-                                        result: result.clone(),
-                                        agent_id: self.engine.agent_id().to_string(),
-                                    })
-                                    .unwrap_or_default(),
-                                ))
-                                .await;
-                        }
+                    if let Some(ref item) = snap.current
+                        && item.notify_on_complete
+                    {
+                        let _ = self
+                            .global_bus
+                            .publish(Event::new(
+                                WORK_SOURCE,
+                                EventType::Custom("work.item.result".into()),
+                                serde_json::to_value(WorkItemResultEvent {
+                                    item_id,
+                                    result: result.clone(),
+                                    agent_id: self.engine.agent_id().to_string(),
+                                })
+                                .unwrap_or_default(),
+                            ))
+                            .await;
                     }
                 }
 

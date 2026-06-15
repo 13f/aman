@@ -218,7 +218,7 @@ impl AgentRegistry {
                 let deferred_queue = {
                     let dir = super::agent_seed::aman_data_dir()
                         .join("agents")
-                        .join(&agent_id)
+                        .join(agent_id)
                         .join("deferred");
                     match persistence::FileDeferredTaskQueue::open(&dir) {
                         Ok(q) => Some(Arc::new(q) as Arc<dyn kernel::deferred_task::DeferredTaskQueue>),
@@ -665,7 +665,7 @@ impl AgentRegistry {
     ///
     /// Called during Phase 4 shutdown to prevent agents from generating new
     /// events while the event bus is being drained. The full state cleanup
-    /// happens later in Phase 2 via [`clear()`].
+    /// happens later in Phase 2 via [`Self::clear`].
     pub async fn stop_idle_systems(&self) {
         let idle_managers: Vec<Arc<AgentIdleManager>> = {
             let managers = self.idle_managers.read().await;

@@ -1,6 +1,8 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+mod common;
+
 use std::process::Command;
 
 #[test]
@@ -22,9 +24,9 @@ security:
     )
     .expect("write config");
 
-    let bin = env!("CARGO_BIN_EXE_aman");
+    let bin = common::aman_cli_bin();
 
-    let show = Command::new(bin)
+    let show = Command::new(&bin)
         .args(["config", "show", "--config"])
         .arg(&config_path)
         .output()
@@ -32,14 +34,14 @@ security:
     assert!(show.status.success());
     assert!(String::from_utf8_lossy(&show.stdout).contains("\"runtime\""));
 
-    let validate = Command::new(bin)
+    let validate = Command::new(&bin)
         .args(["config", "validate", "--config"])
         .arg(&config_path)
         .status()
         .expect("run validate");
     assert!(validate.success());
 
-    let set = Command::new(bin)
+    let set = Command::new(&bin)
         .args([
             "config",
             "set",
@@ -54,7 +56,7 @@ security:
         .expect("run set");
     assert!(set.success());
 
-    let show2 = Command::new(bin)
+    let show2 = Command::new(&bin)
         .args(["config", "show", "--config"])
         .arg(&config_path)
         .args(["--override"])

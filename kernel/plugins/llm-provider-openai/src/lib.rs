@@ -150,14 +150,15 @@ impl LlmOpenaiProvider {
             request_body["tools"] = json!(openai_tools);
             request_body["tool_choice"] = json!("auto");
         }
-        if let Some(ref fmt) = req.response_format {
-            if fmt == "json_object" {
-                request_body["response_format"] = json!({"type": "json_object"});
-            }
+        if let Some(ref fmt) = req.response_format
+            && fmt == "json_object"
+        {
+            request_body["response_format"] = json!({"type": "json_object"});
         }
 
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(STREAM_TIMEOUT_SECS))
+            .no_proxy()
             .build()
             .map_err(|e| {
                 Error::Io(std::io::Error::other(e.to_string()))
@@ -326,10 +327,10 @@ impl LlmOpenaiProvider {
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
         }
-        if let Some(ref fmt) = req.response_format {
-            if fmt == "json_object" {
-                body["response_format"] = json!({"type": "json_object"});
-            }
+        if let Some(ref fmt) = req.response_format
+            && fmt == "json_object"
+        {
+            body["response_format"] = json!({"type": "json_object"});
         }
 
         let url = format!("{}/chat/completions", self.base_url);

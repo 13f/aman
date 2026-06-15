@@ -421,8 +421,8 @@ impl SessionManager {
             .and_then(|v| v.as_i64()).unwrap_or(0);
         let last_active_at = instance.data.get("last_active_at")
             .and_then(|v| v.as_i64()).unwrap_or(0);
-        if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
-            if let Err(e) = store.upsert(&session_store::SessionRecord {
+        if let Some(store) = self.agent_registry.get_session_store(agent_id).await
+            && let Err(e) = store.upsert(&session_store::SessionRecord {
                 id: id.clone(),
                 agent_id: agent_id.to_owned(),
                 state: instance.current_state,
@@ -435,7 +435,6 @@ impl SessionManager {
             }) {
                 tracing::warn!(session_id = %id, agent_id = %agent_id, error = %e, "failed to persist new session record");
             }
-        }
 
         Ok(id)
     }
@@ -482,7 +481,7 @@ impl SessionManager {
             .restore_instance(session_id, "message-session", data)?;
 
         self.audit.record(
-            &format!("system:session_{session_type}"),
+            format!("system:session_{session_type}"),
             "chat.session.create",
             format!("session:{session_id}"),
             "ok",
@@ -507,8 +506,8 @@ impl SessionManager {
         }
 
         // Persist to the agent's session store
-        if let Some(store) = self.agent_registry.get_session_store(agent_id).await {
-            if let Err(e) = store.upsert(&session_store::SessionRecord {
+        if let Some(store) = self.agent_registry.get_session_store(agent_id).await
+            && let Err(e) = store.upsert(&session_store::SessionRecord {
                 id: session_id.to_owned(),
                 agent_id: agent_id.to_owned(),
                 state: instance.current_state,
@@ -521,7 +520,6 @@ impl SessionManager {
             }) {
                 tracing::warn!(session_id = %session_id, agent_id = %agent_id, error = %e, "failed to persist session record");
             }
-        }
 
         Ok(())
     }

@@ -96,8 +96,8 @@ impl<W: Write> Write for RedactWriter<W> {
 
 impl<W: Write> Drop for RedactWriter<W> {
     fn drop(&mut self) {
-        if let Some(ref mut inner) = self.inner {
-            if !self.buf.is_empty() {
+        if let Some(ref mut inner) = self.inner
+            && !self.buf.is_empty() {
                 let line_str = String::from_utf8_lossy(&self.buf);
                 let redacted = kernel::redactor::redact_sensitive_data(&line_str);
                 let owned = redacted.into_owned();
@@ -105,7 +105,6 @@ impl<W: Write> Drop for RedactWriter<W> {
                 let _ = inner.flush();
                 self.buf.clear();
             }
-        }
     }
 }
 

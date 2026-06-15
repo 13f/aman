@@ -63,6 +63,7 @@ pub struct AgentIdleManager {
 impl AgentIdleManager {
     /// Create a new per-agent idle manager.
     #[must_use]
+    #[allow(clippy::too_many_arguments)] // Constructor aggregates distinct per-agent deps.
     pub fn new(
         agent_id: impl Into<String>,
         local_bus: Arc<dyn EventBus>,
@@ -437,30 +438,28 @@ impl AgentIdleManager {
                     }
 
                     // ── Random skill selection (only if no deferred task) ────
-                    if !deferred_acted {
-                        if let Some(ref actor) = boredom_actor {
-                            if let Some(tag) =
-                                actor.try_act(
-                                    detector.boredom_poll_count,
-                                    &agent_id,
-                                    pending,
-                                ).await
-                            {
-                                // Notify the corresponding system state so the UI
-                                // reflects what the agent is doing.
-                                if let Some(ref ss) = system_state {
-                                    let state = match tag.as_str() {
-                                        "work" => AgentSystemState::Working,
-                                        "study" => AgentSystemState::Studying,
-                                        "prize" => AgentSystemState::Prize,
-                                        "internet" | "entertainment" | "fun" => {
-                                            AgentSystemState::DailyLife
-                                        }
-                                        _ => AgentSystemState::Waiting,
-                                    };
-                                    *ss.lock().expect("system_state lock") = state;
+                    if !deferred_acted
+                        && let Some(ref actor) = boredom_actor
+                        && let Some(tag) =
+                            actor.try_act(
+                                detector.boredom_poll_count,
+                                &agent_id,
+                                pending,
+                            ).await
+                    {
+                        // Notify the corresponding system state so the UI
+                        // reflects what the agent is doing.
+                        if let Some(ref ss) = system_state {
+                            let state = match tag.as_str() {
+                                "work" => AgentSystemState::Working,
+                                "study" => AgentSystemState::Studying,
+                                "prize" => AgentSystemState::Prize,
+                                "internet" | "entertainment" | "fun" => {
+                                    AgentSystemState::DailyLife
                                 }
-                            }
+                                _ => AgentSystemState::Waiting,
+                            };
+                            *ss.lock().expect("system_state lock") = state;
                         }
                     }
                 }

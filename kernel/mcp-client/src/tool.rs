@@ -52,7 +52,7 @@ impl McpToolWrapper {
         // Convert the MCP input_schema (Value) to a JsonSchema.
         // If the schema is empty or not an object, default to `{"type": "object"}`.
         let schema_value = if tool_info.input_schema.is_object()
-            && !tool_info.input_schema.as_object().map_or(true, |o| o.is_empty())
+            && !tool_info.input_schema.as_object().is_none_or(|o| o.is_empty())
         {
             tool_info.input_schema.clone()
         } else {

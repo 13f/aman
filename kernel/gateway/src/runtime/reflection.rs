@@ -490,6 +490,7 @@ pub async fn session_extract_and_store(
 }
 
 /// Run LLM extraction with an optional prompt override from the Python self-module bridge.
+#[allow(clippy::too_many_arguments)] // Mirrors the internal extraction pipeline inputs.
 pub async fn session_extract_and_store_with_prompt(
     memory_llm: Option<&MemoryLlmConfig>,
     llm: &Arc<dyn LlmProvider>,
@@ -542,14 +543,13 @@ pub async fn session_extract_and_store_with_prompt(
     // Create KG relationships for extracted entities
     if let Some(entities) = summary.get("entities").and_then(|e| e.as_array()) {
         for entity in entities {
-            if let Some(name) = entity.as_str() {
-                if let Err(e) = memory
+            if let Some(name) = entity.as_str()
+                && let Err(e) = memory
                     .relate(name, session_id, "appears_in")
                     .await
                 {
                     tracing::warn!(entity = %name, session_id = %session_id, error = %e, "failed to create KG relationship");
                 }
-            }
         }
     }
 

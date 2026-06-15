@@ -22,6 +22,7 @@ use tokio::time::Duration;
 const POLL_TIMEOUT_MS: u64 = 25;
 const MAX_BATCH_SIZE: usize = 256;
 
+#[allow(dead_code)] // Stub: will be wired into the Discord Gateway listener loop.
 fn push_chat_event(
     source_id: &str,
     chat_id: &str,
@@ -64,6 +65,7 @@ fn push_chat_event(
     let _ = tx.send(event);
 }
 
+#[allow(dead_code)] // Stub: most fields will be used by the Gateway listener loop.
 pub struct DiscordSource {
     id: String,
     bot_token: String,

@@ -41,7 +41,7 @@ mod duration_secs {
 ///
 /// No board connection, no claim strategy, no capabilities — external systems
 /// push work items; the Work System is a passive FIFO consumer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct WorkConfig {
     /// Execution tuning.
     #[serde(default)]
@@ -58,17 +58,6 @@ pub struct WorkConfig {
     /// Retry behaviour.
     #[serde(default)]
     pub retry: RetryConfig,
-}
-
-impl Default for WorkConfig {
-    fn default() -> Self {
-        Self {
-            execution: ExecutionConfig::default(),
-            hooks: HooksConfig::default(),
-            queue: QueueConfig::default(),
-            retry: RetryConfig::default(),
-        }
-    }
 }
 
 impl WorkConfig {

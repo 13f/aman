@@ -41,7 +41,7 @@ pub struct AgentDescriptor {
     /// 配置中是否启用
     pub enabled: bool,
 
-    /// Model max context window in tokens (from provider.models.<model>.max_context_tokens).
+    /// Model max context window in tokens (from `provider.models.\<model\>.max_context_tokens`).
     /// None = use hardcoded lookup in TokenBudget::new().
     pub max_context_tokens: Option<usize>,
 

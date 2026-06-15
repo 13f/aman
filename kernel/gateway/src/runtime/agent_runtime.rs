@@ -614,7 +614,7 @@ impl AgentRuntimeBuilder {
                     match cache.check_approval(
                         &plugin_name,
                         &sec.requested_capabilities,
-                        &plugin::plugin_manifest_version(&candidate),
+                        plugin::plugin_manifest_version(&candidate),
                     ) {
                         Ok(Some(needed_caps)) => {
                             if auto_approve {
@@ -863,9 +863,9 @@ impl AgentRuntimeBuilder {
 
                 // -- EmotionEvaluator (LLM-driven emotion updates) --
                 // Gated on: global emotion.enabled AND valid emotions/ directory per agent.
-                if let Some(ref emotion_cfg) = cfg.emotion {
-                    if emotion_cfg.enabled {
-                        if let Some(ref provider) = cfg.providers.get(&emotion_cfg.provider) {
+                if let Some(ref emotion_cfg) = cfg.emotion
+                    && emotion_cfg.enabled {
+                        if let Some(provider) = cfg.providers.get(&emotion_cfg.provider) {
                             let api_key =
                                 get_llm_api_key_or_inline(&emotion_cfg.provider, Some(provider));
                             let eval_llm = super::emotion_evaluator::EmotionLlmConfig {
@@ -902,7 +902,6 @@ impl AgentRuntimeBuilder {
                             );
                         }
                     }
-                }
             }
         }
 
@@ -3001,8 +3000,8 @@ impl AgentRuntime {
             .await
             .iter()
             .map(|(candidate, caps)| PendingApprovalInfo {
-                plugin_name: plugin::plugin_manifest_name(&candidate).to_string(),
-                version: plugin::plugin_manifest_version(&candidate).to_string(),
+                plugin_name: plugin::plugin_manifest_name(candidate).to_string(),
+                version: plugin::plugin_manifest_version(candidate).to_string(),
                 capabilities_summary: caps.summary(),
                 capabilities: caps.clone(),
             })
@@ -3023,8 +3022,8 @@ impl AgentRuntime {
                 .iter()
                 .map(|(candidate, needed_caps)| {
                     (
-                        plugin::plugin_manifest_name(&candidate).to_string(),
-                        plugin::plugin_manifest_version(&candidate).to_string(),
+                        plugin::plugin_manifest_name(candidate).to_string(),
+                        plugin::plugin_manifest_version(candidate).to_string(),
                         needed_caps.summary(),
                         needed_caps.clone(),
                     )
@@ -3563,7 +3562,7 @@ impl AgentRuntime {
 
     /// Returns a reference to the shutdown notification channel.
     ///
-    /// The notification is sent when [`shutdown()`] completes, regardless of
+    /// The notification is sent when [`Self::shutdown`] completes, regardless of
     /// whether shutdown was triggered via HTTP, signal, or any other path.
     /// Callers can `.await` on `notified()` to wait for shutdown completion.
     #[must_use]

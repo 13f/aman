@@ -109,7 +109,7 @@ pub fn load_all_mcp_servers() -> Result<Vec<McpServerEntry>, String> {
     let agents_dir = aman_data_dir().join("agents");
     if let Ok(dir_entries) = std::fs::read_dir(&agents_dir) {
         for entry in dir_entries.flatten() {
-            if !entry.file_type().map_or(false, |t| t.is_dir()) {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
                 continue;
             }
             let agent_key = entry.file_name().to_string_lossy().to_string();

@@ -494,19 +494,13 @@ pub struct AgentConfig {
 }
 
 /// MCP (Model Context Protocol) server integration configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct McpConfig {
     /// Enable MCP server connections. When false, the gateway does not
     /// initialize MCP clients and the desktop UI hides the MCP page.
     /// Default: false (MCP is disabled by default).
     pub enabled: bool,
-}
-
-impl Default for McpConfig {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
 }
 
 /// Context compression configuration.
@@ -917,7 +911,7 @@ pub struct HookConfig {
     pub min_version: Option<String>,
 }
 
-/// Manifest inside a hook directory (hooks/<name>/config.yaml).
+/// Manifest inside a hook directory (`hooks/\<name\>/config.yaml`).
 ///
 /// ```yaml
 /// name: openpeon
@@ -1584,16 +1578,16 @@ impl AgentConfig {
             }
         }
 
-        if let Some(work_patch) = patch.work {
-            if let Some(v) = work_patch.config {
-                self.work = v;
-            }
+        if let Some(work_patch) = patch.work
+            && let Some(v) = work_patch.config
+        {
+            self.work = v;
         }
 
-        if let Some(ui) = patch.ui {
-            if let Some(v) = ui.locale {
-                self.ui.locale = v;
-            }
+        if let Some(ui) = patch.ui
+            && let Some(v) = ui.locale
+        {
+            self.ui.locale = v;
         }
     }
 

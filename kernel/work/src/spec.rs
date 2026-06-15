@@ -139,10 +139,10 @@ impl SystemSpec for WorkSpec {
 
     async fn decompose(&self, item: &WorkItem, max_retries: u32) -> Vec<Step> {
         // Use predefined steps if present.
-        if let Some(ref predefined) = item.steps {
-            if !predefined.is_empty() {
-                return predefined.clone();
-            }
+        if let Some(ref predefined) = item.steps
+            && !predefined.is_empty()
+        {
+            return predefined.clone();
         }
 
         if !self.auto_decompose {

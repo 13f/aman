@@ -243,11 +243,11 @@ async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
 
         let mut entry = serde_json::json!({
             "agent_id": agent_id,
-            "system_state": serde_json::to_value(&inst.system_state)
+            "system_state": serde_json::to_value(inst.system_state)
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_else(|| "idle".to_owned()),
-            "status": serde_json::to_value(&inst.status)
+            "status": serde_json::to_value(inst.status)
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_default(),

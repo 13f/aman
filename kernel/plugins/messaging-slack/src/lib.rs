@@ -96,7 +96,7 @@ impl Plugin for SlackPlugin {
             return vec![];
         }
 
-        let source_id = format!("chat:slack:bot");
+        let source_id = "chat:slack:bot".to_string();
 
         let sender = Arc::new(SlackSender::new(&config.bot_token));
         if let Some(registry) = &self.channel_registry {

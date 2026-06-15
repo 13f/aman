@@ -25,6 +25,7 @@ const POLL_TIMEOUT_MS: u64 = 25;
 const MAX_BATCH_SIZE: usize = 256;
 
 /// Build a chat event from an incoming Slack message.
+#[allow(dead_code, clippy::too_many_arguments)] // Stub: will be wired into the Slack RTM listener loop.
 fn push_chat_event(
     source_id: &str,
     chat_id: &str,
@@ -70,6 +71,7 @@ fn push_chat_event(
     let _ = tx.send(event);
 }
 
+#[allow(dead_code)] // Stub: most fields will be used by the Slack RTM listener loop.
 pub struct SlackSource {
     id: String,
     bot_token: String,

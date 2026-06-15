@@ -119,8 +119,7 @@ fn gateway_bin_path() -> Result<std::path::PathBuf, String> {
     if let Ok(output) = std::process::Command::new("brew")
         .args(["--prefix", "aman"])
         .output()
-    {
-        if output.status.success() {
+        && output.status.success() {
             let prefix = String::from_utf8_lossy(&output.stdout).trim().to_owned();
             let bin = std::path::PathBuf::from(&prefix).join("bin").join("aman");
             if bin.exists() {
@@ -128,7 +127,6 @@ fn gateway_bin_path() -> Result<std::path::PathBuf, String> {
                 return Ok(bin);
             }
         }
-    }
 
     // ── Tier 2: User data directory ───────────────────────────────────
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
@@ -139,18 +137,16 @@ fn gateway_bin_path() -> Result<std::path::PathBuf, String> {
     }
 
     // ── Tier 3: Alongside the app executable ──────────────────────────
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent() {
             let sibling = exe_dir.join("aman");
             if sibling.exists() {
                 tracing::info!(path = %sibling.display(), "found gateway alongside app");
                 return Ok(sibling);
             }
         }
-    }
 
-    Err(format!(
-        "Gateway binary 'aman' not found.\n\n\
+    Err("Gateway binary 'aman' not found.\n\n\
         Search order:\n  \
         1. brew-installed: brew install aman\n  \
         2. user data dir: ~/.aman/bin/aman\n  \
@@ -158,8 +154,7 @@ fn gateway_bin_path() -> Result<std::path::PathBuf, String> {
         Build and install it first:\n  \
         cargo build --release -p gateway\n  \
         mkdir -p ~/.aman/bin\n  \
-        cp target/release/aman ~/.aman/bin/aman"
-    ))
+        cp target/release/aman ~/.aman/bin/aman".to_string())
 }
 
 #[tauri::command]
@@ -1384,6 +1379,7 @@ const DEFAULT_INSTANCE: &str = "default";
 
 /// Known IM channel platforms with their field prototypes.
 /// Keychain keys are constructed dynamically: `aman.bot.{id}.{instance}.{field_key}`
+#[allow(clippy::type_complexity)] // Static table type is inherently nested.
 static IM_CHANNEL_PLATFORMS: &[(&str, &str, &[(&str, &str)])] = &[
     ("telegram", "Telegram", &[
         ("token", "Bot Token"),
@@ -1905,7 +1901,7 @@ pub async fn set_provider_api_key(state: State<'_, AppState>, key: String, api_k
         .set(&format!("aman.providers.{key}.api_key"), &api_key)
         .map_err(|e| t_with(&t, "desktop.error.keychain_save", &[("detail", &e.to_string())]))?;
 
-    Ok(t_with(&t, "desktop.info.provider_api_key_saved", &[("key", &key), ("backend", &"macOS Keychain")]))
+    Ok(t_with(&t, "desktop.info.provider_api_key_saved", &[("key", &key), ("backend", "macOS Keychain")]))
 }
 
 #[tauri::command]
@@ -1993,8 +1989,8 @@ pub async fn list_provider_models(
             .await
         {
             Ok(resp) => {
-                if let Ok(body) = resp.json::<OpenAIModelListResponse>().await {
-                    if !body.data.is_empty() {
+                if let Ok(body) = resp.json::<OpenAIModelListResponse>().await
+                    && !body.data.is_empty() {
                         let mut models: Vec<crate::models::ModelEntry> = body
                             .data
                             .into_iter()
@@ -2006,7 +2002,6 @@ pub async fn list_provider_models(
                         models.sort_by(|a, b| a.id.cmp(&b.id));
                         return Ok(models);
                     }
-                }
             }
             Err(_) => { /* fall through to config fallback */ }
         }
@@ -2040,9 +2035,9 @@ fn sync_filesystem_agents_to_config(t: &Translator) -> Result<(), String> {
 
     let config_path = default_config_path();
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
+        .map_err(|e| t_with(t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
-    let entries = std::fs::read_dir(&agents_dir).map_err(|e| t_with(&t, "desktop.error.read_agents_dir", &[("detail", &e.to_string())]))?;
+    let entries = std::fs::read_dir(&agents_dir).map_err(|e| t_with(t, "desktop.error.read_agents_dir", &[("detail", &e.to_string())]))?;
     let mut changed = false;
 
     for entry in entries.flatten() {
@@ -2084,7 +2079,7 @@ fn sync_filesystem_agents_to_config(t: &Translator) -> Result<(), String> {
     }
 
     if changed {
-        aman_config.save(&config_path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
+        aman_config.save(&config_path).map_err(|e| t_with(t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
     }
     Ok(())
 }
@@ -2670,8 +2665,8 @@ pub async fn list_mcp_servers(
         let mut runtime_status: std::collections::HashMap<(String, String), (bool, usize, Option<String>)> = std::collections::HashMap::new();
 
         for entry in &entries {
-            if entry.source != "global" && seen_agents.insert(entry.source.clone()) {
-                if let Ok(statuses) = client.mcp_list_servers(&entry.source).await {
+            if entry.source != "global" && seen_agents.insert(entry.source.clone())
+                && let Ok(statuses) = client.mcp_list_servers(&entry.source).await {
                     for status in &statuses {
                         if let Some(name) = status.get("name").and_then(|v| v.as_str()) {
                             let connected = status.get("connected")
@@ -2690,7 +2685,6 @@ pub async fn list_mcp_servers(
                         }
                     }
                 }
-            }
         }
 
         // Apply runtime status to entries.
@@ -2710,8 +2704,10 @@ pub async fn list_mcp_servers(
 
 /// Create a new MCP server definition (global or per-agent).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command mirrors the MCP config fields.
 pub async fn create_mcp_server(
-    state: State<'_, AppState>,name: String,
+    state: State<'_, AppState>,
+    name: String,
     transport: String,
     command: Option<String>,
     args: Vec<String>,

@@ -388,7 +388,7 @@ async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
             safe_eprintln!("gRPC: {e}");
             1
         })?;
-        print!("{json}");
+        safe_println!("{json}");
         return Ok(());
     }
 
@@ -401,10 +401,10 @@ async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
     let status = res.status();
     let body = res.text().await.map_err(|_| 1)?;
     if status.is_success() {
-        print!("{body}");
+        safe_println!("{body}");
         Ok(())
     } else {
-        eprint!("{body}");
+        safe_eprintln!("{body}");
         Err(1)
     }
 }
@@ -458,7 +458,7 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
                 safe_eprintln!("gRPC: {e}");
                 1
             })?;
-        print!("{json}");
+        safe_println!("{json}");
         return Ok(());
     }
 
@@ -494,10 +494,10 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
     let status = res.status();
     let body = res.text().await.map_err(|_| 1)?;
     if status.is_success() {
-        print!("{body}");
+        safe_println!("{body}");
         Ok(())
     } else {
-        eprint!("{body}");
+        safe_eprintln!("{body}");
         Err(1)
     }
 }
@@ -552,12 +552,12 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else if status == reqwest::StatusCode::CONFLICT {
                 Err(3)
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -650,10 +650,10 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -666,10 +666,10 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -694,10 +694,10 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -722,10 +722,10 @@ async fn event_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -764,7 +764,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                 .inject_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes)
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "push" => {
@@ -815,13 +815,13 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                 .push_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes, agent_id)
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "types" => {
             let types = client.event_types().await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
             let json = serde_json::to_string(&types).unwrap_or_default();
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "dump" => {
@@ -840,7 +840,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                 .dump_event_json(id.ok_or(2)?)
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "trace" => {
@@ -859,7 +859,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                 .event_trace_json(trace_id.ok_or(2)?)
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         _ => Err(2),
@@ -918,10 +918,10 @@ async fn dlq_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1024,7 +1024,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
                 .dlq_list_json(reason, source, event_type, limit, offset)
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "retry" => {
@@ -1240,10 +1240,10 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1324,7 +1324,7 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
                 if text == "[]" || text == "null" {
                     safe_println!("No pending plugin approvals.");
                 } else {
-                    print!("{text}");
+                    safe_println!("{text}");
                 }
                 Ok(())
             } else {
@@ -1361,10 +1361,10 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1380,7 +1380,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
                 .list_plugins_json()
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "enable" | "disable" | "uninstall" => {
@@ -1420,7 +1420,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
                 .install_plugin_json(data)
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "approve" | "deny" | "pending" => {
@@ -1461,10 +1461,10 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1500,10 +1500,10 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1549,13 +1549,13 @@ async fn skill_cmd(args: &[String]) -> Result<(), i32> {
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
                 if sub == "info" || sub == "version" {
-                    print!("{text}");
+                    safe_println!("{text}");
                 }
                 Ok(())
             } else if status == reqwest::StatusCode::CONFLICT {
                 Err(3)
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1571,7 +1571,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                 .list_skills_json()
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "search" => {
@@ -1596,7 +1596,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                 .search_skills_json(q.unwrap_or_default(), limit.unwrap_or(10))
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "info" | "enable" | "disable" | "version" | "rollback" => {
@@ -1623,7 +1623,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                         .get_skill_json(name)
                         .await
                         .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-                    print!("{json}");
+                    safe_println!("{json}");
                     Ok(())
                 }
                 "enable" => client.enable_skill(name).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
@@ -1756,10 +1756,10 @@ async fn workflow_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                print!("{text}");
+                safe_println!("{text}");
                 Ok(())
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1794,13 +1794,13 @@ async fn workflow_cmd(args: &[String]) -> Result<(), i32> {
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
                 if sub == "show" {
-                    print!("{text}");
+                    safe_println!("{text}");
                 }
                 Ok(())
             } else if status == reqwest::StatusCode::CONFLICT {
                 Err(3)
             } else {
-                eprint!("{text}");
+                safe_eprintln!("{text}");
                 Err(1)
             }
         }
@@ -1816,7 +1816,7 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
                 .list_workflow_instances_json()
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-            print!("{json}");
+            safe_println!("{json}");
             Ok(())
         }
         "show" | "retry" | "cancel" => {
@@ -1838,7 +1838,7 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
                         .get_workflow_instance_json(id)
                         .await
                         .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
-                    print!("{json}");
+                    safe_println!("{json}");
                     Ok(())
                 }
                 "retry" => client.retry_workflow(id).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
@@ -2066,7 +2066,7 @@ async fn config_cmd(args: &[String]) -> Result<(), i32> {
             )
             .map_err(|_| 1)?;
             let body = serde_json::to_string_pretty(&loaded.config).map_err(|_| 1)?;
-            print!("{body}");
+            safe_println!("{body}");
             Ok(())
         }
         "validate" => {

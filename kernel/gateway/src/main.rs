@@ -329,7 +329,7 @@ async fn run_tui_mode(
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-#[allow(clippy::print_stderr)]
+#[allow(clippy::print_stderr, clippy::type_complexity)] // CLI argument parsing: complex tuple is local and self-contained.
 fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<String>, Option<PathBuf>), i32> {
     let mut config_path: Option<PathBuf> = None;
     let mut bind: SocketAddr = DEFAULT_BIND.parse().expect("default bind");
@@ -373,6 +373,7 @@ fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<St
     Ok((config_path, bind, api_token, soul_path))
 }
 
+#[allow(clippy::print_stderr)] // Pre-tracing startup error: runtime construction failed before subscriber is wired.
 fn build_runtime(
     config: config::AgentConfig,
     bind: SocketAddr,

@@ -75,9 +75,7 @@ impl BoredomActor {
             return None;
         }
 
-        let Some(tag) = self.weighted_pick_tag(queue_depth) else {
-            return None;
-        };
+        let tag = self.weighted_pick_tag(queue_depth)?;
         info!("random_hit:tag: {}", tag);
 
         if tag == "idle" {
@@ -89,7 +87,7 @@ impl BoredomActor {
             .skill_index
             .search_by_tag(IDLE_RUN_TAG)
             .into_iter()
-            .filter(|s| s.tags.iter().any(|t| *t == tag))
+            .filter(|s| s.tags.contains(&tag))
             .collect();
 
         if candidates.is_empty() {
@@ -99,9 +97,7 @@ impl BoredomActor {
         let idx = rand::thread_rng().gen_range(0..candidates.len());
         let skill_name = candidates[idx].name.clone();
 
-        let Some(skill) = self.skill_registry.get(&skill_name) else {
-            return None;
-        };
+        let skill = self.skill_registry.get(&skill_name)?;
 
         info!(
             "random_hit:skill: {} tag={} agent={} poll={}",
@@ -112,9 +108,9 @@ impl BoredomActor {
         let idle_prompt = self
             .skill_registry
             .idle_prompts(&skill_name)
-            .and_then(|prompts| {
+            .map(|prompts| {
                 let i = rand::thread_rng().gen_range(0..prompts.len());
-                Some(prompts[i].replace("{agent_id}", agent_id))
+                prompts[i].replace("{agent_id}", agent_id)
             });
 
         let text = match idle_prompt {
@@ -180,8 +176,15 @@ impl BoredomActor {
     /// the weighted random draw, making it more likely to be selected
     /// as the backlog grows.
     fn weighted_pick_tag(&self, queue_depth: usize) -> Option<String> {
-        // Compute effective weights (base weight × pressure multiplier
-        // if work_pressure targets this tag).
+        self.weighted_pick_tag_with_value(queue_depth, rand::random())
+    }
+
+    /// Deterministic variant used by tests to avoid flaky random draws.
+    fn weighted_pick_tag_with_value(
+        &self,
+        queue_depth: usize,
+        r: f64,
+    ) -> Option<String> {
         let effective = self.effective_activities(queue_depth);
 
         let total: f64 = effective.iter().map(|(_, w)| w).sum();
@@ -189,7 +192,6 @@ impl BoredomActor {
             return None;
         }
 
-        let r: f64 = rand::random();
         let target = r * total;
 
         let mut acc = 0.0;
@@ -200,9 +202,7 @@ impl BoredomActor {
             }
         }
 
-        effective
-            .last()
-            .map(|(a, _)| a.tag.clone())
+        effective.last().map(|(a, _)| a.tag.clone())
     }
 
     /// Build the list of `(activity, effective_weight)` pairs, applying
@@ -605,10 +605,23 @@ mod tests {
         let actor = BoredomActor::new(config, search, registry, None);
 
         // With depth=5: work multiplier = 1+100*5=501, idle stays at 1.0
-        // work: 501, idle: 1.0, total: 502 → work dominates
-        for _ in 0..50 {
-            let tag = actor.weighted_pick_tag(5).expect("should pick");
-            assert_eq!(tag, "work", "work pressure should make work dominate");
-        }
+        // work: 501, idle: 1.0, total: 502 → work dominates.
+        // Use the deterministic variant so the test is not sensitive to RNG.
+        let tag = actor
+            .weighted_pick_tag_with_value(5, 0.5)
+            .expect("should pick");
+        assert_eq!(tag, "work", "work pressure should make work dominate");
+
+        // A value very close to 1 should still land in the work bucket.
+        let tag = actor
+            .weighted_pick_tag_with_value(5, 0.999)
+            .expect("should pick");
+        assert_eq!(tag, "work", "work pressure should make work dominate");
+
+        // Only a value in the first 1/502 of the range picks idle.
+        let tag = actor
+            .weighted_pick_tag_with_value(5, 0.0)
+            .expect("should pick");
+        assert_eq!(tag, "idle", "first bucket is idle at r = 0");
     }
 }

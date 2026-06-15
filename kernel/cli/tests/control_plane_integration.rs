@@ -1,6 +1,8 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+mod common;
+
 use config::AgentConfig;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use std::process::Command;
@@ -12,6 +14,7 @@ async fn cli_can_call_metrics_and_audit_log_and_event_dump_trace() {
     let runtime = AgentRuntimeBuilder::new(config)
         .with_bind_addr("127.0.0.1:0".parse().expect("addr"))
         .with_api_token(Some("token".to_owned()))
+        .with_runtime_handle(tokio::runtime::Handle::current())
         .build()
         .expect("build runtime");
     let server = serve(
@@ -26,11 +29,12 @@ async fn cli_can_call_metrics_and_audit_log_and_event_dump_trace() {
 
     runtime.start().await.expect("start runtime");
 
-    let bin = env!("CARGO_BIN_EXE_aman");
+    let bin = common::aman_cli_bin();
     let addr_arg = addr.to_string();
 
     let status = tokio::task::spawn_blocking({
         let addr_arg = addr_arg.clone();
+        let bin = bin.clone();
         move || {
             Command::new(bin)
                 .args(["metrics", "--addr", &addr_arg, "--token", "token"])
@@ -44,6 +48,7 @@ async fn cli_can_call_metrics_and_audit_log_and_event_dump_trace() {
 
     let status = tokio::task::spawn_blocking({
         let addr_arg = addr_arg.clone();
+        let bin = bin.clone();
         move || {
             Command::new(bin)
                 .args([
@@ -72,6 +77,7 @@ async fn cli_can_call_metrics_and_audit_log_and_event_dump_trace() {
 
     let status = tokio::task::spawn_blocking({
         let addr_arg = addr_arg.clone();
+        let bin = bin.clone();
         move || {
             Command::new(bin)
                 .args([

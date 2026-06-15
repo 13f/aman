@@ -11,10 +11,10 @@ use messaging_core::types::ChatTarget;
 #[must_use]
 pub fn build_proxy_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
-    if let Some(proxy_url) = kernel::proxy::detect_proxy_url() {
-        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-            builder = builder.proxy(proxy);
-        }
+    if let Some(proxy_url) = kernel::proxy::detect_proxy_url()
+        && let Ok(proxy) = reqwest::Proxy::all(&proxy_url)
+    {
+        builder = builder.proxy(proxy);
     }
     builder.build().expect("build discord reqwest client")
 }

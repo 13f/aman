@@ -640,10 +640,10 @@ impl SkillLoader {
 // LLM instruction skills (Agent Skills standard — SKILL.md with frontmatter)
 // ---------------------------------------------------------------------------
 
-/// An LLM-instruction skill loaded from a SKILL.md file (Agent Skills standard).
-///
-/// These are NOT event-driven. The LLM decides when to use them based on
-/// the `name` and `description` injected into its context.
+// An LLM-instruction skill loaded from a SKILL.md file (Agent Skills standard).
+//
+// These are NOT event-driven. The LLM decides when to use them based on
+// the `name` and `description` injected into its context.
 
 /// The execution mode for a skill — controls how the harness runs it.
 ///
@@ -1291,16 +1291,16 @@ impl HotReloadManager {
 
             // Incremental reload: skip files whose content hasn't changed
             // since the last successful load.
-            if let Some(hash) = content_hash {
-                if file_hashes.get(&file) == Some(&hash) {
-                    // Carry forward existing mapping so it isn't treated as stale.
-                    if let Some(name) = loaded_mapping.get(&file).cloned() {
-                        if !name.is_empty() {
-                            loaded_names.insert(name);
-                        }
-                    }
-                    continue;
+            if let Some(hash) = content_hash
+                && file_hashes.get(&file) == Some(&hash)
+            {
+                // Carry forward existing mapping so it isn't treated as stale.
+                if let Some(name) = loaded_mapping.get(&file).cloned()
+                    && !name.is_empty()
+                {
+                    loaded_names.insert(name);
                 }
+                continue;
             }
 
             let loaded = match SkillLoader::load_from_path(&file) {

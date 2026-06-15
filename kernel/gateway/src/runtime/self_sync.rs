@@ -58,7 +58,7 @@ fn sync_builtin_self_to(data_dir: &Path) -> Result<(), Box<dyn std::error::Error
     let mut new_hashes: HashMap<String, String> = HashMap::new();
 
     for file in &self_files {
-        let dest = data_dir.join(&file.rel_path);
+        let dest = data_dir.join(file.rel_path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }

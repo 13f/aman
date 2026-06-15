@@ -137,10 +137,10 @@ impl SystemSpec for DailySpec {
     }
 
     async fn decompose(&self, item: &DailyItem, _max_retries: u32) -> Vec<Routine> {
-        if let Some(ref predefined) = item.routines {
-            if !predefined.is_empty() {
-                return predefined.clone();
-            }
+        if let Some(ref predefined) = item.routines
+            && !predefined.is_empty()
+        {
+            return predefined.clone();
         }
         default_routines_for_window(item.window)
     }

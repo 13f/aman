@@ -279,8 +279,8 @@ impl McpClientManager {
         let registered = self.registered_tools.read().await;
 
         servers
-            .iter()
-            .map(|(name, _handle)| {
+            .keys()
+            .map(|name| {
                 let tool_count = registered.get(name).map_or(0, |v| v.len());
                 McpServerStatus {
                     name: name.clone(),
@@ -295,7 +295,6 @@ impl McpClientManager {
     }
 
     /// Return the merged list of all server configs (connected or not).
-    #[must_use]
     pub fn load_merged_config(agent_key: &str) -> Result<Vec<McpServerConfig>, String> {
         let global = McpServersFile::load_global()?
             .unwrap_or_default()

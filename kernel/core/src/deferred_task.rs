@@ -5,8 +5,8 @@
 //! task scheduling across memory-backed and file-backed queues.
 //!
 //! Three implementations share this trait:
-//! - [`MemoryDeferredTaskQueue`](idle::MemoryDeferredTaskQueue) — in-memory only
-//! - [`FileDeferredTaskQueue`](persistence::FileDeferredTaskQueue) — one JSON file per task
+//! - `MemoryDeferredTaskQueue` (in `idle`) — in-memory only
+//! - `FileDeferredTaskQueue` (in `persistence`) — one JSON file per task
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

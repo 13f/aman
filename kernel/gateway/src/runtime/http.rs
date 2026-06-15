@@ -3432,30 +3432,6 @@ fn with_audit(
     }
 }
 
-/// Wrap a `Result<T, Error>` (where `T: Serialize`) with audit logging.
-///
-/// On success, records an `"ok"` outcome and returns `(StatusCode::OK, Json(data))`.
-/// On error, same behaviour as [`with_audit`].
-fn with_audit_json<T: Serialize>(
-    audit: &AuditLogger,
-    operator: &str,
-    action: &str,
-    resource: &str,
-    result: Result<T, Error>,
-) -> Response {
-    match result {
-        Ok(data) => {
-            audit.record(operator, action, resource, "ok", "");
-            (StatusCode::OK, Json(data)).into_response()
-        }
-        Err(error) => {
-            let msg = error.to_string();
-            audit.record(operator, action, resource, "error", &msg);
-            ApiError::from(error).into_response()
-        }
-    }
-}
-
 /// Unified API error response.
 ///
 /// All HTTP handlers in this file produce errors in this shape so
@@ -3721,7 +3697,7 @@ async fn idle_run(
         .skill_search()
         .search_by_tag("idle_run")
         .into_iter()
-        .filter(|s| s.tags.iter().any(|t| *t == tag))
+        .filter(|s| s.tags.contains(&tag))
         .collect();
 
     if candidates.is_empty() {
@@ -3745,9 +3721,9 @@ async fn idle_run(
     let idle_prompt = runtime
         .skills()
         .idle_prompts(&skill_name)
-        .and_then(|prompts| {
+        .map(|prompts| {
             let i = prompt_idx % prompts.len();
-            Some(prompts[i].replace("{agent_id}", &agent_id))
+            prompts[i].replace("{agent_id}", &agent_id)
         });
 
     let text = match idle_prompt {
@@ -3933,7 +3909,7 @@ async fn mcp_connect_server(
         })?;
 
     let merged = mcp_client::McpClientManager::load_merged_config(&agent_key)
-        .map_err(|e| ApiError::internal(e))?;
+        .map_err(ApiError::internal)?;
 
     let config = merged.iter().find(|c| c.name == name).cloned().ok_or_else(|| {
         ApiError::not_found(format!("MCP server '{name}' not found in config"))
@@ -3975,7 +3951,7 @@ async fn mcp_reload(
         .agent_registry()
         .reload_mcp_for_agent(&agent_key)
         .await
-        .map_err(|e| ApiError::internal(e))?;
+        .map_err(ApiError::internal)?;
 
     Ok(Json(json!({"ok": true, "agent": agent_key})))
 }

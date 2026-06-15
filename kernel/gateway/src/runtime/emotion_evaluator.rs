@@ -20,7 +20,7 @@
 //! the evaluator is **not started** for that agent — the desktop falls back to
 //! the state-based emoji mapping.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -330,8 +330,8 @@ impl EmotionEvaluator {
         }
 
         // Recent session messages
-        if let Some(ref store) = self.session_store {
-            if let Ok(sessions) = store.list_all() {
+        if let Some(ref store) = self.session_store
+            && let Ok(sessions) = store.list_all() {
                 // Take the most recent session(s) with messages
                 let active: Vec<_> = sessions
                     .iter()
@@ -372,7 +372,6 @@ impl EmotionEvaluator {
                     }
                 }
             }
-        }
 
         // Recent trace records
         if let Some(ref ts) = self.trace_store {
@@ -494,7 +493,7 @@ fn emotions_path(agent_id: &str) -> PathBuf {
 /// Load and validate the emotion candidates from `data.json`.
 /// Returns `None` if the directory is missing, data.json can't be parsed,
 /// or any referenced image file is missing.
-fn load_emotion_candidates(dir: &PathBuf) -> Option<Vec<EmotionCandidate>> {
+fn load_emotion_candidates(dir: &Path) -> Option<Vec<EmotionCandidate>> {
     if !dir.exists() {
         return None;
     }

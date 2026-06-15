@@ -1,6 +1,8 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+mod common;
+
 use config::AgentConfig;
 use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
 use serde_json::json;
@@ -8,19 +10,19 @@ use std::fs;
 use std::process::Command;
 
 fn run_ok(args: &[&str]) {
-    let bin = env!("CARGO_BIN_EXE_aman");
+    let bin = common::aman_cli_bin();
     let status = Command::new(bin).args(args).status().expect("run");
     assert!(status.success(), "expected success: {:?}", args);
 }
 
 fn run_exit(args: &[&str]) -> i32 {
-    let bin = env!("CARGO_BIN_EXE_aman");
+    let bin = common::aman_cli_bin();
     let out = Command::new(bin).args(args).output().expect("run");
     out.status.code().unwrap_or(-1)
 }
 
 fn run_stdout(args: &[&str]) -> String {
-    let bin = env!("CARGO_BIN_EXE_aman");
+    let bin = common::aman_cli_bin();
     let out = Command::new(bin).args(args).output().expect("run");
     assert!(out.status.success(), "expected success: {:?}", args);
     String::from_utf8_lossy(&out.stdout).to_string()
@@ -33,6 +35,7 @@ async fn cli_smoke_all_current_subcommands() {
     let runtime = AgentRuntimeBuilder::new(config)
         .with_bind_addr("127.0.0.1:0".parse().expect("addr"))
         .with_api_token(Some("token".to_owned()))
+        .with_runtime_handle(tokio::runtime::Handle::current())
         .build()
         .expect("build runtime");
     let skills_dir = runtime.runtime_dir().join("skills");

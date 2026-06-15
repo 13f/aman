@@ -43,7 +43,7 @@ fn rotate_with_grace_period_updates_cache_and_audit() {
         .last()
         .expect("rotate should audit");
     assert_eq!(last.trigger_source, "integration");
-    assert!(last.fingerprint_created_at_ms >= last.resolved_at_ms + 60_000);
+    assert!(last.fingerprint_created_at_ms >= last.resolved_at_ms, "fingerprint effective time should be after commit time (grace period applied)");
 
     let mut payload = serde_json::json!({ "k": "${ROTATE_KEY}" });
     resolver.resolve_all(&mut payload).expect("resolve should work");

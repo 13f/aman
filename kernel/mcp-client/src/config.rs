@@ -80,7 +80,7 @@ impl McpServerConfig {
         match self.transport.as_str() {
             "stdio" => Some("stdio"),
             "streamable-http" => Some("streamable-http"),
-            "auto" | _ => {
+            _ => {
                 let has_command = self.command.as_ref().is_some_and(|c| !c.trim().is_empty());
                 let has_url = self.url.as_ref().is_some_and(|u| !u.trim().is_empty());
 

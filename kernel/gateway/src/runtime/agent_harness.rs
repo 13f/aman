@@ -1244,6 +1244,7 @@ impl AgentHarness {
     /// `continuation_mode` distinguishes "继续" ([`ContinuationMode::Continue`])
     /// from normal messages ([`ContinuationMode::Fresh`]) and gateway-restart
     /// recovery ([`ContinuationMode::Replay`]).
+    #[allow(clippy::too_many_arguments)] // Dispatcher signature mirrors `process_message` args.
     pub fn spawn_process_message(
         self: &Arc<Self>,
         agent_id: String,
@@ -1325,7 +1326,7 @@ impl AgentHarness {
         // Auto-detect continuation: if the last assistant message is a
         // max-turns-reached marker, the user is clicking "继续".
         let effective_mode = if continuation_mode == ContinuationMode::Continue
-            || history.last().map_or(false, |m| {
+            || history.last().is_some_and(|m| {
                 m.role == ChatMessageRole::Assistant
                     && m.content.starts_with("[max ")
                     && m.content.contains("turns reached")
@@ -1342,15 +1343,13 @@ impl AgentHarness {
         // This is the **replay** path — full-history reconstruction.
         if history.is_empty()
             && super::session::work_session::parse_work_session_id(session_id).is_some()
-        {
-            if let Some(store) = self.registry.get_session_store(agent_id).await {
+            && let Some(store) = self.registry.get_session_store(agent_id).await {
                 let _ = super::session::work_session::resume_work_session(
                     self, &store, session_id, 0,
                 ).await;
                 // Reload after restore
                 history = self.session_history.get(session_id);
             }
-        }
 
         match effective_mode {
             ContinuationMode::Continue => {
@@ -2069,6 +2068,7 @@ impl AgentHarness {
     /// Spawned by `process_message` when `direct_act` returns `AwaitingDetach`.
     /// Waits for the process, updates the tool result in history, runs Turn 2,
     /// and publishes the final reply.
+    #[allow(clippy::too_many_arguments)] // Captures all state needed for the async continuation.
     async fn run_direct_act_continuation(
         self: Arc<Self>,
         agent_id: String,
@@ -2763,11 +2763,10 @@ impl AgentHarness {
                     tracing::warn!(agent_id = %aid, session_id = %sid, error = %err, "failed to publish event to global bus");
                 }
                 // Also push to the local bus when available.
-                if let Some(ref local_bus) = registry.get_local_bus(&aid).await {
-                    if let Err(err) = local_bus.publish(e).await {
+                if let Some(ref local_bus) = registry.get_local_bus(&aid).await
+                    && let Err(err) = local_bus.publish(e).await {
                         tracing::warn!(agent_id = %aid, session_id = %sid, error = %err, "failed to publish event to local bus");
                     }
-                }
             }
         })
     }

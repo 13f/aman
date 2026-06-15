@@ -64,10 +64,10 @@ impl McpClientHandle {
             cmd.env(k, v);
         }
         // Always set PATH so the child can find executables
-        if !env.contains_key("PATH") {
-            if let Ok(path) = std::env::var("PATH") {
-                cmd.env("PATH", path);
-            }
+        if !env.contains_key("PATH")
+            && let Ok(path) = std::env::var("PATH")
+        {
+            cmd.env("PATH", path);
         }
 
         info!(server = name, command, ?args, "connecting to MCP server via stdio");

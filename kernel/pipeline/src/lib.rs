@@ -1412,4 +1412,131 @@ mod tests {
             assert_eq!(engine.compensation_alerts().len(), 1);
         });
     }
+
+    // ── Property-based tests (proptest) ────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use async_trait::async_trait;
+        use kernel::context::ToolContext;
+        use kernel::event::{Event, EventType};
+        use kernel::pipeline::{PipelineStep, StepType};
+        use kernel::retry::RetryPolicy;
+        use kernel::schema::JsonSchema;
+        use kernel::tool::Tool;
+        use kernel::types::ToolMode;
+        use kernel::AmanResult;
+        use proptest::prelude::*;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        /// A no-op tool used to construct `PipelineStep` values in
+        /// property tests. The tool is never actually executed —
+        /// the property under test is constructor-level, not
+        /// runtime-level.
+        #[derive(Debug)]
+        struct NoopTool;
+
+        #[async_trait]
+        impl Tool for NoopTool {
+            fn name(&self) -> &str {
+                "noop"
+            }
+            fn mode(&self) -> ToolMode {
+                ToolMode::Local
+            }
+            fn parameters(&self) -> &JsonSchema {
+                static PARAMS: std::sync::LazyLock<JsonSchema> =
+                    std::sync::LazyLock::new(|| JsonSchema::from(json!({"type": "object"})));
+                &PARAMS
+            }
+            fn returns(&self) -> &JsonSchema {
+                static RETURNS: std::sync::LazyLock<JsonSchema> =
+                    std::sync::LazyLock::new(|| JsonSchema::from(json!({"type": "object"})));
+                &RETURNS
+            }
+            async fn execute(
+                &self,
+                _params: serde_json::Value,
+                _ctx: ToolContext,
+            ) -> AmanResult<serde_json::Value> {
+                Ok(json!({}))
+            }
+        }
+
+        /// Property: `PipelineDefinition` preserves step order
+        /// and identity. For a serial pipeline constructed with N
+        /// steps, `steps[i].id` must equal the i-th input id.
+        /// Catches accidental sorting, deduplication, or
+        /// reordering in the constructor.
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+            #[test]
+            fn pipeline_preserves_step_order(
+                step_ids in proptest::collection::vec("step-[a-z]{1,6}", 1..=6)
+            ) {
+                let steps: Vec<PipelineStep> = step_ids
+                    .iter()
+                    .map(|id| PipelineStep {
+                        id: id.clone(),
+                        step_type: StepType::Action,
+                        tool: Arc::new(NoopTool),
+                        compensate: None,
+                        retry: RetryPolicy {
+                            max_attempts: 1,
+                            retry_backoff: kernel::retry::RetryBackoff::Immediate,
+                        },
+                    })
+                    .collect();
+                let pipeline = PipelineDefinition::new(
+                    "test-pipeline",
+                    ConcurrencyModel::Serial,
+                    steps.clone(),
+                );
+                prop_assert_eq!(pipeline.steps.len(), step_ids.len());
+                for (i, expected_id) in step_ids.iter().enumerate() {
+                    prop_assert_eq!(&pipeline.steps[i].id, expected_id);
+                }
+            }
+        }
+
+        /// Property: `PipelineDefinition` preserves the
+        /// concurrency model verbatim. A Serial pipeline stays
+        /// Serial; a Limited(n) pipeline keeps its limit; etc.
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(64))]
+            #[test]
+            fn pipeline_preserves_concurrency(
+                limit in 1usize..=16
+            ) {
+                let step = PipelineStep {
+                    id: "only".to_owned(),
+                    step_type: StepType::Action,
+                    tool: Arc::new(NoopTool),
+                    compensate: None,
+                    retry: RetryPolicy {
+                        max_attempts: 1,
+                        retry_backoff: kernel::retry::RetryBackoff::Immediate,
+                    },
+                };
+                let parallel = PipelineDefinition::new(
+                    "p", ConcurrencyModel::Parallel, vec![step.clone()],
+                );
+                prop_assert!(matches!(parallel.concurrency, ConcurrencyModel::Parallel));
+
+                let serial = PipelineDefinition::new(
+                    "p", ConcurrencyModel::Serial, vec![step.clone()],
+                );
+                prop_assert!(matches!(serial.concurrency, ConcurrencyModel::Serial));
+
+                let limited = PipelineDefinition::new(
+                    "p", ConcurrencyModel::Limited(limit), vec![step],
+                );
+                match limited.concurrency {
+                    ConcurrencyModel::Limited(n) => prop_assert_eq!(n, limit),
+                    _ => prop_assert!(false, "expected Limited"),
+                }
+            }
+        }
+    }
 }

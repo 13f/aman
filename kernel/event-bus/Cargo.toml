@@ -21,6 +21,7 @@ uuid.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 pollster.workspace = true
+proptest.workspace = true
 test-utils = { path = "../test-utils" }
 tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
 

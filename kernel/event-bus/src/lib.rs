@@ -2070,4 +2070,77 @@ mod tests {
             );
         });
     }
+
+    // ── Property-based tests (proptest) ────────────────────────────────
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Property: empty `SubscriptionFilter` matches every event.
+        /// This is the "wildcard" semantics — `None` for each
+        /// constraint means "no restriction on this dimension."
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+            #[test]
+            fn empty_filter_matches_any_event(
+                source in "test-[a-z]{1,8}",
+                event_type in "evt\\.[a-z]+\\.[a-z]+",
+                priority_idx in 0u8..3,
+            ) {
+                let filter = SubscriptionFilter::default();
+                let mut event = Event::new(
+                    source,
+                    EventType::Custom(event_type),
+                    json!({}),
+                );
+                // Priority is an enum with 3 variants; pick one
+                // by index.
+                event.priority = match priority_idx {
+                    0 => Priority::High,
+                    1 => Priority::Normal,
+                    _ => Priority::Low,
+                };
+                prop_assert!(filter.matches(&event));
+            }
+        }
+
+        /// Property: filter matching is monotonic in the
+        /// `Option<Vec<T>>` fields. If a filter with only the
+        /// event_type constraint matches, adding the SAME source
+        /// (a compatible additional constraint) still matches.
+        /// This pins the AND-semantics: extra constraints can
+        /// only narrow, never widen, the set of matching events.
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(128))]
+            #[test]
+            fn adding_compatible_constraint_preserves_match(
+                source in "test-[a-z]{1,8}",
+                event_type in "evt\\.[a-z]+\\.[a-z]+",
+            ) {
+                let event = Event::new(
+                    source.clone(),
+                    EventType::Custom(event_type.clone()),
+                    json!({}),
+                );
+
+                // Narrow by event_type only.
+                let narrow = SubscriptionFilter {
+                    event_types: Some(vec![EventType::Custom(event_type)]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                };
+                prop_assert!(narrow.matches(&event));
+
+                // Narrow by event_type AND source — the event has
+                // both, so it must still match.
+                let plus_source = SubscriptionFilter {
+                    sources: Some(vec![SourceId::new(source)]),
+                    ..narrow.clone()
+                };
+                prop_assert!(plus_source.matches(&event));
+            }
+        }
+    }
 }

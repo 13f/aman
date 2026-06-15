@@ -106,19 +106,19 @@ pub struct PluginLifecycleConfig {
     pub auto_start: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PluginExports {
-    #[serde(default)]
-    pub skills: Vec<String>,
-    #[serde(default)]
-    pub tools: Vec<String>,
-    #[serde(default)]
-    pub event_sources: Vec<String>,
-    #[serde(default)]
-    pub hooks: Vec<String>,
-    #[serde(default)]
-    pub memory_providers: Vec<String>,
-}
+/// The set of capabilities a plugin declares it exports (in
+/// `PluginManifest::exports`) and the set actually registered
+/// at runtime (in `LoadedPlugin::exports`). Both stages use
+/// the same shape — a list of skill/tool/event_source/hook/
+/// memory_provider names — so P3-21 from
+/// docs/code-review-20260614.md unifies them as a single type
+/// (`RegisteredExports`) with `PluginExports` kept as a
+/// type alias for the manifest side.
+///
+/// The alias preserves downstream call sites
+/// (`PluginManifest::exports: PluginExports { ... }`) without
+/// any consumer needing to change.
+pub type PluginExports = RegisteredExports;
 
 impl Default for PluginManifest {
     fn default() -> Self {
@@ -829,7 +829,7 @@ async fn install_plugin_handler(
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegisteredExports {
     pub skills: Vec<String>,
     pub tools: Vec<String>,
@@ -1282,9 +1282,9 @@ impl PluginLoader {
                     SandboxConfig {
                         allowed_read_dirs: read_dirs,
                         allowed_write_dirs: write_dirs,
-                        network_allowed: caps.can_network,
-                        process_spawn_allowed: caps.can_spawn_processes,
-                        max_memory_mb: caps.max_memory_mb,
+                        network_allowed: caps.flags.can_network,
+                        process_spawn_allowed: caps.flags.can_spawn_processes,
+                        max_memory_mb: caps.limits.max_memory_mb,
                     }
                 });
 
@@ -1319,7 +1319,7 @@ impl PluginLoader {
                 let wasm_security = manifest.security.as_ref().map(|s| {
                     let caps = &s.requested_capabilities;
                     WasmSecurityConfig {
-                        max_memory_bytes: caps.max_memory_mb * 1_048_576,
+                        max_memory_bytes: caps.limits.max_memory_mb * 1_048_576,
                         ..WasmSecurityConfig::default()
                     }
                 });

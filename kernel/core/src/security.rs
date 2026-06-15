@@ -14,6 +14,19 @@ use std::path::{Path, PathBuf};
 /// are enforced by the security harness.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapabilitySet {
+    #[serde(flatten)]
+    pub flags: CapabilityFlags,
+    #[serde(flatten)]
+    pub paths: CapabilityPaths,
+    #[serde(flatten)]
+    pub limits: CapabilityLimits,
+}
+
+/// Boolean capability flags (event-bus, network, process spawn).
+/// All-`false` is the conservative default — a plugin gets nothing
+/// until the operator explicitly approves each flag.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CapabilityFlags {
     /// Whether the plugin can publish events to the event bus.
     #[serde(default, alias = "publish_events")]
     pub can_publish_events: bool,
@@ -22,16 +35,6 @@ pub struct CapabilitySet {
     #[serde(default, alias = "subscribe_events")]
     pub can_subscribe_events: bool,
 
-    /// Filesystem paths the plugin is allowed to read.
-    /// May contain `${var}` templates resolved at runtime via [`TemplateContext`].
-    #[serde(default, alias = "read_paths")]
-    pub allowed_read_paths: Vec<String>,
-
-    /// Filesystem paths the plugin is allowed to read and write.
-    /// May contain `${var}` templates resolved at runtime via [`TemplateContext`].
-    #[serde(default, alias = "write_paths")]
-    pub allowed_write_paths: Vec<String>,
-
     /// Whether the plugin is allowed to make network connections.
     #[serde(default, alias = "network")]
     pub can_network: bool,
@@ -39,7 +42,78 @@ pub struct CapabilitySet {
     /// Whether the plugin is allowed to spawn child processes.
     #[serde(default, alias = "spawn_processes")]
     pub can_spawn_processes: bool,
+}
 
+impl CapabilityFlags {
+    /// `self` covers `other` iff every `true` flag in `other` is also
+    /// `true` in `self`. Subset semantics for booleans.
+    pub fn contains(&self, other: &Self) -> bool {
+        (!other.can_publish_events || self.can_publish_events)
+            && (!other.can_subscribe_events || self.can_subscribe_events)
+            && (!other.can_network || self.can_network)
+            && (!other.can_spawn_processes || self.can_spawn_processes)
+    }
+
+    /// Flags set in `other` but not in `self`. Used to surface new
+    /// requested capabilities to the operator.
+    pub fn diff(&self, other: &Self) -> Self {
+        Self {
+            can_publish_events: other.can_publish_events && !self.can_publish_events,
+            can_subscribe_events: other.can_subscribe_events && !self.can_subscribe_events,
+            can_network: other.can_network && !self.can_network,
+            can_spawn_processes: other.can_spawn_processes && !self.can_spawn_processes,
+        }
+    }
+}
+
+/// Filesystem paths the plugin is allowed to read / write.
+/// May contain `${var}` templates resolved at runtime via
+/// [`TemplateContext`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct CapabilityPaths {
+    #[serde(default, alias = "read_paths")]
+    pub allowed_read_paths: Vec<String>,
+    #[serde(default, alias = "write_paths")]
+    pub allowed_write_paths: Vec<String>,
+}
+
+impl CapabilityPaths {
+    /// `self` covers `other` iff every path in `other` is also in
+    /// the matching list of `self`. Subset semantics for paths.
+    pub fn contains(&self, other: &Self) -> bool {
+        other
+            .allowed_read_paths
+            .iter()
+            .all(|p| self.allowed_read_paths.contains(p))
+            && other
+                .allowed_write_paths
+                .iter()
+                .all(|p| self.allowed_write_paths.contains(p))
+    }
+
+    /// Paths in `other` that are not covered by `self`'s lists.
+    pub fn diff(&self, other: &Self) -> Self {
+        Self {
+            allowed_read_paths: other
+                .allowed_read_paths
+                .iter()
+                .filter(|p| !self.allowed_read_paths.contains(p))
+                .cloned()
+                .collect(),
+            allowed_write_paths: other
+                .allowed_write_paths
+                .iter()
+                .filter(|p| !self.allowed_write_paths.contains(p))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+/// Resource limits for a sandboxed plugin. `other` is covered by
+/// `self` iff none of `other`'s limits exceed `self`'s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CapabilityLimits {
     /// Maximum memory the plugin process may allocate, in megabytes.
     /// Default: 500 MB.
     #[serde(default = "default_max_memory_mb")]
@@ -56,6 +130,43 @@ pub struct CapabilitySet {
     pub max_events_per_second: f64,
 }
 
+// SAFETY: CapabilityLimits' f64 field is always a finite value set
+// by the user or the default (50.0). We never store NaN or infinity,
+// so PartialEq is reflexive and Eq is valid.
+impl Eq for CapabilityLimits {}
+
+impl Default for CapabilityLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_mb: default_max_memory_mb(),
+            max_cpu_seconds: default_max_cpu_seconds(),
+            max_events_per_second: default_max_events_per_second(),
+        }
+    }
+}
+
+impl CapabilityLimits {
+    /// `self` covers `other` iff `other`'s limits don't exceed
+    /// `self`'s on any dimension.
+    pub fn contains(&self, other: &Self) -> bool {
+        other.max_memory_mb <= self.max_memory_mb
+            && other.max_cpu_seconds <= self.max_cpu_seconds
+            && other.max_events_per_second <= self.max_events_per_second
+    }
+
+    /// For each dimension, the looser of `self` and `other`'s limit
+    /// (i.e. the maximum). Used when merging two capability sets.
+    pub fn diff(&self, other: &Self) -> Self {
+        Self {
+            max_memory_mb: other.max_memory_mb.max(self.max_memory_mb),
+            max_cpu_seconds: other.max_cpu_seconds.max(self.max_cpu_seconds),
+            max_events_per_second: other
+                .max_events_per_second
+                .max(self.max_events_per_second),
+        }
+    }
+}
+
 const fn default_max_memory_mb() -> u64 {
     500
 }
@@ -68,23 +179,18 @@ fn default_max_events_per_second() -> f64 {
     50.0
 }
 
-// SAFETY: CapabilitySet's f64 fields (max_events_per_second) are always
-// finite values set by the user or default (50.0). We never store NaN or
-// infinity, so reflexivity of PartialEq holds and Eq is valid.
+// SAFETY: CapabilitySet's flatten of CapabilityLimits (which has the
+// f64 field) means CapabilitySet's Eq derivation depends on
+// CapabilityLimits' Eq impl. We never store NaN or infinity in
+// max_events_per_second, so reflexivity holds.
 impl Eq for CapabilitySet {}
 
 impl Default for CapabilitySet {
     fn default() -> Self {
         Self {
-            can_publish_events: false,
-            can_subscribe_events: false,
-            allowed_read_paths: Vec::new(),
-            allowed_write_paths: Vec::new(),
-            can_network: false,
-            can_spawn_processes: false,
-            max_memory_mb: default_max_memory_mb(),
-            max_cpu_seconds: default_max_cpu_seconds(),
-            max_events_per_second: default_max_events_per_second(),
+            flags: CapabilityFlags::default(),
+            paths: CapabilityPaths::default(),
+            limits: CapabilityLimits::default(),
         }
     }
 }
@@ -95,16 +201,16 @@ impl CapabilitySet {
     #[must_use]
     pub fn granted_boolean_caps(&self) -> Vec<&'static str> {
         let mut grants = Vec::new();
-        if self.can_publish_events {
+        if self.flags.can_publish_events {
             grants.push("publish_events");
         }
-        if self.can_subscribe_events {
+        if self.flags.can_subscribe_events {
             grants.push("subscribe_events");
         }
-        if self.can_network {
+        if self.flags.can_network {
             grants.push("network");
         }
-        if self.can_spawn_processes {
+        if self.flags.can_spawn_processes {
             grants.push("spawn_processes");
         }
         grants
@@ -118,26 +224,26 @@ impl CapabilitySet {
         for cap in self.granted_boolean_caps() {
             lines.push(format!("  - {cap}"));
         }
-        if !self.allowed_read_paths.is_empty() {
+        if !self.paths.allowed_read_paths.is_empty() {
             lines.push("  - read paths:".to_string());
-            for path in &self.allowed_read_paths {
+            for path in &self.paths.allowed_read_paths {
                 lines.push(format!("      {path}"));
             }
         }
-        if !self.allowed_write_paths.is_empty() {
+        if !self.paths.allowed_write_paths.is_empty() {
             lines.push("  - write paths:".to_string());
-            for path in &self.allowed_write_paths {
+            for path in &self.paths.allowed_write_paths {
                 lines.push(format!("      {path}"));
             }
         }
-        lines.push(format!("  - max memory: {} MB", self.max_memory_mb));
+        lines.push(format!("  - max memory: {} MB", self.limits.max_memory_mb));
         lines.push(format!(
             "  - max CPU time: {} seconds",
-            self.max_cpu_seconds
+            self.limits.max_cpu_seconds
         ));
         lines.push(format!(
             "  - max events/sec: {}",
-            self.max_events_per_second
+            self.limits.max_events_per_second
         ));
         lines
     }
@@ -146,50 +252,15 @@ impl CapabilitySet {
     /// all capabilities requested by `other` are already granted by `self`.
     /// Used to determine whether a previously-approved capability set still
     /// covers the current request.
+    ///
+    /// Delegates to per-group `contains` on the sub-structs. Adding a
+    /// new boolean cap means: add a field to `CapabilityFlags` and
+    /// update its `contains` — no change to this method.
     #[must_use]
     pub fn contains(&self, other: &CapabilitySet) -> bool {
-        // Boolean flags: if other requests it, self must have it
-        if other.can_publish_events && !self.can_publish_events {
-            return false;
-        }
-        if other.can_subscribe_events && !self.can_subscribe_events {
-            return false;
-        }
-        if other.can_network && !self.can_network {
-            return false;
-        }
-        if other.can_spawn_processes && !self.can_spawn_processes {
-            return false;
-        }
-
-        // Path subsets: all paths other wants must be in self
-        if !other
-            .allowed_read_paths
-            .iter()
-            .all(|p| self.allowed_read_paths.contains(p))
-        {
-            return false;
-        }
-        if !other
-            .allowed_write_paths
-            .iter()
-            .all(|p| self.allowed_write_paths.contains(p))
-        {
-            return false;
-        }
-
-        // Resource limits: other must not exceed self
-        if other.max_memory_mb > self.max_memory_mb {
-            return false;
-        }
-        if other.max_cpu_seconds > self.max_cpu_seconds {
-            return false;
-        }
-        if other.max_events_per_second > self.max_events_per_second {
-            return false;
-        }
-
-        true
+        self.flags.contains(&other.flags)
+            && self.paths.contains(&other.paths)
+            && self.limits.contains(&other.limits)
     }
 
     /// Returns the capabilities in `other` that are NOT covered by `self`.
@@ -197,37 +268,9 @@ impl CapabilitySet {
     #[must_use]
     pub fn diff(&self, other: &CapabilitySet) -> CapabilitySet {
         CapabilitySet {
-            can_publish_events: other.can_publish_events && !self.can_publish_events,
-            can_subscribe_events: other.can_subscribe_events && !self.can_subscribe_events,
-            allowed_read_paths: other
-                .allowed_read_paths
-                .iter()
-                .filter(|p| !self.allowed_read_paths.contains(p))
-                .cloned()
-                .collect(),
-            allowed_write_paths: other
-                .allowed_write_paths
-                .iter()
-                .filter(|p| !self.allowed_write_paths.contains(p))
-                .cloned()
-                .collect(),
-            can_network: other.can_network && !self.can_network,
-            can_spawn_processes: other.can_spawn_processes && !self.can_spawn_processes,
-            max_memory_mb: if other.max_memory_mb > self.max_memory_mb {
-                other.max_memory_mb
-            } else {
-                self.max_memory_mb
-            },
-            max_cpu_seconds: if other.max_cpu_seconds > self.max_cpu_seconds {
-                other.max_cpu_seconds
-            } else {
-                self.max_cpu_seconds
-            },
-            max_events_per_second: if other.max_events_per_second > self.max_events_per_second {
-                other.max_events_per_second
-            } else {
-                self.max_events_per_second
-            },
+            flags: self.flags.diff(&other.flags),
+            paths: self.paths.diff(&other.paths),
+            limits: self.limits.diff(&other.limits),
         }
     }
 }
@@ -294,8 +337,8 @@ impl CapabilitySet {
                 .collect()
         };
         (
-            resolve(&self.allowed_read_paths),
-            resolve(&self.allowed_write_paths),
+            resolve(&self.paths.allowed_read_paths),
+            resolve(&self.paths.allowed_write_paths),
         )
     }
 }
@@ -593,17 +636,29 @@ mod tests {
     #[test]
     fn capability_set_contains_subset() {
         let base = CapabilitySet {
-            can_publish_events: true,
-            can_network: true,
-            max_memory_mb: 500,
-            max_events_per_second: 50.0,
+            flags: CapabilityFlags {
+                can_publish_events: true,
+                can_network: true,
+                ..Default::default()
+            },
+            limits: CapabilityLimits {
+                max_memory_mb: 500,
+                max_events_per_second: 50.0,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
         let subset = CapabilitySet {
-            can_publish_events: true,
-            max_memory_mb: 200,
-            max_events_per_second: 30.0,
+            flags: CapabilityFlags {
+                can_publish_events: true,
+                ..Default::default()
+            },
+            limits: CapabilityLimits {
+                max_memory_mb: 200,
+                max_events_per_second: 30.0,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
@@ -613,12 +668,18 @@ mod tests {
     #[test]
     fn capability_set_rejects_escalation() {
         let base = CapabilitySet {
-            max_memory_mb: 200,
+            limits: CapabilityLimits {
+                max_memory_mb: 200,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
         let escalation = CapabilitySet {
-            max_memory_mb: 600,
+            limits: CapabilityLimits {
+                max_memory_mb: 600,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
@@ -629,7 +690,10 @@ mod tests {
     fn capability_set_rejects_new_boolean_flag() {
         let base = CapabilitySet::default();
         let escalation = CapabilitySet {
-            can_network: true,
+            flags: CapabilityFlags {
+                can_network: true,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
         assert!(!base.contains(&escalation));
@@ -639,28 +703,40 @@ mod tests {
     fn diff_identifies_new_capabilities() {
         let old = CapabilitySet::default();
         let new = CapabilitySet {
-            can_publish_events: true,
-            allowed_read_paths: vec!["/data".to_string()],
-            max_memory_mb: 500,
+            flags: CapabilityFlags {
+                can_publish_events: true,
+                ..Default::default()
+            },
+            paths: CapabilityPaths {
+                allowed_read_paths: vec!["/data".to_string()],
+                ..Default::default()
+            },
+            limits: CapabilityLimits {
+                max_memory_mb: 500,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
         let diff = old.diff(&new);
-        assert!(diff.can_publish_events);
-        assert_eq!(diff.allowed_read_paths, vec!["/data".to_string()]);
-        assert_eq!(diff.max_memory_mb, 500);
+        assert!(diff.flags.can_publish_events);
+        assert_eq!(diff.paths.allowed_read_paths, vec!["/data".to_string()]);
+        assert_eq!(diff.limits.max_memory_mb, 500);
     }
 
     #[test]
     fn resolve_template_paths() {
         let caps = CapabilitySet {
-            allowed_read_paths: vec![
-                "${project.work_dir}/src".to_string(),
-                "${aman.data_dir}/config".to_string(),
-            ],
-            allowed_write_paths: vec![
-                "${project.work_dir}/aman_team".to_string(),
-            ],
+            paths: CapabilityPaths {
+                allowed_read_paths: vec![
+                    "${project.work_dir}/src".to_string(),
+                    "${aman.data_dir}/config".to_string(),
+                ],
+                allowed_write_paths: vec![
+                    "${project.work_dir}/aman_team".to_string(),
+                ],
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
@@ -690,8 +766,14 @@ mod tests {
         let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
         let caps = CapabilitySet {
-            can_publish_events: true,
-            max_memory_mb: 500,
+            flags: CapabilityFlags {
+                can_publish_events: true,
+                ..Default::default()
+            },
+            limits: CapabilityLimits {
+                max_memory_mb: 500,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
 
@@ -706,7 +788,7 @@ mod tests {
         cache.save("test-plugin", &mut approved).expect("save");
         let loaded = cache.load("test-plugin").expect("load").expect("exists");
         assert_eq!(loaded.plugin_version, "1.0.0");
-        assert!(loaded.capabilities.can_publish_events);
+        assert!(loaded.capabilities.flags.can_publish_events);
 
         // Clean up
         let _ = fs::remove_dir_all(&tmp);
@@ -723,8 +805,14 @@ mod tests {
         let mut approved = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: CapabilitySet {
-                can_publish_events: true,
-                max_memory_mb: 500,
+                flags: CapabilityFlags {
+                    can_publish_events: true,
+                    ..Default::default()
+                },
+                limits: CapabilityLimits {
+                    max_memory_mb: 500,
+                    ..Default::default()
+                },
                 ..CapabilitySet::default()
             },
             approved_at_ms: 1000,
@@ -735,8 +823,14 @@ mod tests {
 
         // Same requested caps should auto-approve
         let requested = CapabilitySet {
-            can_publish_events: true,
-            max_memory_mb: 300,
+            flags: CapabilityFlags {
+                can_publish_events: true,
+                ..Default::default()
+            },
+            limits: CapabilityLimits {
+                max_memory_mb: 300,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
         let version = semver::Version::new(1, 0, 0);
@@ -766,7 +860,10 @@ mod tests {
         cache.save("test-plugin", &mut approved).expect("save");
 
         let requested = CapabilitySet {
-            can_network: true,
+            flags: CapabilityFlags {
+                can_network: true,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
         let version = semver::Version::new(1, 0, 0);
@@ -819,8 +916,14 @@ mod tests {
         let mut approved = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: CapabilitySet {
-                can_publish_events: true,
-                max_memory_mb: 500,
+                flags: CapabilityFlags {
+                    can_publish_events: true,
+                    ..Default::default()
+                },
+                limits: CapabilityLimits {
+                    max_memory_mb: 500,
+                    ..Default::default()
+                },
                 ..CapabilitySet::default()
             },
             approved_at_ms: 1000,
@@ -837,10 +940,16 @@ mod tests {
         let tampered = ApprovedCapabilities {
             plugin_version: "1.0.0".to_owned(),
             capabilities: CapabilitySet {
-                can_publish_events: true,
-                can_network: true,              // ESCALATED: network access!
-                can_spawn_processes: true,       // ESCALATED: process spawn!
-                max_memory_mb: 99999,           // ESCALATED: unlimited memory!
+                flags: CapabilityFlags {
+                    can_publish_events: true,
+                    can_network: true,              // ESCALATED: network access!
+                    can_spawn_processes: true,       // ESCALATED: process spawn!
+                    ..Default::default()
+                },
+                limits: CapabilityLimits {
+                    max_memory_mb: 99999,           // ESCALATED: unlimited memory!
+                    ..Default::default()
+                },
                 ..CapabilitySet::default()
             },
             approved_at_ms: 1000,
@@ -871,7 +980,10 @@ mod tests {
         let cache = ApprovalCache::new(tmp.clone()).expect("create cache");
 
         let requested = CapabilitySet {
-            can_publish_events: true,
+            flags: CapabilityFlags {
+                can_publish_events: true,
+                ..Default::default()
+            },
             ..CapabilitySet::default()
         };
         let version = semver::Version::new(1, 0, 0);
@@ -889,12 +1001,12 @@ mod tests {
     #[test]
     fn capability_set_default_memory_is_500mb() {
         let caps = CapabilitySet::default();
-        assert_eq!(caps.max_memory_mb, 500);
+        assert_eq!(caps.limits.max_memory_mb, 500);
     }
 
     #[test]
     fn capability_set_default_events_per_second_is_50() {
         let caps = CapabilitySet::default();
-        assert!((caps.max_events_per_second - 50.0).abs() < f64::EPSILON);
+        assert!((caps.limits.max_events_per_second - 50.0).abs() < f64::EPSILON);
     }
 }

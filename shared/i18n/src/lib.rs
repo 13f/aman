@@ -394,239 +394,91 @@ pub mod key {
     pub const DESKTOP_INFO_GATEWAY_CONNECTED: &str = "desktop.info.gateway_connected";
     /// "Gateway startup timed out after {secs}s"
     pub const DESKTOP_ERROR_STARTUP_TIMEOUT: &str = "desktop.error.startup_timeout";
+
+    // ── Desktop / Config ──────────────────────────────────────────
+    /// "Failed to read config: {detail}"
+    pub const DESKTOP_ERROR_CONFIG_READ: &str = "desktop.error.config_read";
+    /// "Failed to save config: {detail}"
+    pub const DESKTOP_ERROR_CONFIG_SAVE: &str = "desktop.error.config_save";
+    /// "Failed to read agents directory: {detail}"
+    pub const DESKTOP_ERROR_READ_AGENTS_DIR: &str = "desktop.error.read_agents_dir";
+
+    // ── Desktop / Provider ────────────────────────────────────────
+    /// "Provider key can only contain letters, digits, underscores, hyphens"
+    pub const DESKTOP_ERROR_PROVIDER_KEY_INVALID: &str = "desktop.error.provider_key_invalid";
+    /// "Provider '{key}' already exists"
+    pub const DESKTOP_ERROR_PROVIDER_EXISTS: &str = "desktop.error.provider_exists";
+    /// "Provider '{key}' not found"
+    pub const DESKTOP_ERROR_PROVIDER_NOT_FOUND: &str = "desktop.error.provider_not_found";
+    /// "Provider '{provider}' not found — create it first"
+    pub const DESKTOP_ERROR_PROVIDER_NOT_FOUND_CREATE_FIRST: &str = "desktop.error.provider_not_found_create_first";
+    /// "Provider '{key}' is referenced by agents: {agents} — cannot delete"
+    pub const DESKTOP_ERROR_PROVIDER_IN_USE: &str = "desktop.error.provider_in_use";
+    /// "Provider '{key}' created"
+    pub const DESKTOP_INFO_PROVIDER_CREATED: &str = "desktop.info.provider_created";
+    /// "Provider '{key}' updated"
+    pub const DESKTOP_INFO_PROVIDER_UPDATED: &str = "desktop.info.provider_updated";
+    /// "Provider '{key}' deleted"
+    pub const DESKTOP_INFO_PROVIDER_DELETED: &str = "desktop.info.provider_deleted";
+    /// "Provider '{key}' API key saved to {backend}"
+    pub const DESKTOP_INFO_PROVIDER_API_KEY_SAVED: &str = "desktop.info.provider_api_key_saved";
+    /// "Failed to save to keychain: {detail}"
+    pub const DESKTOP_ERROR_KEYCHAIN_SAVE: &str = "desktop.error.keychain_save";
+    /// "Failed to create HTTP client: {detail}"
+    pub const DESKTOP_ERROR_HTTP_CLIENT: &str = "desktop.error.http_client";
+
+    // ── Desktop / Agent ───────────────────────────────────────────
+    /// "Agent key can only contain letters, digits, underscores, hyphens"
+    pub const DESKTOP_ERROR_AGENT_KEY_INVALID: &str = "desktop.error.agent_key_invalid";
+    /// "Agent '{key}' already exists"
+    pub const DESKTOP_ERROR_AGENT_EXISTS: &str = "desktop.error.agent_exists";
+    /// "Agent '{key}' not found"
+    pub const DESKTOP_ERROR_AGENT_NOT_FOUND: &str = "desktop.error.agent_not_found";
+    /// "Agent '{key}' has no provider configured"
+    pub const DESKTOP_ERROR_AGENT_NO_PROVIDER: &str = "desktop.error.agent_no_provider";
+    /// "Agent '{key}' created"
+    pub const DESKTOP_INFO_AGENT_CREATED: &str = "desktop.info.agent_created";
+    /// "Agent '{key}' updated"
+    pub const DESKTOP_INFO_AGENT_UPDATED: &str = "desktop.info.agent_updated";
+    /// "Agent '{key}' deleted"
+    pub const DESKTOP_INFO_AGENT_DELETED: &str = "desktop.info.agent_deleted";
+    /// "Agent '{key}' activated"
+    pub const DESKTOP_INFO_AGENT_ACTIVATED: &str = "desktop.info.agent_activated";
+
+    // ── Desktop / MCP ─────────────────────────────────────────────
+    /// "Server name cannot be empty"
+    pub const DESKTOP_ERROR_MCP_NAME_EMPTY: &str = "desktop.error.mcp_name_empty";
+    /// "MCP server '{name}' created"
+    pub const DESKTOP_INFO_MCP_CREATED: &str = "desktop.info.mcp_created";
+    /// "MCP server '{name}' deleted"
+    pub const DESKTOP_INFO_MCP_DELETED: &str = "desktop.info.mcp_deleted";
+    /// "Gateway is not running"
+    pub const DESKTOP_ERROR_GATEWAY_NOT_RUNNING: &str = "desktop.error.gateway_not_running";
 }
 
-// ── English bundle ──────────────────────────────────────────────────
+// ── Translation bundles ─────────────────────────────────────────────
 
-static EN: std::sync::LazyLock<Bundle> = std::sync::LazyLock::new(|| {
-    let mut b = Bundle::new();
-    // Common
-    b.insert("common.ok", "OK");
-    b.insert("common.cancel", "Cancel");
-    b.insert("common.close", "Close");
-    b.insert("common.save", "Save");
-    b.insert("common.delete", "Delete");
-    b.insert("common.edit", "Edit");
-    b.insert("common.search", "Search");
-    b.insert("common.loading", "Loading\u{2026}");
-    b.insert("common.error", "Error");
-    b.insert("common.warning", "Warning");
-    b.insert("common.success", "Success");
-    b.insert("common.yes", "Yes");
-    b.insert("common.no", "No");
-    b.insert("common.submit", "Submit");
-    b.insert("common.refresh", "Refresh");
-    b.insert("common.settings", "Settings");
-    b.insert("common.help", "Help");
-    b.insert("common.about", "About");
-    b.insert("common.home", "Home");
-    b.insert("common.back", "Back");
-    b.insert("common.next", "Next");
-    b.insert("common.previous", "Previous");
-    b.insert("common.finish", "Finish");
-    b.insert("common.retry", "Retry");
-    b.insert("common.skip", "Skip");
-    b.insert("common.confirm", "Confirm");
-    b.insert("common.are_you_sure", "Are you sure?");
-    b.insert("common.no_results", "No results found.");
-    b.insert("common.copied", "Copied to clipboard");
-    b.insert("common.enabled", "Enabled");
-    b.insert("common.disabled", "Disabled");
-    b.insert("common.online", "Online");
-    b.insert("common.offline", "Offline");
-    b.insert("common.unknown", "Unknown");
-    b.insert("common.none", "None");
-    b.insert("common.all", "All");
-    // Config
-    b.insert("config.title", "Configuration");
-    b.insert("config.invalid", "Invalid configuration: {detail}");
-    b.insert("config.read_error", "Failed to read configuration file");
-    b.insert("config.parse_error", "Failed to parse configuration");
-    // Gateway
-    b.insert("gateway.starting", "Gateway is starting\u{2026}");
-    b.insert("gateway.ready", "Gateway is ready");
-    b.insert("gateway.stopping", "Gateway is shutting down\u{2026}");
-    b.insert("gateway.stopped", "Gateway shut down");
-    // Agent
-    b.insert("agent.busy", "Agent is busy");
-    b.insert("agent.idle", "Agent is idle");
-    b.insert("agent.sleeping", "Agent is sleeping");
-    b.insert("agent.session_started", "Session started");
-    // Plugin
-    b.insert("plugin.loaded", "Plugin loaded successfully");
-    b.insert("plugin.load_failed", "Plugin failed to load");
-    // Tool
-    b.insert("tool.started", "Tool execution started");
-    b.insert("tool.completed", "Tool execution completed");
-    b.insert("tool.failed", "Tool execution failed");
-    // HTTP / API
-    b.insert("http.unauthorized", "Unauthorized");
-    b.insert("http.forbidden", "Forbidden");
-    b.insert("http.not_found", "Not Found");
-    b.insert("http.internal_error", "Internal Server Error");
-    b.insert("http.service_unavailable", "Service Unavailable");
-    b.insert("http.rate_limited", "Rate limit exceeded");
-    // Validation
-    b.insert("validation.required", "This field is required");
-    b.insert("validation.too_long", "Value is too long");
-    b.insert("validation.invalid_format", "Invalid format");
-    b.insert("validation.out_of_range", "Value out of range");
-    // Lifecycle
-    b.insert("lifecycle.phase_start", "Starting phase {phase}\u{2026}");
-    b.insert("lifecycle.phase_complete", "Phase {phase} complete");
-    // TUI
-    b.insert("tui.logs.title", "Logs");
-    b.insert("tui.logs.switch_hint", "Tab to switch");
-    b.insert("tui.approvals.title", "Pending Approvals");
-    b.insert("tui.approvals.no_pending", "No pending approvals.");
-    b.insert("tui.approvals.capabilities_for", "Capabilities for");
-    b.insert("tui.approvals.approve_deny_hint", "Enter=Approve  d=Deny");
-    b.insert("tui.footer.tab", "Tab");
-    b.insert("tui.footer.switch_focus", "switch focus");
-    b.insert("tui.footer.navigate", "navigate");
-    b.insert("tui.footer.enter", "Enter");
-    b.insert("tui.footer.approve", "approve");
-    b.insert("tui.footer.d_key", "d");
-    b.insert("tui.footer.deny", "deny");
-    b.insert("tui.footer.scroll", "scroll");
-    b.insert("tui.footer.q_key", "Ctrl+Q");
-    b.insert("tui.footer.quit", "quit");
-    b.insert("tui.error.approve_failed", "Approve failed");
-    b.insert("tui.error.deny_failed", "Deny failed");
-    b.insert("tui.error.no_plugin_selected", "No plugin selected");
-    // Desktop
-    b.insert("desktop.menu.reload_skills", "Reload Skills");
-    b.insert("desktop.menu.quit", "Quit aman desktop");
-    b.insert("desktop.menu.file", "File");
-    b.insert("desktop.menu.edit", "Edit");
-    b.insert("desktop.menu.help", "Help");
-    b.insert("desktop.menu.about", "About aman desktop");
-    b.insert("desktop.menu.devtools", "Toggle DevTools");
-    b.insert("desktop.error.no_gateway", "Gateway not connected. Start the gateway daemon first.");
-    b.insert("desktop.error.already_connected", "Already connected to a gateway");
-    b.insert("desktop.error.gateway_unreachable", "Gateway not reachable at {url}");
-    b.insert("desktop.error.spawn_failed", "Failed to spawn gateway at {path}");
-    b.insert("desktop.info.gateway_started", "Gateway started at {url}");
-    b.insert("desktop.info.gateway_connected", "Connected to already-running gateway at {url}");
-    b.insert("desktop.error.startup_timeout", "Gateway startup timed out after {secs}s");
-    b
-});
+/// Load a bundle from a compile-time embedded JSON file.
+///
+/// Keys and values are intentionally leaked so they become `&'static str`
+/// — translation bundles live for the entire program lifetime.
+fn load_bundle(json: &'static str) -> Bundle {
+    let map: std::collections::HashMap<String, String> =
+        serde_json::from_str(json).expect("failed to parse i18n bundle JSON");
+    let mut bundle = Bundle::with_capacity(map.len());
+    for (k, v) in map {
+        let k: &'static str = Box::leak(k.into_boxed_str());
+        let v: &'static str = Box::leak(v.into_boxed_str());
+        bundle.insert(k, v);
+    }
+    bundle
+}
 
-// ── Simplified Chinese bundle ───────────────────────────────────────
+static EN: std::sync::LazyLock<Bundle> =
+    std::sync::LazyLock::new(|| load_bundle(include_str!("i18n.en.json")));
 
-static ZHS: std::sync::LazyLock<Bundle> = std::sync::LazyLock::new(|| {
-    let mut b = Bundle::new();
-    // Common
-    b.insert("common.ok", "确定");
-    b.insert("common.cancel", "取消");
-    b.insert("common.close", "关闭");
-    b.insert("common.save", "保存");
-    b.insert("common.delete", "删除");
-    b.insert("common.edit", "编辑");
-    b.insert("common.search", "搜索");
-    b.insert("common.loading", "加载中\u{2026}");
-    b.insert("common.error", "错误");
-    b.insert("common.warning", "警告");
-    b.insert("common.success", "成功");
-    b.insert("common.yes", "是");
-    b.insert("common.no", "否");
-    b.insert("common.submit", "提交");
-    b.insert("common.refresh", "刷新");
-    b.insert("common.settings", "设置");
-    b.insert("common.help", "帮助");
-    b.insert("common.about", "关于");
-    b.insert("common.home", "首页");
-    b.insert("common.back", "返回");
-    b.insert("common.next", "下一步");
-    b.insert("common.previous", "上一步");
-    b.insert("common.finish", "完成");
-    b.insert("common.retry", "重试");
-    b.insert("common.skip", "跳过");
-    b.insert("common.confirm", "确认");
-    b.insert("common.are_you_sure", "确定吗？");
-    b.insert("common.no_results", "未找到结果。");
-    b.insert("common.copied", "已复制到剪贴板");
-    b.insert("common.enabled", "已启用");
-    b.insert("common.disabled", "已禁用");
-    b.insert("common.online", "在线");
-    b.insert("common.offline", "离线");
-    b.insert("common.unknown", "未知");
-    b.insert("common.none", "无");
-    b.insert("common.all", "全部");
-    // Config
-    b.insert("config.title", "配置");
-    b.insert("config.invalid", "配置无效：{detail}");
-    b.insert("config.read_error", "无法读取配置文件");
-    b.insert("config.parse_error", "无法解析配置");
-    // Gateway
-    b.insert("gateway.starting", "网关正在启动\u{2026}");
-    b.insert("gateway.ready", "网关已就绪");
-    b.insert("gateway.stopping", "网关正在关闭\u{2026}");
-    b.insert("gateway.stopped", "网关已关闭");
-    // Agent
-    b.insert("agent.busy", "智能体忙碌中");
-    b.insert("agent.idle", "智能体空闲中");
-    b.insert("agent.sleeping", "智能体休眠中");
-    b.insert("agent.session_started", "会话已开始");
-    // Plugin
-    b.insert("plugin.loaded", "插件加载成功");
-    b.insert("plugin.load_failed", "插件加载失败");
-    // Tool
-    b.insert("tool.started", "工具执行开始");
-    b.insert("tool.completed", "工具执行完成");
-    b.insert("tool.failed", "工具执行失败");
-    // HTTP / API
-    b.insert("http.unauthorized", "未授权");
-    b.insert("http.forbidden", "禁止访问");
-    b.insert("http.not_found", "未找到");
-    b.insert("http.internal_error", "内部服务器错误");
-    b.insert("http.service_unavailable", "服务不可用");
-    b.insert("http.rate_limited", "请求频率超限");
-    // Validation
-    b.insert("validation.required", "此字段为必填项");
-    b.insert("validation.too_long", "值过长");
-    b.insert("validation.invalid_format", "格式无效");
-    b.insert("validation.out_of_range", "值超出范围");
-    // Lifecycle
-    b.insert("lifecycle.phase_start", "正在启动阶段 {phase}\u{2026}");
-    b.insert("lifecycle.phase_complete", "阶段 {phase} 完成");
-    // TUI
-    b.insert("tui.logs.title", "日志");
-    b.insert("tui.logs.switch_hint", "Tab 切换");
-    b.insert("tui.approvals.title", "待审批");
-    b.insert("tui.approvals.no_pending", "暂无待审批项。");
-    b.insert("tui.approvals.capabilities_for", "能力详情");
-    b.insert("tui.approvals.approve_deny_hint", "Enter=批准  d=拒绝");
-    b.insert("tui.footer.tab", "Tab");
-    b.insert("tui.footer.switch_focus", "切换焦点");
-    b.insert("tui.footer.navigate", "导航");
-    b.insert("tui.footer.enter", "Enter");
-    b.insert("tui.footer.approve", "批准");
-    b.insert("tui.footer.d_key", "d");
-    b.insert("tui.footer.deny", "拒绝");
-    b.insert("tui.footer.scroll", "滚动");
-    b.insert("tui.footer.q_key", "Ctrl+Q");
-    b.insert("tui.footer.quit", "退出");
-    b.insert("tui.error.approve_failed", "批准失败");
-    b.insert("tui.error.deny_failed", "拒绝失败");
-    b.insert("tui.error.no_plugin_selected", "未选择插件");
-    // Desktop
-    b.insert("desktop.menu.reload_skills", "重新加载技能");
-    b.insert("desktop.menu.quit", "退出 aman desktop");
-    b.insert("desktop.menu.file", "文件");
-    b.insert("desktop.menu.edit", "编辑");
-    b.insert("desktop.menu.help", "帮助");
-    b.insert("desktop.menu.about", "关于 aman desktop");
-    b.insert("desktop.menu.devtools", "切换开发者工具");
-    b.insert("desktop.error.no_gateway", "网关未连接，请先启动网关守护进程。");
-    b.insert("desktop.error.already_connected", "已连接到网关");
-    b.insert("desktop.error.gateway_unreachable", "无法访问网关 {url}");
-    b.insert("desktop.error.spawn_failed", "无法启动网关 {path}");
-    b.insert("desktop.info.gateway_started", "网关已启动 {url}");
-    b.insert("desktop.info.gateway_connected", "已连接到运行中的网关 {url}");
-    b.insert("desktop.error.startup_timeout", "网关启动超时 ({secs}秒)");
-    b
-});
+static ZHS: std::sync::LazyLock<Bundle> =
+    std::sync::LazyLock::new(|| load_bundle(include_str!("i18n.zhs.json")));
 
 // ── Convenience free functions ──────────────────────────────────────
 

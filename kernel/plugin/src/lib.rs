@@ -1028,6 +1028,49 @@ pub struct PluginLoader {
     approval_cache: Option<ApprovalCache>,
 }
 
+/// Generates iteration blocks for registering plugin exports.
+///
+/// Each entry is a tuple: `(plural_method, field, register_method, name_method)`.
+/// On first error the loop rolls back already-registered items via
+/// `unregister_exports` and returns the error.
+macro_rules! register_exports_block {
+    ($self:expr, $plugin:expr, $exports:expr,
+     $(($plural_method:ident, $field:ident, $register_method:ident, $name_method:ident)),+ $(,)?) => {
+        $(
+            for item in $plugin.$plural_method() {
+                $exports.$field.push(item.$name_method().to_owned());
+                if let Err(error) = $self.registrar.$register_method(item) {
+                    $self.unregister_exports(&$exports, $plugin.name())?;
+                    return Err(error);
+                }
+            }
+        )+
+    };
+}
+
+/// Generates iteration blocks for unregistering plugin exports.
+///
+/// Each entry is a tuple: `(field, unregister_method)`.
+/// Iteration order is reversed relative to registration (containers before
+/// resources). The first error is saved and returned after all items are processed.
+macro_rules! unregister_exports_block {
+    ($self:expr, $exports:expr,
+     $(($field:ident, $unregister_method:ident)),+ $(,)?) => {
+        let mut first_error: Option<kernel::Error> = None;
+        $(
+            for item_name in &$exports.$field {
+                if let Err(error) = $self.registrar.$unregister_method(item_name)
+                    && first_error.is_none() {
+                        first_error = Some(error);
+                    }
+            }
+        )+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+    };
+}
+
 impl PluginLoader {
     #[must_use]
     pub fn new(registrar: Arc<dyn PluginExportRegistrar>) -> Self {
@@ -1580,80 +1623,24 @@ impl PluginLoader {
 
     fn register_exports(&self, plugin: &dyn Plugin) -> AmanResult<RegisteredExports> {
         let mut exports = RegisteredExports::default();
-
-        for skill in plugin.skills() {
-            exports.skills.push(skill.name().to_owned());
-            if let Err(error) = self.registrar.register_skill(skill) {
-                self.unregister_exports(&exports, plugin.name())?;
-                return Err(error);
-            }
-        }
-        for tool in plugin.tools() {
-            exports.tools.push(tool.name().to_owned());
-            if let Err(error) = self.registrar.register_tool(tool) {
-                self.unregister_exports(&exports, plugin.name())?;
-                return Err(error);
-            }
-        }
-        for source in plugin.event_sources() {
-            exports.event_sources.push(source.id().to_owned());
-            if let Err(error) = self.registrar.register_event_source(source) {
-                self.unregister_exports(&exports, plugin.name())?;
-                return Err(error);
-            }
-        }
-        for hook in plugin.hooks() {
-            exports.hooks.push(hook.name().to_owned());
-            if let Err(error) = self.registrar.register_hook(hook) {
-                self.unregister_exports(&exports, plugin.name())?;
-                return Err(error);
-            }
-        }
-        for provider in plugin.memory_providers() {
-            exports.memory_providers.push(provider.name().to_owned());
-            if let Err(error) = self.registrar.register_memory_provider(provider) {
-                self.unregister_exports(&exports, plugin.name())?;
-                return Err(error);
-            }
-        }
+        register_exports_block!(self, plugin, exports,
+            (skills, skills, register_skill, name),
+            (tools, tools, register_tool, name),
+            (event_sources, event_sources, register_event_source, id),
+            (hooks, hooks, register_hook, name),
+            (memory_providers, memory_providers, register_memory_provider, name)
+        );
         Ok(exports)
     }
 
     fn unregister_exports(&self, exports: &RegisteredExports, plugin_name: &str) -> AmanResult<()> {
-        let mut first_error = None;
-        for provider_name in &exports.memory_providers {
-            if let Err(error) = self.registrar.unregister_memory_provider(provider_name)
-                && first_error.is_none() {
-                    first_error = Some(error);
-                }
-        }
-        for hook_name in &exports.hooks {
-            if let Err(error) = self.registrar.unregister_hook(hook_name)
-                && first_error.is_none() {
-                    first_error = Some(error);
-                }
-        }
-        for source_id in &exports.event_sources {
-            if let Err(error) = self.registrar.unregister_event_source(source_id)
-                && first_error.is_none() {
-                    first_error = Some(error);
-                }
-        }
-        for tool_name in &exports.tools {
-            if let Err(error) = self.registrar.unregister_tool(tool_name)
-                && first_error.is_none() {
-                    first_error = Some(error);
-                }
-        }
-        for skill_name in &exports.skills {
-            if let Err(error) = self.registrar.unregister_skill(skill_name)
-                && first_error.is_none() {
-                    first_error = Some(error);
-                }
-        }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
+        unregister_exports_block!(self, exports,
+            (memory_providers, unregister_memory_provider),
+            (hooks, unregister_hook),
+            (event_sources, unregister_event_source),
+            (tools, unregister_tool),
+            (skills, unregister_skill)
+        );
         self.audit(
             plugin_name,
             PluginAuditEventType::RollbackReleased,

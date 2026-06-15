@@ -3,6 +3,7 @@
 
 use super::agent_runtime::AgentRuntime;
 use super::session_store;
+use super::AuditLogger;
 use axum::extract::{Multipart, Path, State};
 use tracing::instrument;
 use axum::extract::Query;
@@ -31,6 +32,9 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+/// Default operator name when the `x-aman-operator` header is absent.
+const DEFAULT_OPERATOR: &str = "api";
 
 #[derive(Debug, Clone)]
 pub struct HttpServerConfig {
@@ -258,13 +262,13 @@ async fn agent_start(State(runtime): State<Arc<AgentRuntime>>) -> Response {
         Ok(()) => {
             runtime
                 .audit()
-                .record("api", "agent.start", "agent", "ok", "");
+                .record(DEFAULT_OPERATOR, "agent.start", "agent", "ok", "");
             StatusCode::OK.into_response()
         }
         Err(error) => {
             runtime
                 .audit()
-                .record("api", "agent.start", "agent", "error", error.to_string());
+                .record(DEFAULT_OPERATOR, "agent.start", "agent", "error", error.to_string());
             ApiError::from(error).into_response()
         }
     }
@@ -272,27 +276,9 @@ async fn agent_start(State(runtime): State<Arc<AgentRuntime>>) -> Response {
 
 #[instrument(skip(runtime, headers))]
 async fn agent_shutdown(State(runtime): State<Arc<AgentRuntime>>, headers: HeaderMap) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime
-            .audit()
-            .record(operator, "agent.shutdown", "agent", "confirm_required", "");
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
-    match runtime.shutdown().await {
-        Ok(()) => {
-            runtime
-                .audit()
-                .record(operator, "agent.shutdown", "agent", "ok", "");
-            StatusCode::OK.into_response()
-        }
-        Err(error) => {
-            runtime
-                .audit()
-                .record(operator, "agent.shutdown", "agent", "error", error.to_string());
-            ApiError::from(error).into_response()
-        }
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "agent.shutdown", "agent", &headers) { return response; }
+    with_audit(&runtime.audit(), operator, "agent.shutdown", "agent", runtime.shutdown().await)
 }
 
 async fn source_pause(
@@ -300,25 +286,9 @@ async fn source_pause(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    match runtime.sources().pause(&id).await {
-        Ok(()) => {
-            runtime
-                .audit()
-                .record(operator, "source.pause", format!("source:{id}"), "ok", "");
-            StatusCode::OK.into_response()
-        }
-        Err(error) => {
-            runtime.audit().record(
-                operator,
-                "source.pause",
-                format!("source:{id}"),
-                "error",
-                error.to_string(),
-            );
-            ApiError::from(error).into_response()
-        }
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    let resource = format!("source:{id}");
+    with_audit(&runtime.audit(), operator, "source.pause", &resource, runtime.sources().pause(&id).await)
 }
 
 async fn source_resume(
@@ -326,25 +296,9 @@ async fn source_resume(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    match runtime.sources().resume(&id).await {
-        Ok(()) => {
-            runtime
-                .audit()
-                .record(operator, "source.resume", format!("source:{id}"), "ok", "");
-            StatusCode::OK.into_response()
-        }
-        Err(error) => {
-            runtime.audit().record(
-                operator,
-                "source.resume",
-                format!("source:{id}"),
-                "error",
-                error.to_string(),
-            );
-            ApiError::from(error).into_response()
-        }
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    let resource = format!("source:{id}");
+    with_audit(&runtime.audit(), operator, "source.resume", &resource, runtime.sources().resume(&id).await)
 }
 
 async fn source_config(
@@ -353,25 +307,9 @@ async fn source_config(
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    match runtime.sources().reconfigure(&id, payload).await {
-        Ok(()) => {
-            runtime
-                .audit()
-                .record(operator, "source.config", format!("source:{id}"), "ok", "");
-            StatusCode::OK.into_response()
-        }
-        Err(error) => {
-            runtime.audit().record(
-                operator,
-                "source.config",
-                format!("source:{id}"),
-                "error",
-                error.to_string(),
-            );
-            ApiError::from(error).into_response()
-        }
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    let resource = format!("source:{id}");
+    with_audit(&runtime.audit(), operator, "source.config", &resource, runtime.sources().reconfigure(&id, payload).await)
 }
 
 async fn im_channel_reload(
@@ -379,7 +317,7 @@ async fn im_channel_reload(
     Path((platform, instance)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.reload_im_channel_source(&platform, &instance).await {
         Ok(()) => {
             runtime.audit().record(
@@ -512,7 +450,7 @@ async fn skill_enable(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.skills().enable(&name) {
         Ok(()) => {
             runtime.audit().record(
@@ -542,7 +480,7 @@ async fn skill_disable(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.skills().disable(&name) {
         Ok(()) => {
             runtime.audit().record(
@@ -609,17 +547,8 @@ async fn skill_rollback(
     headers: HeaderMap,
     Json(payload): Json<SkillRollbackRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime.audit().record(
-            operator,
-            "skill.rollback",
-            format!("skill:{name}"),
-            "confirm_required",
-            "",
-        );
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "skill.rollback", &format!("skill:{name}"), &headers) { return response; }
 
     let destination = runtime
         .skills_dir()
@@ -683,7 +612,7 @@ async fn workflow_create(
     headers: HeaderMap,
     Json(payload): Json<WorkflowCreateRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.workflow_engine().create_instance(&name, payload.data) {
         Ok(instance) => {
             runtime.audit().record(
@@ -744,17 +673,8 @@ async fn workflow_retry(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime.audit().record(
-            operator,
-            "workflow.retry",
-            format!("workflow-instance:{id}"),
-            "confirm_required",
-            "",
-        );
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "workflow.retry", &format!("workflow-instance:{id}"), &headers) { return response; }
     let event = Event::new(
         "workflow:control",
         EventType::Custom("retry".to_owned()),
@@ -796,17 +716,8 @@ async fn workflow_cancel(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime.audit().record(
-            operator,
-            "workflow.cancel",
-            format!("workflow-instance:{id}"),
-            "confirm_required",
-            "",
-        );
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "workflow.cancel", &format!("workflow-instance:{id}"), &headers) { return response; }
     let event = Event::new(
         "workflow:control",
         EventType::Custom("cancel".to_owned()),
@@ -848,7 +759,7 @@ async fn plugin_enable(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.enable_plugin(&name).await {
         Ok(()) => {
             runtime.audit().record(
@@ -890,7 +801,7 @@ struct PluginListItem {
 }
 
 async fn plugin_list(State(runtime): State<Arc<AgentRuntime>>, headers: HeaderMap) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     let plugins_root = runtime.runtime_dir().join("plugins");
 
     let mut installed = BTreeMap::<String, (String, String)>::new();
@@ -954,17 +865,8 @@ async fn plugin_disable(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime.audit().record(
-            operator,
-            "plugin.disable",
-            format!("plugin:{name}"),
-            "confirm_required",
-            "",
-        );
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "plugin.disable", &format!("plugin:{name}"), &headers) { return response; }
     match runtime.disable_plugin(&name).await {
         Ok(()) => {
             runtime.audit().record(
@@ -994,7 +896,7 @@ async fn plugin_uninstall(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.uninstall_plugin(&name).await {
         Ok(()) => {
             runtime.audit().record(
@@ -1024,7 +926,7 @@ async fn plugin_install(
     headers: HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     let mut archive_bytes = None;
     loop {
         match multipart.next_field().await {
@@ -1099,7 +1001,7 @@ async fn cron_add(
     headers: HeaderMap,
     Json(req): Json<CronAddRequest>,
 ) -> Response {
-    let caller = operator_from_headers(&headers).unwrap_or("api");
+    let caller = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.add_cron_job(req.id, req.expression, caller).await {
         Ok(()) => {
             runtime
@@ -1122,7 +1024,7 @@ async fn cron_update(
     Path(id): Path<String>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let caller = operator_from_headers(&headers).unwrap_or("api");
+    let caller = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.update_cron_job(&id, payload, caller).await {
         Ok(()) => {
             runtime
@@ -1148,7 +1050,7 @@ async fn cron_remove(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let caller = operator_from_headers(&headers).unwrap_or("api");
+    let caller = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.remove_cron_job(&id, caller).await {
         Ok(()) => {
             runtime
@@ -1175,7 +1077,7 @@ async fn inject_event(
     headers: HeaderMap,
     Json(req): Json<InjectEventRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     if !runtime.risky_capabilities_enabled() {
         runtime.audit().record(
             operator,
@@ -1250,7 +1152,7 @@ async fn push_event(
     headers: HeaderMap,
     Json(req): Json<PushEventRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
 
     if req.source.trim().is_empty() {
         return ApiError::bad_request("source cannot be empty").into_response();
@@ -1427,17 +1329,8 @@ async fn dlq_retry(
     Path(id): Path<String>,
     Json(payload): Json<DlqRetryRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime.audit().record(
-            operator,
-            "dlq.retry",
-            format!("dlq:{id}"),
-            "confirm_required",
-            "",
-        );
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "dlq.retry", &format!("dlq:{id}"), &headers) { return response; }
     let reason = payload.reason.unwrap_or_else(|| "manual retry".to_owned());
     let event = match runtime.dlq().retry(&id, operator, reason) {
         Ok(event) => event,
@@ -1481,7 +1374,7 @@ async fn dlq_discard(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.dlq().discard(&id) {
         Ok(entry) => {
             runtime.audit().record(
@@ -1768,17 +1661,8 @@ async fn config_set(
     headers: HeaderMap,
     Json(req): Json<ConfigSetRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
-    if !require_confirmation(&headers) {
-        runtime.audit().record(
-            operator,
-            "config.set",
-            "config",
-            "confirm_required",
-            "",
-        );
-        return ApiError::conflict("confirmation required".to_owned(),).into_response();
-    }
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    if let Some(response) = guard_confirmation(&runtime.audit(), operator, "config.set", "config", &headers) { return response; }
     runtime.log_config_change(operator, &req.changed_fields);
     (StatusCode::OK, Json(OkResponse { ok: true })).into_response()
 }
@@ -1979,7 +1863,7 @@ async fn soul_update(
     headers: HeaderMap,
     Json(req): Json<SoulUpdateRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.update_soul(&req.content).await {
         Ok(()) => {
             runtime
@@ -2621,7 +2505,7 @@ async fn chat_session_create(
     headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     let session_type = payload
         .get("session_type")
         .and_then(|v| v.as_str())
@@ -2750,7 +2634,7 @@ async fn chat_session_delete(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     // Delete from persistent store first. Track whether the store
     // actually found the session — the WorkflowEngine may not know about
     // it (e.g. after a gateway restart), so the store is authoritative
@@ -2904,7 +2788,7 @@ async fn chat_session_send(
     Path(id): Path<String>,
     Json(req): Json<ChatSendRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
 
     // Validate session exists and check optimistic lock version.
     let instance = match runtime.workflow_engine().get_instance(&id) {
@@ -3131,7 +3015,7 @@ async fn chat_session_close(
     Path(id): Path<String>,
     Json(req): Json<ChatSessionActionRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     let event = Event::new(
         "chat:control",
         EventType::Custom("SESSION_CLOSE_CMD".to_owned()),
@@ -3212,7 +3096,7 @@ async fn chat_session_stop(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     let event = Event::new(
         "chat:control",
         EventType::Custom("STOP_GENERATION".to_owned()),
@@ -3232,7 +3116,7 @@ async fn chat_session_retry(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     let event = Event::new(
         "chat:control",
         EventType::Custom("RETRY_CMD".to_owned()),
@@ -3288,7 +3172,7 @@ async fn chat_session_edit(
     Path(id): Path<String>,
     Json(req): Json<ChatEditRequest>,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
 
     // Validate session.
     let instance = match runtime.workflow_engine().get_instance(&id) {
@@ -3365,7 +3249,7 @@ async fn skills_reload(
     State(runtime): State<Arc<AgentRuntime>>,
     headers: HeaderMap,
 ) -> Response {
-    let operator = operator_from_headers(&headers).unwrap_or("api");
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     match runtime.reload_skills_now() {
         Ok(_report) => {
             runtime.audit().record(
@@ -3504,6 +3388,72 @@ fn require_confirmation(headers: &HeaderMap) -> bool {
         .get("x-aman-confirm")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("yes"))
+}
+
+/// Guard: if the `x-aman-confirm: yes` header is absent, record an audit
+/// entry and return `Some(response)`.  Handlers use `if let Some(r) = ... { return r; }`
+/// to short-circuit.
+fn guard_confirmation(
+    audit: &AuditLogger,
+    operator: &str,
+    action: &str,
+    resource: &str,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    if !require_confirmation(headers) {
+        audit.record(operator, action, resource, "confirm_required", "");
+        return Some(ApiError::conflict("confirmation required").into_response());
+    }
+    None
+}
+
+/// Wrap a `Result<(), Error>` with audit logging.
+///
+/// On success, records an `"ok"` outcome and returns `StatusCode::OK`.
+/// On error, records an `"error"` outcome with the error string and converts
+/// the error to the standard `ApiError` JSON response.
+fn with_audit(
+    audit: &AuditLogger,
+    operator: &str,
+    action: &str,
+    resource: &str,
+    result: Result<(), Error>,
+) -> Response {
+    match result {
+        Ok(()) => {
+            audit.record(operator, action, resource, "ok", "");
+            StatusCode::OK.into_response()
+        }
+        Err(error) => {
+            let msg = error.to_string();
+            audit.record(operator, action, resource, "error", &msg);
+            ApiError::from(error).into_response()
+        }
+    }
+}
+
+/// Wrap a `Result<T, Error>` (where `T: Serialize`) with audit logging.
+///
+/// On success, records an `"ok"` outcome and returns `(StatusCode::OK, Json(data))`.
+/// On error, same behaviour as [`with_audit`].
+fn with_audit_json<T: Serialize>(
+    audit: &AuditLogger,
+    operator: &str,
+    action: &str,
+    resource: &str,
+    result: Result<T, Error>,
+) -> Response {
+    match result {
+        Ok(data) => {
+            audit.record(operator, action, resource, "ok", "");
+            (StatusCode::OK, Json(data)).into_response()
+        }
+        Err(error) => {
+            let msg = error.to_string();
+            audit.record(operator, action, resource, "error", &msg);
+            ApiError::from(error).into_response()
+        }
+    }
 }
 
 /// Unified API error response.

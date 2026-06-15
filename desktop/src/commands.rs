@@ -22,6 +22,12 @@ fn translator(state: &State<'_, AppState>) -> Translator {
     Translator::new(state.locale)
 }
 
+/// Convenience: translate a key with key-value placeholder pairs.
+fn t_with(t: &Translator, key: &'static str, pairs: &[(&str, &str)]) -> String {
+    let map: std::collections::HashMap<&str, &str> = pairs.iter().copied().collect();
+    t.translate_with(key, &map)
+}
+
 /// Helper to get the gateway client from state, failing with a clear message if disconnected.
 async fn require_gateway(state: &State<'_, AppState>) -> Result<GatewayClient, String> {
     let guard = state.gateway_client.lock().await;
@@ -1770,9 +1776,10 @@ fn provider_has_api_key(key: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn list_providers() -> Result<Vec<crate::models::ProviderEntry>, String> {
+pub async fn list_providers(state: State<'_, AppState>) -> Result<Vec<crate::models::ProviderEntry>, String> {
+    let t = translator(&state);
     let config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     let mut entries: Vec<crate::models::ProviderEntry> = config
         .providers
@@ -1793,19 +1800,20 @@ pub async fn list_providers() -> Result<Vec<crate::models::ProviderEntry>, Strin
 
 #[tauri::command]
 pub async fn create_provider(
-    key: String,
+    state: State<'_, AppState>,key: String,
     display_name: String,
     base_url: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if !config::is_valid_identifier(&key) {
-        return Err("Provider key 只能包含英文字母、数字、下划线、短横线".to_owned());
+        return Err(t.translate("desktop.error.provider_key_invalid").to_owned());
     }
 
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     if aman_config.providers.contains_key(&key) {
-        return Err(format!("Provider '{key}' 已存在"));
+        return Err(t_with(&t, "desktop.error.provider_exists", &[("key", &key)]));
     }
 
     aman_config.providers.insert(
@@ -1820,24 +1828,25 @@ pub async fn create_provider(
     );
 
     let path = default_config_path();
-    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+    aman_config.save(&path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
 
-    Ok(format!("Provider '{key}' 已创建"))
+    Ok(t_with(&t, "desktop.info.provider_created", &[("key", &key)]))
 }
 
 #[tauri::command]
 pub async fn update_provider(
-    key: String,
+    state: State<'_, AppState>,key: String,
     display_name: Option<String>,
     base_url: Option<String>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     let provider = aman_config
         .providers
         .get_mut(&key)
-        .ok_or_else(|| format!("Provider '{key}' 不存在"))?;
+        .ok_or_else(|| t_with(&t, "desktop.error.provider_not_found", &[("key", &key)]))?;
 
     if let Some(name) = display_name {
         provider.display_name = name;
@@ -1847,18 +1856,19 @@ pub async fn update_provider(
     }
 
     let path = default_config_path();
-    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+    aman_config.save(&path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
 
-    Ok(format!("Provider '{key}' 已更新"))
+    Ok(t_with(&t, "desktop.info.provider_updated", &[("key", &key)]))
 }
 
 #[tauri::command]
-pub async fn delete_provider(key: String) -> Result<String, String> {
+pub async fn delete_provider(state: State<'_, AppState>, key: String) -> Result<String, String> {
+    let t = translator(&state);
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     if !aman_config.providers.contains_key(&key) {
-        return Err(format!("Provider '{key}' 不存在"));
+        return Err(t_with(&t, "desktop.error.provider_not_found", &[("key", &key)]));
     }
 
     // Check that no agent references this provider.
@@ -1869,44 +1879,43 @@ pub async fn delete_provider(key: String) -> Result<String, String> {
         .map(|(k, _)| k.clone())
         .collect();
     if !agents_using.is_empty() {
-        return Err(format!(
-            "Provider '{key}' 被以下 Agent 引用，无法删除: {}",
-            agents_using.join(", "),
-        ));
+        return Err(t_with(&t, "desktop.error.provider_in_use", &[("key", &key), ("agents", &agents_using.join(", "))]));
     }
 
     aman_config.providers.remove(&key);
 
     let path = default_config_path();
-    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+    aman_config.save(&path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
 
-    Ok(format!("Provider '{key}' 已删除"))
+    Ok(t_with(&t, "desktop.info.provider_deleted", &[("key", &key)]))
 }
 
 #[tauri::command]
-pub async fn set_provider_api_key(key: String, api_key: String) -> Result<String, String> {
+pub async fn set_provider_api_key(state: State<'_, AppState>, key: String, api_key: String) -> Result<String, String> {
+    let t = translator(&state);
     // Validate provider exists
     let aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     if !aman_config.providers.contains_key(&key) {
-        return Err(format!("Provider '{key}' 不存在"));
+        return Err(t_with(&t, "desktop.error.provider_not_found", &[("key", &key)]));
     }
 
     let backend = KeychainBackend;
     backend
         .set(&format!("aman.providers.{key}.api_key"), &api_key)
-        .map_err(|e| format!("保存到 Keychain 失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.keychain_save", &[("detail", &e.to_string())]))?;
 
-    Ok(format!("Provider '{key}' API Key 已保存到 macOS Keychain"))
+    Ok(t_with(&t, "desktop.info.provider_api_key_saved", &[("key", &key), ("backend", &"macOS Keychain")]))
 }
 
 #[tauri::command]
-pub async fn has_provider_api_key(key: String) -> Result<bool, String> {
+pub async fn has_provider_api_key(state: State<'_, AppState>, key: String) -> Result<bool, String> {
+    let t = translator(&state);
     // Validate provider exists
     let aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     if !aman_config.providers.contains_key(&key) {
-        return Err(format!("Provider '{key}' 不存在"));
+        return Err(t_with(&t, "desktop.error.provider_not_found", &[("key", &key)]));
     }
 
     Ok(provider_has_api_key(&key))
@@ -1941,15 +1950,16 @@ struct OpenAIModelEntry {
 
 #[tauri::command]
 pub async fn list_provider_models(
-    provider_key: String,
+    state: State<'_, AppState>,provider_key: String,
 ) -> Result<Vec<crate::models::ModelEntry>, String> {
+    let t = translator(&state);
     let aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     let provider = aman_config
         .providers
         .get(&provider_key)
-        .ok_or_else(|| format!("Provider '{provider_key}' 不存在"))?;
+        .ok_or_else(|| t_with(&t, "desktop.error.provider_not_found", &[("key", &provider_key)]))?;
 
     let secrets_mode = aman_config.runtime.security.secrets_mode;
 
@@ -1974,7 +1984,7 @@ pub async fn list_provider_models(
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+            .map_err(|e| t_with(&t, "desktop.error.http_client", &[("detail", &e.to_string())]))?;
 
         match client
             .get(&url)
@@ -2022,7 +2032,7 @@ pub async fn list_provider_models(
 
 /// Scan `~/.aman/agents/` for subdirectories containing `SOUL.md` that are
 /// not yet in config.yaml, and auto-register them with empty provider (disabled).
-fn sync_filesystem_agents_to_config() -> Result<(), String> {
+fn sync_filesystem_agents_to_config(t: &Translator) -> Result<(), String> {
     let agents_dir = crate::agent_fs::agents_dir();
     if !agents_dir.exists() {
         return Ok(());
@@ -2030,9 +2040,9 @@ fn sync_filesystem_agents_to_config() -> Result<(), String> {
 
     let config_path = default_config_path();
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
-    let entries = std::fs::read_dir(&agents_dir).map_err(|e| format!("读取agents目录失败: {e}"))?;
+    let entries = std::fs::read_dir(&agents_dir).map_err(|e| t_with(&t, "desktop.error.read_agents_dir", &[("detail", &e.to_string())]))?;
     let mut changed = false;
 
     for entry in entries.flatten() {
@@ -2074,7 +2084,7 @@ fn sync_filesystem_agents_to_config() -> Result<(), String> {
     }
 
     if changed {
-        aman_config.save(&config_path).map_err(|e| format!("保存配置失败: {e}"))?;
+        aman_config.save(&config_path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
     }
     Ok(())
 }
@@ -2083,11 +2093,12 @@ fn sync_filesystem_agents_to_config() -> Result<(), String> {
 pub async fn list_agents(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::models::AgentEntry>, String> {
+    let t = translator(&state);
     // Discover any agents manually copied into ~/.aman/agents/ before listing.
-    sync_filesystem_agents_to_config()?;
+    sync_filesystem_agents_to_config(&t)?;
 
     let aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     let active_key = state.active_agent_key.lock().await.clone();
 
@@ -2135,18 +2146,19 @@ pub async fn create_agent(
     model: String,
     soul_content: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if !config::is_valid_identifier(&key) {
-        return Err("Agent key 只能包含英文字母、数字、下划线、短横线".to_owned());
+        return Err(t.translate("desktop.error.agent_key_invalid").to_owned());
     }
 
     // Validate provider exists.
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     if !aman_config.providers.contains_key(&provider) {
-        return Err(format!("Provider '{provider}' 不存在，请先创建 Provider"));
+        return Err(t_with(&t, "desktop.error.provider_not_found_create_first", &[("provider", &provider)]));
     }
     if aman_config.agents.contains_key(&key) {
-        return Err(format!("Agent '{key}' 已存在"));
+        return Err(t_with(&t, "desktop.error.agent_exists", &[("key", &key)]));
     }
 
     // Create filesystem structure with {name} substituted.
@@ -2169,14 +2181,14 @@ pub async fn create_agent(
     );
 
     let path = default_config_path();
-    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+    aman_config.save(&path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
 
     // Notify the gateway runtime to reload this agent so the idle system picks it up.
     if let Ok(client) = require_gateway(&state).await {
         let _ = client.reload_agent(&key).await;
     }
 
-    Ok(format!("Agent '{key}' 已创建"))
+    Ok(t_with(&t, "desktop.info.agent_created", &[("key", &key)]))
 }
 
 #[tauri::command]
@@ -2189,20 +2201,21 @@ pub async fn update_agent(
     soul_content: Option<String>,
     system_prompt_override: Option<Option<String>>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     let agent = aman_config
         .agents
         .get_mut(&key)
-        .ok_or_else(|| format!("Agent '{key}' 不存在"))?;
+        .ok_or_else(|| t_with(&t, "desktop.error.agent_not_found", &[("key", &key)]))?;
 
     if let Some(name) = display_name {
         agent.display_name = name;
     }
     if let Some(p) = provider {
         if !aman_config.providers.contains_key(&p) {
-            return Err(format!("Provider '{p}' 不存在"));
+            return Err(t_with(&t, "desktop.error.provider_not_found", &[("key", &p)]));
         }
         // Auto-enable the agent when a provider is first configured.
         let was_unconfigured = agent.provider.is_empty();
@@ -2219,7 +2232,7 @@ pub async fn update_agent(
     }
 
     let path = default_config_path();
-    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+    aman_config.save(&path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
 
     // Notify the gateway runtime to reload this agent so the idle system picks it up.
     if let Ok(client) = require_gateway(&state).await {
@@ -2231,30 +2244,31 @@ pub async fn update_agent(
         crate::agent_fs::write_soul(&key, &content)?;
     }
 
-    Ok(format!("Agent '{key}' 已更新"))
+    Ok(t_with(&t, "desktop.info.agent_updated", &[("key", &key)]))
 }
 
 #[tauri::command]
 pub async fn delete_agent(
-    key: String,
+    state: State<'_, AppState>,key: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     let mut aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     if !aman_config.agents.contains_key(&key) {
-        return Err(format!("Agent '{key}' 不存在"));
+        return Err(t_with(&t, "desktop.error.agent_not_found", &[("key", &key)]));
     }
 
     // Remove from config.
     aman_config.agents.remove(&key);
 
     let path = default_config_path();
-    aman_config.save(&path).map_err(|e| format!("保存配置失败: {e}"))?;
+    aman_config.save(&path).map_err(|e| t_with(&t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
 
     // Remove filesystem directory.
     let _ = crate::agent_fs::remove_agent_dir(&key);
 
-    Ok(format!("Agent '{key}' 已删除"))
+    Ok(t_with(&t, "desktop.info.agent_deleted", &[("key", &key)]))
 }
 
 #[tauri::command]
@@ -2362,19 +2376,18 @@ pub async fn select_agent(
     state: State<'_, AppState>,
     key: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     // Validate agent exists in config.
     let aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     if !aman_config.agents.contains_key(&key) {
-        return Err(format!("Agent '{key}' 不存在"));
+        return Err(t_with(&t, "desktop.error.agent_not_found", &[("key", &key)]));
     }
 
     // Block selection of agents without a configured provider.
     if let Some(entry) = aman_config.agents.get(&key)
         && entry.provider.is_empty() {
-            return Err(format!(
-                "Agent '{key}' 尚未配置 Provider，请先在 Agents 页面配置。"
-            ));
+            return Err(t_with(&t, "desktop.error.agent_no_provider", &[("key", &key)]));
         }
 
     let mut active = state.active_agent_key.lock().await;
@@ -2384,20 +2397,21 @@ pub async fn select_agent(
     // Notify the UI so sidebar widgets can refresh.
     let _ = app.emit("agent:selected", serde_json::json!({ "key": key }));
 
-    Ok(format!("Agent '{key}' 已激活"))
+    Ok(t_with(&t, "desktop.info.agent_activated", &[("key", &key)]))
 }
 
 #[tauri::command]
 pub async fn get_active_agent(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::models::AgentEntry>, String> {
+    let t = translator(&state);
     let active_key = state.active_agent_key.lock().await.clone();
     let Some(key) = active_key else {
         return Ok(None);
     };
 
     let aman_config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
     match aman_config.agents.get(&key) {
         Some(agent) => {
@@ -2426,24 +2440,27 @@ pub async fn get_active_agent(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn get_aman_config() -> Result<config::AmanConfig, String> {
+pub async fn get_aman_config(state: State<'_, AppState>) -> Result<config::AmanConfig, String> {
+    let t = translator(&state);
     config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))
 }
 
 #[tauri::command]
-pub async fn get_secrets_mode() -> Result<String, String> {
+pub async fn get_secrets_mode(state: State<'_, AppState>) -> Result<String, String> {
+    let t = translator(&state);
     let cfg = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     Ok(serde_json::to_string(&cfg.runtime.security.secrets_mode)
         .unwrap_or_else(|_| "\"env\"".to_owned()))
 }
 
 /// Return whether MCP (Model Context Protocol) server integration is enabled.
 #[tauri::command]
-pub async fn get_mcp_enabled() -> Result<bool, String> {
+pub async fn get_mcp_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    let t = translator(&state);
     let cfg = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     Ok(cfg.runtime.mcp.enabled)
 }
 
@@ -2458,23 +2475,26 @@ pub async fn get_locale(state: State<'_, AppState>) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-pub async fn has_any_provider() -> Result<bool, String> {
+pub async fn has_any_provider(state: State<'_, AppState>) -> Result<bool, String> {
+    let t = translator(&state);
     let config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     Ok(!config.providers.is_empty())
 }
 
 #[tauri::command]
-pub async fn has_any_agent() -> Result<bool, String> {
+pub async fn has_any_agent(state: State<'_, AppState>) -> Result<bool, String> {
+    let t = translator(&state);
     let config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     Ok(!config.agents.is_empty())
 }
 
 #[tauri::command]
-pub async fn get_default_model() -> Result<Option<config::DefaultModelConfig>, String> {
+pub async fn get_default_model(state: State<'_, AppState>) -> Result<Option<config::DefaultModelConfig>, String> {
+    let t = translator(&state);
     let config = config::AmanConfig::from_default_path()
-        .map_err(|e| format!("读取配置失败: {e}"))?;
+        .map_err(|e| t_with(&t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
     Ok(config.model)
 }
 
@@ -2691,7 +2711,7 @@ pub async fn list_mcp_servers(
 /// Create a new MCP server definition (global or per-agent).
 #[tauri::command]
 pub async fn create_mcp_server(
-    name: String,
+    state: State<'_, AppState>,name: String,
     transport: String,
     command: Option<String>,
     args: Vec<String>,
@@ -2701,8 +2721,9 @@ pub async fn create_mcp_server(
     auto_connect: bool,
     agent_key: Option<String>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if name.trim().is_empty() {
-        return Err("Server name 不能为空".to_string());
+        return Err(t.translate("desktop.error.mcp_name_empty").to_string());
     }
 
     let config = crate::mcp_servers_fs::McpServerConfig {
@@ -2718,17 +2739,18 @@ pub async fn create_mcp_server(
 
     crate::mcp_servers_fs::add_mcp_server(config, agent_key.as_deref())?;
 
-    Ok(format!("MCP server '{}' 已创建", name.trim()))
+    Ok(t_with(&t, "desktop.info.mcp_created", &[("name", name.trim())]))
 }
 
 /// Delete an MCP server definition.
 #[tauri::command]
 pub async fn delete_mcp_server(
-    name: String,
+    state: State<'_, AppState>,name: String,
     agent_key: Option<String>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     crate::mcp_servers_fs::remove_mcp_server(&name, agent_key.as_deref())?;
-    Ok(format!("MCP server '{}' 已删除", name))
+    Ok(t_with(&t, "desktop.info.mcp_deleted", &[("name", &name)]))
 }
 
 /// Connect an agent to an MCP server via the gateway.
@@ -2738,9 +2760,10 @@ pub async fn connect_mcp_server(
     agent_key: String,
     name: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     let guard = state.gateway_client.lock().await;
     let client = guard.as_ref()
-        .ok_or_else(|| "Gateway 未运行".to_string())?;
+        .ok_or_else(|| t.translate("desktop.error.gateway_not_running").to_string())?;
     client.mcp_connect_server(&agent_key, &name).await
 }
 
@@ -2751,9 +2774,10 @@ pub async fn disconnect_mcp_server(
     agent_key: String,
     name: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     let guard = state.gateway_client.lock().await;
     let client = guard.as_ref()
-        .ok_or_else(|| "Gateway 未运行".to_string())?;
+        .ok_or_else(|| t.translate("desktop.error.gateway_not_running").to_string())?;
     client.mcp_disconnect_server(&agent_key, &name).await
 }
 

@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
+use tokio::sync::Semaphore;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -191,7 +192,7 @@ impl CompensationEngine {
                     success = true;
                     break;
                 }
-                wait_backoff(&contract.retry_backoff, attempt);
+                wait_backoff(&contract.retry_backoff, attempt).await;
                 attempt += 1;
             }
             if success {
@@ -230,72 +231,71 @@ pub struct ConcurrencyController {
 }
 
 impl ConcurrencyController {
-    pub fn enter(&self, pipeline_id: &str, model: &ConcurrencyModel) -> ConcurrencyGuard {
-        let state = {
-            let mut states = self.states.lock().expect("concurrency states mutex");
-            Arc::clone(
-                states
-                    .entry(pipeline_id.to_owned())
-                    .or_insert_with(|| Arc::new(PipelineConcurrencyState::default())),
-            )
-        };
-
-        let mut running = state.running.lock().expect("concurrency running mutex");
+    pub async fn enter(&self, pipeline_id: &str, model: &ConcurrencyModel) -> ConcurrencyGuard {
         match model {
             ConcurrencyModel::Serial => {
-                while *running > 0 {
-                    running = state
-                        .wakeup
-                        .wait(running)
-                        .expect("concurrency wait should not fail");
+                let state = self.get_or_create_state(pipeline_id, 1);
+                let permit = Arc::clone(&state.semaphore)
+                    .acquire_owned()
+                    .await
+                    .expect("serial semaphore closed");
+                ConcurrencyGuard {
+                    permit: Some(permit),
                 }
-                *running = 1;
             }
             ConcurrencyModel::Limited(limit) => {
                 let limit = (*limit).max(1);
-                while *running >= limit {
-                    running = state
-                        .wakeup
-                        .wait(running)
-                        .expect("concurrency wait should not fail");
+                let state = self.get_or_create_state(pipeline_id, limit);
+                let permit = Arc::clone(&state.semaphore)
+                    .acquire_owned()
+                    .await
+                    .expect("limited semaphore closed");
+                ConcurrencyGuard {
+                    permit: Some(permit),
                 }
-                *running += 1;
             }
             ConcurrencyModel::Parallel => {
-                *running += 1;
+                ConcurrencyGuard { permit: None }
             }
         }
-        drop(running);
+    }
 
-        ConcurrencyGuard {
-            state,
+    fn get_or_create_state(
+        &self,
+        pipeline_id: &str,
+        max_permits: usize,
+    ) -> Arc<PipelineConcurrencyState> {
+        let mut states = self.states.lock().expect("concurrency states mutex");
+        Arc::clone(
+            states
+                .entry(pipeline_id.to_owned())
+                .or_insert_with(|| Arc::new(PipelineConcurrencyState::new(max_permits))),
+        )
+    }
+}
+
+#[derive(Debug)]
+struct PipelineConcurrencyState {
+    semaphore: Arc<Semaphore>,
+}
+
+impl PipelineConcurrencyState {
+    fn new(max_permits: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(max_permits)),
         }
     }
 }
 
-#[derive(Default)]
-struct PipelineConcurrencyState {
-    running: Mutex<usize>,
-    wakeup: Condvar,
-}
-
 pub struct ConcurrencyGuard {
-    state: Arc<PipelineConcurrencyState>,
+    #[allow(dead_code)]
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl Drop for ConcurrencyGuard {
     fn drop(&mut self) {
-        let mut running = self
-            .state
-            .running
-            .lock()
-            .expect("concurrency running mutex");
-        *running = running.saturating_sub(1);
-        if *running == 0 {
-            self.state.wakeup.notify_all();
-        } else {
-            self.state.wakeup.notify_one();
-        }
+        // Permit is automatically released when OwnedSemaphorePermit drops.
+        // No explicit notification needed — the Semaphore handles it.
     }
 }
 
@@ -376,7 +376,8 @@ impl PipelineEngine {
     ) -> AmanResult<Vec<Event>> {
         let _guard = self
             .concurrency_controller
-            .enter(&pipeline.id, &pipeline.concurrency);
+            .enter(&pipeline.id, &pipeline.concurrency)
+            .await;
 
         let trace_id = event.metadata.trace_id;
         let mut instance = PipelineInstance::new(&pipeline.id, &pipeline.concurrency);
@@ -607,7 +608,7 @@ impl PipelineEngine {
                     if let Some(sink) = &self.tool_sink {
                         sink.on_tool_failed(&tool_name, &pipeline.id, &instance.id, &error.to_string()).await;
                     }
-                    wait_backoff(&step.retry.retry_backoff, attempt);
+                    wait_backoff(&step.retry.retry_backoff, attempt).await;
                     attempt += 1;
                 }
                 Err(error) => {
@@ -621,7 +622,7 @@ impl PipelineEngine {
     }
 }
 
-fn wait_backoff(backoff: &RetryBackoff, attempt: u32) {
+async fn wait_backoff(backoff: &RetryBackoff, attempt: u32) {
     let delay = match backoff {
         RetryBackoff::Immediate => 0,
         RetryBackoff::Fixed(ms) => *ms,
@@ -636,7 +637,7 @@ fn wait_backoff(backoff: &RetryBackoff, attempt: u32) {
     };
 
     if delay > 0 {
-        std::thread::sleep(std::time::Duration::from_millis(delay.min(5)));
+        tokio::time::sleep(std::time::Duration::from_millis(delay.min(5))).await;
     }
 }
 

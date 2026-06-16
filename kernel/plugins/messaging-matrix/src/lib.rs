@@ -129,3 +129,67 @@ impl Plugin for MatrixPlugin {
         vec![]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use messaging_core::registry::ChannelRegistry;
+    use messaging_core::router::StickyAgentRouter;
+    use messaging_core::session::ChatSessionStore;
+    use std::sync::Arc;
+
+    fn registries() -> (Arc<ChannelRegistry>, Arc<StickyAgentRouter>, Arc<ChatSessionStore>) {
+        (
+            Arc::new(ChannelRegistry::new()),
+            Arc::new(StickyAgentRouter::new(vec!["cortana".to_owned()])),
+            Arc::new(ChatSessionStore::new()),
+        )
+    }
+
+    #[test]
+    fn event_sources_disabled_returns_empty() {
+        let (registry, router, store) = registries();
+        let mut config = MatrixConfig::default();
+        config.enabled = false;
+        config.username = "@test:matrix.org".to_owned();
+
+        let plugin = MatrixPlugin::new(config).with_registries(registry, router, store);
+
+        assert!(plugin.event_sources().is_empty());
+    }
+
+    #[test]
+    fn event_sources_no_homeserver_returns_empty() {
+        let (registry, router, store) = registries();
+        let mut config = MatrixConfig::default();
+        config.enabled = true;
+        config.homeserver_url = String::new();
+        config.username = "@test:matrix.org".to_owned();
+
+        let plugin = MatrixPlugin::new(config).with_registries(registry, router, store);
+
+        assert!(plugin.event_sources().is_empty());
+    }
+
+    #[test]
+    fn event_sources_enabled_registers_sender_and_returns_source() {
+        let (registry, router, store) = registries();
+        let mut config = MatrixConfig::default();
+        config.enabled = true;
+        config.homeserver_url = "https://matrix.org".to_owned();
+        config.username = "@test:matrix.org".to_owned();
+        config.password = "s3cret".to_owned();
+
+        let plugin = MatrixPlugin::new(config).with_registries(
+            Arc::clone(&registry),
+            Arc::clone(&router),
+            Arc::clone(&store),
+        );
+
+        let sources = plugin.event_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id(), "chat:matrix:@test:matrix.org");
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("chat:matrix:@test:matrix.org").is_some());
+    }
+}

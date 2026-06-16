@@ -242,3 +242,86 @@ impl EventSource for SlackSource {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use messaging_core::router::StickyAgentRouter;
+    use messaging_core::session::ChatSessionStore;
+    use std::sync::Arc;
+
+    fn registries() -> (Arc<StickyAgentRouter>, Arc<ChatSessionStore>) {
+        (
+            Arc::new(StickyAgentRouter::new(vec!["cortana".to_owned()])),
+            Arc::new(ChatSessionStore::new()),
+        )
+    }
+
+    #[test]
+    fn new_source_has_expected_id_and_type() {
+        let source = SlackSource::new("chat:slack:test", "xoxb-token", "xapp-token");
+        assert_eq!(source.id(), "chat:slack:test");
+        assert!(matches!(source.source_type(), SourceType::Chat));
+        assert!(matches!(source.health(), HealthStatus::Degraded));
+    }
+
+    #[tokio::test]
+    async fn init_with_registries_sets_health_ok() {
+        let (router, store) = registries();
+        let mut source = SlackSource::new("chat:slack:test", "xoxb-token", "xapp-token")
+            .with_registries(router, store);
+
+        source.init(SourceContext::default()).await.unwrap();
+        assert!(matches!(source.health(), HealthStatus::Ok));
+
+        source.shutdown().await.unwrap();
+        assert!(matches!(source.health(), HealthStatus::Degraded));
+    }
+
+    #[tokio::test]
+    async fn init_fails_without_registries() {
+        let mut source = SlackSource::new("chat:slack:test", "xoxb-token", "xapp-token");
+        let result = source.init(SourceContext::default()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn poll_returns_empty_when_no_events() {
+        let (router, store) = registries();
+        let mut source = SlackSource::new("chat:slack:test", "xoxb-token", "xapp-token")
+            .with_registries(router, store);
+
+        source.init(SourceContext::default()).await.unwrap();
+        let events = source.poll(&SourceContext::default()).await.unwrap();
+        assert!(events.is_empty());
+
+        source.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pause_resume_and_backpressure() {
+        let (router, store) = registries();
+        let mut source = SlackSource::new("chat:slack:test", "xoxb-token", "xapp-token")
+            .with_registries(Arc::clone(&router), Arc::clone(&store));
+
+        source.init(SourceContext::default()).await.unwrap();
+
+        source.pause().await.unwrap();
+        assert!(source.paused.load(Ordering::Acquire));
+
+        source.resume().await.unwrap();
+        assert!(!source.paused.load(Ordering::Acquire));
+
+        source.on_backpressure(BackpressureLevel::L3, &SourceContext::default())
+            .await
+            .unwrap();
+        assert!(source.paused.load(Ordering::Acquire));
+
+        source.on_backpressure(BackpressureLevel::Normal, &SourceContext::default())
+            .await
+            .unwrap();
+        assert!(!source.paused.load(Ordering::Acquire));
+
+        source.shutdown().await.unwrap();
+    }
+}

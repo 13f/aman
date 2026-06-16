@@ -387,3 +387,60 @@ impl EventSource for TelegramSource {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use messaging_core::router::StickyAgentRouter;
+    use messaging_core::session::ChatSessionStore;
+    use std::sync::Arc;
+
+    fn registries() -> (Arc<StickyAgentRouter>, Arc<ChatSessionStore>) {
+        (
+            Arc::new(StickyAgentRouter::new(vec!["cortana".to_owned()])),
+            Arc::new(ChatSessionStore::new()),
+        )
+    }
+
+    #[test]
+    fn new_source_has_expected_id_and_type() {
+        let source = TelegramSource::new("chat:telegram:test", "token", Vec::new());
+        assert_eq!(source.id(), "chat:telegram:test");
+        assert!(matches!(source.source_type(), SourceType::Chat));
+        assert!(matches!(source.health(), HealthStatus::Degraded));
+    }
+
+    #[tokio::test]
+    async fn poll_before_init_returns_empty() {
+        let mut source = TelegramSource::new("chat:telegram:test", "token", Vec::new());
+        let events = source.poll(&SourceContext::default()).await.unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn init_fails_without_registries() {
+        let mut source = TelegramSource::new("chat:telegram:test", "token", Vec::new());
+        let result = source.init(SourceContext::default()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn pause_resume_and_backpressure() {
+        let (router, store) = registries();
+        let mut source = TelegramSource::new("chat:telegram:test", "token", Vec::new())
+            .with_registries(router, store);
+
+        source.pause().await.unwrap();
+        assert!(source.paused.load(Ordering::Acquire));
+
+        source.resume().await.unwrap();
+        // Not initialized yet, so resume should not clear paused.
+        assert!(source.paused.load(Ordering::Acquire));
+
+        source.on_backpressure(BackpressureLevel::L3, &SourceContext::default()).await.unwrap();
+        assert!(source.paused.load(Ordering::Acquire));
+
+        source.on_backpressure(BackpressureLevel::Normal, &SourceContext::default()).await.unwrap();
+        assert!(!source.paused.load(Ordering::Acquire));
+    }
+}

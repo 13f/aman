@@ -184,7 +184,7 @@ fn kill_process(...) {
 
 **cognitive/ 整个 crate**: 12/13 文件零测试，CLAUDE.md 强调的核心 trait `CognitiveEngine` **无任何直接测试**。
 
-**所有 5 个 messaging 插件** (telegram/slack/discord/matrix) 共 16 个文件 **0 测试**。
+**所有 4 个 messaging 插件** (telegram/slack/discord/matrix) 共 16 个文件 **0 测试**。
 
 **建议优先级**:
 
@@ -192,10 +192,19 @@ fn kill_process(...) {
 2. `cognitive/engine` + `cognitive/llm` - trait 抽象的契约必须可被测试
 3. messaging 插件 - 至少加 happy-path 集成测试
 
+**✅ 部分修复 (2026-06-16)**:
+
+- **Messaging 插件 happy-path 集成测试落地**：为全部 4 个 messaging 插件新增单元/集成测试，覆盖插件加载、source 生命周期、sender 解析等 happy path：
+  - `messaging-telegram`：11 个测试 — plugin event_sources（disabled / no token / enabled / username fallback）、source 基础属性 / init 错误 / poll / pause / resume / backpressure、sender `parse_chat_id` 合法/非法值。
+  - `messaging-slack`：8 个测试 — plugin event_sources（disabled / no token / enabled）、source 基础属性 / init-shutdown 生命周期 / 缺 registry 错误 / poll / pause / resume / backpressure。
+  - `messaging-discord`：8 个测试 — 与 Slack 同覆盖。
+  - `messaging-matrix`：8 个测试 — 与 Slack 同覆盖，加上 homeserver_url 为空时的 early return。
+- **测试策略**：不依赖真实网络。Telegram 的 `TelegramSource::init` 会启动真实长轮询，因此只测试其缺 registry 错误路径；其余 source 的 stub listener loop 不访问网络，可完整测试 init/shutdown/poll 生命周期。Sender 侧仅测试本地可验证的解析逻辑（Telegram `parse_chat_id`），HTTP 发送路径留待后续配合 mock server 覆盖。
+
 **✅ 部分修复 (2026-06-14)**:
 
 - **CognitiveEngine trait 合约测试落地**：`cognitive/llm/tests/cognitive_engine_contract.rs` 新增 7 个合约测试 + 1 个 stub 自测（共 8 个测试），用 inline `StubLlmProvider` 实现 `cognitive_llm::provider::LlmProvider`。覆盖 `process` 的空观测短路、provider 错误的 `EngineError` 包装、text/tool-call 决策、`subscribe`/`unsubscribe` 的 `Arc::as_ptr` 身份比较、`reset_session` 幂等性。同时把 `LlmCognitiveEngine::emit` 从 private `#[allow(dead_code)]` 升为 `pub fn`，让外部 tests/ 能直接驱动 listener 注册表（生产代码路径不变 — `process` 仍不调用 `emit`，那是后续 streaming PR 的工作）。
-- **范围**：`agent_runtime.rs` / `http.rs` / `agent_harness.rs` / 5 个 messaging 插件都仍未加测试 — 这条 P1 只完成 1/3（cognitive 部分），整体"测试覆盖率"仍是结构性问题。
+- **范围**：`agent_runtime.rs` / `http.rs` / `agent_harness.rs` 仍未加测试 — 这条 P1 完成 2/3（cognitive + messaging 部分），整体"测试覆盖率"仍是结构性问题。
 - **Stub 选型说明**：inline 而不是 `test_utils::MockLLMProvider` 复用，因为 `test_utils::MockLLMProvider` 实现的是 kernel-style trait（`complete`/`chat`），而 `LlmCognitiveEngine` 需要 `cognitive_llm::provider::LlmProvider`（`chat_completion(LlmChatRequest, Option<callback>)`）— 两者是 P0-1 已识别的并行重复 trait。桥接会引入新 kernel→cognitive-llm 边，**反转 P0-1 刚建立的解耦**。
 
 **验证**：`cargo test -p cognitive-llm --test cognitive_engine_contract` 8/8 通过；`cargo build -p cognitive-llm --tests` 干净。

@@ -133,3 +133,85 @@ impl Plugin for TelegramPlugin {
         vec![]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use messaging_core::registry::ChannelRegistry;
+    use messaging_core::router::StickyAgentRouter;
+    use messaging_core::session::ChatSessionStore;
+    use std::sync::Arc;
+
+    fn registries() -> (Arc<ChannelRegistry>, Arc<StickyAgentRouter>, Arc<ChatSessionStore>) {
+        (
+            Arc::new(ChannelRegistry::new()),
+            Arc::new(StickyAgentRouter::new(vec!["cortana".to_owned()])),
+            Arc::new(ChatSessionStore::new()),
+        )
+    }
+
+    #[test]
+    fn event_sources_disabled_returns_empty() {
+        let (registry, router, store) = registries();
+        let mut config = TelegramConfig::default();
+        config.enabled = false;
+        config.bot_token = "secret".to_owned();
+
+        let plugin = TelegramPlugin::new(config)
+            .with_registries(registry, router, store);
+
+        assert!(plugin.event_sources().is_empty());
+    }
+
+    #[test]
+    fn event_sources_no_token_returns_empty() {
+        let (registry, router, store) = registries();
+        let mut config = TelegramConfig::default();
+        config.enabled = true;
+        config.bot_token = String::new();
+
+        let plugin = TelegramPlugin::new(config)
+            .with_registries(registry, router, store);
+
+        assert!(plugin.event_sources().is_empty());
+    }
+
+    #[test]
+    fn event_sources_enabled_registers_sender_and_returns_source() {
+        let (registry, router, store) = registries();
+        let mut config = TelegramConfig::default();
+        config.enabled = true;
+        config.bot_token = "test-token-123".to_owned();
+        config.bot_username = "testbot".to_owned();
+
+        let plugin = TelegramPlugin::new(config).with_registries(
+            Arc::clone(&registry),
+            Arc::clone(&router),
+            Arc::clone(&store),
+        );
+
+        let sources = plugin.event_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id(), "chat:telegram:testbot");
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("chat:telegram:testbot").is_some());
+    }
+
+    #[test]
+    fn event_sources_uses_token_prefix_when_username_missing() {
+        let (registry, router, store) = registries();
+        let mut config = TelegramConfig::default();
+        config.enabled = true;
+        config.bot_token = "abcdefgh1234".to_owned();
+
+        let plugin = TelegramPlugin::new(config).with_registries(
+            Arc::clone(&registry),
+            Arc::clone(&router),
+            Arc::clone(&store),
+        );
+
+        let sources = plugin.event_sources();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id(), "chat:telegram:abcdefgh");
+    }
+}

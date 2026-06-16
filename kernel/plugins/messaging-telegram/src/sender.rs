@@ -194,3 +194,26 @@ impl MessageSender for TelegramSender {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_valid_chat_id() {
+        let chat_id = parse_chat_id("12345").unwrap();
+        assert_eq!(chat_id.0, 12345);
+    }
+
+    #[test]
+    fn parse_negative_chat_id() {
+        let chat_id = parse_chat_id("-987654321").unwrap();
+        assert_eq!(chat_id.0, -987654321);
+    }
+
+    #[test]
+    fn parse_invalid_chat_id_fails() {
+        assert!(parse_chat_id("not-a-number").is_err());
+        assert!(parse_chat_id("").is_err());
+    }
+}

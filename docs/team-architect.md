@@ -76,7 +76,7 @@ pub mod team_events {
 ## 五、Crate 结构
 
 ```
-crates/plugins/team/
+kernel/plugins/team/
 ├── plugin.yaml              # PluginManifest
 ├── Cargo.toml
 └── src/
@@ -425,7 +425,7 @@ pub fn compile_team_workflow(config: &TeamConfig) -> WorkflowDef {
 ### 11.1 Plugin::routes()
 
 ```rust
-// crates/core/src/plugin.rs
+// kernel/core/src/plugin.rs
 #[async_trait]
 pub trait Plugin: Send + Sync {
     // ... 现有方法 ...
@@ -438,7 +438,7 @@ pub trait Plugin: Send + Sync {
 AgentRuntime 在 `build_router()` 中合并：
 
 ```rust
-// crates/gateway/src/runtime/http.rs
+// kernel/gateway/src/runtime/http.rs
 fn build_router(runtime: Arc<AgentRuntime>) -> Router {
     let mut app = Router::new()
         .route("/health/live", get(health_live))
@@ -456,7 +456,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
 
 ### 11.2 Plugin 支持脚本运行时
 
-复用现有的 `ScriptRuntime`（`crates/core/src/script.rs`），扩展 `PluginCandidate` 支持脚本驱动的插件：
+复用现有的 `ScriptRuntime`（`kernel/core/src/script.rs`），扩展 `PluginCandidate` 支持脚本驱动的插件：
 
 ```yaml
 # plugin.yaml — Subprocess 类型插件声明
@@ -508,7 +508,7 @@ pub struct PluginManifest {
 ## 十三、HTTP API
 
 ```rust
-// crates/plugins/team/src/api.rs
+// kernel/plugins/team/src/api.rs
 pub fn team_api_routes() -> Router {
     Router::new()
         // Work Items
@@ -558,7 +558,7 @@ Frontend: App.svelte 挂载时 fetch /ui/pages
 ### 14.2 `/ui/pages` 端点
 
 ```rust
-// crates/gateway/src/runtime/http.rs
+// kernel/gateway/src/runtime/http.rs
 #[derive(Serialize)]
 struct UiPageEntry {
     id: String,

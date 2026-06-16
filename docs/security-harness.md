@@ -26,8 +26,8 @@ internal plugin crates.
 
 ## 2. Log Redaction
 
-**Crate:** `kernel::redactor` (`crates/core/src/redactor.rs`)
-**Layer:** `RedactWriter` (`crates/gateway/src/runtime/redact_layer.rs`)
+**Crate:** `kernel::redactor` (`kernel/core/src/redactor.rs`)
+**Layer:** `RedactWriter` (`kernel/gateway/src/runtime/redact_layer.rs`)
 
 ### 2.1 Pre-compiled Regex Patterns
 
@@ -89,7 +89,7 @@ line can escape.
 
 ## 3. Secret Management
 
-**Crate:** `secret` (`crates/secret/src/lib.rs`)
+**Crate:** `secret` (`kernel/secret/src/lib.rs`)
 
 ### 3.1 Multi-Backend Resolution
 
@@ -164,8 +164,8 @@ resolution is audit-logged.
 
 ## 4. Prompt Injection Defense
 
-**Crates:** `kernel::sanitizer` (`crates/core/src/sanitizer.rs`),
-`secret::InputSanitizer` (`crates/secret/src/lib.rs`)
+**Crates:** `kernel::sanitizer` (`kernel/core/src/sanitizer.rs`),
+`secret::InputSanitizer` (`kernel/secret/src/lib.rs`)
 
 ### 4.1 Three-Tier Input Sanitization (§8.1)
 
@@ -221,8 +221,8 @@ Pre-compiled regex patterns in `secret::InputSanitizer`:
 
 ## 5. Output Validation (Fail-Closed)
 
-**Crates:** `kernel::validator` (`crates/core/src/validator.rs`),
-`secret::OutputValidator` (`crates/secret/src/lib.rs`)
+**Crates:** `kernel::validator` (`kernel/core/src/validator.rs`),
+`secret::OutputValidator` (`kernel/secret/src/lib.rs`)
 
 ### 5.1 Core OutputValidator (§8.2)
 
@@ -254,7 +254,7 @@ violation details and maintain audit logs.
 
 ## 6. Tool Hardline Security
 
-**Crate:** `tool::security` (`crates/tool/src/security.rs`)
+**Crate:** `tool::security` (`kernel/tool/src/security.rs`)
 
 Hardline blocks are checked **before** the user authorization dialog and
 **cannot be approved**. They protect against catastrophic operations.
@@ -302,7 +302,7 @@ Additionally, reading these sensitive aman security paths is blocked:
 
 ## 7. Tool Authorization Flow
 
-**Crate:** `tool::auth` (`crates/tool/src/auth.rs`)
+**Crate:** `tool::auth` (`kernel/tool/src/auth.rs`)
 
 ### 7.1 AuthRegistry
 
@@ -324,7 +324,7 @@ auth dialog. The cache is in-memory only — not persisted across restarts.
 
 ## 8. API Authentication & Authorization
 
-**Crate:** gateway HTTP layer (`crates/gateway/src/runtime/http.rs`)
+**Crate:** gateway HTTP layer (`kernel/gateway/src/runtime/http.rs`)
 
 ### 8.1 Bearer Token Authentication
 
@@ -375,7 +375,7 @@ Every operation is recorded in the audit log with:
 
 ## 9. Event Bus Backpressure (DoS Protection)
 
-**Crate:** `event-bus` (`crates/event-bus/src/backpressure.rs`)
+**Crate:** `event-bus` (`kernel/event-bus/src/backpressure.rs`)
 
 A 4-level backpressure system prevents event floods from overwhelming the
 system:
@@ -393,7 +393,7 @@ system:
 Additional protections:
 
 - **Deduplication:** Bloom filter + LRU cache with configurable time window
-  prevents duplicate event injection (`crates/event-bus/src/dedup.rs`)
+  prevents duplicate event injection (`kernel/event-bus/src/dedup.rs`)
 - **Discard hook:** Configurable callback invoked when events are dropped
 - **Overflow directory:** Spilled events are replayed when the queue drains
   below threshold
@@ -403,7 +403,7 @@ Additional protections:
 
 ## 10. Data Integrity
 
-**Crate:** `persistence` (`crates/persistence/src/`)
+**Crate:** `persistence` (`kernel/persistence/src/`)
 
 ### 10.1 Write-Ahead Log (WAL)
 
@@ -427,7 +427,7 @@ corruption from partial writes.
 
 ## 11. Config Validation
 
-**Crate:** `config` (`crates/config/src/lib.rs`)
+**Crate:** `config` (`kernel/config/src/lib.rs`)
 
 ### 11.1 Four-Layer Loading
 
@@ -522,17 +522,17 @@ enabled for advanced use cases.
 
 | Concern | File |
 |---------|------|
-| Log redaction core | `crates/core/src/redactor.rs` |
-| RedactWriter (tracing) | `crates/gateway/src/runtime/redact_layer.rs` |
-| Input sanitization | `crates/core/src/sanitizer.rs` |
-| Output validation | `crates/core/src/validator.rs` |
-| Secrets + prompt defense | `crates/secret/src/lib.rs` |
-| Tool hardline blocks | `crates/tool/src/security.rs` |
-| Tool authorization | `crates/tool/src/auth.rs` |
-| HTTP auth middleware | `crates/gateway/src/runtime/http.rs` |
-| Event bus backpressure | `crates/event-bus/src/backpressure.rs` |
-| Event deduplication | `crates/event-bus/src/dedup.rs` |
-| WAL integrity | `crates/persistence/src/wal.rs` |
-| Config validation | `crates/config/src/lib.rs` |
-| Print macro definitions | `crates/core/src/redactor.rs` (safe_println!/safe_eprintln!) |
-| CLI usage of safe macros | `crates/cli/src/main.rs` |
+| Log redaction core | `kernel/core/src/redactor.rs` |
+| RedactWriter (tracing) | `kernel/gateway/src/runtime/redact_layer.rs` |
+| Input sanitization | `kernel/core/src/sanitizer.rs` |
+| Output validation | `kernel/core/src/validator.rs` |
+| Secrets + prompt defense | `kernel/secret/src/lib.rs` |
+| Tool hardline blocks | `kernel/tool/src/security.rs` |
+| Tool authorization | `kernel/tool/src/auth.rs` |
+| HTTP auth middleware | `kernel/gateway/src/runtime/http.rs` |
+| Event bus backpressure | `kernel/event-bus/src/backpressure.rs` |
+| Event deduplication | `kernel/event-bus/src/dedup.rs` |
+| WAL integrity | `kernel/persistence/src/wal.rs` |
+| Config validation | `kernel/config/src/lib.rs` |
+| Print macro definitions | `kernel/core/src/redactor.rs` (safe_println!/safe_eprintln!) |
+| CLI usage of safe macros | `kernel/cli/src/main.rs` |

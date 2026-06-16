@@ -34,7 +34,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugin/src/lib.rs` |
+| 涉及 | `kernel/plugin/src/lib.rs` |
 | 架构 | §2 决策 2 |
 | 状态 | ✅ 已完成 |
 
@@ -56,7 +56,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/runtime/src/agent_runtime.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_runtime.rs` |
 | 架构 | §2 决策 3 |
 | 状态 | ✅ 已完成 |
 
@@ -81,7 +81,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/runtime/src/agent_runtime.rs`（WorkflowDef 注册） |
+| 涉及 | `kernel/gateway/src/runtime/agent_runtime.rs`（WorkflowDef 注册） |
 | 架构 | §3 会话状态机 |
 | 状态 | ✅ 已完成 |
 
@@ -106,7 +106,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/tauri/src/commands.rs`、`crates/tauri/src/models.rs`、`crates/tauri/src/lib.rs` |
+| 涉及 | `desktop/src/commands.rs`、`desktop/src/models.rs`、`desktop/src/lib.rs` |
 | 架构 | §6.1（get_capabilities 返回时机） |
 | 状态 | ✅ 已完成 |
 
@@ -132,7 +132,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/tauri/src/App.svelte` |
+| 涉及 | `desktop/src/App.svelte` |
 | 架构 | §7.2 |
 | 状态 | ✅ 已完成 |
 
@@ -153,7 +153,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 3 天 |
-| 涉及 | `crates/tauri/src/pages/Chat.svelte`（新建） |
+| 涉及 | `desktop/src/pages/Chat.svelte`（新建） |
 | 架构 | §11 页面业务架构 |
 | 状态 | ✅ 已完成 |
 
@@ -185,7 +185,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/tauri/src/App.svelte`、`crates/tauri/src/pages/Chat.svelte` |
+| 涉及 | `desktop/src/App.svelte`、`desktop/src/pages/Chat.svelte` |
 | 架构 | §7.1 |
 | 状态 | ✅ 已完成 |
 
@@ -213,7 +213,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/test-utils/src/mock_llm.rs`（新建） |
+| 涉及 | `kernel/test-utils/src/mock_llm.rs`（新建） |
 | 架构 | §13.6 |
 | 状态 | ✅ 已完成 |
 
@@ -235,7 +235,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/test-utils/src/fake_event_bus.rs`、`crates/test-utils/src/clock.rs`（新建） |
+| 涉及 | `kernel/test-utils/src/fake_event_bus.rs`、`kernel/test-utils/src/clock.rs`（新建） |
 | 架构 | §13.6 |
 | 状态 | ✅ 已完成 |
 
@@ -257,7 +257,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/workflow/tests/proptest_chat_session.rs` |
+| 涉及 | `kernel/workflow/tests/proptest_chat_session.rs` |
 | 架构 | §13.2 |
 | 状态 | ✅ 已完成 |
 
@@ -284,7 +284,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 3 天 |
-| 涉及 | 新建 `crates/plugins/chat-source/` |
+| 涉及 | 新建 `kernel/plugins/chat-source/` |
 | 架构 | §6 桥接层设计 |
 
 **子任务：**
@@ -312,7 +312,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 3 天 |
-| 涉及 | 新建 `crates/plugins/llm-skill/` |
+| 涉及 | 新建 `kernel/plugins/llm-skill/` |
 | 架构 | §3 会话状态机、§4 并发与队列模型 |
 | 状态 | ✅ 已完成 |
 
@@ -348,7 +348,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | 新建 `crates/plugins/llm-provider-openai/` |
+| 涉及 | 新建 `kernel/plugins/llm-provider-openai/` |
 | 架构 | §8.4 API Key 管理 |
 | 状态 | ✅ 已完成 |
 
@@ -387,7 +387,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/tauri/src/pages/Chat.svelte` |
+| 涉及 | `desktop/src/pages/Chat.svelte` |
 | 架构 | §11.4 流式输出语义 |
 | 状态 | ✅ 已完成 |
 
@@ -424,7 +424,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/tauri/src/pages/Chat.svelte` 或独立组件 |
+| 涉及 | `desktop/src/pages/Chat.svelte` 或独立组件 |
 | 架构 | §11.2 消息类型 |
 | 状态 | ✅ 已完成 |
 
@@ -457,7 +457,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/tauri/src/commands.rs` |
+| 涉及 | `desktop/src/commands.rs` |
 | 架构 | §6.1（聊天操作 IPC） |
 | 状态 | ✅ 已完成 |
 
@@ -487,7 +487,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/llm-skill/`、`crates/tauri/src/pages/Chat.svelte` |
+| 涉及 | `kernel/plugins/llm-skill/`、`desktop/src/pages/Chat.svelte` |
 | 架构 | §5 SOUL 集成 |
 
 **子任务：**
@@ -512,7 +512,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/runtime/src/metrics.rs`、`crates/runtime/src/http.rs`、`crates/tauri/src/commands.rs`、`crates/tauri/src/lib.rs` |
+| 涉及 | `kernel/gateway/src/runtime/metrics.rs`、`kernel/gateway/src/runtime/http.rs`、`desktop/src/commands.rs`、`desktop/src/lib.rs` |
 | 架构 | §14.2、§14.5 |
 
 **子任务：**
@@ -543,7 +543,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/tauri/src/rate_limiter.rs`（新建）、`crates/tauri/src/commands.rs`、`crates/tauri/src/state.rs`、`crates/tauri/src/pages/Chat.svelte` |
+| 涉及 | `desktop/src/rate_limiter.rs`（新建）、`desktop/src/commands.rs`、`desktop/src/state.rs`、`desktop/src/pages/Chat.svelte` |
 | 架构 | §4.5 限流模型 |
 | 状态 | ✅ 已完成 |
 
@@ -569,7 +569,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/config/`、`crates/persistence/src/persistent_bus.rs`、`crates/plugins/llm-skill/`、`crates/tauri/src/commands.rs`、`crates/tauri/src/models.rs` |
+| 涉及 | `kernel/config/`、`kernel/persistence/src/persistent_bus.rs`、`kernel/plugins/llm-skill/`、`desktop/src/commands.rs`、`desktop/src/models.rs` |
 | 架构 | §9.1-9.2 |
 | 状态 | ✅ 已完成 |
 
@@ -600,7 +600,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/runtime/`、`crates/plugins/llm-skill/` |
+| 涉及 | `kernel/gateway/`、`kernel/plugins/llm-skill/` |
 | 架构 | §9.4 Phase 4.5 |
 
 **子任务：**
@@ -632,12 +632,12 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/core/src/sanitizer.rs`、`crates/tauri/src/commands.rs` |
+| 涉及 | `kernel/core/src/sanitizer.rs`、`desktop/src/commands.rs` |
 | 架构 | §8.1 |
 | 状态 | ✅ 已完成 |
 
 **子任务：**
-1. ✅ 实现 `InputSanitizer`（`crates/core/src/sanitizer.rs`）：
+1. ✅ 实现 `InputSanitizer`（`kernel/core/src/sanitizer.rs`）：
    - `replace_token` 策略：匹配关键词 → 替换命中子串为 `[redacted]`
    - `replace_message` 策略：高风险模式（系统提示提取等）→ 整条替换为 `[redacted]`
    - `block` 策略：确定恶意内容（shell 注入等）→ 拒绝发送
@@ -660,12 +660,12 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/core/src/validator.rs`、`crates/plugins/llm-skill/`、`crates/tauri/src/commands.rs`、`crates/tauri/src/pages/Chat.svelte` |
+| 涉及 | `kernel/core/src/validator.rs`、`kernel/plugins/llm-skill/`、`desktop/src/commands.rs`、`desktop/src/pages/Chat.svelte` |
 | 架构 | §8.2 |
 | 状态 | ✅ 已完成 |
 
 **子任务：**
-1. ✅ 实现 `OutputValidator`（`crates/core/src/validator.rs`，11 个测试全通过）：
+1. ✅ 实现 `OutputValidator`（`kernel/core/src/validator.rs`，11 个测试全通过）：
    - Secret 泄漏检测（sk-私钥、AKIA、-----BEGIN、ghp_）
    - 系统提示泄漏检测（you are an AI assistant）
    - Tool 注入检测（ignore safety、bypass filter）
@@ -688,7 +688,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/tauri/src/pages/Chat.svelte`、`crates/plugins/chat-source/` |
+| 涉及 | `desktop/src/pages/Chat.svelte`、`kernel/plugins/chat-source/` |
 | 架构 | §11.5 |
 | 状态 | ✅ 已完成 |
 
@@ -718,7 +718,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/llm-skill/` |
+| 涉及 | `kernel/plugins/llm-skill/` |
 | 架构 | §15 |
 | 状态 | ✅ 已完成 |
 
@@ -748,7 +748,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/llm-skill/` |
+| 涉及 | `kernel/plugins/llm-skill/` |
 | 架构 | §11.3 会话模型 |
 
 **子任务：**
@@ -793,7 +793,7 @@ M1 能力框架 ✅ ──┬── M2 聊天骨架 ✅
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/plugins/llm-skill/`、审计日志系统 |
+| 涉及 | `kernel/plugins/llm-skill/`、审计日志系统 |
 | 架构 | §11.6 |
 | 状态 | ✅ 已完成 |
 

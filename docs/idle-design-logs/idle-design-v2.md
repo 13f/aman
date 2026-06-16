@@ -802,7 +802,7 @@ routes:
 ### 7.1 新增 crate: `idle`
 
 ```
-crates/idle/
+kernel/idle/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs               # 公开 API

@@ -82,7 +82,7 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 
 ### 3.1 当前链路（无 Harness）
 
-当前 `MESSAGE_RECEIVED` 事件由 **AgentHarness**（`crates/gateway/src/runtime/agent_harness.rs`）
+当前 `MESSAGE_RECEIVED` 事件由 **AgentHarness**（`kernel/gateway/src/runtime/agent_harness.rs`）
 处理。这是 Harness 化的 ReAct 循环处理器：
 
 ```
@@ -234,7 +234,7 @@ Harness 版本在 Agent 级别管理中断，可以输出"已处理了 N 轮"的
 ### 3.5 ReAct 循环与 chat-session Workflow 状态机集成
 
 AgentHarness 的 ReAct 循环不引入新的状态机——它运行在现有 chat-session Workflow
-（`crates/gateway/src/runtime/agent_runtime.rs:202-352`）的 `PROCESSING` 状态内部。
+（`kernel/gateway/src/runtime/agent_runtime.rs:202-352`）的 `PROCESSING` 状态内部。
 两者通过事件驱动协作：
 
 ```
@@ -288,7 +288,7 @@ IDLE
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/`（新建 `agent.rs`） |
+| 涉及 | `kernel/core/src/`（新建 `agent.rs`） |
 | 描述 | 定义 Agent 核心数据结构，作为框架内 Agent 的运行时表示 |
 
 ```rust
@@ -331,7 +331,7 @@ pub struct AgentInstance {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/`（新建 `agent_registry.rs`） |
+| 涉及 | `kernel/gateway/src/runtime/`（新建 `agent_registry.rs`） |
 | 描述 | Agent 实例的运行时注册表，管理 Agent 的 CRUD 和状态 |
 
 ```rust
@@ -360,7 +360,7 @@ impl AgentRegistry {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_registry.rs`、`crates/core/src/event.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_registry.rs`、`kernel/core/src/event.rs` |
 | 描述 | Agent 生命周期事件：注册、状态变更、卸载 |
 
 | 新增事件 | 发布时机 |
@@ -375,7 +375,7 @@ impl AgentRegistry {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/tauri/src/commands.rs` |
+| 涉及 | `desktop/src/commands.rs` |
 | 描述 | 新增 `list_agents`、`get_agent`、`set_agent_status` IPC 命令 |
 
 ---
@@ -391,7 +391,7 @@ impl AgentRegistry {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/`（新建 `react.rs`） |
+| 涉及 | `kernel/core/src/`（新建 `react.rs`） |
 | 描述 | 定义 ReAct 循环引擎的核心 trait 和类型 |
 
 ```rust
@@ -451,7 +451,7 @@ pub trait ReActEngine: Send + Sync {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/`（新建 `agent_harness.rs`） |
+| 涉及 | `kernel/gateway/src/runtime/`（新建 `agent_harness.rs`） |
 | 描述 | AgentHarness 是 ReAct 循环的编排器，协调 Context 组装、LLM 调用、Tool 执行、事件发布 |
 
 ```rust
@@ -521,7 +521,7 @@ impl AgentHarness {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_runtime.rs`、`crates/dispatcher/src/` |
+| 涉及 | `kernel/gateway/src/runtime/agent_runtime.rs`、`kernel/dispatcher/src/` |
 | 描述 | 使 AgentHarness 成为 MESSAGE_RECEIVED 事件的处理器 |
 
 **子任务：**
@@ -537,7 +537,7 @@ impl AgentHarness {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/react.rs` + `crates/gateway/src/runtime/agent_harness.rs` + `crates/gateway/src/runtime/agent_runtime.rs` |
+| 涉及 | `kernel/core/src/react.rs` + `kernel/gateway/src/runtime/agent_harness.rs` + `kernel/gateway/src/runtime/agent_runtime.rs` |
 | 描述 | LLM Provider 返回流式响应时，Harness 实时发布 Stream 事件 |
 
 **实现：**
@@ -561,7 +561,7 @@ impl AgentHarness {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/`（扩展 `tool.rs`）+ `config.yaml` 格式扩展 |
+| 涉及 | `kernel/core/src/`（扩展 `tool.rs`）+ `config.yaml` 格式扩展 |
 
 **config.yaml 扩展：**
 ```yaml
@@ -591,7 +591,7 @@ agents:
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_harness.rs`（ToolExecutor） |
+| 涉及 | `kernel/gateway/src/runtime/agent_harness.rs`（ToolExecutor） |
 | 描述 | AgentHarness 在执行 Tool 前检查该 Agent 是否有权限 |
 
 ```rust
@@ -631,7 +631,7 @@ impl ToolExecutor {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/`（新建 `token_budget.rs`） |
+| 涉及 | `kernel/gateway/src/runtime/`（新建 `token_budget.rs`） |
 | 描述 | Token 用量追踪与预算管理 |
 
 ```rust
@@ -674,7 +674,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/`（新建 `history_compressor.rs`） |
+| 涉及 | `kernel/gateway/src/runtime/`（新建 `history_compressor.rs`） |
 | 描述 | 当 Token 预算超限时，自动压缩/摘要最旧的对话历史 |
 
 **子任务：**
@@ -698,7 +698,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_harness.rs` + `crates/runtime/src/memory_store.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_harness.rs` + `kernel/gateway/src/runtime/memory_store.rs` |
 | 描述 | 在 Context Assembly 阶段从记忆库检索相关片段 |
 
 **子任务：**
@@ -711,7 +711,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_harness.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_harness.rs` |
 | 描述 | ReAct 循环结束后，自动将关键信息写入长期记忆 |
 
 **子任务：**
@@ -731,7 +731,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_harness.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_harness.rs` |
 | 描述 | ReAct 循环检查全局中断标志 |
 
 **子任务：**
@@ -744,7 +744,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/runtime/src/agent_harness.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_harness.rs` |
 | 描述 | 中断后用户新消息可以继续同一会话，历史保持不变 |
 
 ---
@@ -758,7 +758,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/event.rs`、`crates/gateway/src/runtime/agent_runtime.rs`、`crates/gateway/src/runtime/agent_harness.rs` |
+| 涉及 | `kernel/core/src/event.rs`、`kernel/gateway/src/runtime/agent_runtime.rs`、`kernel/gateway/src/runtime/agent_harness.rs` |
 | 描述 | 通过 EventBus subscription 实现 Agent 间事件路由 |
 
 **子任务：**
@@ -770,7 +770,7 @@ impl TokenBudget {
 
 | 属性 | 内容 |
 |------|------|
-| 涉及 | `crates/core/src/agent.rs` |
+| 涉及 | `kernel/core/src/agent.rs` |
 | 描述 | 定义 Agent 间消息的标准格式 |
 
 ```
@@ -790,7 +790,7 @@ agent:message {
 
 ### 5.0 LLM Plugin → AgentHarness 迁移策略
 
-LLM Plugin（`crates/plugins/llm-plugin/`）已被移除。AgentHarness 现在是唯一的消息处理者。
+LLM Plugin（`kernel/plugins/llm-plugin/`）已被移除。AgentHarness 现在是唯一的消息处理者。
 
 迁移历程：
 - **阶段 A — 共存期**：AgentHarness 和 LLM Plugin 同时加载，共享事件总线

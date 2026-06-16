@@ -23,8 +23,8 @@
 
 | 文件 | 改动 |
 |------|------|
-| `crates/gateway/src/runtime/http.rs` | `chat_session_create`→发布 `session:started`；`chat_session_close`→发布 `session:closed` |
-| `crates/gateway/src/main.rs` | 三处生命周期点发布 gateway 事件 |
+| `kernel/gateway/src/runtime/http.rs` | `chat_session_create`→发布 `session:started`；`chat_session_close`→发布 `session:closed` |
+| `kernel/gateway/src/main.rs` | 三处生命周期点发布 gateway 事件 |
 
 > **`session:timeout` 暂未实现** — 当前工作流 engine 的 `handle_timeouts()` 仅在测试模块中被调用，
 > 生产环境没有 timeout 轮询。需要一个后台 task 定期调用 `workflow_engine.handle_timeouts(now)`
@@ -58,8 +58,8 @@
 
 | 文件 | 改动 |
 |------|------|
-| `crates/pipeline/src/lib.rs` | 新增 `ToolEventSink` trait；`PipelineEngine` 增加 `tool_sink` 字段 + `with_tool_sink()`；`execute_tool_with_retry()` 中 invoke/completed/failed 三点发出事件 |
-| `crates/gateway/src/runtime/agent_runtime.rs` | 新增 `BusToolEventSink` 实现（将 `ToolEventSink` 事件发布到 EventBus）；`SkillEventDispatcher` 中 dispatch 前/后发布 `message:dispatch` / `message:completed` |
+| `kernel/pipeline/src/lib.rs` | 新增 `ToolEventSink` trait；`PipelineEngine` 增加 `tool_sink` 字段 + `with_tool_sink()`；`execute_tool_with_retry()` 中 invoke/completed/failed 三点发出事件 |
+| `kernel/gateway/src/runtime/agent_runtime.rs` | 新增 `BusToolEventSink` 实现（将 `ToolEventSink` 事件发布到 EventBus）；`SkillEventDispatcher` 中 dispatch 前/后发布 `message:dispatch` / `message:completed` |
 
 ### 涉及运行时改动
 
@@ -101,7 +101,7 @@
 
 ### 不涉及改动
 
-- 不需要改 `crates/core/src/event.rs`，用 `Custom` 即可
+- 不需要改 `kernel/core/src/event.rs`，用 `Custom` 即可
 - 不需要改 event bus 基础设施
 - 不需要改 gateway / Tauri
 

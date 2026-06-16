@@ -2,7 +2,7 @@
 
 ## EventType Enum
 
-Defined in `crates/core/src/event.rs:11-37`:
+Defined in `kernel/core/src/event.rs:11-37`:
 
 ```rust
 pub enum EventType {
@@ -55,7 +55,7 @@ Unrecognized strings deserialize as `Custom(value)`. Empty strings are rejected 
 
 ## Event Struct
 
-Defined in `crates/core/src/event.rs:187-203`:
+Defined in `kernel/core/src/event.rs:187-203`:
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -238,13 +238,13 @@ agents:
 
 | Component | File | Role |
 |-----------|------|------|
-| `AgentRegistry::set_local_bus()` | `crates/gateway/src/runtime/agent_registry.rs:251` | Stores per-agent Local Bus |
-| `AgentRegistry::get_local_bus()` | `crates/gateway/src/runtime/agent_registry.rs:257` | Lookup Local Bus by agent_id |
-| `AgentRegistry::load_from_config()` | `crates/gateway/src/runtime/agent_registry.rs:95-110` | Creates Local Bus for each agent at startup |
-| `AgentEntryConfig::event_bus` | `crates/config/src/lib.rs:422` | Per-agent `PartialEventBusConfig` |
-| `ToolExecutor::publish_to_agent_bus()` | `crates/gateway/src/runtime/agent_harness.rs:114` | Tool events → Local Bus |
-| `LlmReActEngine::publish_to_agent_bus()` | `crates/gateway/src/runtime/agent_harness.rs:298` | LLM events → Local Bus |
-| `AgentHarness::publish_to_agent_bus()` | `crates/gateway/src/runtime/agent_harness.rs:487` | Stream/harness events → Local Bus |
+| `AgentRegistry::set_local_bus()` | `kernel/gateway/src/runtime/agent_registry.rs:251` | Stores per-agent Local Bus |
+| `AgentRegistry::get_local_bus()` | `kernel/gateway/src/runtime/agent_registry.rs:257` | Lookup Local Bus by agent_id |
+| `AgentRegistry::load_from_config()` | `kernel/gateway/src/runtime/agent_registry.rs:95-110` | Creates Local Bus for each agent at startup |
+| `AgentEntryConfig::event_bus` | `kernel/config/src/lib.rs:422` | Per-agent `PartialEventBusConfig` |
+| `ToolExecutor::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:114` | Tool events → Local Bus |
+| `LlmReActEngine::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:298` | LLM events → Local Bus |
+| `AgentHarness::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:487` | Stream/harness events → Local Bus |
 
 ---
 
@@ -274,9 +274,9 @@ agents:
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `FileCreated` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `crates/source/src/file_watch.rs:81,315` |
-| `FileChanged` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `crates/source/src/file_watch.rs:82,324` |
-| `FileDeleted` | `file_watch:{path}` | `{"path":"..."}` | `crates/source/src/file_watch.rs:83,318` |
+| `FileCreated` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `kernel/source/src/file_watch.rs:81,315` |
+| `FileChanged` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `kernel/source/src/file_watch.rs:82,324` |
+| `FileDeleted` | `file_watch:{path}` | `{"path":"..."}` | `kernel/source/src/file_watch.rs:83,318` |
 
 Produced by `source::file_watch::FileWatchSource`. Uses `notify` crate to watch filesystem directories. Each file event carries the affected path and file type.
 
@@ -284,8 +284,8 @@ Produced by `source::file_watch::FileWatchSource`. Uses `notify` crate to watch 
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `TimerTick` | `timer:{name}` | depends on timer config | `crates/source/src/timer.rs:113,122` |
-| `Heartbeat` | `timer:{name}` | `{"heartbeat":true}` | `crates/source/src/timer.rs:113` |
+| `TimerTick` | `timer:{name}` | depends on timer config | `kernel/source/src/timer.rs:113,122` |
+| `Heartbeat` | `timer:{name}` | `{"heartbeat":true}` | `kernel/source/src/timer.rs:113` |
 
 Produced by `source::timer::TimerSource`. Configurable interval. When `interval_ms >= 60000`, produces `Heartbeat`; otherwise `TimerTick`.
 
@@ -293,7 +293,7 @@ Produced by `source::timer::TimerSource`. Configurable interval. When `interval_
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `CronTick` | `cron:{id}` | depends on cron config | `crates/source/src/cron.rs:119` |
+| `CronTick` | `cron:{id}` | depends on cron config | `kernel/source/src/cron.rs:119` |
 
 Produced by `source::cron::CronSource`. Uses cron expressions (6-field: sec min hour dom mon dow). Managed through the runtime's `CronManager`.
 
@@ -301,8 +301,8 @@ Produced by `source::cron::CronSource`. Uses cron expressions (6-field: sec min 
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `MessageReceived` | `chat-platform:tauri-desktop` | `{"session_id":"...", "text":"...", "channel":"tauri_desktop", "message_id":"...", "client_timestamp":...}` | `crates/plugins/chat-source/src/lib.rs:147` |
-| `MessageReceived` | `socket:{name}` | depends on socket protocol | `crates/source/src/socket.rs:116,147,184` |
+| `MessageReceived` | `chat-platform:tauri-desktop` | `{"session_id":"...", "text":"...", "channel":"tauri_desktop", "message_id":"...", "client_timestamp":...}` | `kernel/plugins/chat-source/src/lib.rs:147` |
+| `MessageReceived` | `socket:{name}` | depends on socket protocol | `kernel/source/src/socket.rs:116,147,184` |
 
 Produced by the chat-platform source (from Tauri IPC) or socket source (TCP/UDP connections). The chat-platform source validates messages for length (max 4096 chars) and empty content.
 
@@ -310,7 +310,7 @@ Produced by the chat-platform source (from Tauri IPC) or socket source (TCP/UDP 
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `WebhookReceived` | `webhook:{name}` | from HTTP request body | `crates/source/src/webhook.rs:35` |
+| `WebhookReceived` | `webhook:{name}` | from HTTP request body | `kernel/source/src/webhook.rs:35` |
 
 Produced by `source::webhook::WebhookSource`. Receives HTTP POST requests and converts the body (JSON) into the event payload.
 
@@ -318,7 +318,7 @@ Produced by `source::webhook::WebhookSource`. Receives HTTP POST requests and co
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `SystemSignal` | `signal:{name}` | `{"signal":"SIGINT\|SIGTERM\|SIGHUP\|SIGUSR1\|SIGUSR2"}` | `crates/source/src/signal.rs:93,100` |
+| `SystemSignal` | `signal:{name}` | `{"signal":"SIGINT\|SIGTERM\|SIGHUP\|SIGUSR1\|SIGUSR2"}` | `kernel/source/src/signal.rs:93,100` |
 
 Produced by `source::signal::SignalSource`. Listens for OS signals. Each signal produces one event. SIGUSR1/SIGUSR2 also produce a second event with the signal name.
 
@@ -326,7 +326,7 @@ Produced by `source::signal::SignalSource`. Listens for OS signals. Each signal 
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `WorkflowStateChanged` | `workflow:engine` | `{"instance_id":"...", "workflow_name":"...", "from_state":"...", "to_state":"...", "reason":"...", "is_final":bool}` | `crates/workflow/src/lib.rs:1114` |
+| `WorkflowStateChanged` | `workflow:engine` | `{"instance_id":"...", "workflow_name":"...", "from_state":"...", "to_state":"...", "reason":"...", "is_final":bool}` | `kernel/workflow/src/lib.rs:1114` |
 
 Produced by the `WorkflowEngine` on every state transition. Records the workflow instance, old and new states, and the transition reason (Event, Timeout, ActionFailed, GuardRejected, RetryExceeded).
 
@@ -334,7 +334,7 @@ Produced by the `WorkflowEngine` on every state transition. Records the workflow
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `SkillReloaded` | `skill:hot_reload` | `{"inserted":[...], "updated_same_version":[...], "updated_new_version":[...], "removed":[...]}` | `crates/gateway/src/runtime/agent_runtime.rs:982` |
+| `SkillReloaded` | `skill:hot_reload` | `{"inserted":[...], "updated_same_version":[...], "updated_new_version":[...], "removed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:982` |
 
 Auto-published by the runtime's skill hot-reload watcher when skill files change on disk. Contains lists of skills that were inserted, updated, or removed.
 
@@ -342,7 +342,7 @@ Auto-published by the runtime's skill hot-reload watcher when skill files change
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `ConfigChanged` | `config` | `{"changed_fields":["path.to.field",...], "meta":{"loaded_at_ms":..., "source_chain":[...]}}` | `crates/config/src/lib.rs:718` |
+| `ConfigChanged` | `config` | `{"changed_fields":["path.to.field",...], "meta":{"loaded_at_ms":..., "source_chain":[...]}}` | `kernel/config/src/lib.rs:718` |
 
 Produced by the config loader when config is modified. Lists the exact fields that changed and the config source chain.
 
@@ -363,10 +363,10 @@ The following EventType variants are defined in the enum but currently have no p
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `SESSION_CLOSE_CMD` | HTTP handler `chat_session_close` | Close a chat session | `{"session_id":"...", "operator":"...", "reason":...}` | `crates/gateway/src/runtime/http.rs:1965` |
-| `STOP_GENERATION` | HTTP handler `chat_session_stop` | Stop LLM generation | `{"session_id":"...", "operator":"..."}` | `crates/gateway/src/runtime/http.rs:2013` |
-| `RETRY_CMD` | HTTP handler `chat_session_retry` | Retry last message | `{"session_id":"...", "operator":"..."}` | `crates/gateway/src/runtime/http.rs:2033` |
-| `MESSAGE_EDITED` | HTTP handler `chat_session_edit` | Message edited | `{"session_id":"...", "message_event_id":"...", "new_text":"...", "operator":"..."}` | `crates/gateway/src/runtime/http.rs:2134` |
+| `SESSION_CLOSE_CMD` | HTTP handler `chat_session_close` | Close a chat session | `{"session_id":"...", "operator":"...", "reason":...}` | `kernel/gateway/src/runtime/http.rs:1965` |
+| `STOP_GENERATION` | HTTP handler `chat_session_stop` | Stop LLM generation | `{"session_id":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2013` |
+| `RETRY_CMD` | HTTP handler `chat_session_retry` | Retry last message | `{"session_id":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2033` |
+| `MESSAGE_EDITED` | HTTP handler `chat_session_edit` | Message edited | `{"session_id":"...", "message_event_id":"...", "new_text":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2134` |
 
 These control events drive the chat-session workflow state machine. They are published via `workflow_engine.handle_event()` (for close/retry) or `runtime.publish_event()` (for stop/edit).
 
@@ -374,11 +374,11 @@ These control events drive the chat-session workflow state machine. They are pub
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `session:started` | `http.rs::chat_session_create()` | Chat session created | `{"session_id":"...","session_type":"...","operator":"..."}` | `crates/gateway/src/runtime/http.rs:1665` |
-| `session:closed` | `http.rs::chat_session_close()` | Chat session closed | `{"session_id":"...","operator":"..."}` | `crates/gateway/src/runtime/http.rs:2003` |
-| `gateway:starting` | `main.rs` | Gateway daemon starting | `{"bind":"..."}` | `crates/gateway/src/main.rs:119-123` |
-| `gateway:ready` | `main.rs` | Gateway ready to serve | `{"bind":"...","addr":"..."}` | `crates/gateway/src/main.rs:134-138` |
-| `gateway:stopping` | `main.rs` | Gateway shutting down | `{}` | `crates/gateway/src/main.rs:162-166` |
+| `session:started` | `http.rs::chat_session_create()` | Chat session created | `{"session_id":"...","session_type":"...","operator":"..."}` | `kernel/gateway/src/runtime/http.rs:1665` |
+| `session:closed` | `http.rs::chat_session_close()` | Chat session closed | `{"session_id":"...","operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2003` |
+| `gateway:starting` | `main.rs` | Gateway daemon starting | `{"bind":"..."}` | `kernel/gateway/src/main.rs:119-123` |
+| `gateway:ready` | `main.rs` | Gateway ready to serve | `{"bind":"...","addr":"..."}` | `kernel/gateway/src/main.rs:134-138` |
+| `gateway:stopping` | `main.rs` | Gateway shutting down | `{}` | `kernel/gateway/src/main.rs:162-166` |
 
 Published by the gateway daemon at lifecycle boundaries: before starting the runtime, after start succeeds, and before graceful shutdown. `session:started`/`session:closed` are published from HTTP handler endpoints and carry the `session_id` for trace chain correlation.
 
@@ -415,8 +415,8 @@ Published by AgentHarness to track the ReAct loop lifecycle. `llm:call_started`/
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `message:dispatch` | `SkillEventDispatcher` | Event routed to skill(s) for processing | `{"trace_id":"...","event_id":"...","event_type":"...","source":"..."}` | `crates/gateway/src/runtime/agent_runtime.rs:422` |
-| `message:completed` | `SkillEventDispatcher` | Skill(s) finished processing | `{"trace_id":"...","executed":[...],"failed":[...]}` | `crates/gateway/src/runtime/agent_runtime.rs:433` |
+| `message:dispatch` | `SkillEventDispatcher` | Event routed to skill(s) for processing | `{"trace_id":"...","event_id":"...","event_type":"...","source":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:422` |
+| `message:completed` | `SkillEventDispatcher` | Skill(s) finished processing | `{"trace_id":"...","executed":[...],"failed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:433` |
 
 Published by the `SkillEventDispatcher` — a catch-all EventBus subscriber registered in the runtime builder. On every incoming event, `message:dispatch` fires before routing to matching skills and `message:completed` fires after all matching skills have executed (success or failure).
 
@@ -424,11 +424,11 @@ Published by the `SkillEventDispatcher` — a catch-all EventBus subscriber regi
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `tool:invoke` | `PipelineEngine` | Tool execution started | `{"tool_name":"...","pipeline_id":"...","instance_id":"..."}` | `crates/pipeline/src/lib.rs:591` |
-| `tool:completed` | `PipelineEngine` | Tool execution succeeded | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","duration_ms":N}` | `crates/pipeline/src/lib.rs:599` |
-| `tool:failed` | `PipelineEngine` | Tool execution failed | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","error":"..."}` | `crates/pipeline/src/lib.rs:605,612` |
+| `tool:invoke` | `PipelineEngine` | Tool execution started | `{"tool_name":"...","pipeline_id":"...","instance_id":"..."}` | `kernel/pipeline/src/lib.rs:591` |
+| `tool:completed` | `PipelineEngine` | Tool execution succeeded | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","duration_ms":N}` | `kernel/pipeline/src/lib.rs:599` |
+| `tool:failed` | `PipelineEngine` | Tool execution failed | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","error":"..."}` | `kernel/pipeline/src/lib.rs:605,612` |
 
-Defined via the `ToolEventSink` trait and wired into `PipelineEngine::execute_tool_with_retry()`. The `BusToolEventSink` implementation in the gateway crate (`crates/gateway/src/runtime/agent_runtime.rs:518-550`) converts these sink callbacks into EventBus publishes.
+Defined via the `ToolEventSink` trait and wired into `PipelineEngine::execute_tool_with_retry()`. The `BusToolEventSink` implementation in the gateway crate (`kernel/gateway/src/runtime/agent_runtime.rs:518-550`) converts these sink callbacks into EventBus publishes.
 
 > **Architecture note**: `PipelineEngine` is currently not in the production chat flow (the LLM plugin calls the provider directly via `rig::agent::prompt()`). Tool events fire from the `PipelineEngine` path used in tests and the dispatcher crate. Production tool events will be added when `PipelineEngine` or `ToolRunner` is wired into the production path.
 
@@ -436,9 +436,9 @@ Defined via the `ToolEventSink` trait and wired into `PipelineEngine::execute_to
 
 | Literal Value | Purpose | Payload | File:Line |
 |---|---|---|---|
-| `capability_available` | New capability registered | `{"capability":"..."}` | `crates/gateway/src/runtime/agent_runtime.rs:833` |
-| `capability_removed` | Capability unregistered | `{"capability":"...","reason":"..."}` | `crates/gateway/src/runtime/agent_runtime.rs:833` |
-| `capability_registry_updated` | Full capability registry refresh | `{"available":[...], "added":[...], "removed":[...]}` | `crates/gateway/src/runtime/agent_runtime.rs:807` |
+| `capability_available` | New capability registered | `{"capability":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:833` |
+| `capability_removed` | Capability unregistered | `{"capability":"...","reason":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:833` |
+| `capability_registry_updated` | Full capability registry refresh | `{"available":[...], "added":[...], "removed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:807` |
 
 Published by the capability registry during startup and plugin hot-load/unload. The `registry_updated` event is a summary and does not enter the WAL.
 
@@ -446,7 +446,7 @@ Published by the capability registry during startup and plugin hot-load/unload. 
 
 | Literal Value | Purpose | Payload | File:Line |
 |---|---|---|---|
-| `soul_changed` | SOUL file modified on disk | `{"name":"...", "boundaries":[...], "preferences":{...}}` | `crates/soul/src/lib.rs:384` |
+| `soul_changed` | SOUL file modified on disk | `{"name":"...", "boundaries":[...], "preferences":{...}}` | `kernel/soul/src/lib.rs:384` |
 
 Published by the SOUL hot-reload manager when the SOUL.md file changes. Contains the new soul name, boundaries, and preferences. This event is also passed through to the EventStore for audit purposes.
 
@@ -454,9 +454,9 @@ Published by the SOUL hot-reload manager when the SOUL.md file changes. Contains
 
 | Literal Value | Purpose | Payload | Producer File:Line |
 |---|---|---|---|
-| `retry` | Manual retry of errored workflow | `{"operator":"..."}` | `crates/gateway/src/runtime/http.rs:636` |
-| `cancel` | Cancel pending retry | `{"operator":"..."}` | `crates/gateway/src/runtime/http.rs:694` |
-| `retry` | Auto-retry by workflow engine | `{"auto_retry":true, "attempt":N}` | `crates/workflow/src/lib.rs:1027` |
+| `retry` | Manual retry of errored workflow | `{"operator":"..."}` | `kernel/gateway/src/runtime/http.rs:636` |
+| `cancel` | Cancel pending retry | `{"operator":"..."}` | `kernel/gateway/src/runtime/http.rs:694` |
+| `retry` | Auto-retry by workflow engine | `{"auto_retry":true, "attempt":N}` | `kernel/workflow/src/lib.rs:1027` |
 
 Published by HTTP handlers and the workflow engine's auto-retry mechanism.
 
@@ -464,7 +464,7 @@ Published by HTTP handlers and the workflow engine's auto-retry mechanism.
 
 ## Work System Events
 
-The Work System (`crates/work/`) models task discovery, claiming, execution, and review as an event-driven state machine. Each agent instance owns a private WorkSystem that publishes internal flow events to the agent's **Local Bus**. External board events originate from kanban/team plugins on the **Global Bus** and are injected into the agent's Local Bus for processing.
+The Work System (`kernel/work/`) models task discovery, claiming, execution, and review as an event-driven state machine. Each agent instance owns a private WorkSystem that publishes internal flow events to the agent's **Local Bus**. External board events originate from kanban/team plugins on the **Global Bus** and are injected into the agent's Local Bus for processing.
 
 ### Architecture
 
@@ -623,12 +623,12 @@ work:
 
 | Component | File | Role |
 |-----------|------|------|
-| `WorkState` / `WorkEvent` / `WorkContext` | `crates/work/src/types.rs` | Core type definitions |
-| `WorkPersonality` / `TaskSelectionStrategy` | `crates/work/src/personality.rs` | Agent work behavior config |
-| `WorkConfig` / `BoardConfig` / `ReviewConfig` | `crates/work/src/config.rs` | YAML config + validation |
-| `WorkSystem::handle()` | `crates/work/src/system.rs` | State machine engine |
-| `WorkBoardClient` trait | `crates/work/src/system.rs` | Board abstraction (kanban/team) |
-| `WorkTraceEvent` | `crates/work/src/trace.rs` | Trace store event types |
+| `WorkState` / `WorkEvent` / `WorkContext` | `kernel/work/src/types.rs` | Core type definitions |
+| `WorkPersonality` / `TaskSelectionStrategy` | `kernel/work/src/personality.rs` | Agent work behavior config |
+| `WorkConfig` / `BoardConfig` / `ReviewConfig` | `kernel/work/src/config.rs` | YAML config + validation |
+| `WorkSystem::handle()` | `kernel/work/src/system.rs` | State machine engine |
+| `WorkBoardClient` trait | `kernel/work/src/system.rs` | Board abstraction (kanban/team) |
+| `WorkTraceEvent` | `kernel/work/src/trace.rs` | Trace store event types |
 
 ### Idle System Coordination
 
@@ -642,7 +642,7 @@ The Work System and Idle System coordinate through the Event Bus:
 
 ## HTTP API Event Endpoints
 
-All endpoints in `crates/gateway/src/runtime/http.rs`:
+All endpoints in `kernel/gateway/src/runtime/http.rs`:
 
 | Method | Route | Purpose | Response |
 |--------|-------|---------|----------|
@@ -662,9 +662,9 @@ Bridged from Rust backend to Svelte frontend:
 
 | Event Name | Direction | Polling | Listeners | File:Line |
 |---|---|---|---|---|
-| `menu:reload_skills` | Menu action → Frontend | On demand | Handled via Tauri menu event | `crates/tauri/src/lib.rs:38` |
-| `metrics:updated` | Background task → Frontend | Every 2s | `Dashboard.svelte`, `DebugPanel.svelte` | `crates/tauri/src/lib.rs:180` |
-| `event:processed` | Background task → Frontend | Every 1s | `Chat.svelte:936`, `DebugPanel.svelte:102` | `crates/tauri/src/lib.rs:200` |
+| `menu:reload_skills` | Menu action → Frontend | On demand | Handled via Tauri menu event | `desktop/src/lib.rs:38` |
+| `metrics:updated` | Background task → Frontend | Every 2s | `Dashboard.svelte`, `DebugPanel.svelte` | `desktop/src/lib.rs:180` |
+| `event:processed` | Background task → Frontend | Every 1s | `Chat.svelte:936`, `DebugPanel.svelte:102` | `desktop/src/lib.rs:200` |
 
 The background tasks poll the gateway HTTP API:
 - `metrics:updated` — polls `GET /debug/metrics` every 2 seconds
@@ -674,7 +674,7 @@ The background tasks poll the gateway HTTP API:
 
 ## Chat-Session Workflow Transitions
 
-The chat-session workflow (`crates/gateway/src/runtime/agent_runtime.rs:202-352`) is driven by events. The mapping from event types to workflow transitions:
+The chat-session workflow (`kernel/gateway/src/runtime/agent_runtime.rs:202-352`) is driven by events. The mapping from event types to workflow transitions:
 
 | Current State | Event | Next State |
 |---|---|---|
@@ -704,16 +704,16 @@ The chat-session workflow (`crates/gateway/src/runtime/agent_runtime.rs:202-352`
 
 | Component | File | Purpose |
 |---|---|---|
-| `EventBus` trait | `crates/event-bus/src/lib.rs:226` | `publish()`, `subscribe()`, `unsubscribe()`, `try_dequeue()`, `wait_for_event()`, `metrics()`, `backpressure_level()`, `can_poll()` |
-| `InMemoryBus` | `crates/event-bus/src/lib.rs:439` | In-memory implementation with priority queues, used for both Global and Local buses |
-| `InMemoryBusConfig` | `crates/event-bus/src/lib.rs:171` | Backpressure thresholds (L1:80.97%, L2:90.11%, L3:95.97%, L4A:98.11%), retry, dedup, overflow, rate limiting |
-| `SubscriptionFilter` | `crates/event-bus/src/lib.rs:62` | Filter by `event_types`, `sources`, `priorities`, `payload_match` |
-| `OverflowDir` | `crates/event-bus/src/overflow.rs` | Disk overflow when queue is full (Level 4A) |
-| `BackpressureController` | `crates/event-bus/src/backpressure.rs` | 7-level backpressure (Normal → L1 → L2 → L3 → L4A → L4B → Critical) |
-| `DedupWindow` | `crates/event-bus/src/dedup.rs` | Two-level dedup: Bloom filter + LRU cache (30s window default) |
-| `RetryQueue` | `crates/event-bus/src/retry_queue.rs` | Retry for AtLeastOnce delivery with exponential/sequence backoff |
-| `EventRateLimiter` | `crates/event-bus/src/rate_limiter.rs` | Per-source token-bucket rate limiter |
-| `PersistentBus` | `crates/persistence/src/persistent_bus.rs` | WAL-backed persistent event bus (Global Bus only) |
+| `EventBus` trait | `kernel/event-bus/src/lib.rs:226` | `publish()`, `subscribe()`, `unsubscribe()`, `try_dequeue()`, `wait_for_event()`, `metrics()`, `backpressure_level()`, `can_poll()` |
+| `InMemoryBus` | `kernel/event-bus/src/lib.rs:439` | In-memory implementation with priority queues, used for both Global and Local buses |
+| `InMemoryBusConfig` | `kernel/event-bus/src/lib.rs:171` | Backpressure thresholds (L1:80.97%, L2:90.11%, L3:95.97%, L4A:98.11%), retry, dedup, overflow, rate limiting |
+| `SubscriptionFilter` | `kernel/event-bus/src/lib.rs:62` | Filter by `event_types`, `sources`, `priorities`, `payload_match` |
+| `OverflowDir` | `kernel/event-bus/src/overflow.rs` | Disk overflow when queue is full (Level 4A) |
+| `BackpressureController` | `kernel/event-bus/src/backpressure.rs` | 7-level backpressure (Normal → L1 → L2 → L3 → L4A → L4B → Critical) |
+| `DedupWindow` | `kernel/event-bus/src/dedup.rs` | Two-level dedup: Bloom filter + LRU cache (30s window default) |
+| `RetryQueue` | `kernel/event-bus/src/retry_queue.rs` | Retry for AtLeastOnce delivery with exponential/sequence backoff |
+| `EventRateLimiter` | `kernel/event-bus/src/rate_limiter.rs` | Per-source token-bucket rate limiter |
+| `PersistentBus` | `kernel/persistence/src/persistent_bus.rs` | WAL-backed persistent event bus (Global Bus only) |
 
 ### Dual-Layer Configuration
 
@@ -744,7 +744,7 @@ Key implementation details:
 
 ### AgentRegistry Bus Management
 
-`AgentRegistry` (`crates/gateway/src/runtime/agent_registry.rs`) stores per-agent Local Buses in a `RwLock<HashMap<String, Arc<dyn EventBus>>>`:
+`AgentRegistry` (`kernel/gateway/src/runtime/agent_registry.rs`) stores per-agent Local Buses in a `RwLock<HashMap<String, Arc<dyn EventBus>>>`:
 
 - `set_local_bus(agent_id, bus)` — called during `load_from_config()` to create each agent's Local Bus
 - `get_local_bus(agent_id) -> Option<Arc<dyn EventBus>>` — called by `ToolExecutor`, `LlmReActEngine`, and `AgentHarness` to resolve the correct bus for each agent's internal events
@@ -754,7 +754,7 @@ Key implementation details:
 
 ## Event Store
 
-Defined in `crates/gateway/src/runtime/event_store.rs`:
+Defined in `kernel/gateway/src/runtime/event_store.rs`:
 
 - **Capacity**: Global cap (configurable) + per-trace cap (max events per trace_id)
 - **`record(event)`**: Stores event by ID, indexes by trace_id, builds trace_children graph from `payload.trace_prev`
@@ -763,13 +763,13 @@ Defined in `crates/gateway/src/runtime/event_store.rs`:
 - **`trace_chain(trace_id)`**: BFS traversal of trace ancestors + descendants
 - **`recent(count)`**: Most recent N events by insertion order
 
-The `StoreAllEventsHandler` (`crates/gateway/src/runtime/agent_runtime.rs:903-907`) is a catch-all subscriber that records every published event into the EventStore.
+The `StoreAllEventsHandler` (`kernel/gateway/src/runtime/agent_runtime.rs:903-907`) is a catch-all subscriber that records every published event into the EventStore.
 
 ---
 
 ## Dead Letter Queue (DLQ)
 
-`crates/persistence/src/dlq.rs` — `InMemoryDeadLetterQueue`:
+`kernel/persistence/src/dlq.rs` — `InMemoryDeadLetterQueue`:
 
 | Method | Purpose |
 |---|---|
@@ -785,7 +785,7 @@ Events enter DLQ primarily through the pipeline engine when a step fails and com
 
 ## Audit Log
 
-`crates/gateway/src/runtime/audit.rs` — `AuditLogger`:
+`kernel/gateway/src/runtime/audit.rs` — `AuditLogger`:
 
 - Ring buffer of `AuditRecord` with fields: `operator`, `action`, `target`, `outcome`, `detail`, `timestamp`
 - Default capacity: 2000 records

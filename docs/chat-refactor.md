@@ -27,7 +27,7 @@ Team 如果沿用 Plugin 模式，需要先补齐这两个缺口。补全后，C
 **方案**：在 `kernel::plugin::Plugin` trait 增加可选方法 `routes()`。
 
 ```rust
-// crates/core/src/plugin.rs — Plugin trait 增加
+// kernel/core/src/plugin.rs — Plugin trait 增加
 #[async_trait]
 pub trait Plugin: Send + Sync {
     // ... 现有方法 (name, version, hooks, tools, init, shutdown) ...
@@ -44,7 +44,7 @@ pub trait Plugin: Send + Sync {
 AgentRuntime 消费侧（Phase 3 插件加载完成后）：
 
 ```rust
-// crates/gateway/src/runtime/agent_runtime.rs
+// kernel/gateway/src/runtime/agent_runtime.rs
 fn build_router(runtime: Arc<AgentRuntime>) -> Router {
     let mut app = Router::new()
         // ... 内置路由（health, metrics） ...
@@ -61,8 +61,8 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
 ```
 
 **影响范围**：
-- `crates/core/src/plugin.rs`：trait 加方法（向后兼容，默认返回 `None`）
-- `crates/gateway/src/runtime/agent_runtime.rs`：`build_router()` 加插件路由 merge 逻辑
+- `kernel/core/src/plugin.rs`：trait 加方法（向后兼容，默认返回 `None`）
+- `kernel/gateway/src/runtime/agent_runtime.rs`：`build_router()` 加插件路由 merge 逻辑
 - 现有插件不受影响（都返回 `None`）
 
 ---
@@ -76,7 +76,7 @@ fn build_router(runtime: Arc<AgentRuntime>) -> Router {
 **后端**：
 
 ```rust
-// crates/gateway/src/runtime/http.rs
+// kernel/gateway/src/runtime/http.rs
 .route("/ui/pages", get(ui_plugin_pages))
 
 #[derive(Serialize)]
@@ -156,9 +156,9 @@ export const pluginPageComponents: Record<string, any> = {
 ```
 
 **影响范围**：
-- `crates/gateway/src/runtime/http.rs`：新增 `/ui/pages` 端点
-- `crates/tauri/src/App.svelte`：导航栏动态化 + 页面分发改为映射表
-- `crates/tauri/src/commands.rs`：新增 `get_ui_plugin_pages` 命令
+- `kernel/gateway/src/runtime/http.rs`：新增 `/ui/pages` 端点
+- `desktop/src/App.svelte`：导航栏动态化 + 页面分发改为映射表
+- `desktop/src/commands.rs`：新增 `get_ui_plugin_pages` 命令
 - 现有内置页面 Home/Dashboard/WorkflowBoard 等不受影响（仍在 `{#if}` 链中）
 
 ---
@@ -171,33 +171,33 @@ Chat 功能分散在以下几个位置：
 
 ```
 硬编码点:
-├── crates/gateway/src/runtime/http.rs
+├── kernel/gateway/src/runtime/http.rs
 │   └── /chat/sessions             (7 个路由，build_router 中硬编码)
 │   └── /chat/session/{id}/send
 │   └── /chat/session/{id}/close
 │   └── ...
 │
-├── crates/gateway/src/runtime/session_store.rs
+├── kernel/gateway/src/runtime/session_store.rs
 │   └── SessionStore (Chat 专用，但定义在 gateway 而非 plugin)
 │
-├── crates/gateway/src/runtime/agent_harness.rs
+├── kernel/gateway/src/runtime/agent_harness.rs
 │   └── run_react_loop() (Chat 和未来 Team 共用 — 放在 gateway 没问题)
 │
-├── crates/tauri/src/App.svelte
+├── desktop/src/App.svelte
 │   └── menuGroups[0].items[1]: { id: "chat", label: "Chat" }  (硬编码)
 │   └── {:else if currentPage === "chat"} <Chat />              (硬编码路由)
 │
-├── crates/tauri/src/lib.rs
+├── desktop/src/lib.rs
 │   └── 20+ chat_* Tauri commands                              (硬编码)
 │
-└── crates/tauri/src/pages/Chat.svelte
+└── desktop/src/pages/Chat.svelte
     └── Chat UI 组件
 ```
 
 ### 3.2 目标状态
 
 ```
-crates/plugins/chat/
+kernel/plugins/chat/
 ├── plugin.yaml        # PluginManifest
 ├── Cargo.toml
 └── src/
@@ -207,7 +207,7 @@ crates/plugins/chat/
     ├── commands.rs    # Tauri commands (chat_send_message 等)
     └── bridge.rs      # 与 AgentHarness 的桥接
 
-crates/tauri/src/pages/plugins/Chat.svelte  # UI 组件移至 plugins 子目录
+desktop/src/pages/plugins/Chat.svelte  # UI 组件移至 plugins 子目录
 ```
 
 ### 3.3 重构步骤
@@ -215,7 +215,7 @@ crates/tauri/src/pages/plugins/Chat.svelte  # UI 组件移至 plugins 子目录
 **Step 1：创建 ChatPlugin crate 骨架**
 
 ```yaml
-# crates/plugins/chat/plugin.yaml
+# kernel/plugins/chat/plugin.yaml
 name: "chat"
 version: "0.1.0"
 capabilities: ["chat", "llm_conversation"]
@@ -231,7 +231,7 @@ ui:
 ```
 
 ```rust
-// crates/plugins/chat/src/lib.rs
+// kernel/plugins/chat/src/lib.rs
 pub struct ChatPlugin {
     session_store: Arc<SessionStore>,
     agent_registry: Arc<AgentRegistry>,
@@ -258,7 +258,7 @@ impl Plugin for ChatPlugin {
 
 **Step 2：迁移 SessionStore 到 Chat 插件**
 
-`SessionStore` 从 `crates/gateway/src/runtime/session_store.rs` 移到 `crates/plugins/chat/src/session.rs`。
+`SessionStore` 从 `kernel/gateway/src/runtime/session_store.rs` 移到 `kernel/plugins/chat/src/session.rs`。
 
 `AgentRuntime` 通过 `PluginContext` 把 `EventBus`、`AgentRegistry`、`ToolRegistry` 引用传给 ChatPlugin，SessionStore 不再需要放在 gateway 层。
 
@@ -267,7 +267,7 @@ impl Plugin for ChatPlugin {
 从 `build_router()` 中删除所有 `/chat/*` 路由。ChatPlugin 通过 `routes()` 返回相同的 Router。路由路径不变（仍在 `/api/v1/chat/*`），对前端 Tauri commands 透明。
 
 ```rust
-// crates/plugins/chat/src/api.rs
+// kernel/plugins/chat/src/api.rs
 pub fn chat_api_routes() -> Router {
     Router::new()
         .route("/chat/sessions", get(chat_sessions))
@@ -290,7 +290,7 @@ pub fn chat_api_routes() -> Router {
 方案：在 `PluginContext` 中注入一个 `CommandRegistrar`：
 
 ```rust
-// crates/core/src/context.rs 增加
+// kernel/core/src/context.rs 增加
 pub struct PluginContext {
     // ... 现有字段 ...
     pub command_registrar: Arc<dyn CommandRegistrar>,
@@ -317,7 +317,7 @@ impl Plugin for ChatPlugin {
 
 **Step 5：迁移 UI 组件**
 
-`crates/tauri/src/pages/Chat.svelte` → `crates/tauri/src/pages/plugins/Chat.svelte`。
+`desktop/src/pages/Chat.svelte` → `desktop/src/pages/plugins/Chat.svelte`。
 
 从 `App.svelte` 中删除 Chat 的硬编码导航项和路由分支。改为：
 - 升级 B 完成后：Chat 通过 `UiDeclaration.pages: ["chat"]` 自动出现
@@ -346,7 +346,7 @@ Phase 1: 升级 B — UI 动态导航           (1-2天)
          └── App.svelte 动态导航 + 映射表
 
 Phase 2: Team Plugin 开发               (依赖 A+B)
-         └── crates/plugins/team/ 全部
+         └── kernel/plugins/team/ 全部
 
 Phase 3: Chat 插件化重构                (依赖 A+B，可与 Team 并行或后置)
          ├── Step 1-2: 创建 ChatPlugin + 迁移 SessionStore
@@ -378,7 +378,7 @@ Phase 3: Chat 插件化重构                (依赖 A+B，可与 Team 并行或
 ```
 所有"业务功能"都是 Plugin:
 
-crates/plugins/
+kernel/plugins/
 ├── info-hub/        # 已有
 ├── team/            # 新增 (Phase 2)
 └── chat/            # 重构 (Phase 3)

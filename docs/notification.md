@@ -16,7 +16,7 @@ EventBus ──→ NotificationSubscriber → NotificationStore ──→ HTTP G
 
 ## Notification Model
 
-Defined in `crates/notification/src/model.rs`:
+Defined in `kernel/notification/src/model.rs`:
 
 ```rust
 pub enum Severity { Critical, Warning }
@@ -101,7 +101,7 @@ not an audit log.
 ## Crate Structure
 
 ```
-crates/notification/
+kernel/notification/
 ├── Cargo.toml
 └── src/
     ├── lib.rs           # Public API

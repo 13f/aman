@@ -65,7 +65,7 @@ M13 集成与打磨       ██████████████████
 - [x] 配置 `.cargo/config.toml`（编译优化、deny unsafe）
 - [x] 添加 `Cargo.lock` 到版本控制
 
-### 1.2 core: 核心类型 (`crates/core/`)
+### 1.2 core: 核心类型 (`kernel/core/`)
 
 - [x] 统一核心字段命名并冻结 schema（`Event.type` vs `event_type`、`EventMetadata.ttl` vs `ttl_ms`）
 - [x] 实现 `Event` 结构体（id, source, event\_type, timestamp, priority, delivery, dedup\_key, payload, metadata）
@@ -161,7 +161,7 @@ M13 集成与打磨       ██████████████████
 - `M2` 不要求先实现全部性能优化，可以先保证正确性与接口稳定。
 - `M2` 不要求和所有事件源联调，事件注入可先用测试桩或构造事件完成。
 
-### 2.1 InMemoryBus (`crates/event-bus/`)
+### 2.1 InMemoryBus (`kernel/event-bus/`)
 
 - [x] 定义 `EventBus` trait（publish, subscribe, unsubscribe, metrics, backpressure\_level）
 - [x] 实现 `InMemoryBus` 结构体
@@ -261,7 +261,7 @@ M13 集成与打磨       ██████████████████
 - `CronSource` 的审计、持久化 override、leader election 可以先按接口和基础行为实现，不必在本阶段做完整集群语义。
 - `SocketSource` 可以先完成最小监听与事件注入，复杂流控与平台差异优化后置。
 
-### 3.1 EventSource 基础设施 (`crates/source/`)
+### 3.1 EventSource 基础设施 (`kernel/source/`)
 
 - [x] 实现 `SourceRegistry` 结构体（注册/查找/管理）
 - [x] 实现 `SourceMode` 标记（Pull vs Push）
@@ -370,7 +370,7 @@ M13 集成与打磨       ██████████████████
 - `M4` 不要求一开始就支持全部 `MatchCondition` 与复杂 `FanOut` 组合，可先覆盖高频规则。
 - `M4` 不要求并发模型一次做全，先稳定 `Serial`，再扩展 `Parallel` 与 `Limited(N)`。
 
-### 4.1 Dispatcher (`crates/dispatcher/`)
+### 4.1 Dispatcher (`kernel/dispatcher/`)
 
 - [x] 实现 `Dispatcher` 结构体
 - [x] 实现 `RouteRule` 路由规则表
@@ -382,7 +382,7 @@ M13 集成与打磨       ██████████████████
 - [x] 实现 `rebuild_routes` 动态重建路由表（插件/Skill 变更时）
 - [x] 实现 `SubscriptionFilter` → `MatchCondition` 转换
 
-### 4.2 Pipeline 引擎 (`crates/pipeline/`)
+### 4.2 Pipeline 引擎 (`kernel/pipeline/`)
 
 - [x] 实现 `PipelineEngine` 执行引擎
 - [x] 实现 `PipelineInstance` 运行时（id, compensation\_stack, temp\_dir）
@@ -464,7 +464,7 @@ M13 集成与打磨       ██████████████████
 - `M5` 不要求所有内置工具同批完成，先选择最能支撑主链路的工具类型落地。
 - `M5` 不要求完整容器/WASM 沙箱，只要本地子进程隔离路径可用即可。
 
-### 5.1 Skill 系统 (`crates/skill/`)
+### 5.1 Skill 系统 (`kernel/skill/`)
 
 - [x] 实现 `SkillRegistry` 结构体（注册/查询/启用/禁用）
 - [x] 实现声明式 Skill 加载（YAML → Skill 实例）
@@ -499,7 +499,7 @@ M13 集成与打磨       ██████████████████
 - [x] 实现 `history` 查看历史
 - [x] 实现 `diff` 比较版本差异
 
-### 5.5 Tool Runner (`crates/tool/`)
+### 5.5 Tool Runner (`kernel/tool/`)
 
 - [x] 实现 `ToolRegistry` 结构体（注册/查找）
 - [x] 实现 `ToolRunner` 6 步执行流程：
@@ -571,7 +571,7 @@ M13 集成与打磨       ██████████████████
 - `M6` 不要求先完成高规模实例恢复性能优化，那属于后续持久化与运行时联调议题。
 - `M6` 不要求 UI 可视化或管理界面，重点是状态机内核与事件语义正确。
 
-### 6.1 Workflow 定义 (`crates/workflow/`)
+### 6.1 Workflow 定义 (`kernel/workflow/`)
 
 - [x] 实现 `WorkflowDef` 结构体（name, states, initial\_state, final\_states, error\_state, transitions, state\_timeouts, error\_recovery）
 - [x] 实现 `StateDef` 结构体
@@ -688,7 +688,7 @@ M13 集成与打磨       ██████████████████
 - `M7` 不要求安装卸载 API、桌面端管理界面同步完成，先保证插件内核可用。
 - `M7` 不要求 SOUL 热更新与运行时广播第一阶段就完整落地，可先完成解析和注入接口。
 
-### 7.1 插件基础设施 (`crates/plugin/`)
+### 7.1 插件基础设施 (`kernel/plugin/`)
 
 - [x] 实现 `PluginManifest` 结构体（plugin.yaml 解析）
 - [x] 实现 `plugin.yaml` 格式定义（name, version, depends\_on, lifecycle, exports, config\_schema）
@@ -739,7 +739,7 @@ M13 集成与打磨       ██████████████████
 - [x] 实现插件安装（POST /plugin/install, multipart: plugin.tar.gz）
 - [x] 实现插件卸载（on\_unload → 清理注册 → 删除文件）
 
-### 7.7 SOUL 系统 (`crates/soul/`)
+### 7.7 SOUL 系统 (`kernel/soul/`)
 
 - [x] 实现 `Soul` 结构体（name, identity, core, expertise, boundaries, vibe, preferences, raw）
 - [x] 实现 `SOUL.md` 解析器（`from_file` / `from_str`）
@@ -797,7 +797,7 @@ M13 集成与打磨       ██████████████████
 - `M8` 不要求全部一致性模式同时成熟，可先以 `optimistic_lock` 作为默认写模型。
 - `M8` 不要求先把冷存储、长期归档、复杂运维告警做全，只要生命周期主链可验证。
 
-### 8.1 WAL (`crates/persistence/`)
+### 8.1 WAL (`kernel/persistence/`)
 
 - [x] 实现 `WriteAheadLog` 结构体
 - [x] 实现 `append`（事件 → WAL → fsync → 返回偏移量）
@@ -897,7 +897,7 @@ M13 集成与打磨       ██████████████████
 - `M9` 不要求一开始就拥有完整的提示注入检测体系，可先覆盖高风险已知模式。
 - `M9` 不要求配置 UI/可视化编辑器，重点是配置语义、校验与安全默认值。
 
-### 9.1 Secret 管理 (`crates/secret/`)
+### 9.1 Secret 管理 (`kernel/secret/`)
 
 - [x] 实现 `SecretResolver` 结构体
 - [x] 实现 ${VARIABLE} 模式扫描（递归遍历配置 JSON）
@@ -912,7 +912,7 @@ M13 集成与打磨       ██████████████████
 - [x] 实现 Secret Store 不可用时的重试（secret\_retry\_count + 退避 + 本地缓存降级）
 - [x] 实现 `secret_cache_fallback` 安全约束（AES-256-GCM 加密 + 600 权限 + TTL 300s）
 
-### 9.2 配置系统 (`crates/config/`)
+### 9.2 配置系统 (`kernel/config/`)
 
 - [x] 实现 `AgentConfig` 完整配置结构体
 - [x] 实现 `ConfigLoader` 多层加载：
@@ -986,7 +986,7 @@ M13 集成与打磨       ██████████████████
 - `M10` 不要求先把所有可观测性能力接满，那部分在 `M11` 收口。
 - `M10` 不要求桌面端联动完成，Tauri 集成属于 `M12`。
 
-### 10.1 运行时编排 (`crates/runtime/`)
+### 10.1 运行时编排 (`kernel/gateway/`)
 
 - [x] 实现 `AgentRuntimeBuilder`（构建器模式）
 - [x] 实现 `AgentRuntime` 结构体
@@ -1052,7 +1052,7 @@ M13 集成与打磨       ██████████████████
 - [x] 实现敏感操作审计日志
 - [x] 实现二次确认机制（shutdown, disable plugin, dlq retry）
 
-### 10.5 CLI (`crates/cli/`)
+### 10.5 CLI (`kernel/cli/`)
 
 - [x] 实现 `aman run` 命令（--config, --soul, --daemon, --log-level）
 - [x] 实现 `--soul` 的 SOUL 热加载（监听文件变更，发布 soul_changed 事件）
@@ -1199,7 +1199,7 @@ M13 集成与打磨       ██████████████████
 - `M12` 不要求桌面端替代 CLI/HTTP API，三者应协同而非重复建设。
 - `M12` 不要求一开始就做复杂视觉打磨，先保证 IPC、状态与运行时交互稳定。
 
-### 12.1 Tauri 项目初始化 (`crates/tauri/`)
+### 12.1 Tauri 项目初始化 (`desktop/`)
 
 - [x] 创建 Tauri v2 项目骨架（`aman-tauri-lib` 库 + `aman-tauri` 二进制）
 - [x] 配置 `tauri.conf.json`（devUrl localhost:1420, frontendDist）
@@ -1307,7 +1307,7 @@ M13 集成与打磨       ██████████████████
 
 ### 13.1 端到端集成测试
 
-已在 `crates/runtime/tests/e2e_integration.rs` 中实现，6 个测试全部通过。覆盖以下场景：
+已在 `kernel/gateway/tests/e2e_integration.rs` 中实现，6 个测试全部通过。覆盖以下场景：
 
 - [x] 场景 1：文件变更 → Pipeline → 通知（Source 层测试 `all_built_sources_can_register_start_emit_and_reach_bus` 已覆盖 FileWatch → EventBus ✅）
 - [x] 场景 2：Pipeline 失败 + DLQ 生命周期（enqueue → list → retry → discard，含无确认拒绝）
@@ -1315,7 +1315,7 @@ M13 集成与打磨       ██████████████████
 - [x] 场景 4：Workflow ERROR → RETRY 恢复 → 成功
   - **测试**: `workflow_error_retry_recovery` — 创建实例 → "fail" 事件进入 ERROR → HTTP retry API 恢复 → 验证回到 PENDING ✅
   - 覆盖 HTTP API 路由 `/workflow-instance/{id}/retry`、`x-aman-confirm` 确认头、`get_instance` 状态查询
-  - 测试文件: `crates/runtime/tests/e2e_integration.rs`
+  - 测试文件: `kernel/gateway/tests/e2e_integration.rs`
 - [x] 场景 5：事件风暴触发背压指标变化（50 events → metrics contain backpressure）
 - [x] 场景 6：崩溃恢复（Persistence 层 WAL checkpoint/replay 测试已覆盖该语义；完整进程级 E2E 需手动运行）
 - [x] 场景 7：插件热插拔（Plugin 层 `plugin_install_endpoint_accepts_multipart_archive`、`plugin_installer_uninstall_calls_unload_and_removes_files` 等 22 项测试已覆盖安装/卸载/启用/禁用全生命周期 ✅）
@@ -1327,24 +1327,24 @@ M13 集成与打磨       ██████████████████
   - **结果**: `event_bus_publish_10k` — 26.8ms / 10K events ≈ **373K events/s** ✅
   - `event_bus_publish_single` — 357ns per publication
   - `event_bus_10_subscribers` — 3.98µs per event with 10 subscribers
-  - 基准文件: `crates/event-bus/benches/throughput.rs`
+  - 基准文件: `kernel/event-bus/benches/throughput.rs`
 - [x] 基准：Pipeline 端到端延迟（P50 < 10ms, P99 < 100ms）
   - **结果**: `pipeline_1_step` — **3.51µs**（≈284K pipelines/s）✅, `pipeline_3_steps_serial` — **8.96–12.70µs**（≈79–111K pipelines/s 含3步）✅
   - 远超目标（P50 在微秒级），空载 NoopTool 延迟极低
-  - 基准文件: `crates/pipeline/benches/latency.rs`
+  - 基准文件: `kernel/pipeline/benches/latency.rs`
 - [x] 基准：WAL 写入吞吐（目标 > 10K events/s fsync 模式）
   - **结果**: `wal_append_fsync_100` — 379ms / 100 events ≈ **264 events/s** ⚠️ (OS/disk dependent; macOS APFS fsync is slow; expect >10K on Linux NVMe)
   - `wal_append_batch_1k` — 17.4ms / 1K events ≈ **57.5K events/s** ✅
-  - 基准文件: `crates/persistence/benches/wal_throughput.rs`
+  - 基准文件: `kernel/persistence/benches/wal_throughput.rs`
 - [x] 基准：背压溢出磁盘（100K events → 溢出 → 恢复 全链路）
   - **结果**: `overflow_100k_spill_to_disk` — **90ms / 100K events**（≈1.1M events/s with disk spillover）✅
-  - 基准文件: `crates/event-bus/benches/overflow.rs`
+  - 基准文件: `kernel/event-bus/benches/overflow.rs`
 - [x] 基准：启动时间（Phase 0→5，目标 < 5s 空配置）
   - **结果**: `startup/empty_config` — **204.6ms** ✅
-  - 基准文件: `crates/runtime/benches/startup.rs`
+  - 基准文件: `kernel/gateway/benches/startup.rs`
 - [x] 基准：Workflow 实例恢复（10K 实例，目标 < 120s）
   - **结果**: `list_10k_instances` — **3.78ms** ✅, `create_and_list_10k` (10K新建+列表) — **21.4ms** ✅
-  - 基准文件: `crates/workflow/benches/recovery.rs`
+  - 基准文件: `kernel/workflow/benches/recovery.rs`
 
 ### 13.3 开发者文档
 
@@ -1362,7 +1362,7 @@ M13 集成与打磨       ██████████████████
 
 - [x] 实现 `sdk` crate（prelude 重新导出核心类型）
 - [x] 提供外部 Skill/Plugin 开发者的最小依赖
-- [x] 提供示例 Skill 项目模板（`crates/sdk/examples/hello-skill/`）
+- [x] 提供示例 Skill 项目模板（`kernel/sdk/examples/hello-skill/`）
   - `Cargo.toml`：依赖 SDK crate，workspace member
   - `src/lib.rs`：完整实现 `Tool`（EchoTool）、`Skill`（EchoSkill）、`Plugin`（HelloPlugin）trait
   - `SKILL.md` + `plugin.yaml`：声明式技能和插件清单

@@ -36,7 +36,7 @@ aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Da
 ┌──────────────────────────────────────────────────────┐
 │  Layer 1: 后端能力插件 (aman Plugin)                   │
 │                                                       │
-│  放在: crates/plugins/ (或独立仓库)                    │
+│  放在: kernel/plugins/ (或独立仓库)                    │
 │  注册: EventSource + Skill + Tool                     │
 │  具体:                                                 │
 │    - chat-source      → ChatPlatformSource 事件源     │
@@ -46,7 +46,7 @@ aman 框架已完成 Tauri 桌面应用基础（M12），现有页面包括：Da
 ├──────────────────────────────────────────────────────┤
 │  Layer 2: 前端可视化页面 (Tauri 静态编译)               │
 │                                                       │
-│  放在: crates/tauri/src/pages/Chat.svelte             │
+│  放在: desktop/src/pages/Chat.svelte             │
 │  不动态加载: 页面代码编译在 Tauri 二进制中               │
 │  条件激活: 页面显示/隐藏由运行时状态驱动                 │
 │  通信: IPC (invoke + listen) ←→ AgentRuntime           │

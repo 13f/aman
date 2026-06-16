@@ -59,7 +59,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 
 ## M1：核心类型系统（5 天）
 
-> 目标：创建 `crates/idle/` 新 crate，实现 §3 全部类型定义。所有类型经序列化/反序列化测试。
+> 目标：创建 `kernel/idle/` 新 crate，实现 §3 全部类型定义。所有类型经序列化/反序列化测试。
 > 验收：`cargo check -p idle` 通过，所有类型可正确 ser/de。
 
 ### [x] T1.1 — 创建 idle crate 骨架
@@ -67,11 +67,11 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | 新建 `crates/idle/`（Cargo.toml, src/lib.rs, src/types.rs 等） |
+| 涉及 | 新建 `kernel/idle/`（Cargo.toml, src/lib.rs, src/types.rs 等） |
 | 架构 | §7.1 Crate Assignment |
 
 **子任务：**
-1. 创建 `crates/idle/Cargo.toml`，依赖 `core`、`serde`、`tokio`
+1. 创建 `kernel/idle/Cargo.toml`，依赖 `core`、`serde`、`tokio`
 2. 在 workspace `Cargo.toml` 中注册 `idle` crate
 3. 创建模块骨架：`types.rs`、`detector.rs`、`personality.rs`、`coordination.rs`、`workflow.rs`、`arousal.rs`、`incubation.rs`、`config.rs`
 4. `lib.rs` 中声明所有模块并 re-export 公共类型
@@ -88,7 +88,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/types.rs` |
+| 涉及 | `kernel/idle/src/types.rs` |
 | 架构 | §3.1 IdleKind — 七种深度驱动空闲子类型 |
 
 **子任务：**
@@ -114,7 +114,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/types.rs` |
+| 涉及 | `kernel/idle/src/types.rs` |
 | 架构 | §3.2 IdleEvent、§3.3 QueueDrained |
 
 **子任务：**
@@ -140,7 +140,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/idle/src/types.rs`、`crates/idle/src/personality.rs` |
+| 涉及 | `kernel/idle/src/types.rs`、`kernel/idle/src/personality.rs` |
 | 架构 | §3.4 IdlePersonality、§3.5 IdleCoordination |
 
 **子任务：**
@@ -167,7 +167,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/core/src/event.rs`、`crates/core/src/source.rs` |
+| 涉及 | `kernel/core/src/event.rs`、`kernel/core/src/source.rs` |
 | 架构 | §3.5 IdleCoordination（依赖 SourceType 扩展）、§7.2 core 变更 |
 
 **子任务：**
@@ -195,7 +195,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/coordination.rs` |
+| 涉及 | `kernel/idle/src/coordination.rs` |
 | 架构 | §3.5 IdleCoordination |
 
 **子任务：**
@@ -223,7 +223,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/arousal.rs` |
+| 涉及 | `kernel/idle/src/arousal.rs` |
 | 架构 | §3.1 IdleKind（ArousalBehavior）、§8 配置（arousal section） |
 
 **子任务：**
@@ -247,11 +247,11 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/idle/src/config.rs`、`crates/config/src/` |
+| 涉及 | `kernel/idle/src/config.rs`、`kernel/config/src/` |
 | 架构 | §8 Configuration Surface、§4.3 默认配置 |
 
 **子任务：**
-1. 在 `crates/config/` 中新增 `IdleConfig` section：
+1. 在 `kernel/config/` 中新增 `IdleConfig` section：
    - `enabled: bool`
    - `reflection: ReflectionConfig`（enabled, timeout_secs, check_items）
    - `personality: IdlePersonality`（完整配置结构）
@@ -282,7 +282,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/event-bus/src/lib.rs`（或 `bus.rs`） |
+| 涉及 | `kernel/event-bus/src/lib.rs`（或 `bus.rs`） |
 | 架构 | §5.2 Dispatcher 主循环（依赖 wait_for_event）、§9.3 层级6 |
 
 **子任务：**
@@ -308,7 +308,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/event-bus/src/` |
+| 涉及 | `kernel/event-bus/src/` |
 | 架构 | §3.2 IdleEvent（R4-2 序列化约束） |
 
 **子任务：**
@@ -329,7 +329,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/event-bus/src/metrics.rs` |
+| 涉及 | `kernel/event-bus/src/metrics.rs` |
 | 架构 | §12 Metrics |
 
 **子任务：**
@@ -355,7 +355,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/dispatcher/src/lib.rs` |
+| 涉及 | `kernel/dispatcher/src/lib.rs` |
 | 架构 | §5.2 Dispatcher 主循环（完整伪代码）、agent-design.md §3.4（Reflection 触发逻辑） |
 
 **子任务：**
@@ -378,7 +378,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/dispatcher/src/lib.rs` |
+| 涉及 | `kernel/dispatcher/src/lib.rs` |
 | 架构 | §5.2（QueueDrained 构造 L577-583）、§3.3 QueueDrained 定义 |
 
 **子任务：**
@@ -400,7 +400,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 2 天 |
-| 涉及 | `crates/dispatcher/src/lib.rs` |
+| 涉及 | `kernel/dispatcher/src/lib.rs` |
 | 架构 | §5.2（select! 分支 L536-558）、agent-design.md §3.4（"Reflection 可被新事件抢先"） |
 
 **子任务：**
@@ -430,7 +430,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/dispatcher/src/lib.rs` |
+| 涉及 | `kernel/dispatcher/src/lib.rs` |
 | 架构 | §5.2（R2-1 + R5-1 注释 L519-526）、§10 已知风险（R5-1） |
 
 **子任务：**
@@ -451,7 +451,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/dispatcher/src/lib.rs`、`crates/idle/src/types.rs`（ReflectionBreaker） |
+| 涉及 | `kernel/dispatcher/src/lib.rs`、`kernel/idle/src/types.rs`（ReflectionBreaker） |
 | 架构 | §4.5 Reflection 熔断、§9.3 层级2-3 |
 
 **子任务：**
@@ -474,7 +474,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/dispatcher/src/lib.rs` |
+| 涉及 | `kernel/dispatcher/src/lib.rs` |
 | 架构 | §5.2（L529）、§5.4 Idle Workflow 取消机制 |
 
 **子任务：**
@@ -500,7 +500,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/detector.rs` |
+| 涉及 | `kernel/idle/src/detector.rs` |
 | 架构 | §5.3 IdleDetector 伪代码（R8：状态机逻辑由 AgentIdleManager 后台 task 驱动） |
 
 **子任务：**
@@ -525,7 +525,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/idle/src/detector.rs` |
+| 涉及 | `kernel/idle/src/detector.rs` |
 | 架构 | §5.3 effective_personality 伪代码、§6.3 聊天场景适配策略 |
 
 **子任务：**
@@ -550,7 +550,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/idle/src/detector.rs`、`crates/idle/src/personality.rs` |
+| 涉及 | `kernel/idle/src/detector.rs`、`kernel/idle/src/personality.rs` |
 | 架构 | §4.1 状态转移规则、§4.3 默认 depth_schedule |
 
 **子任务：**
@@ -572,7 +572,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/detector.rs` |
+| 涉及 | `kernel/idle/src/detector.rs` |
 | 架构 | §5.3（R4-3 注释 L616-620）、§3.2（from_chat_mode 字段 R3-2） |
 
 **子任务：**
@@ -599,7 +599,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/workflow.rs` |
+| 涉及 | `kernel/idle/src/workflow.rs` |
 | 架构 | §5.4 Idle Workflow 取消机制 |
 
 **子任务：**
@@ -621,7 +621,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/`（新建 pipeline 定义）、路由配置文件 |
+| 涉及 | `kernel/idle/src/`（新建 pipeline 定义）、路由配置文件 |
 | 架构 | §6.2 表格（Daze/Boredom）、§6.3（Boredom 聊天 no-op） |
 
 **子任务：**
@@ -643,7 +643,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/`（新建 Sleep Workflow）、`crates/idle/src/workflow.rs` |
+| 涉及 | `kernel/idle/src/`（新建 Sleep Workflow）、`kernel/idle/src/workflow.rs` |
 | 架构 | §6.2（Sleep 行）、§5.4 execute_sleep_workflow 示例 |
 
 **子任务：**
@@ -666,7 +666,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/`（新建 Exploration Workflow） |
+| 涉及 | `kernel/idle/src/`（新建 Exploration Workflow） |
 | 架构 | §6.2（Exploration 行）、§8 exploration 配置 |
 
 **子任务：**
@@ -688,7 +688,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/idle/src/`（新建 Meditation Workflow） |
+| 涉及 | `kernel/idle/src/`（新建 Meditation Workflow） |
 | 架构 | §6.2（Meditation 行）、§4.4 打断策略矩阵（打断损失：高） |
 
 **子任务：**
@@ -710,7 +710,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | `crates/idle/src/incubation.rs` |
+| 涉及 | `kernel/idle/src/incubation.rs` |
 | 架构 | §6.2（Waiting/Incubation）、§5.5 Incubation 后台线程 |
 
 **子任务：**
@@ -738,7 +738,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/gateway/src/runtime/agent_registry.rs`、`crates/gateway/src/runtime/agent_runtime.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_registry.rs`、`kernel/gateway/src/runtime/agent_runtime.rs` |
 | 架构 | §9.1 启动序列（R8：Per-Agent） |
 
 **子任务：**
@@ -763,7 +763,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/gateway/src/runtime/agent_registry.rs` |
+| 涉及 | `kernel/gateway/src/runtime/agent_registry.rs` |
 | 架构 | §9.2 关闭序列（R8：Per-Agent） |
 
 **子任务：**
@@ -786,7 +786,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 0.5 天 |
-| 涉及 | 配置文件 + `crates/gateway/src/runtime/` |
+| 涉及 | 配置文件 + `kernel/gateway/src/runtime/` |
 | 架构 | §6.1 路由配置 |
 
 **子任务：**
@@ -818,7 +818,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1.5 天 |
-| 涉及 | `crates/idle/src/types.rs`、`crates/idle/src/` |
+| 涉及 | `kernel/idle/src/types.rs`、`kernel/idle/src/` |
 | 架构 | §3.4 ContextIsolation、§6.3 上下文隔离策略 |
 
 **子任务：**
@@ -840,7 +840,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/metrics.rs` |
+| 涉及 | `kernel/idle/src/metrics.rs` |
 | 架构 | §12 Metrics |
 
 **子任务：**
@@ -861,7 +861,7 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 | 属性 | 内容 |
 |------|------|
 | 估时 | 1 天 |
-| 涉及 | `crates/idle/src/integration_test.rs` |
+| 涉及 | `kernel/idle/src/integration_test.rs` |
 | 架构 | §4.2 完整事件处理→空闲→再唤醒流程 |
 
 **子任务：**
@@ -911,20 +911,20 @@ M1 核心类型 ──┬── M2 协调与配置 ──┐
 
 | 架构 § | 模块 | 关键文件 |
 |---------|------|---------|
-| §3.1 IdleKind | idle crate | `crates/idle/src/types.rs` |
-| §3.2 IdleEvent | idle crate | `crates/idle/src/types.rs` |
-| §3.3 QueueDrained | idle crate | `crates/idle/src/types.rs` |
-| §3.4 IdlePersonality | idle crate | `crates/idle/src/types.rs`、`personality.rs` |
-| §3.5 IdleCoordination | idle crate | `crates/idle/src/coordination.rs` |
+| §3.1 IdleKind | idle crate | `kernel/idle/src/types.rs` |
+| §3.2 IdleEvent | idle crate | `kernel/idle/src/types.rs` |
+| §3.3 QueueDrained | idle crate | `kernel/idle/src/types.rs` |
+| §3.4 IdlePersonality | idle crate | `kernel/idle/src/types.rs`、`personality.rs` |
+| §3.5 IdleCoordination | idle crate | `kernel/idle/src/coordination.rs` |
 | §4 状态机 | 跨模块 | dispatcher, idle, runtime |
-| §5.2 Dispatcher 主循环 | dispatcher crate | `crates/dispatcher/src/lib.rs` |
-| §5.3 IdleDetector / AgentIdleManager | idle crate | `crates/idle/src/detector.rs`、`manager.rs` |
-| §5.4 Workflow 取消 | idle crate | `crates/idle/src/workflow.rs` |
-| §5.5 Incubation | idle crate | `crates/idle/src/incubation.rs` |
+| §5.2 Dispatcher 主循环 | dispatcher crate | `kernel/dispatcher/src/lib.rs` |
+| §5.3 IdleDetector / AgentIdleManager | idle crate | `kernel/idle/src/detector.rs`、`manager.rs` |
+| §5.4 Workflow 取消 | idle crate | `kernel/idle/src/workflow.rs` |
+| §5.5 Incubation | idle crate | `kernel/idle/src/incubation.rs` |
 | §6 路由配置 | gateway crate | 配置文件 + 路由注册 |
-| §8 配置 | config crate | `crates/config/src/` |
-| §9 生命周期 | gateway crate | `crates/gateway/src/runtime/agent_runtime.rs`、`agent_registry.rs` |
-| §12 Metrics | idle crate | `crates/idle/src/metrics.rs` |
+| §8 配置 | config crate | `kernel/config/src/` |
+| §9 生命周期 | gateway crate | `kernel/gateway/src/runtime/agent_runtime.rs`、`agent_registry.rs` |
+| §12 Metrics | idle crate | `kernel/idle/src/metrics.rs` |
 
 ---
 

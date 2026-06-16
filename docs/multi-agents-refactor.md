@@ -178,7 +178,7 @@ ProviderSecretResolver
 ### 4.1 新增 Struct
 
 ```rust
-// crates/config/src/lib.rs
+// kernel/config/src/lib.rs
 
 /// 单个 LLM Provider 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,7 +306,7 @@ impl amanConfig {
 
 ## 5. Tauri Backend 新增 IPC Commands
 
-新的 command 放在 `crates/tauri/src/commands.rs`，按域分组：
+新的 command 放在 `desktop/src/commands.rs`，按域分组：
 
 ### 5.1 Provider Commands
 
@@ -580,7 +580,7 @@ Payload 示例（agent:created）：
 ## 8. AppState 改动
 
 ```rust
-// crates/tauri/src/state.rs
+// desktop/src/state.rs
 
 use config::amanConfig;
 use std::sync::Arc;
@@ -634,7 +634,7 @@ impl AppState {
 
 ## 9. 文件系统操作（新增 utility 模块）
 
-`crates/tauri/src/agent_fs.rs` — Agent 文件系统操作的封装：
+`desktop/src/agent_fs.rs` — Agent 文件系统操作的封装：
 
 ```rust
 /// 创建 Agent 文件系统结构
@@ -715,12 +715,12 @@ pub fn append_session_message(
 
 ### 10.1 当前 `secret` crate 能力
 
-现有 `crates/secret` 支持多后端（env, vault, aws, 1password），但缺少 macOS Keychain。
+现有 `kernel/secret` 支持多后端（env, vault, aws, 1password），但缺少 macOS Keychain。
 
 ### 10.2 新增 Keychain 后端
 
 ```rust
-// crates/secret 新增 macOS Keychain 后端
+// kernel/secret 新增 macOS Keychain 后端
 // 使用 security-framework crate
 
 pub struct KeychainBackend;
@@ -756,9 +756,9 @@ label: aman.providers.deepseek.api_key
 ## 11. crate 依赖关系与改动范围总览
 
 ```
-crates/config         — 新增 amanConfig, ProviderConfig, AgentEntryConfig struct
+kernel/config         — 新增 amanConfig, ProviderConfig, AgentEntryConfig struct
                         新增 AMAN_* 环境变量支持（AMAN_PROVIDER_*）
-crates/tauri          — 新增 commands（provider/agent CRUD）
+desktop          — 新增 commands（provider/agent CRUD）
                         新增 models（ProviderEntry, AgentEntry）
                         新增 agent_fs.rs（文件系统操作）
                         新增 pages（Providers.svelte, Agents.svelte, AgentCreate.svelte）
@@ -766,9 +766,9 @@ crates/tauri          — 新增 commands（provider/agent CRUD）
                         修改 Chat.svelte（agent 选择器）
                         修改 AppState（active_agent_key, config cache）
                         修改 start_runtime command（依赖 agent 上下文）
-crates/secret         — 可选新增 Keychain 后端
-crates/core/kernel    — 可选新增事件类型常量（provider:created, agent:created 等）
-crates/runtime        — 无需改动（仍接收事件）
+kernel/secret         — 可选新增 Keychain 后端
+kernel/core/kernel    — 可选新增事件类型常量（provider:created, agent:created 等）
+kernel/gateway        — 无需改动（仍接收事件）
 其他 crate            — 无需改动
 ```
 
@@ -865,9 +865,9 @@ CREATE INDEX idx_sessions_last_active ON sessions(last_active_at);
 
 | Phase | Scope | Dependencies | 预估工作量 |
 |-------|-------|-------------|-----------|
-| **P1** | config crate: `amanConfig`, `ProviderConfig`, `AgentEntryConfig`, `validate_full()` | 无 | crates/config: ~200 lines |
+| **P1** | config crate: `amanConfig`, `ProviderConfig`, `AgentEntryConfig`, `validate_full()` | 无 | kernel/config: ~200 lines |
 | **P1** | `amanConfig::save()` + `is_valid_identifier()` | P1 config | ~50 lines |
-| **P2** | Tauri backend: `list_providers`, `create_provider`, `delete_provider`, API Key 存储命令 | P1 config | crates/tauri: ~300 lines |
+| **P2** | Tauri backend: `list_providers`, `create_provider`, `delete_provider`, API Key 存储命令 | P1 config | desktop: ~300 lines |
 | **P2** | Tauri backend: `agent_fs.rs` — `init_agent_dir`, `remove_agent_dir`, session 写入 | P1 config | ~200 lines |
 | **P2** | Tauri backend: `list_agents`, `create_agent`, `delete_agent`, `select_agent` | P2 agent_fs | ~250 lines |
 | **P3** | Tauri frontend: `Providers.svelte` 页面 | P2 commands | ~200 lines |

@@ -766,7 +766,7 @@ routes:
 ### 7.1 新增 crate: `idle`
 
 ```
-crates/idle/src/
+kernel/idle/src/
 ├── types.rs        # IdleKind, IdleEvent, QueueDrained, IdlePersonality,
 │                   #   IdleCoordination, IdleContext, ChatMode,
 │                   #   ReflectionBreaker, PollRelaxation, ContextIsolation,

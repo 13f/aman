@@ -2,7 +2,7 @@
 
 > **核心变更**：从「独立 2 状态机」重构为「LifecycleEngine 的领域适配层」。
 > Work/Study/Daily-Life 三个系统的共用逻辑（状态机、FIFO 队列、步骤链式执行、
-> 中断/重试、IdleSignal 反馈、全局总线通知）全部提取到 `crates/lifecycle`。
+> 中断/重试、IdleSignal 反馈、全局总线通知）全部提取到 `kernel/lifecycle`。
 > Work System 只需实现 `SystemSpec` trait，提供 Work 领域特有的类型和逻辑。
 >
 > 架构层次：
@@ -38,7 +38,7 @@ v2 中 Work、Study、Daily-Life 三个系统各自实现了几乎相同的：
 
 ## 2. Lifecycle Engine Architecture
 
-### 2.1 Shared Engine (`crates/lifecycle`)
+### 2.1 Shared Engine (`kernel/lifecycle`)
 
 ```rust
 /// 泛型生命周期引擎。S 是实现 SystemSpec 的领域适配器。

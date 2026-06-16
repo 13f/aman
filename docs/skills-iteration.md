@@ -17,10 +17,10 @@ adapter layer to avoid rippling changes across the codebase.
 ### Steps
 
 1. **Add dependencies**
-   - `skm-core` to `crates/skill/Cargo.toml`
+   - `skm-core` to `kernel/skill/Cargo.toml`
    - If skm-core uses `workspace = true` internally, vendor or pin explicit versions
 
-2. **Create adapter `SkmRegistry` in `crates/skill/src/`**
+2. **Create adapter `SkmRegistry` in `kernel/skill/src/`**
    - Wraps `skm_core::SkillRegistry`
    - `new(root: &Path) -> Self` — initialises the registry pointing at `~/.aman/skills/`
    - `discover() -> Vec<LlmSkill>` — iterates `registry.catalog()`, maps `Skill` → `LlmSkill`
@@ -28,7 +28,7 @@ adapter layer to avoid rippling changes across the codebase.
    - `refresh() -> RefreshReport` — re-scans disk for changes
 
 3. **Update callers**
-   - `crates/gateway/src/runtime/agent_runtime.rs`:
+   - `kernel/gateway/src/runtime/agent_runtime.rs`:
      Replace `skill::discover_llm_skills(&skills_dir)` → `skill::SkmRegistry::new(&skills_dir).discover()`
    - `AgentRuntime::read_skill()`: use `SkmRegistry::load_content()` internally
    - `HotReloadManager`: integrate `SkmRegistry::refresh()` into the watch loop
@@ -41,10 +41,10 @@ adapter layer to avoid rippling changes across the codebase.
 
 | File | Change |
 |---|---|
-| `crates/skill/Cargo.toml` | add `skm-core` |
-| `crates/skill/src/lib.rs` | add `mod skm_adapter;` + re-export |
-| `crates/skill/src/skm_adapter.rs` | new: `SkmRegistry` adapter |
-| `crates/gateway/src/runtime/agent_runtime.rs` | use `SkmRegistry` in build |
+| `kernel/skill/Cargo.toml` | add `skm-core` |
+| `kernel/skill/src/lib.rs` | add `mod skm_adapter;` + re-export |
+| `kernel/skill/src/skm_adapter.rs` | new: `SkmRegistry` adapter |
+| `kernel/gateway/src/runtime/agent_runtime.rs` | use `SkmRegistry` in build |
 
 ### Exit criteria
 
@@ -76,7 +76,7 @@ adapter layer to avoid rippling changes across the codebase.
 ### Implementation
 
 ```
-crates/skill/src/
+kernel/skill/src/
 ├── mod.rs
 ├── skm_adapter.rs       ← Phase 1
 ├── validation.rs         ← New
@@ -99,17 +99,17 @@ $ aman skills validate ./skills/my-skill/SKILL.md
 ✓ my-skill: all 10 rules passed
 ```
 
-Implementation in `crates/cli/src/commands/skills.rs` (new file).
+Implementation in `kernel/cli/src/commands/skills.rs` (new file).
 
 ### Files touched
 
 | File | Change |
 |---|---|
-| `crates/skill/Cargo.toml` | (already updated in Phase 1) |
-| `crates/skill/src/validation.rs` | new |
-| `crates/skill/src/lib.rs` | re-export `validation` module |
-| `crates/cli/src/main.rs` | add `skills validate` subcommand |
-| `crates/cli/src/commands/` | add `mod skills;` with handlers |
+| `kernel/skill/Cargo.toml` | (already updated in Phase 1) |
+| `kernel/skill/src/validation.rs` | new |
+| `kernel/skill/src/lib.rs` | re-export `validation` module |
+| `kernel/cli/src/main.rs` | add `skills validate` subcommand |
+| `kernel/cli/src/commands/` | add `mod skills;` with handlers |
 
 ### Exit criteria
 
@@ -158,7 +158,7 @@ ipo-research/  unlisted-ecosystem-analysis/  chaotic-reasoning/  discover-facts/
 
 ### Implementation
 
-`crates/skill/src/export.rs`:
+`kernel/skill/src/export.rs`:
 
 ```rust
 pub fn export_skills(skills: &[LlmSkill], out_dir: &Path) -> Result<ExportReport>
@@ -170,9 +170,9 @@ Simple file copy — read SKILL.md from source path, write to `out_dir/{name}/SK
 
 | File | Change |
 |---|---|
-| `crates/skill/src/export.rs` | new |
-| `crates/skill/src/lib.rs` | re-export `export` module |
-| `crates/cli/src/commands/skills.rs` | add `export` subcommand |
+| `kernel/skill/src/export.rs` | new |
+| `kernel/skill/src/lib.rs` | re-export `export` module |
+| `kernel/cli/src/commands/skills.rs` | add `export` subcommand |
 
 ### Exit criteria
 
@@ -217,7 +217,7 @@ CascadeSelector
 
 ### Steps
 
-1. **Add `skm-select` dependency** to `crates/gateway/Cargo.toml`
+1. **Add `skm-select` dependency** to `kernel/gateway/Cargo.toml`
 
 2. **Build selector at startup** in `AgentRuntime::build()`:
    ```rust
@@ -263,10 +263,10 @@ CascadeSelector
 
 | File | Change |
 |---|---|
-| `crates/gateway/Cargo.toml` | add `skm-select` |
-| `crates/gateway/src/runtime/agent_runtime.rs` | add `skill_selector` field + init |
-| `crates/gateway/src/runtime/http.rs` | use `CascadeSelector` instead of keyword match |
-| `crates/gateway/src/config.rs` | add `skill_selector.semantic_model` config field |
+| `kernel/gateway/Cargo.toml` | add `skm-select` |
+| `kernel/gateway/src/runtime/agent_runtime.rs` | add `skill_selector` field + init |
+| `kernel/gateway/src/runtime/http.rs` | use `CascadeSelector` instead of keyword match |
+| `kernel/gateway/src/config.rs` | add `skill_selector.semantic_model` config field |
 
 ### Exit criteria
 

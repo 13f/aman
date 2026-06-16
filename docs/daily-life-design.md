@@ -2,7 +2,7 @@
 
 > **核心变更**：与 Work/Study System 对齐——从「独立 2 状态机」重构为「LifecycleEngine 的领域适配层」。
 > 共用逻辑（状态机、FIFO 队列、步骤链式执行、中断/重试、IdleSignal 反馈、全局总线通知）
-> 全部由 `crates/lifecycle::LifecycleEngine<S>` 提供。
+> 全部由 `kernel/lifecycle::LifecycleEngine<S>` 提供。
 > Daily Life System 只需实现 `SystemSpec` trait，提供日常领域特有的类型和逻辑。
 >
 > 架构层次：

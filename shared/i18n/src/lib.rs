@@ -392,6 +392,42 @@ pub mod key {
     pub const DESKTOP_INFO_GATEWAY_STARTED: &str = "desktop.info.gateway_started";
     /// "Connected to already-running gateway at {url}"
     pub const DESKTOP_INFO_GATEWAY_CONNECTED: &str = "desktop.info.gateway_connected";
+    /// "Gateway stopped"
+    pub const DESKTOP_INFO_GATEWAY_STOPPED: &str = "desktop.info.gateway_stopped";
+    /// "Disconnected from gateway"
+    pub const DESKTOP_INFO_GATEWAY_DISCONNECTED: &str = "desktop.info.gateway_disconnected";
+    /// "Skills reloaded"
+    pub const DESKTOP_INFO_SKILLS_RELOADED: &str = "desktop.info.skills_reloaded";
+    /// "Skill '{name}' enabled"
+    pub const DESKTOP_INFO_SKILL_ENABLED: &str = "desktop.info.skill_enabled";
+    /// "Skill '{name}' disabled"
+    pub const DESKTOP_INFO_SKILL_DISABLED: &str = "desktop.info.skill_disabled";
+    /// "Workflow retried"
+    pub const DESKTOP_INFO_WORKFLOW_RETRIED: &str = "desktop.info.workflow_retried";
+    /// "Workflow cancelled"
+    pub const DESKTOP_INFO_WORKFLOW_CANCELLED: &str = "desktop.info.workflow_cancelled";
+    /// "SOUL updated"
+    pub const DESKTOP_INFO_SOUL_UPDATED: &str = "desktop.info.soul_updated";
+    /// "Plugin {name} enabled"
+    pub const DESKTOP_INFO_PLUGIN_ENABLED: &str = "desktop.info.plugin_enabled";
+    /// "Plugin {name} disabled"
+    pub const DESKTOP_INFO_PLUGIN_DISABLED: &str = "desktop.info.plugin_disabled";
+    /// "DLQ entry retried"
+    pub const DESKTOP_INFO_DLQ_RETRIED: &str = "desktop.info.dlq_retried";
+    /// "DLQ entry discarded"
+    pub const DESKTOP_INFO_DLQ_DISCARDED: &str = "desktop.info.dlq_discarded";
+    /// "Session ID cannot be empty"
+    pub const DESKTOP_ERROR_SESSION_ID_EMPTY: &str = "desktop.error.session_id_empty";
+    /// "Message ID cannot be empty"
+    pub const DESKTOP_ERROR_MESSAGE_ID_EMPTY: &str = "desktop.error.message_id_empty";
+    /// "Edited message cannot be empty"
+    pub const DESKTOP_ERROR_MESSAGE_EDITED_EMPTY: &str = "desktop.error.message_edited_empty";
+    /// "Trace ID cannot be empty"
+    pub const DESKTOP_ERROR_TRACE_ID_EMPTY: &str = "desktop.error.trace_id_empty";
+    /// "Message cannot be empty"
+    pub const DESKTOP_ERROR_MESSAGE_EMPTY: &str = "desktop.error.message_empty";
+    /// "Message exceeds maximum length of {max} characters (got {len})"
+    pub const DESKTOP_ERROR_MESSAGE_TOO_LONG: &str = "desktop.error.message_too_long";
     /// "Gateway startup timed out after {secs}s"
     pub const DESKTOP_ERROR_STARTUP_TIMEOUT: &str = "desktop.error.startup_timeout";
 

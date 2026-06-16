@@ -236,6 +236,16 @@ fn kill_process(...) {
 
 **建议**: 全文统一使用 `t.translate()` 调用，缺失的 key 加入 `shared/i18n` 资源。
 
+**✅ 已修复 (2026-06-16)**:
+
+- 在 `shared/i18n/src/i18n.en.json` / `i18n.zhs.json` 中补充 17 个新 key：
+  - `desktop.info.gateway_stopped`, `desktop.info.gateway_disconnected`, `desktop.info.skills_reloaded`, `desktop.info.skill_enabled`, `desktop.info.skill_disabled`, `desktop.info.workflow_retried`, `desktop.info.workflow_cancelled`, `desktop.info.soul_updated`, `desktop.info.plugin_enabled`, `desktop.info.plugin_disabled`, `desktop.info.dlq_retried`, `desktop.info.dlq_discarded`。
+  - `desktop.error.session_id_empty`, `desktop.error.message_id_empty`, `desktop.error.message_edited_empty`, `desktop.error.trace_id_empty`, `desktop.error.message_empty`, `desktop.error.message_too_long`。
+- 在 `shared/i18n/src/lib.rs` 新增对应的常量（`DESKTOP_INFO_*` / `DESKTOP_ERROR_*`）。
+- `desktop/src/commands.rs` 中 `stop_runtime`、`reload_skills`、`enable/disable_skill`、`retry/cancel_workflow`、`update_soul`、`enable/disable_plugin`、`retry/discard_dlq` 以及所有 chat 校验错误，全部改为 `t.translate()` / `t_with()` 调用。`chat_session_state_local` 因无 `AppState` 入参，使用 `Translator::default()` 兜底。
+
+**验证**：`cargo check -p aman-tauri-lib` 干净；`cargo clippy --workspace -- -D warnings` 干净；`cargo test --workspace` 全过。
+
 ### 9. `http.rs` 中 `"api"` 字符串出现 45+ 次
 
 `operator_from_headers(&headers).unwrap_or("api")` 在 http.rs 中重复 45+ 次。
@@ -247,6 +257,8 @@ fn kill_process(...) {
 1. `const DEFAULT_OPERATOR: &str = "api"`
 2. 抽 `with_audit(operator, action, target, fut)` 装饰器
 3. 抽 `require_confirmation(...)` helper
+
+**✅ 已修复 (2026-06-14)**：上述 DRY 重构已在 `http.rs` 落地，默认 operator、audit 装饰器、确认前置检查 helper 均已实现。
 
 ### 10. `MemoryProvider` 17 个 `unimplemented!()` 默认方法
 
@@ -307,7 +319,7 @@ pub enum Kind {
 
 **建议**: 写 `#[derive(Noop)]` proc-macro 统一生成。
 
-**✅ 部分修复 (2026-06-14)**:
+**✅ 已修复 (2026-06-14)**:
 
 - 新增 `#[proc_macro_derive(Noop)]`（`kernel/macros/src/noop.rs`），生成 10 个方法的 `PluginExportRegistrar` impl（5 个 `register_*` + 5 个 `unregister_*`），每个都是 `_` 参数 + `Ok(())`。
 - `NoopPluginRegistrar` 从 40 行手写 impl 折叠成 `#[derive(Default, macros::Noop)] pub struct NoopPluginRegistrar;`。**净 -37 行**。
@@ -315,7 +327,7 @@ pub enum Kind {
 - trybuild pass-test `tests/ui/noop_pass.rs` 验证展开：派生后的结构体能塞进 `Box<dyn PluginExportRegistrar>`。
 - 依赖：plugin 加 `macros = { path = "../macros" }`；macros 加 `quote = "1"` + dev-deps `kernel` / `plugin`。
 
-**未做**：`register_exports` / `unregister_exports` 里那 5 块重复的「for + push + register_* + 错误回滚」代码没动 — 这是函数内重复，proc-macro derive 不适用（derive 只能给 struct/enum 加方法，不能改 free function）。需要的重构是表驱动（按 `ExportKind` 数组迭代）或 trait-object 化，跟 derive 完全是两套机制。**属于独立 follow-up**。
+**✅ 已修复 (2026-06-15)**：`register_exports` / `unregister_exports` 里那 5 块重复的「for + push + register_* + 错误回滚」代码已用 `register_exports_block!` / `unregister_exports_block!` 宏表驱动化。每块改为宏调用里的一个 tuple 条目，注册/卸载顺序与回滚逻辑由宏统一生成，**净 -70 行**。
 
 **✅ Bugfix (2026-06-15)**：`has_manifest_exports()` 和 `validate_manifest_exports()` 补上遗漏的 `memory_providers` 检查。之前仅导出 `memory_providers` 的插件会被错误拒绝。
 

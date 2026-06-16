@@ -251,6 +251,7 @@ pub async fn start_runtime(
 
 #[tauri::command]
 pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> {
+    let t = translator(&state);
     // Best-effort call to the gateway's shutdown endpoint
     let base_url = {
         let guard = state.gateway_client.lock().await;
@@ -280,9 +281,9 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
     if let Some(mut child) = proc_guard.take() {
         let _ = child.kill().await;
         let _ = child.wait().await;
-        Ok("Gateway stopped".to_owned())
+        Ok(t.translate(i18n::key::DESKTOP_INFO_GATEWAY_STOPPED).to_owned())
     } else {
-        Ok("Disconnected from gateway".to_owned())
+        Ok(t.translate(i18n::key::DESKTOP_INFO_GATEWAY_DISCONNECTED).to_owned())
     }
 }
 
@@ -362,23 +363,26 @@ pub async fn list_llm_skills(state: State<'_, AppState>) -> Result<serde_json::V
 
 #[tauri::command]
 pub async fn reload_skills(state: State<'_, AppState>) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.reload_skills().await?;
-    Ok("Skills reloaded".to_owned())
+    Ok(t.translate(i18n::key::DESKTOP_INFO_SKILLS_RELOADED).to_owned())
 }
 
 #[tauri::command]
 pub async fn enable_skill(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.enable_skill(&name).await?;
-    Ok(format!("Skill '{name}' enabled"))
+    Ok(t_with(&t, i18n::key::DESKTOP_INFO_SKILL_ENABLED, [("name", name.as_str())].as_slice()))
 }
 
 #[tauri::command]
 pub async fn disable_skill(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.disable_skill(&name).await?;
-    Ok(format!("Skill '{name}' disabled"))
+    Ok(t_with(&t, i18n::key::DESKTOP_INFO_SKILL_DISABLED, [("name", name.as_str())].as_slice()))
 }
 
 #[tauri::command]
@@ -463,16 +467,18 @@ pub async fn get_workflow_instances(
 
 #[tauri::command]
 pub async fn retry_workflow(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.retry_workflow(&id).await?;
-    Ok("Workflow retried".to_owned())
+    Ok(t.translate(i18n::key::DESKTOP_INFO_WORKFLOW_RETRIED).to_owned())
 }
 
 #[tauri::command]
 pub async fn cancel_workflow(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.cancel_workflow(&id).await?;
-    Ok("Workflow cancelled".to_owned())
+    Ok(t.translate(i18n::key::DESKTOP_INFO_WORKFLOW_CANCELLED).to_owned())
 }
 
 #[tauri::command]
@@ -538,9 +544,10 @@ pub async fn preview_system_prompt(state: State<'_, AppState>) -> Result<String,
 
 #[tauri::command]
 pub async fn update_soul(state: State<'_, AppState>, content: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.update_soul(&content).await?;
-    Ok("SOUL updated".to_owned())
+    Ok(t.translate(i18n::key::DESKTOP_INFO_SOUL_UPDATED).to_owned())
 }
 
 #[tauri::command]
@@ -571,16 +578,26 @@ pub async fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginEntry>
 
 #[tauri::command]
 pub async fn enable_plugin(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.enable_plugin(&name).await?;
-    Ok(format!("Plugin {name} enabled"))
+    Ok(t_with(
+        &t,
+        i18n::key::DESKTOP_INFO_PLUGIN_ENABLED,
+        [("name", name.as_str())].as_slice(),
+    ))
 }
 
 #[tauri::command]
 pub async fn disable_plugin(state: State<'_, AppState>, name: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.disable_plugin(&name).await?;
-    Ok(format!("Plugin {name} disabled"))
+    Ok(t_with(
+        &t,
+        i18n::key::DESKTOP_INFO_PLUGIN_DISABLED,
+        [("name", name.as_str())].as_slice(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -636,16 +653,18 @@ pub async fn list_dlq(state: State<'_, AppState>) -> Result<Vec<DlqEntry>, Strin
 
 #[tauri::command]
 pub async fn retry_dlq(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.retry_dlq(&id).await?;
-    Ok("DLQ entry retried".to_owned())
+    Ok(t.translate(i18n::key::DESKTOP_INFO_DLQ_RETRIED).to_owned())
 }
 
 #[tauri::command]
 pub async fn discard_dlq(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    let t = translator(&state);
     let client = require_gateway(&state).await?;
     client.discard_dlq(&id).await?;
-    Ok("DLQ entry discarded".to_owned())
+    Ok(t.translate(i18n::key::DESKTOP_INFO_DLQ_DISCARDED).to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -657,8 +676,9 @@ pub async fn chat_stop_generation(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
     let client = require_gateway(&state).await?;
     client.chat_stop_generation(&session_id).await?;
@@ -674,6 +694,7 @@ pub async fn chat_send_message(
     #[allow(unused)]
     trace_prev: Option<String>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     let _start = Instant::now();
 
     // --- Rate limiting check (user-level: 10 msg / 60s sliding window, §4.5) ---
@@ -684,13 +705,18 @@ pub async fn chat_send_message(
     // Validate message length
     let len = text.chars().count();
     if len > 4096 {
-        return Err(format!("Message exceeds maximum length of 4096 characters (got {len})"));
+        let len_str = len.to_string();
+        return Err(t_with(
+            &t,
+            i18n::key::DESKTOP_ERROR_MESSAGE_TOO_LONG,
+            [("max", "4096"), ("len", len_str.as_str())].as_slice(),
+        ));
     }
     if text.trim().is_empty() {
-        return Err("Message cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_MESSAGE_EMPTY).to_owned());
     }
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -931,11 +957,12 @@ pub async fn chat_session_branch(
     agent_key: Option<String>,
     session_type: Option<String>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
     if message_id.trim().is_empty() {
-        return Err("Message ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_MESSAGE_ID_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -948,8 +975,9 @@ pub async fn chat_session_close(
     session_id: String,
     _expected_version: Option<u64>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -962,8 +990,9 @@ pub async fn chat_session_delete(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<(), String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
     let client = require_gateway(&state).await?;
     client.chat_delete_session(&session_id).await
@@ -975,8 +1004,9 @@ pub async fn chat_session_history(
     session_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<ChatMessageEntry>, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -998,8 +1028,9 @@ pub async fn chat_session_state(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<ChatSessionState, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -1034,7 +1065,11 @@ pub async fn chat_session_state_local(
     session_id: String,
 ) -> Result<ChatSessionState, String> {
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(
+            i18n::Translator::default()
+                .translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY)
+                .to_owned(),
+        );
     }
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_owned())?;
     let sessions_dir = std::path::PathBuf::from(&home)
@@ -1080,8 +1115,9 @@ pub async fn chat_retry_last(
     session_id: String,
     _expected_version: Option<u64>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -1097,11 +1133,12 @@ pub async fn chat_edit_message(
     text: String,
     expected_version: Option<u64>,
 ) -> Result<String, String> {
+    let t = translator(&state);
     if session_id.trim().is_empty() {
-        return Err("Session ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
     }
     if text.trim().is_empty() {
-        return Err("Edited message cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_MESSAGE_EDITED_EMPTY).to_owned());
     }
 
     let client = require_gateway(&state).await?;
@@ -1114,8 +1151,9 @@ pub async fn chat_trace_chain(
     state: State<'_, AppState>,
     trace_id: String,
 ) -> Result<serde_json::Value, String> {
+    let t = translator(&state);
     if trace_id.trim().is_empty() {
-        return Err("Trace ID cannot be empty".to_owned());
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_TRACE_ID_EMPTY).to_owned());
     }
     let client = require_gateway(&state).await?;
     client.event_trace(&trace_id).await

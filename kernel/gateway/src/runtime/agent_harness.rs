@@ -3059,3 +3059,111 @@ fn sanitize_api_keys(text: &str) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_remember_commands_extracts_single_marker() {
+        let (text, memories) = process_remember_commands("Hello [remember: user likes rust] world");
+        assert_eq!(text, "Hello  world");
+        assert_eq!(memories, vec!["user likes rust"]);
+    }
+
+    #[test]
+    fn process_remember_commands_extracts_multiple_markers() {
+        let (text, memories) =
+            process_remember_commands("[remember: foo] start [remember: bar] end [remember: baz]");
+        assert_eq!(text, "start  end");
+        assert_eq!(memories, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn process_remember_commands_keeps_literal_when_unclosed() {
+        let (text, memories) = process_remember_commands("Note [remember: unfinished");
+        assert_eq!(text, "Note [remember: unfinished");
+        assert!(memories.is_empty());
+    }
+
+    #[test]
+    fn process_remember_commands_ignores_empty_or_short_content() {
+        let (text, memories) = process_remember_commands("[remember: ] [remember: x] valid");
+        assert_eq!(text, "valid");
+        assert!(memories.is_empty());
+    }
+
+    #[test]
+    fn sanitize_api_keys_redacts_openai_key_in_api_key_context() {
+        let input = r#"{ "apiKey": "sk-abcdefghijklmnopqrstuvwxyz12" }"#;
+        let out = sanitize_api_keys(input);
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("sk-abcdefghijklmnopqrstuvwxyz12"));
+    }
+
+    #[test]
+    fn sanitize_api_keys_redacts_bearer_authorization() {
+        let input = "Authorization: Bearer sk-12345678901234567890";
+        let out = sanitize_api_keys(input);
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn sanitize_api_keys_leaves_sk_outside_api_context() {
+        let input = "The ski-trip to sk-foo was fun";
+        let out = sanitize_api_keys(input);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn build_continuation_context_empty_history() {
+        let ctx = build_continuation_context(&[]);
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].role, ChatMessageRole::System);
+        assert!(ctx[0].content.contains("[Previous Session Summary]"));
+    }
+
+    #[test]
+    fn build_continuation_context_summarizes_user_assistant_exchange() {
+        let history = vec![
+            ChatMessage::user("Find the answer"),
+            ChatMessage::assistant("Working on it"),
+            ChatMessage::user("Any update?"),
+            ChatMessage::assistant("Still searching"),
+        ];
+        let ctx = build_continuation_context(&history);
+        let summary = &ctx[0].content;
+        assert!(summary.contains("Goal: Find the answer"));
+        assert!(summary.contains("4 messages exchanged"));
+        assert!(summary.contains("Status: incomplete"));
+        assert!(summary.contains("Last action: Still searching"));
+    }
+
+    #[test]
+    fn build_continuation_context_detects_collision_found() {
+        let history = vec![
+            ChatMessage::user("Search collision"),
+            ChatMessage::tool_result("tc1", "search", "COLLISION FOUND for block 42"),
+        ];
+        let ctx = build_continuation_context(&history);
+        let summary = &ctx[0].content;
+        assert!(summary.contains("COLLISION FOUND"));
+        assert!(summary.contains("Status: complete"));
+    }
+
+    #[test]
+    fn build_continuation_context_counts_tool_calls() {
+        let mut assistant_msg = ChatMessage::assistant("using tools");
+        assistant_msg.tool_calls = Some(vec![
+            serde_json::json!({"function": {"name": "grep"}}),
+            serde_json::json!({"function": {"name": "grep"}}),
+            serde_json::json!({"function": {"name": "cat"}}),
+        ]);
+        let history = vec![ChatMessage::user("Run tools"), assistant_msg];
+        let ctx = build_continuation_context(&history);
+        let summary = &ctx[0].content;
+        assert!(summary.contains("Tool usage: 3 calls across 2 unique tools"));
+        assert!(summary.contains("grep: 2 calls"));
+        assert!(summary.contains("cat: 1 calls"));
+    }
+}

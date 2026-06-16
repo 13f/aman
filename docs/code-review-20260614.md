@@ -176,7 +176,7 @@ fn kill_process(...) {
 |---|---|---|
 | `agent_runtime.rs` | 5110 | **10** |
 | `http.rs` | 4264 | **10** |
-| `agent_harness.rs` | 2801 | **0** |
+| `agent_harness.rs` | 2801 | **11** |
 | `desktop/commands.rs` | 2764 | **0** |
 | `desktop/gateway_client.rs` | 990 | **0** |
 | `cli/main.rs` | 2172 | **2** |
@@ -196,7 +196,8 @@ fn kill_process(...) {
 
 - **RuntimeLifecycle 单元测试落地**：`kernel/gateway/src/runtime/agent_runtime.rs` 新增 9 个 `RuntimeLifecycle` 状态机测试，覆盖初始状态、phase 往返、`mark_ready`、启动门控（New→Starting、幂等、Ready 可重入、Shutdown 拒绝）、关闭门控（New→ShuttingDown、幂等、`mark_shutdown`、通知等待者）。这些测试不依赖完整 `AgentRuntime` 构造，直接验证 P0-2 提取出的生命周期子系统。
 - **HTTP helper 单元测试落地**：`kernel/gateway/src/runtime/http.rs` 新增 10 个纯本地单元测试，覆盖 `parse_bearer`、`operator_from_headers`、`require_confirmation`、`guard_confirmation`、`with_audit` 五个 helper。验证 token 提取、operator header 修剪、确认头匹配规则、缺确认头时的冲突短路与审计记录、成功/失败结果的审计记录与状态码映射。
-- 更新覆盖率表：`agent_runtime.rs` 从 1 个测试 → 10 个；`http.rs` 从 0 个 → 10 个。
+- **Agent harness 单元测试落地**：`kernel/gateway/src/runtime/agent_harness.rs` 新增 11 个纯本地单元测试，覆盖 `process_remember_commands`（单/多标记、未闭合、空/短内容）、`sanitize_api_keys`（apiKey/Bearer 上下文脱敏、非 API 上下文保留）、`build_continuation_context`（空历史、用户/助手对话摘要、工具结果中的 COLLISION FOUND、结构化 tool_calls 计数）。
+- 更新覆盖率表：`agent_runtime.rs` 从 1 个测试 → 10 个；`http.rs` 从 0 个 → 10 个；`agent_harness.rs` 从 0 个 → 11 个。
 
 **✅ 部分修复 (2026-06-16)**:
 
@@ -210,7 +211,7 @@ fn kill_process(...) {
 **✅ 部分修复 (2026-06-14)**:
 
 - **CognitiveEngine trait 合约测试落地**：`cognitive/llm/tests/cognitive_engine_contract.rs` 新增 7 个合约测试 + 1 个 stub 自测（共 8 个测试），用 inline `StubLlmProvider` 实现 `cognitive_llm::provider::LlmProvider`。覆盖 `process` 的空观测短路、provider 错误的 `EngineError` 包装、text/tool-call 决策、`subscribe`/`unsubscribe` 的 `Arc::as_ptr` 身份比较、`reset_session` 幂等性。同时把 `LlmCognitiveEngine::emit` 从 private `#[allow(dead_code)]` 升为 `pub fn`，让外部 tests/ 能直接驱动 listener 注册表（生产代码路径不变 — `process` 仍不调用 `emit`，那是后续 streaming PR 的工作）。
-- **范围**：`agent_harness.rs` 仍未加测试；`agent_runtime.rs` 与 `http.rs` 已新增 helper/生命周期单元测试，但集成测试覆盖仍不足。
+- **范围**：`agent_runtime.rs` / `http.rs` / `agent_harness.rs` 均已新增本地 helper 单元测试，但三个文件的集成测试（完整 runtime → HTTP → harness 链路）仍未覆盖。
 - **Stub 选型说明**：inline 而不是 `test_utils::MockLLMProvider` 复用，因为 `test_utils::MockLLMProvider` 实现的是 kernel-style trait（`complete`/`chat`），而 `LlmCognitiveEngine` 需要 `cognitive_llm::provider::LlmProvider`（`chat_completion(LlmChatRequest, Option<callback>)`）— 两者是 P0-1 已识别的并行重复 trait。桥接会引入新 kernel→cognitive-llm 边，**反转 P0-1 刚建立的解耦**。
 
 **验证**：`cargo test -p cognitive-llm --test cognitive_engine_contract` 8/8 通过；`cargo build -p cognitive-llm --tests` 干净。

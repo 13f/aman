@@ -24,6 +24,15 @@ use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// eprintln! wrapper that redacts sensitive data before printing.
+/// Used for startup errors before the tracing subscriber is active.
+macro_rules! safe_eprintln {
+    ($($arg:tt)*) => {
+        let msg = format!($($arg)*);
+        eprintln!("{}", kernel::redactor::redact_sensitive_data(&msg));
+    };
+}
+
 static _AI_SIGNAL: () = {
     let _ = std::any::TypeId::of::<AmanSignalV1>();
 };
@@ -103,7 +112,7 @@ async fn run() -> Result<(), i32> {
     // Load config from file or default path.
     let config = ConfigLoader::load(config_path.as_deref(), None)
         .map_err(|e| {
-            eprintln!("Config load error: {e}");
+            safe_eprintln!("Config load error: {e}");
             1
         })?
         .config;
@@ -118,7 +127,7 @@ async fn run() -> Result<(), i32> {
     )
     .await
     .map_err(|e| {
-        eprintln!("HTTP server error: {e}");
+        safe_eprintln!("HTTP server error: {e}");
         1
     })?;
 
@@ -147,12 +156,12 @@ async fn run() -> Result<(), i32> {
                 match r {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        eprintln!("Runtime start error: {e}");
+                        safe_eprintln!("Runtime start error: {e}");
                         return Err(1);
                     }
                     Err(_) => {
                         let phase = runtime.phase();
-                        eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+                        safe_eprintln!("Runtime start timed out after 30s (phase={phase:?})");
                         return Err(1);
                     }
                 }
@@ -179,12 +188,12 @@ async fn run() -> Result<(), i32> {
                 match r {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        eprintln!("Runtime start error: {e}");
+                        safe_eprintln!("Runtime start error: {e}");
                         return Err(1);
                     }
                     Err(_) => {
                         let phase = runtime.phase();
-                        eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+                        safe_eprintln!("Runtime start timed out after 30s (phase={phase:?})");
                         return Err(1);
                     }
                 }
@@ -364,7 +373,7 @@ fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<St
                 i += 1;
             }
             _ => {
-                eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]");
+                safe_eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]");
                 return Err(2);
             }
         }
@@ -391,7 +400,7 @@ fn build_runtime(
 
     let runtime = std::thread::spawn(move || {
         builder.build().map_err(|e| {
-            eprintln!("Runtime build error: {e}");
+            safe_eprintln!("Runtime build error: {e}");
             1
         })
     })

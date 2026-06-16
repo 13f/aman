@@ -4610,6 +4610,7 @@ dependencies = [
  "kernel",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "yantrikdb",

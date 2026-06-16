@@ -96,20 +96,6 @@ pub enum RuntimePhase {
     Phase5 = 6,
 }
 
-impl RuntimePhase {
-    fn from_u8(value: u8) -> Self {
-        match value {
-            0 => Self::Phase0,
-            1 => Self::Phase05,
-            2 => Self::Phase1,
-            3 => Self::Phase2,
-            4 => Self::Phase3,
-            5 => Self::Phase4,
-            _ => Self::Phase5,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeStatus {
     New,
@@ -1960,11 +1946,7 @@ impl AgentRuntimeBuilder {
             soul_thread: Mutex::new(None),
             backpressure_stop: Arc::new(AtomicBool::new(false)),
             backpressure_task: Mutex::new(None),
-            phase: AtomicU8::new(RuntimePhase::Phase0 as u8),
-            status: RwLock::new(RuntimeStatus::New),
-            transition_lock: Mutex::new(()),
-            shutdown_requested: AtomicBool::new(false),
-            startup_pause: self.startup_pause,
+            lifecycle: RuntimeLifecycle::new(self.startup_pause),
             inflight_pipelines,
             inflight_skills,
             metrics,
@@ -1979,7 +1961,6 @@ impl AgentRuntimeBuilder {
             agent_registry,
             agent_harness,
             session_manager,
-            shutdown_notify: tokio::sync::Notify::new(),
             self_bridge,
             sse_broadcast: sse_state,
             hook_registry,
@@ -2721,17 +2702,9 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
 /// triad that gates `start()` and `shutdown()`.
 ///
 /// This is the first extracted subsystem from the `AgentRuntime` god struct
-/// (P0-4 in `docs/code-review-20260614.md`). It is intentionally small and
-/// focuses on the state-machine concerns; the remaining subsystems
-/// (`Event`, `Skill`, `Plugin`, `Messaging`) are larger refactors that will
-/// follow the same pattern in subsequent PRs.
-///
-/// Public surface:
-/// - `start()` / `shutdown()` — same semantics as before, but the
-///   short-lock-window fix from P0-3 lives here.
-/// - `phase()`, `status()`, `transition_lock()` — read-only accessors for
-///   callers that need to observe lifecycle state.
-#[allow(dead_code)] // Public API for subsystem extraction — wired into AgentRuntime in a follow-up PR.
+/// (P0-2 in `docs/code-review-20260614.md`). It intentionally owns only the
+/// state-machine primitives; the per-phase work stays in `AgentRuntime`, which
+/// calls `set_phase()` and the start/shutdown gates here.
 pub struct RuntimeLifecycle {
     phase: AtomicU8,
     status: RwLock<RuntimeStatus>,
@@ -2741,7 +2714,6 @@ pub struct RuntimeLifecycle {
     startup_pause: Duration,
 }
 
-#[allow(dead_code)] // Public API for subsystem extraction — wired into AgentRuntime in a follow-up PR.
 impl RuntimeLifecycle {
     /// Construct a fresh lifecycle in `New` state.
     pub fn new(startup_pause: Duration) -> Self {
@@ -2770,9 +2742,37 @@ impl RuntimeLifecycle {
         }
     }
 
+    /// Set the runtime phase.
+    pub fn set_phase(&self, phase: RuntimePhase) {
+        self.phase.store(phase as u8, Ordering::Release);
+    }
+
     /// Current runtime status.
     pub async fn status(&self) -> RuntimeStatus {
         *self.status.read().await
+    }
+
+    /// Whether the runtime has reached `Ready` and is therefore live.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.phase() == RuntimePhase::Phase5
+    }
+
+    /// Whether the runtime is not fully shut down. Returns `true` if the
+    /// status lock is currently held, matching the previous `AgentRuntime`
+    /// behavior.
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        match self.status.try_read() {
+            Ok(guard) => *guard != RuntimeStatus::Shutdown,
+            Err(_) => true,
+        }
+    }
+
+    /// Configured pause between startup/shutdown phase transitions.
+    #[must_use]
+    pub fn startup_pause(&self) -> Duration {
+        self.startup_pause
     }
 
     /// Whether a shutdown has been requested.
@@ -2781,9 +2781,15 @@ impl RuntimeLifecycle {
         self.shutdown_requested.load(Ordering::Acquire)
     }
 
+    /// Returns a reference to the shutdown-complete notification channel.
+    #[must_use]
+    pub fn shutdown_notify(&self) -> &tokio::sync::Notify {
+        &self.shutdown_notify
+    }
+
     /// Notify waiters that shutdown has completed.
     pub fn notify_shutdown_complete(&self) {
-        self.shutdown_notify.notify_waiters();
+        self.shutdown_notify.notify_one();
     }
 
     /// Wait for the shutdown-complete notification.
@@ -2794,7 +2800,7 @@ impl RuntimeLifecycle {
     /// Atomic `New → Starting` gate. Returns `Ok(())` if we acquired the
     /// gate, `Err` if a previous `start()` is in progress, or if the
     /// runtime is already shutting down / shut down.
-    async fn try_acquire_start_gate(&self) -> Result<(), Error> {
+    pub async fn try_acquire_start_gate(&self) -> Result<(), Error> {
         let _guard = self.transition_lock.lock().await;
         let current = *self.status.read().await;
         match current {
@@ -2812,8 +2818,9 @@ impl RuntimeLifecycle {
         Ok(())
     }
 
-    /// Atomic `Ready → ShuttingDown` gate.
-    async fn try_acquire_shutdown_gate(&self) -> Result<(), ()> {
+    /// Atomic `Ready → ShuttingDown` gate. Returns `Ok(())` on success,
+    /// `Err(())` if the runtime is already shut down.
+    pub async fn try_acquire_shutdown_gate(&self) -> Result<(), ()> {
         self.shutdown_requested.store(true, Ordering::Release);
         let _guard = self.transition_lock.lock().await;
         let current = *self.status.read().await;
@@ -2825,21 +2832,14 @@ impl RuntimeLifecycle {
     }
 
     /// Mark the runtime as fully shut down.
-    async fn mark_shutdown(&self) {
+    pub async fn mark_shutdown(&self) {
         *self.status.write().await = RuntimeStatus::Shutdown;
         self.notify_shutdown_complete();
     }
 
     /// Mark the runtime as ready after start completes.
-    async fn mark_ready(&self) {
+    pub async fn mark_ready(&self) {
         *self.status.write().await = RuntimeStatus::Ready;
-    }
-
-    /// Bump the phase forward by one step. Helper for `start()` and
-    /// `shutdown()`.
-    async fn bump_phase(&self, target: RuntimePhase) -> Result<(), Error> {
-        self.phase.store(target as u8, Ordering::Release);
-        Ok(())
     }
 }
 
@@ -2874,11 +2874,7 @@ pub struct AgentRuntime {
     soul_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     backpressure_stop: Arc<AtomicBool>,
     backpressure_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    phase: AtomicU8,
-    status: RwLock<RuntimeStatus>,
-    transition_lock: Mutex<()>,
-    shutdown_requested: AtomicBool,
-    startup_pause: Duration,
+    lifecycle: RuntimeLifecycle,
     inflight_pipelines: Arc<AtomicUsize>,
     inflight_skills: Arc<AtomicUsize>,
     metrics: super::metrics::MetricsRegistry,
@@ -2912,10 +2908,6 @@ pub struct AgentRuntime {
     /// Session manager — orchestrates session lifecycle, OCC, persistence,
     /// and system prompt caching independently of the chat transport.
     session_manager: Arc<super::session::SessionManager>,
-    /// Notified when `shutdown()` completes. Used by `main.rs` to exit the
-    /// process after an HTTP-initiated shutdown (the signal handler path
-    /// would otherwise never be reached).
-    shutdown_notify: tokio::sync::Notify,
     /// Python self-module bridge for prompt building (Phase 2+).
     self_bridge: super::self_bridge::SelfBridge,
     /// SSE broadcast state — fans out events and snapshots to connected clients.
@@ -3287,24 +3279,21 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn phase(&self) -> RuntimePhase {
-        RuntimePhase::from_u8(self.phase.load(Ordering::Acquire))
+        self.lifecycle.phase()
     }
 
     pub async fn status(&self) -> RuntimeStatus {
-        *self.status.read().await
+        self.lifecycle.status().await
     }
 
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.phase() == RuntimePhase::Phase5
+        self.lifecycle.is_ready()
     }
 
     #[must_use]
     pub fn is_live(&self) -> bool {
-        match self.status.try_read() {
-            Ok(guard) => *guard != RuntimeStatus::Shutdown,
-            Err(_) => true,
-        }
+        self.lifecycle.is_live()
     }
 
     #[must_use]
@@ -3567,7 +3556,7 @@ impl AgentRuntime {
     /// Callers can `.await` on `notified()` to wait for shutdown completion.
     #[must_use]
     pub fn shutdown_notify(&self) -> &tokio::sync::Notify {
-        &self.shutdown_notify
+        self.lifecycle.shutdown_notify()
     }
 
     #[must_use]
@@ -3852,27 +3841,11 @@ impl AgentRuntime {
 
     #[instrument(skip(self))]
     pub async fn start(&self) -> AmanResult<()> {
-        let _guard = self.transition_lock.lock().await;
+        self.lifecycle.try_acquire_start_gate().await?;
         self.ensure_observer_subscribed().await?;
         self.ensure_soul_watching().await?;
         self.ensure_skill_watching().await?;
         self.ensure_backpressure_watching().await?;
-
-        let current = *self.status.read().await;
-        match current {
-            RuntimeStatus::Ready => return Ok(()),
-            RuntimeStatus::ShuttingDown | RuntimeStatus::Shutdown => {
-                return Err(Error::InvalidStateTransition {
-                    message: "runtime is shutting down".to_owned(),
-                });
-            }
-            RuntimeStatus::Starting => return Ok(()),
-            RuntimeStatus::New => {}
-        }
-
-        self.shutdown_requested.store(false, Ordering::Release);
-        *self.status.write().await = RuntimeStatus::Starting;
-        self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
 
         tracing::info!("runtime start: Phase0");
         self.bump_phase(RuntimePhase::Phase0).await?;
@@ -3889,7 +3862,7 @@ impl AgentRuntime {
         tracing::info!("runtime start: Phase5");
         self.bump_phase(RuntimePhase::Phase5).await?;
 
-        *self.status.write().await = RuntimeStatus::Ready;
+        self.lifecycle.mark_ready().await;
         Ok(())
     }
 
@@ -4095,15 +4068,9 @@ impl AgentRuntime {
 
     #[instrument(skip(self))]
     pub async fn shutdown(&self) -> AmanResult<()> {
-        self.shutdown_requested.store(true, Ordering::Release);
-
-        let _guard = self.transition_lock.lock().await;
-
-        let current = *self.status.read().await;
-        if current == RuntimeStatus::Shutdown {
+        if self.lifecycle.try_acquire_shutdown_gate().await.is_err() {
             return Ok(());
         }
-        *self.status.write().await = RuntimeStatus::ShuttingDown;
 
         self.bump_shutdown_phase(RuntimePhase::Phase5).await?;
         self.bump_shutdown_phase(RuntimePhase::Phase4).await?;
@@ -4117,38 +4084,38 @@ impl AgentRuntime {
         self.stop_skill_watching().await;
         self.stop_backpressure_watching().await;
 
-        *self.status.write().await = RuntimeStatus::Shutdown;
-        self.shutdown_notify.notify_one();
+        self.lifecycle.mark_shutdown().await;
         Ok(())
     }
 
     async fn bump_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
-        if self.shutdown_requested.load(Ordering::Acquire) && phase != RuntimePhase::Phase0 {
-            self.bump_shutdown_phase(self.phase()).await?;
-            *self.status.write().await = RuntimeStatus::Shutdown;
+        if self.lifecycle.shutdown_requested() && phase != RuntimePhase::Phase0 {
+            self.bump_shutdown_phase(self.lifecycle.phase()).await?;
+            self.lifecycle.mark_shutdown().await;
             return Err(Error::InvalidStateTransition {
                 message: "startup interrupted by shutdown".to_owned(),
             });
         }
 
-        if !self.startup_pause.is_zero() {
-            tokio::time::sleep(self.startup_pause).await;
+        let startup_pause = self.lifecycle.startup_pause();
+        if !startup_pause.is_zero() {
+            tokio::time::sleep(startup_pause).await;
         }
 
         tracing::info!(?phase, "bump_phase enter");
         match phase {
             RuntimePhase::Phase0 => {
-                self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase0);
             }
             RuntimePhase::Phase05 => {
-                self.phase.store(RuntimePhase::Phase05 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase05);
             }
             RuntimePhase::Phase1 => {
                 if let Some(persistent) = &self.persistent_bus {
                     let _ = persistent.recover_from_wal().await?;
                     let _ = persistent.recover_from_overflow()?;
                 }
-                self.phase.store(RuntimePhase::Phase1 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase1);
             }
             RuntimePhase::Phase2 => {
                 let _ = self.skill_hot_reload.reload_once()?;
@@ -4175,13 +4142,13 @@ impl AgentRuntime {
                     }
                 }
                 tracing::info!("Phase2: store");
-                self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase2);
             }
             RuntimePhase::Phase3 => {
                 if let Err(e) = self.load_workflows_once() {
                     tracing::warn!(error = %e, "Phase3: failed to load workflows; no workflows available");
                 }
-                self.phase.store(RuntimePhase::Phase3 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase3);
             }
             RuntimePhase::Phase4 => {
                 // Start per-agent idle loops
@@ -4195,17 +4162,17 @@ impl AgentRuntime {
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {
-                    if self.shutdown_requested.load(Ordering::Acquire) {
+                    if self.lifecycle.shutdown_requested() {
                         break;
                     }
                     tracing::info!(id = %source.id, "starting source");
                     self.sources.start(&source.id).await?;
                     tracing::info!(id = %source.id, "source started");
                 }
-                self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase4);
             }
             RuntimePhase::Phase5 => {
-                self.phase.store(RuntimePhase::Phase5 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase5);
             }
         }
         Ok(())
@@ -4240,8 +4207,9 @@ impl AgentRuntime {
 
     async fn bump_shutdown_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
         tracing::info!(?phase, "bump_shutdown_phase enter");
-        if !self.startup_pause.is_zero() {
-            tokio::time::sleep(self.startup_pause).await;
+        let startup_pause = self.lifecycle.startup_pause();
+        if !startup_pause.is_zero() {
+            tokio::time::sleep(startup_pause).await;
         }
 
         match phase {
@@ -4250,7 +4218,7 @@ impl AgentRuntime {
                 // refs and their never-ending loops would prevent Tokio's
                 // multi-threaded Runtime::drop() from ever returning.
                 self.sse_broadcast.stop_background_tasks().await;
-                self.phase.store(RuntimePhase::Phase4 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase4);
             }
             RuntimePhase::Phase4 => {
                 // Stop agent idle/work systems before draining the event bus.
@@ -4306,10 +4274,10 @@ impl AgentRuntime {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 tracing::info!("Phase4: event bus drain complete");
-                self.phase.store(RuntimePhase::Phase3 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase3);
             }
             RuntimePhase::Phase3 => {
-                self.phase.store(RuntimePhase::Phase2 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase2);
             }
             RuntimePhase::Phase2 => {
                 {
@@ -4327,7 +4295,7 @@ impl AgentRuntime {
                 // Clear agent registry during shutdown
                 self.agent_registry.clear().await;
                 tracing::info!("Phase2: plugin unload and agent registry clear complete");
-                self.phase.store(RuntimePhase::Phase1 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase1);
             }
             RuntimePhase::Phase1 => {
                 if let Some(persistent) = &self.persistent_bus {
@@ -4356,13 +4324,13 @@ impl AgentRuntime {
                     }
                 }
                 tracing::info!("Phase1: WAL checkpoint complete");
-                self.phase.store(RuntimePhase::Phase05 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase05);
             }
             RuntimePhase::Phase05 => {
-                self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase0);
             }
             RuntimePhase::Phase0 => {
-                self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
+                self.lifecycle.set_phase(RuntimePhase::Phase0);
             }
         }
         Ok(())

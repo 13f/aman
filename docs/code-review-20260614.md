@@ -48,11 +48,11 @@ tui# Aaman 项目代码质量评估报告
 
 ### 2. `AgentRuntime` God Struct + 1780 行 builder
 
-**文件**: `kernel/gateway/src/runtime/agent_runtime.rs:2709-2789` (61 字段), `build()` 200-1980 (1780 行)
+**文件**: `kernel/gateway/src/runtime/agent_runtime.rs:2846` (`AgentRuntime` 字段区), `build()` 120-2000 (~1880 行)
 
 **症状**:
 
-- 61 个字段的单结构体，承担 Event/Skill/Plugin/Messaging/Lifecycle 全部子系统
+- 55 个字段的单结构体，承担 Event/Skill/Plugin/Messaging/Lifecycle 全部子系统
 - 15+ 个 handler 结构体内联在 `build()` 内
 - 86 个 `.clone()`，11 个 `.unwrap()`/`expect()`
 - 86 个 magic string（provider 名称、platform 名称、source 类型）
@@ -66,14 +66,18 @@ tui# Aaman 项目代码质量评估报告
 
 **预期收益**: 单文件 -1500 行，子系统可独立测试
 
+**✅ 已修复 (2026-06-16)**:
+
+- **`RuntimeLifecycle` 正式迁入 `AgentRuntime`**：`AgentRuntime` 现在内嵌 `lifecycle: RuntimeLifecycle`（`agent_runtime.rs:2846`），原 6 个生命周期字段（`phase` / `status` / `transition_lock` / `shutdown_requested` / `shutdown_notify` / `startup_pause`）已从 `AgentRuntime` 移除。`RuntimeLifecycle` 不再标记 `#[allow(dead_code)]`，其公开 API 包括 `phase()` / `status()` / `is_ready()` / `is_live()` / `shutdown_notify()` / `set_phase()` / `try_acquire_start_gate()` / `try_acquire_shutdown_gate()` / `mark_ready()` / `mark_shutdown()` / `notify_shutdown_complete()`。
+- **`start()` / `shutdown()` 完全通过生命周期子系统推进**：`start()` 调用 `try_acquire_start_gate()` 获取原子启动门控，然后执行 `ensure_*()` / `bump_phase()`，最后 `mark_ready()`；`shutdown()` 调用 `try_acquire_shutdown_gate()`，执行反向 `bump_shutdown_phase()`，清理 watcher，最后 `mark_shutdown()`。状态转换的锁窗口保持最短，不跨越 await。
+- **已删除未使用的 `RuntimePhase::from_u8`**： phase 转换统一通过 `RuntimeLifecycle::phase()` / `set_phase()` 完成。
+
 **✅ 部分修复 (2026-06-14)**:
 
-- **首个子系统提取**：`RuntimeLifecycle` 已从 `AgentRuntime` 抽出（`agent_runtime.rs:2711`），封装 `phase` / `status` / `transition_lock` / `shutdown_requested` / `shutdown_notify` / `startup_pause` 6 个生命周期字段。这是 5 个建议子系统中第一个落地，验证拆分模式。
-- **生命周期方法封装**：将 `try_acquire_start_gate()` / `try_acquire_shutdown_gate()` / `mark_ready()` / `mark_shutdown()` / `bump_phase()` 私有方法移到 `RuntimeLifecycle` 上，集中 state-machine 推进逻辑。`start()` / `shutdown()` 后续可通过 `self.lifecycle.xxx()` 调用，消除对内联字段的依赖。
 - **Magic string 集中**：新增 `kernel/gateway/src/runtime/event_consts.rs` 模块，集中所有 event-type 常量（`EVT_TOOL_DISPATCHED` / `EVT_AGENT_BUSY` / `SOURCE_AGENT_HARNESS` 等 23 个常量），`agent_harness.rs` 32 处 `"agent:harness"` 字符串 + 33 处 `EventType::Custom("...")` 已全部迁移到常量。包含守卫测试确保常量非空、无 NUL。
 - **re-export**：通过 `runtime::mod.rs` 公开 `RuntimeLifecycle`。
 
-**当前状态**：`RuntimeLifecycle` 是公共 API（标 `#[allow(dead_code)]`，待后续 PR 把 `AgentRuntime` 的字段迁入并改写 `start()` / `shutdown()` 调用方式）；`event_consts` 已落地并被实际使用。剩余 4 个子系统（`EventSubsystem` / `SkillSubsystem` / `PluginSubsystem` / `MessagingSubsystem`）+ `build()` 拆分属于 P3 长期工作，跟随同一模式逐 PR 完成。
+**当前状态**：生命周期子系统已完全落地；剩余 4 个子系统（`EventSubsystem` / `SkillSubsystem` / `PluginSubsystem` / `MessagingSubsystem`）+ `build()` 拆分属于 P3 长期工作，跟随同一模式逐 PR 完成。
 
 ### 3. 并发安全：跨 await 持锁 + 嵌套锁
 

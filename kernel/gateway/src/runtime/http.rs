@@ -3955,3 +3955,138 @@ async fn mcp_reload(
 
     Ok(Json(json!({"ok": true, "agent": agent_key})))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{guard_confirmation, operator_from_headers, parse_bearer, require_confirmation, with_audit};
+    use super::AuditLogger;
+    use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+    use kernel::Error;
+
+    fn header_map(name: &str, value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            name.parse::<HeaderName>().unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+        headers
+    }
+
+    #[test]
+    fn parse_bearer_extracts_token() {
+        let headers = header_map("authorization", "Bearer secret-token");
+        assert_eq!(parse_bearer(&headers), Some("secret-token".to_owned()));
+    }
+
+    #[test]
+    fn parse_bearer_rejects_missing_header() {
+        let headers = HeaderMap::new();
+        assert_eq!(parse_bearer(&headers), None);
+    }
+
+    #[test]
+    fn parse_bearer_rejects_malformed_value() {
+        let headers = header_map("authorization", "Basic secret-token");
+        assert_eq!(parse_bearer(&headers), None);
+    }
+
+    #[test]
+    fn operator_from_headers_reads_and_trims_custom_header() {
+        let headers = header_map("x-aman-operator", "  alice  ");
+        assert_eq!(operator_from_headers(&headers), Some("alice"));
+    }
+
+    #[test]
+    fn operator_from_headers_returns_none_for_empty_header() {
+        let headers = header_map("x-aman-operator", "   ");
+        assert_eq!(operator_from_headers(&headers), None);
+    }
+
+    #[test]
+    fn operator_from_headers_returns_none_when_missing() {
+        let headers = HeaderMap::new();
+        assert_eq!(operator_from_headers(&headers), None);
+    }
+
+    #[test]
+    fn require_confirmation_matches_yes() {
+        assert!(require_confirmation(&header_map("x-aman-confirm", "yes")));
+        assert!(require_confirmation(&header_map("x-aman-confirm", "YES")));
+    }
+
+    #[test]
+    fn require_confirmation_rejects_other_values() {
+        assert!(!require_confirmation(&header_map("x-aman-confirm", "no")));
+        assert!(!require_confirmation(&header_map("x-aman-confirm", "true")));
+        assert!(!require_confirmation(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn guard_confirmation_short_circuits_when_header_absent() {
+        let audit = AuditLogger::new(10);
+        let response = guard_confirmation(
+            &audit,
+            "api",
+            "test.action",
+            "test.resource",
+            &HeaderMap::new(),
+        )
+        .expect("guard should reject");
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let records = audit.list(Some("test.action"), None, None, None, 0, 10);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, "confirm_required");
+    }
+
+    #[test]
+    fn guard_confirmation_passes_when_header_present() {
+        let audit = AuditLogger::new(10);
+        assert!(guard_confirmation(
+            &audit,
+            "api",
+            "test.action",
+            "test.resource",
+            &header_map("x-aman-confirm", "yes"),
+        )
+        .is_none());
+        assert!(audit.list(Some("test.action"), None, None, None, 0, 10).is_empty());
+    }
+
+    #[test]
+    fn with_audit_records_ok_and_returns_200() {
+        let audit = AuditLogger::new(10);
+        let response = with_audit(
+            &audit,
+            "api",
+            "test.action",
+            "test.resource",
+            Ok(()),
+        );
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let records = audit.list(Some("test.action"), None, None, None, 0, 10);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, "ok");
+    }
+
+    #[test]
+    fn with_audit_records_error_and_maps_status_code() {
+        let audit = AuditLogger::new(10);
+        let response = with_audit(
+            &audit,
+            "api",
+            "test.action",
+            "test.resource",
+            Err(Error::NotFound {
+                name: "missing".to_owned(),
+            }),
+        );
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let records = audit.list(Some("test.action"), None, None, None, 0, 10);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].outcome, "error");
+        assert!(records[0].detail.contains("missing"));
+    }
+}

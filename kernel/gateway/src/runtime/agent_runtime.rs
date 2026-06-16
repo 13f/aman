@@ -4652,7 +4652,10 @@ fn secret_resolver_config(runtime_dir: &Path) -> SecretResolverConfig {
 #[cfg(test)]
 mod tests {
     use super::resolve_secrets_in_config;
+    use super::{RuntimeLifecycle, RuntimePhase, RuntimeStatus};
     use config::AgentConfig;
+    use std::sync::Arc;
+    use std::time::Duration;
     use super::super::AuditLogger;
 
     #[test]
@@ -4662,6 +4665,101 @@ mod tests {
         let audit = AuditLogger::new(100);
         let resolved = resolve_secrets_in_config(config, &std::env::temp_dir(), &audit).expect("resolve");
         assert_eq!(resolved.source.watch_patterns, vec!["resolved".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_initial_state() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        assert_eq!(lc.phase(), RuntimePhase::Phase0);
+        assert_eq!(lc.status().await, RuntimeStatus::New);
+        assert!(!lc.is_ready());
+        assert!(lc.is_live());
+        assert!(!lc.shutdown_requested());
+        assert_eq!(lc.startup_pause(), Duration::from_millis(0));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_set_phase_roundtrip() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        for phase in [
+            RuntimePhase::Phase0,
+            RuntimePhase::Phase05,
+            RuntimePhase::Phase1,
+            RuntimePhase::Phase2,
+            RuntimePhase::Phase3,
+            RuntimePhase::Phase4,
+            RuntimePhase::Phase5,
+        ] {
+            lc.set_phase(phase);
+            assert_eq!(lc.phase(), phase);
+        }
+    }
+
+    #[tokio::test]
+    async fn lifecycle_mark_ready() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        lc.set_phase(RuntimePhase::Phase5);
+        lc.mark_ready().await;
+        assert_eq!(lc.status().await, RuntimeStatus::Ready);
+        assert!(lc.is_ready());
+        assert!(lc.is_live());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_start_gate_from_new() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        assert!(lc.try_acquire_start_gate().await.is_ok());
+        assert_eq!(lc.status().await, RuntimeStatus::Starting);
+        assert_eq!(lc.phase(), RuntimePhase::Phase0);
+        assert!(!lc.shutdown_requested());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_start_gate_idempotent() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        assert!(lc.try_acquire_start_gate().await.is_ok());
+        assert!(lc.try_acquire_start_gate().await.is_ok());
+        assert_eq!(lc.status().await, RuntimeStatus::Starting);
+
+        lc.mark_ready().await;
+        assert!(lc.try_acquire_start_gate().await.is_ok());
+        assert_eq!(lc.status().await, RuntimeStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_start_gate_rejected_after_shutdown_request() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        lc.try_acquire_shutdown_gate().await.expect("shutdown gate");
+        assert!(lc.try_acquire_start_gate().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_shutdown_gate_and_mark_shutdown() {
+        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        assert!(lc.try_acquire_shutdown_gate().await.is_ok());
+        assert!(lc.shutdown_requested());
+        assert_eq!(lc.status().await, RuntimeStatus::ShuttingDown);
+        assert!(lc.is_live());
+
+        // Idempotent while shutting down.
+        assert!(lc.try_acquire_shutdown_gate().await.is_ok());
+
+        lc.mark_shutdown().await;
+        assert_eq!(lc.status().await, RuntimeStatus::Shutdown);
+        assert!(!lc.is_live());
+        assert!(lc.try_acquire_shutdown_gate().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_shutdown_notifies_waiters() {
+        let lc = Arc::new(RuntimeLifecycle::new(Duration::from_millis(0)));
+        let lc2 = Arc::clone(&lc);
+        let waiter = tokio::spawn(async move { lc2.wait_shutdown_complete().await });
+
+        // Give the spawned task time to register its interest.
+        tokio::task::yield_now().await;
+        lc.notify_shutdown_complete();
+        waiter.await.expect("waiter completed");
     }
 }
 

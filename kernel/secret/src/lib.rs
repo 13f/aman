@@ -379,11 +379,17 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SecretCache {
     key: [u8; 32],
     ttl_ms: u64,
     entries: HashMap<String, (EncryptedMemory<String>, u128)>,
+}
+
+impl Default for SecretCache {
+    fn default() -> Self {
+        Self::new(300_000) // 5-minute default TTL
+    }
 }
 
 impl SecretCache {
@@ -1106,9 +1112,9 @@ fn hex_val(byte: u8) -> AmanResult<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EncryptedMemory, InputSanitizer, SecretBackend, SecretCacheFallbackConfig, SecretResolver,
-        OutputValidator, RollingUpdateCoordinator, RotationTarget, SecretResolverConfig,
-        SystemPromptHardener, TrustLevel,
+        EncryptedMemory, InputSanitizer, SecretBackend, SecretCache, SecretCacheFallbackConfig,
+        SecretResolver, OutputValidator, RollingUpdateCoordinator, RotationTarget,
+        SecretResolverConfig, SystemPromptHardener, TrustLevel,
     };
     use kernel::retry::RetryBackoff;
     use kernel::{AmanResult, Error};
@@ -1376,5 +1382,15 @@ mod tests {
         // Cleanup
         let _ = keyring::Entry::new(test_key, "aman-desktop")
             .and_then(|e| e.delete_password());
+    }
+
+    #[test]
+    fn secret_cache_default_produces_random_key() {
+        let cache1 = SecretCache::default();
+        let cache2 = SecretCache::default();
+        // Two default-constructed caches must have different keys
+        assert_ne!(cache1.key, cache2.key);
+        // The key must not be all zeros
+        assert_ne!(cache1.key, [0u8; 32]);
     }
 }

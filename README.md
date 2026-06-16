@@ -40,6 +40,11 @@ click "Start" in the Dashboard.
 
 ### Option B: CLI Only (no GUI)
 
+> **Note**: The CLI binary is named `aman-cli` (to avoid conflicting with the
+> gateway daemon binary `aman`). All examples in documentation use `aman` as a
+> shorthand -- substitute `aman-cli` if you installed via `cargo install --path
+> kernel/cli`.
+
 ```bash
 # Install the CLI
 cargo install --path kernel/cli

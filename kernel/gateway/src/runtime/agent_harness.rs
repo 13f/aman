@@ -231,7 +231,6 @@ impl ToolExecutor {
 
     /// Set a security config for path/network/command allowlist checks.
     #[must_use]
-    #[allow(dead_code)]
     pub fn with_security_config(mut self, config: ToolSecurityConfig) -> Self {
         self.security_config = Some(config);
         self
@@ -497,6 +496,8 @@ pub struct LlmReActEngine {
     prompt_pipeline: Box<dyn PromptPipeline>,
     /// Per-tool timeout (ms), sourced from runtime.tool_timeout_sec.
     tool_timeout_ms: u64,
+    /// Tool security config for path/network/command allowlist enforcement.
+    security_config: Option<ToolSecurityConfig>,
 }
 
 impl LlmReActEngine {
@@ -506,6 +507,7 @@ impl LlmReActEngine {
         bus: Arc<dyn EventBus>,
         prompt_pipeline: Box<dyn PromptPipeline>,
         tool_timeout_ms: u64,
+        security_config: Option<ToolSecurityConfig>,
     ) -> Self {
         Self {
             tool_registry,
@@ -513,6 +515,7 @@ impl LlmReActEngine {
             bus,
             prompt_pipeline,
             tool_timeout_ms,
+            security_config,
         }
     }
 
@@ -769,6 +772,10 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         // Pass interrupt flag so detached processes can be cancelled
         if let Some(ref flag) = ctx.interrupt_flag {
             executor_builder = executor_builder.with_interrupt_flag(Arc::clone(flag));
+        }
+        // Pass security config for path/network/command allowlist enforcement
+        if let Some(ref config) = self.security_config {
+            executor_builder = executor_builder.with_security_config(config.clone());
         }
         let executor = Arc::new(executor_builder);
 
@@ -1078,6 +1085,7 @@ impl AgentHarness {
         compression_config: context_manager::CompressorConfig,
         tool_timeout_ms: u64,
         stream_forwarder_capacity: usize,
+        security_config: Option<ToolSecurityConfig>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let engine = LlmReActEngine::new(
@@ -1086,6 +1094,7 @@ impl AgentHarness {
             Arc::clone(&bus),
             prompt_pipeline,
             tool_timeout_ms,
+            security_config,
         );
         Self {
             registry,

@@ -199,11 +199,34 @@ pub struct SecurityConfig {
     /// Default: false.
     #[serde(default)]
     pub auto_approve_plugins: bool,
+    /// Master switch for tool allowlist enforcement (path/network/command).
+    /// When false, all tool security checks pass (backward-compatible default).
+    /// Set to true to enforce allowlisting rules below.
+    /// Default: false.
+    #[serde(default)]
+    pub tool_security_enabled: bool,
+    /// Directories that tools (ReadTool, WriteTool, etc.) are allowed to
+    /// access. Empty list means no path restrictions (subject to hardline
+    /// blocks which always run).
+    /// Default: empty (allow all paths).
+    #[serde(default)]
+    pub allowed_paths: Vec<PathBuf>,
+    /// Whether HTTP tools are allowed to make outbound network requests.
+    /// Only checked when `tool_security_enabled` is true.
+    /// Default: true (allow network access).
+    #[serde(default = "default_network_allowed")]
+    pub network_allowed: bool,
+    /// Commands that ExecTool is allowed to run. When empty and
+    /// `tool_security_enabled` is true, ALL commands are blocked.
+    /// Default: empty (allow all when tool_security_enabled is false).
+    #[serde(default)]
+    pub command_allowlist: Vec<String>,
 }
 
 fn default_sandbox_enabled() -> bool { true }
 fn default_max_plugin_memory_mb() -> u64 { 500 }
 fn default_max_plugin_cpu_seconds() -> u64 { 300 }
+fn default_network_allowed() -> bool { true }
 
 // ── Secrets mode helper ──────────────────────────────────────────
 impl SecretsMode {

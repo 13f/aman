@@ -640,11 +640,6 @@ impl SkillLoader {
 // LLM instruction skills (Agent Skills standard — SKILL.md with frontmatter)
 // ---------------------------------------------------------------------------
 
-// An LLM-instruction skill loaded from a SKILL.md file (Agent Skills standard).
-//
-// These are NOT event-driven. The LLM decides when to use them based on
-// the `name` and `description` injected into its context.
-
 /// The execution mode for a skill — controls how the harness runs it.
 ///
 /// Skills that only invoke a fixed script/API (no search, no analysis, no
@@ -1868,6 +1863,7 @@ mod tests {
                 allowed_paths: vec![sandbox.clone()],
                 network_allowed: false,
                 command_allowlist: Vec::new(),
+                allowlist_enabled: true,
             }));
 
             let registry = Arc::new(SkillRegistry::new());

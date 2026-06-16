@@ -102,6 +102,21 @@ pub struct ToolSecurityConfig {
     pub allowed_paths: Vec<PathBuf>,
     pub network_allowed: bool,
     pub command_allowlist: Vec<String>,
+    /// When false, all security checks pass (backward-compatible default).
+    /// Set to true to enforce path/network/command allowlisting.
+    pub allowlist_enabled: bool,
+}
+
+impl ToolSecurityConfig {
+    /// A permissive config that allows everything (backward-compatible default).
+    pub fn permissive() -> Self {
+        Self {
+            allowed_paths: vec![],
+            network_allowed: true,
+            command_allowlist: vec![],
+            allowlist_enabled: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -371,6 +386,12 @@ pub fn path_within(candidate: &Path, base: &Path) -> bool {
 /// Checks path allowlist for file-related params, network access for HTTP,
 /// and command allowlist for exec.
 pub fn check_tool_security(config: &ToolSecurityConfig, params: &Value) -> AmanResult<()> {
+    // Backward-compatible: when allowlisting is disabled, all checks pass.
+    // Hardline blocks (rm -rf /, fork bombs, etc.) always run regardless.
+    if !config.allowlist_enabled {
+        return Ok(());
+    }
+
     check_allowed_path(&config.allowed_paths, params.get("path"))?;
     check_allowed_path(&config.allowed_paths, params.get("file_path"))?;
     check_allowed_path(&config.allowed_paths, params.get("from"))?;
@@ -1291,6 +1312,7 @@ mod tests {
                 allowed_paths: vec![sandbox],
                 network_allowed: false,
                 command_allowlist: Vec::new(),
+                allowlist_enabled: true,
             });
 
             let forbidden_path = std::env::temp_dir()
@@ -1348,6 +1370,7 @@ mod tests {
                 allowed_paths: vec![sandbox.clone()],
                 network_allowed: false,
                 command_allowlist: Vec::new(),
+                allowlist_enabled: true,
             });
 
             let write_result = runner
@@ -1402,6 +1425,7 @@ mod tests {
                 allowed_paths: Vec::new(),
                 network_allowed: true,
                 command_allowlist: Vec::new(),
+                allowlist_enabled: true,
             });
 
             let result = runner
@@ -1429,6 +1453,7 @@ mod tests {
                 allowed_paths: Vec::new(),
                 network_allowed: false,
                 command_allowlist: Vec::new(),
+                allowlist_enabled: true,
             });
 
             let error = runner
@@ -1455,6 +1480,7 @@ mod tests {
                 allowed_paths: Vec::new(),
                 network_allowed: false,
                 command_allowlist: vec!["echo".to_owned()],
+                allowlist_enabled: true,
             });
 
             let result = runner
@@ -1483,6 +1509,7 @@ mod tests {
                 allowed_paths: Vec::new(),
                 network_allowed: false,
                 command_allowlist: vec!["echo".to_owned()],
+                allowlist_enabled: true,
             });
 
             let error = runner
@@ -1509,6 +1536,7 @@ mod tests {
                 allowed_paths: Vec::new(),
                 network_allowed: false,
                 command_allowlist: vec!["sleep".to_owned()],
+                allowlist_enabled: true,
             });
 
             let mut ctx = base_context();
@@ -1541,6 +1569,7 @@ mod tests {
                 allowed_paths: vec![sandbox.clone()],
                 network_allowed: false,
                 command_allowlist: vec!["echo".to_owned()],
+                allowlist_enabled: true,
             });
 
             runner
@@ -1603,6 +1632,7 @@ mod tests {
                 allowed_paths: vec![allowed],
                 network_allowed: false,
                 command_allowlist: Vec::new(),
+                allowlist_enabled: true,
             });
 
             let error = runner

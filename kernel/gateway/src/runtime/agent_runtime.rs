@@ -15,6 +15,7 @@ use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
 use kernel::security::{ApprovalCache, ApprovedCapabilities, CapabilitySet};
 use tool::auth::PluginApprovalRegistry;
+use tool::ToolSecurityConfig;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
@@ -902,6 +903,12 @@ impl AgentRuntimeBuilder {
             summarize_tool_results: config.compression.summarize_tool_results,
             truncate_tool_args: config.compression.truncate_tool_args,
         };
+        let tool_security = ToolSecurityConfig {
+            allowed_paths: config.security.allowed_paths.clone(),
+            network_allowed: config.security.network_allowed,
+            command_allowlist: config.security.command_allowlist.clone(),
+            allowlist_enabled: config.security.tool_security_enabled,
+        };
         let agent_harness = Arc::new(super::agent_harness::AgentHarness::new(
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
@@ -913,6 +920,7 @@ impl AgentRuntimeBuilder {
             compressor_config,
             tool_timeout_ms,
             config.event_bus.stream_forwarder_capacity,
+            Some(tool_security),
             self.runtime_handle.clone().expect("runtime_handle must be set before build()"),
         ));
 

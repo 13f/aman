@@ -5672,6 +5672,7 @@ dependencies = [
  "event-bus",
  "kernel",
  "pollster",
+ "rusqlite",
  "serde",
  "serde_json",
  "tracing",

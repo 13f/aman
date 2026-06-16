@@ -24,5 +24,5 @@ pub use persistent_bus::{PersistentBus, PersistentBusConfig};
 pub use state_store::{
     CleanupPolicy, IsolationMode, SledStore, StateRecord, StateStore, WriteConsistency,
 };
-pub use trace_store::JsonlTraceStore;
+pub use trace_store::{JsonlTraceStore, SqliteTraceStore};
 pub use wal::{WalSync, WriteAheadLog};

@@ -912,6 +912,7 @@ impl AgentRuntimeBuilder {
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
             compressor_config,
             tool_timeout_ms,
+            config.event_bus.stream_forwarder_capacity,
             self.runtime_handle.clone().expect("runtime_handle must be set before build()"),
         ));
 

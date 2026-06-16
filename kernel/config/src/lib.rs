@@ -94,9 +94,17 @@ pub struct EventBusConfig {
     pub max_queue_size: usize,
     #[serde(default)]
     pub persistence: Option<PersistenceConfig>,
+    /// Bounded capacity for the per-turn LLM stream forwarder channel.
+    /// When full, the synchronous callback blocks the LLM stream task,
+    /// creating natural TCP backpressure to the LLM provider.
+    /// Default: 8192 slots (~500 KB of in-flight StreamEvents).
+    #[serde(default = "default_stream_forwarder_capacity")]
+    pub stream_forwarder_capacity: usize,
 }
 
 fn default_max_queue_size() -> usize { 10_000 }
+
+fn default_stream_forwarder_capacity() -> usize { 8192 }
 
 impl Default for EventBusConfig {
     fn default() -> Self {
@@ -104,6 +112,7 @@ impl Default for EventBusConfig {
             mode: BusMode::Persistent,
             max_queue_size: 10_000,
             persistence: None,
+            stream_forwarder_capacity: 8192,
         }
     }
 }
@@ -1363,6 +1372,15 @@ where
                     .event_bus
                     .get_or_insert_with(PartialEventBusConfig::default)
                     .max_queue_size = Some(parsed);
+            }
+            "AMAN_EVENT_BUS_STREAM_FORWARDER_CAPACITY" => {
+                let parsed = value.parse::<usize>().map_err(|_| {
+                    Error::config_invalid("AMAN_EVENT_BUS_STREAM_FORWARDER_CAPACITY 必须是整数")
+                })?;
+                patch
+                    .event_bus
+                    .get_or_insert_with(PartialEventBusConfig::default)
+                    .stream_forwarder_capacity = Some(parsed);
             }
             "AMAN_RUNTIME_DRAIN_TIMEOUT_SEC" => {
                 let parsed = value.parse::<u64>().map_err(|_| {

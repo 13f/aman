@@ -39,15 +39,6 @@ use super::AgentRegistry;
 /// Default maximum ReAct loop iterations.
 const DEFAULT_MAX_REACT_TURNS: u32 = 64;
 
-/// Bounded capacity for the per-turn LLM stream forwarder channel.
-///
-/// Caps memory at 128 in-flight `StreamEvent`s per turn. If a slow
-/// consumer (e.g. a stalled event-bus subscriber) ever lets the
-/// forwarder fall behind, the producer (the LLM streaming callback)
-/// drops the overflow chunk with a `tracing::warn!` rather than
-/// growing the buffer without bound.
-const STREAM_FORWARDER_CAP: usize = 128;
-
 /// Default agent router — selects the first enabled agent.
 pub struct FirstEnabledAgentRouter;
 
@@ -1065,6 +1056,10 @@ pub struct AgentHarness {
     agent_router: Box<dyn AgentRouter>,
     /// Compression configuration.
     compression_config: context_manager::CompressorConfig,
+    /// Capacity for the per-turn LLM stream forwarder buffer.
+    /// When full, the synchronous callback blocks the LLM stream task,
+    /// creating natural TCP backpressure to the LLM provider.
+    stream_forwarder_capacity: usize,
     /// Handle to the main tokio runtime, used to spawn tasks from any thread
     /// (including non-tokio threads like the plugin bridge).
     runtime: tokio::runtime::Handle,
@@ -1082,6 +1077,7 @@ impl AgentHarness {
         agent_router: Box<dyn AgentRouter>,
         compression_config: context_manager::CompressorConfig,
         tool_timeout_ms: u64,
+        stream_forwarder_capacity: usize,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         let engine = LlmReActEngine::new(
@@ -1102,6 +1098,7 @@ impl AgentHarness {
             budget_policy,
             agent_router,
             compression_config,
+            stream_forwarder_capacity,
             runtime,
         }
     }
@@ -2684,45 +2681,57 @@ impl AgentHarness {
     /// [`ReActContext::stream_cb`] and BEFORE publishing `reply_ready` or `idle`,
     /// so that `reply_stream_done` is guaranteed to appear first in the event log.
     ///
-    /// # Bounded buffer
+    /// # Bounded buffer with backpressure
     ///
-    /// The channel is bounded to [`STREAM_FORWARDER_CAP`] entries. If the
-    /// forwarder task falls behind the LLM stream producer, the callback
-    /// drops the overflow chunk and logs a `tracing::warn!` so the loss
-    /// is visible in diagnostics. This is preferable to an unbounded
-    /// channel, which would let memory grow without limit if a slow
-    /// consumer (e.g. a stalled event-bus handler) ever appeared.
+    /// The channel is a `std::sync::mpsc::sync_channel` whose capacity is
+    /// configured via `event_bus.stream_forwarder_capacity` (default 8192).
+    /// The synchronous callback calls `sync_tx.send(event)`, which **blocks**
+    /// the LLM stream task when the buffer is full. That blocking propagates
+    /// naturally through the HTTP stream reader → TCP receive window → LLM
+    /// provider, slowing token generation until the consumer catches up.
+    ///
+    /// A dedicated OS thread bridges the synchronous channel to a small
+    /// `tokio::sync::mpsc` channel consumed by the forwarder task. No chunks
+    /// are dropped — backpressure replaces the old `try_send` + drop strategy.
     fn spawn_stream_forwarder(
         &self,
         ctx: &mut ReActContext,
     ) -> tokio::task::JoinHandle<()> {
-        // Capture agent/session ids for the producer-side log path before
-        // they are moved into the spawn block below.
-        let aid_for_log = ctx.agent_id.clone();
-        let sid_for_log = ctx.session_id.clone();
-        let (stream_tx, mut stream_rx) =
-            tokio::sync::mpsc::channel::<StreamEvent>(STREAM_FORWARDER_CAP);
-        {
-            let tx = stream_tx.clone();
-            ctx.stream_cb = Some(Arc::new(move |event| {
-                use tokio::sync::mpsc::error::TrySendError;
-                match tx.try_send(event) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(_)) => {
-                        tracing::warn!(
-                            agent = %aid_for_log,
-                            session = %sid_for_log,
-                            cap = STREAM_FORWARDER_CAP,
-                            "stream forwarder buffer full, dropping chunk"
-                        );
-                    }
-                    Err(TrySendError::Closed(_)) => {
-                        // Forwarder task has ended (turn complete or shutdown);
-                        // expected, no log needed.
+        let capacity = self.stream_forwarder_capacity;
+
+        // ── Layer 1: sync_channel (blocks producer when full) ──────────
+        let (sync_tx, sync_rx) =
+            std::sync::mpsc::sync_channel::<StreamEvent>(capacity);
+
+        // Callback stored in ReActContext — called synchronously by the
+        // LLM stream reader. Blocks when the channel is full, creating
+        // natural backpressure.
+        ctx.stream_cb = Some(Arc::new(move |event| {
+            // send() blocks the calling thread when the buffer is full.
+            // Returns Err(SendError) when the receiver has been dropped
+            // (turn complete / shutdown) — expected, ignore silently.
+            let _ = sync_tx.send(event);
+        }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
+
+        // ── Layer 2: bridge thread (sync_rx → tokio mpsc) ─────────────
+        let (async_tx, mut async_rx) =
+            tokio::sync::mpsc::channel::<StreamEvent>(256);
+        std::thread::Builder::new()
+            .name("stream-fwd-bridge".into())
+            .spawn(move || {
+                while let Ok(event) = sync_rx.recv() {
+                    // blocking_send may block the bridge thread if the
+                    // tokio consumer falls behind — this is intentional
+                    // backpressure propagation.
+                    if async_tx.blocking_send(event).is_err() {
+                        // tokio receiver dropped — forwarder task ended.
+                        break;
                     }
                 }
-            }) as Arc<dyn Fn(StreamEvent) + Send + Sync>);
-        }
+            })
+            .expect("spawn stream-fwd-bridge thread");
+
+        // ── Layer 3: forwarder task (tokio mpsc → event bus) ──────────
         // Publish streaming events to the global bus so that cross-cutting
         // subscribers (ChatReplyHandler, SSE, persistence) can see them.
         // Also publish to the agent's local bus when one exists, for any
@@ -2733,7 +2742,7 @@ impl AgentHarness {
         let registry = Arc::clone(&self.registry);
         let global_bus = Arc::clone(&self.bus);
         tokio::spawn(async move {
-            while let Some(event) = stream_rx.recv().await {
+            while let Some(event) = async_rx.recv().await {
                 let (etype, extra) = match &event {
                     StreamEvent::Start => ("agent:reply_stream_start", json!({})),
                     StreamEvent::Chunk(delta) => {

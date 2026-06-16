@@ -197,7 +197,7 @@ impl SubprocessPluginBridge {
         std::thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
-                if bridge_clone.shutdown.load(Ordering::Relaxed) {
+                if bridge_clone.shutdown.load(Ordering::Acquire) {
                     break;
                 }
                 match line {
@@ -208,7 +208,7 @@ impl SubprocessPluginBridge {
                     Err(_) => break, // pipe closed
                 }
             }
-            bridge_clone.shutdown.store(true, Ordering::Relaxed);
+            bridge_clone.shutdown.store(true, Ordering::Release);
         });
 
         // Spawn reader thread for plugin stderr → TUI log panel
@@ -235,7 +235,7 @@ impl SubprocessPluginBridge {
 
     /// Send a JSON-RPC request to the plugin and wait for a response.
     pub fn request(&self, method: &str, params: serde_json::Value) -> AmanResult<serde_json::Value> {
-        if self.shutdown.load(Ordering::Relaxed) {
+        if self.shutdown.load(Ordering::Acquire) {
             return Err(kernel::Error::Unrecoverable {
                 message: format!("plugin `{}` bridge is shut down", self.plugin_name),
             });
@@ -275,7 +275,7 @@ impl SubprocessPluginBridge {
 
     /// Send a JSON-RPC notification (no response expected).
     pub fn notify(&self, method: &str, params: serde_json::Value) -> AmanResult<()> {
-        if self.shutdown.load(Ordering::Relaxed) {
+        if self.shutdown.load(Ordering::Acquire) {
             return Ok(());
         }
 
@@ -366,7 +366,7 @@ impl SubprocessPluginBridge {
     // ------------------------------------------------------------------
 
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.store(true, Ordering::Release);
         // Wait for child process to exit
         if let Ok(mut guard) = self.child.lock()
             && let Some(mut child) = guard.take()

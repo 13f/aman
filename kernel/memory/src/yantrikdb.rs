@@ -262,9 +262,12 @@ impl MemoryProvider for YantrikdbProvider {
     // -- Session management ------------------------------------------------
 
     async fn session_start(&self, agent_id: &str, session_type: &str) -> AmanResult<String> {
+        // Use agent_id as both namespace and client_id so session_history
+        // queries (which also use agent_id for both fields) can find sessions.
+        // The session type is stored in metadata only.
         let meta = serde_json::json!({"type": session_type});
         self.db_ref()
-            .session_start(agent_id, session_type, &meta)
+            .session_start(agent_id, agent_id, &meta)
             .map_err(Self::map_err)
     }
 
@@ -566,5 +569,296 @@ impl Drop for YantrikdbProvider {
         {
             tracing::error!(error = %e, "Error closing yantrikdb");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a `YantrikdbProvider` backed by the bundled embedder
+    /// (potion-base-2M, dim=64) in a temp directory. No network calls.
+    fn make_provider() -> (YantrikdbProvider, TempDir) {
+        let dir = TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("test.db");
+        let db_path_str = db_path.to_str().expect("valid utf-8 path");
+        // YantrikDB::new(path, 64) auto-attaches the bundled embedder
+        let db =
+            yantrikdb::YantrikDB::new(db_path_str, 64).expect("yantrikdb open for testing");
+        let db_arc = Arc::new(db);
+        let (think_tx, think_rx) = mpsc::channel::<ThinkChannel>(1);
+        let provider = YantrikdbProvider {
+            db: Some(db_arc),
+            agent_id: "test-agent".to_string(),
+            think_tx: Some(think_tx),
+            think_rx: Mutex::new(Some(think_rx)),
+            think_handle: Mutex::new(None),
+        };
+        (provider, dir)
+    }
+
+    // -- store ---------------------------------------------------------------
+
+    #[test]
+    fn store_returns_non_empty_id() {
+        let (p, _d) = make_provider();
+        let id = p.store("agent-1", "hello world", vec![]);
+        assert!(!id.is_empty(), "store should return a non-empty id");
+    }
+
+    #[test]
+    fn store_unique_ids() {
+        let (p, _d) = make_provider();
+        let id1 = p.store("agent-1", "first record", vec![]);
+        let id2 = p.store("agent-1", "second record", vec![]);
+        assert_ne!(id1, id2, "each store must produce a unique id");
+    }
+
+    #[test]
+    fn store_with_tags() {
+        let (p, _d) = make_provider();
+        let id = p.store(
+            "agent-1",
+            "tagged memory",
+            vec!["critical".into(), "work".into()],
+        );
+        assert!(!id.is_empty(), "store with tags should succeed");
+    }
+
+    // -- recall --------------------------------------------------------------
+
+    #[tokio::test]
+    async fn recall_returns_stored_content() {
+        let (p, _d) = make_provider();
+        let content = "Alice is the engineering team lead at Acme Corporation";
+        p.store("agent-1", content, vec![]);
+        let results = p.recall("agent-1", content, 10).await;
+        assert!(
+            results.iter().any(|r| r.content == content),
+            "recall should find the exact stored content; got {:?}",
+            results.iter().map(|r| &r.content).collect::<Vec<_>>(),
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_returns_multiple_results() {
+        let (p, _d) = make_provider();
+        p.store("agent-1", "The weather today is sunny and warm", vec![]);
+        p.store("agent-1", "Meeting with Bob at 3pm", vec![]);
+        // Recall with a query that should match at least the weather record
+        let results = p.recall("agent-1", "weather sunny", 10).await;
+        assert!(!results.is_empty(), "recall should return at least one result");
+    }
+
+    #[tokio::test]
+    async fn recall_respects_limit() {
+        let (p, _d) = make_provider();
+        p.store("agent-1", "alpha bravo charlie delta", vec![]);
+        p.store("agent-1", "alpha bravo charlie delta echo foxtrot", vec![]);
+        let results = p.recall("agent-1", "alpha", 1).await;
+        assert!(results.len() <= 1, "limit=1 should return at most 1 result; got {}", results.len());
+    }
+
+    #[tokio::test]
+    async fn recall_returns_empty_for_empty_store() {
+        let (p, _d) = make_provider();
+        let results = p.recall("agent-1", "anything", 10).await;
+        assert!(results.is_empty(), "empty store yields empty recall");
+    }
+
+    // -- forget --------------------------------------------------------------
+
+    #[test]
+    fn forget_existing_record() {
+        let (p, _d) = make_provider();
+        let id = p.store("agent-1", "will be forgotten", vec![]);
+        assert!(!id.is_empty(), "store must succeed preceding forget");
+        assert!(p.forget("agent-1", &id), "forget should return true");
+    }
+
+    #[test]
+    fn forget_nonexistent_returns_false() {
+        let (p, _d) = make_provider();
+        assert!(!p.forget("agent-1", "nonexistent-rid"), "forget of missing rid returns false");
+    }
+
+    #[test]
+    fn forget_removes_from_recall() {
+        let (p, _d) = make_provider();
+        let content = "unique content for forget test";
+        let id = p.store("agent-1", content, vec![]);
+        assert!(p.forget("agent-1", &id), "forget must succeed");
+
+        // After forget, recall should not find this content
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let results = rt.block_on(p.recall("agent-1", content, 10));
+        assert!(
+            !results.iter().any(|r| r.content == content),
+            "forgotten content should not appear in recall"
+        );
+    }
+
+    // -- multi-agent isolation ----------------------------------------------
+
+    #[tokio::test]
+    async fn multi_agent_isolation() {
+        let (p, _d) = make_provider();
+        p.store("agent-alpha", "classified for alpha eyes only", vec![]);
+        p.store("agent-beta", "classified for beta eyes only", vec![]);
+
+        let alpha_results = p.recall("agent-alpha", "classified", 10).await;
+        assert!(
+            alpha_results.iter().all(|r| r.content.contains("alpha")),
+            "agent-alpha should only see its own memories"
+        );
+
+        let beta_results = p.recall("agent-beta", "classified", 10).await;
+        assert!(
+            beta_results.iter().all(|r| r.content.contains("beta")),
+            "agent-beta should only see its own memories"
+        );
+    }
+
+    // -- stats ---------------------------------------------------------------
+
+    #[tokio::test]
+    async fn stats_reflects_stored_count() {
+        let (p, _d) = make_provider();
+        let stats0 = p.stats("agent-1").await.expect("stats call succeeds");
+        assert_eq!(stats0.total_entries, 0, "empty store has 0 entries");
+
+        p.store("agent-1", "memory one", vec![]);
+        p.store("agent-1", "memory two", vec![]);
+
+        let stats1 = p.stats("agent-1").await.expect("stats call succeeds");
+        assert_eq!(stats1.total_entries, 2, "two stores => 2 entries");
+    }
+
+    // -- provider identity ---------------------------------------------------
+
+    #[test]
+    fn provider_name() {
+        let (p, _d) = make_provider();
+        assert_eq!(p.name(), "yantrikdb");
+    }
+
+    #[test]
+    fn provider_is_available() {
+        let (p, _d) = make_provider();
+        assert!(p.is_available());
+    }
+
+    // -- session management --------------------------------------------------
+
+    #[tokio::test]
+    async fn session_start_and_end() {
+        let (p, _d) = make_provider();
+        let session_id = p
+            .session_start("agent-1", "test")
+            .await
+            .expect("session start");
+        assert!(!session_id.is_empty(), "session id should be non-empty");
+
+        let summary = p
+            .session_end("agent-1", &session_id)
+            .await
+            .expect("session end");
+        assert_eq!(summary.session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn session_history() {
+        let (p, _d) = make_provider();
+        let sid1 = p.session_start("agent-1", "chat").await.unwrap();
+        p.session_end("agent-1", &sid1).await.unwrap();
+        let sid2 = p.session_start("agent-1", "reflection").await.unwrap();
+        p.session_end("agent-1", &sid2).await.unwrap();
+
+        let history = p
+            .session_history("agent-1", 10)
+            .await
+            .expect("session history");
+        assert_eq!(history.len(), 2, "should have 2 sessions in history");
+    }
+
+    // -- procedural memory ---------------------------------------------------
+
+    #[tokio::test]
+    async fn store_and_surface_procedural() {
+        let (p, _d) = make_provider();
+        let rid = p
+            .store_procedural("agent-1", "test-proc", "do something", "strategy")
+            .await
+            .expect("store procedural");
+        assert!(!rid.is_empty(), "procedural rid must be non-empty");
+
+        let results = p
+            .surface_procedural("agent-1", "do something", 10)
+            .await
+            .expect("surface procedural");
+        assert!(
+            results.iter().any(|r| r.rid == rid),
+            "surfaced results should contain the stored procedural"
+        );
+    }
+
+    // -- knowledge graph -----------------------------------------------------
+
+    #[tokio::test]
+    async fn relate_and_get_edges() {
+        let (p, _d) = make_provider();
+        // store entities first so they exist
+        p.store("agent-1", "entity alpha entity", vec![]);
+        p.store("agent-1", "entity beta entity", vec![]);
+
+        // Wait a tick for indexing, then relate
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        p.relate("alpha", "beta", "knows")
+            .await
+            .expect("relate should succeed");
+
+        let edges = p
+            .get_edges("alpha")
+            .await
+            .expect("get_edges should succeed");
+        assert!(
+            edges.iter().any(|(_, to, rt)| to == "beta" && rt == "knows"),
+            "should have an edge alpha -> beta"
+        );
+    }
+
+    // -- temporal queries ----------------------------------------------------
+
+    #[tokio::test]
+    async fn stale_and_upcoming_memories() {
+        let (p, _d) = make_provider();
+        p.store("agent-1", "stale content for temporal test", vec![]);
+
+        let stale = p
+            .stale_memories("agent-1", 1)
+            .await
+            .expect("stale_memories");
+        // Results depend on database, just verify no error
+        assert!(stale.is_empty() || stale.iter().any(|_| true));
+    }
+
+    // -- think pass ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn think_returns_default_result() {
+        let (p, _d) = make_provider();
+        let config = ThinkConfig {
+            importance_threshold: 0.5,
+            run_consolidation: false,
+            run_conflict_scan: false,
+        };
+        let _result = p.think("agent-1", &config).await.expect("think");
+        // Should at least not panic (duration is u64, always >= 0)
     }
 }

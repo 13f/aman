@@ -100,6 +100,10 @@ async fn main() {
         "--version" | "-V" => {
             safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
         }
+        "--help" | "-h" => {
+            print_usage();
+            std::process::exit(0);
+        }
         _ => {
             print_usage();
             std::process::exit(2);

@@ -44,8 +44,7 @@ aman run --config ~/.aman/config.yaml --soul ~/.aman/SOUL.md --bind 127.0.0.1:80
 | `--soul <path>` | SOUL.md system prompt path |
 | `--bind <ip:port>` | Gateway bind address (default: 127.0.0.1:8080) |
 | `--token <token>` | API token for incoming requests |
-| `--daemon` | Daemonize process |
-| `--log-level <level>` | Log level: trace, debug, info, warn, error (default: info) |
+| `--no-tui` | Disable TUI (assumed when running as a daemon) |
 
 Prints the bind address to stdout on success, then blocks until SIGINT/SIGTERM.
 

@@ -85,7 +85,7 @@ pub async fn serve_stdio(runtime: Arc<AgentRuntime>) -> AmanResult<()> {
                             data: None,
                         }),
                     };
-                    println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+                    print_jsonrpc_response(&resp);
                     continue;
                 }
                 r
@@ -101,7 +101,7 @@ pub async fn serve_stdio(runtime: Arc<AgentRuntime>) -> AmanResult<()> {
                         data: None,
                     }),
                 };
-                println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+                print_jsonrpc_response(&resp);
                 continue;
             }
         };
@@ -121,7 +121,7 @@ pub async fn serve_stdio(runtime: Arc<AgentRuntime>) -> AmanResult<()> {
                 error: Some(map_error(e)),
             },
         };
-        println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+        print_jsonrpc_response(&resp);
     }
 
     Ok(())
@@ -146,6 +146,25 @@ fn map_error(e: Error) -> JsonRpcError {
         code,
         message,
         data: None,
+    }
+}
+
+/// Print a JSON-RPC Response to stdout. If serialization fails, print a
+/// hardcoded JSON-RPC internal-error object so the client always receives
+/// valid JSON-RPC, never an empty line.
+fn print_jsonrpc_response(resp: &Response) {
+    match serde_json::to_string(resp) {
+        Ok(json) => println!("{json}"),
+        Err(e) => {
+            // Fallback: a hardcoded, always-valid JSON-RPC error response.
+            // This should never happen in practice (Response is always
+            // serializable), but if it does, the client gets a valid
+            // JSON-RPC error instead of a protocol-breaking empty line.
+            println!(
+                r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":-32603,"message":"internal serialization error: {}"}}}}"#,
+                e.to_string().replace('"', r#"\""#)
+            );
+        }
     }
 }
 

@@ -309,6 +309,15 @@ pub enum Kind {
 
 **建议**: 用 `serde_with` 或自写 derive 宏自动生成 `Partial*` 类型；用 trait `Merge` 让子配置自描述合并逻辑。
 
+**✅ 已修复 (2026-06-16)**:
+
+- 新增 `ConfigPatch` trait（`kernel/config/src/patch.rs`）与 `#[derive(ConfigPatch)]` 过程宏（`kernel/macros/src/config_patch.rs`）。
+- `ConfigPatch` 为每个类型关联一个 `Patch`：原始/外部类型 `Patch = Self`（替换语义），嵌套配置结构体生成 `Partial<Self>` 并递归合并字段。
+- `kernel/config/src/lib.rs` 中 18 个配置结构体全部改用 `#[derive(ConfigPatch)]`，删除约 170 行手写 `Partial*` 影子结构体；`AgentConfig::merge` 从 ~165 行 if-let 嵌套缩减为一行 `ConfigPatch::merge(self, patch)`。
+- `kernel/config/Cargo.toml` 添加 `macros` 依赖。
+
+**验证**：`cargo test -p config` 17 个配置测试全过；`cargo clippy --workspace -- -D warnings` 干净；`cargo test --workspace` 全过。
+
 ---
 
 ## 🟡 P2 中等优先级

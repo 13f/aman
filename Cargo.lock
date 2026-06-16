@@ -1259,6 +1259,7 @@ dependencies = [
  "idle",
  "insta",
  "kernel",
+ "macros",
  "serde",
  "serde_json",
  "serde_yaml",

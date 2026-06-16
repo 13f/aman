@@ -18,6 +18,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod patch;
+
+use patch::ConfigPatch;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -28,7 +32,7 @@ pub enum BusMode {
 }
 
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct RuntimeConfig {
     #[serde(default = "default_drain_timeout")]
     pub drain_timeout_sec: u64,
@@ -48,7 +52,7 @@ impl Default for RuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct GatewayConfig {
     #[serde(default = "default_gateway_port")]
     pub port: u16,
@@ -62,7 +66,7 @@ impl Default for GatewayConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct PersistenceConfig {
     #[serde(default = "default_wal_sync")]
     pub wal_sync: String,
@@ -82,7 +86,7 @@ impl Default for PersistenceConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct EventBusConfig {
     #[serde(default)]
     pub mode: BusMode,
@@ -104,7 +108,7 @@ impl Default for EventBusConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct PluginConfig {
     #[serde(default = "default_enforce_dep")]
     pub enforce_dependency_check: bool,
@@ -120,8 +124,7 @@ impl Default for PluginConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 pub struct SourceConfig {
     #[serde(default)]
     pub notify_on_complete: bool,
@@ -137,7 +140,7 @@ pub struct WorkflowDefinition {
     pub initial_state: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 pub struct WorkflowConfig {
     #[serde(default)]
     pub definitions: Vec<WorkflowDefinition>,
@@ -157,8 +160,7 @@ pub enum SecretsMode {
     OnePassword,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 pub struct SecurityConfig {
     /// Where to read API keys, tokens, and other secrets from.
     #[serde(default)]
@@ -212,7 +214,7 @@ impl SecretsMode {
 // ── Idle State System config (M2.3) ───────────────────────────
 
 /// Reflection 处理器配置。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct ReflectionConfig {
     #[serde(default = "default_reflection_enabled")]
     pub enabled: bool,
@@ -239,7 +241,7 @@ impl Default for ReflectionConfig {
 }
 
 /// Arousal 系统配置。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct ArousalConfig {
     #[serde(default = "default_arousal_initial")]
     pub initial_value: f64,
@@ -260,7 +262,7 @@ impl Default for ArousalConfig {
 }
 
 /// Idle 上下文配置。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct IdleContextConfig {
     #[serde(default = "default_max_output_buffer")]
     pub max_output_buffer: usize,
@@ -275,7 +277,7 @@ impl Default for IdleContextConfig {
 }
 
 /// Sleep 子配置。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct SleepConfig {
     #[serde(default = "default_short_term_retention_days")]
     pub short_term_retention_days: u64,
@@ -300,7 +302,7 @@ impl Default for SleepConfig {
 }
 
 /// Exploration 子配置。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct ExplorationConfig {
     #[serde(default = "default_api_rate_per_minute")]
     pub api_rate_per_minute: u32,
@@ -326,7 +328,7 @@ impl Default for ExplorationConfig {
 }
 
 /// Incubation 子配置。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct IncubationConfig {
     #[serde(default = "default_max_concurrent_incubation")]
     pub max_concurrent: u32,
@@ -366,7 +368,7 @@ impl Default for IncubationConfig {
 }
 
 /// Meditation 子配置。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct MeditationConfig {
     /// Minimum seconds between Meditation cycles (default 2 hours).
     #[serde(default = "default_meditation_cooldown_secs", alias = "cooldown")]
@@ -395,7 +397,7 @@ impl Default for MeditationConfig {
 }
 
 /// 顶级 Idle 段配置。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct IdleConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -438,7 +440,7 @@ impl Default for IdleConfig {
 
 
 /// UI / display configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct UiConfig {
     /// Display locale. Default: English (`en`).
     /// Supported values: `en`, `zhs` (简体中文).
@@ -454,7 +456,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 pub struct AgentConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
@@ -494,7 +496,7 @@ pub struct AgentConfig {
 }
 
 /// MCP (Model Context Protocol) server integration configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 #[serde(default)]
 pub struct McpConfig {
     /// Enable MCP server connections. When false, the gateway does not
@@ -509,7 +511,7 @@ pub struct McpConfig {
 /// model's context window limit. Follows a Hermes-style pipeline:
 /// Stage 1 tool output pruning (zero API cost) → Stage 2 three-segment
 /// HEAD/TAIL/MIDDLE truncation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 #[serde(default)]
 pub struct CompressionConfig {
     /// Trigger threshold (0.0–1.0). Compression fires when prompt tokens
@@ -572,7 +574,7 @@ impl Default for CompressionConfig {
 ///   python: python3
 ///   bridge_script: predefined/self/bridge.py
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 #[serde(default)]
 pub struct SelfConfig {
     /// Enable the Python self-module bridge. When false, Rust prompt
@@ -1189,171 +1191,6 @@ impl ConfigReloader {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialAgentConfig {
-    pub runtime: Option<PartialRuntimeConfig>,
-    pub gateway: Option<PartialGatewayConfig>,
-    pub event_bus: Option<PartialEventBusConfig>,
-    pub plugin: Option<PartialPluginConfig>,
-    pub source: Option<PartialSourceConfig>,
-    pub workflow: Option<PartialWorkflowConfig>,
-    pub security: Option<PartialSecurityConfig>,
-    pub idle: Option<PartialIdleConfig>,
-    pub work: Option<PartialWorkConfig>,
-    pub study: Option<PartialStudyConfig>,
-    pub daily_life: Option<PartialDailyLifeConfig>,
-    pub compression: Option<PartialCompressionConfig>,
-    pub ui: Option<PartialUiConfig>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialUiConfig {
-    pub locale: Option<Locale>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialRuntimeConfig {
-    pub drain_timeout_sec: Option<u64>,
-    pub tool_timeout_sec: Option<u64>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialGatewayConfig {
-    pub port: Option<u16>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialPersistenceConfig {
-    pub wal_sync: Option<String>,
-    pub checkpoint_interval: Option<u64>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialEventBusConfig {
-    pub mode: Option<BusMode>,
-    pub max_queue_size: Option<usize>,
-    pub persistence: Option<PartialPersistenceConfig>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialPluginConfig {
-    pub enforce_dependency_check: Option<bool>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialSourceConfig {
-    pub notify_on_complete: Option<bool>,
-    pub watch_patterns: Option<Vec<String>>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialWorkflowConfig {
-    pub definitions: Option<Vec<WorkflowDefinition>>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialSecurityConfig {
-    pub risky_capabilities_enabled: Option<bool>,
-    pub sandbox_enabled: Option<bool>,
-    pub sandbox_fail_open: Option<bool>,
-    pub max_plugin_memory_mb: Option<u64>,
-    pub max_plugin_cpu_seconds: Option<u64>,
-    pub auto_approve_plugins: Option<bool>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialIdleConfig {
-    pub enabled: Option<bool>,
-    pub personality: Option<IdlePersonality>,
-    pub reflection: Option<PartialReflectionConfig>,
-    pub arousal: Option<PartialArousalConfig>,
-    pub context: Option<PartialIdleContextConfig>,
-    pub sleep: Option<PartialSleepConfig>,
-    pub exploration: Option<PartialExplorationConfig>,
-    pub incubation: Option<PartialIncubationConfig>,
-    pub meditation: Option<PartialMeditationConfig>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialWorkConfig {
-    /// Override the entire work configuration (v2).
-    pub config: Option<WorkConfig>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialStudyConfig {
-    pub config: Option<StudyConfig>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialDailyLifeConfig {
-    pub config: Option<DailyLifeConfig>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialCompressionConfig {
-    pub threshold: Option<f64>,
-    pub tail_budget_ratio: Option<f64>,
-    pub protect_head_messages: Option<usize>,
-    pub min_tail_messages: Option<usize>,
-    pub anti_thrashing: Option<bool>,
-    pub min_savings_pct: Option<f64>,
-    pub max_tool_args_chars: Option<usize>,
-    pub dedup_tool_outputs: Option<bool>,
-    pub summarize_tool_results: Option<bool>,
-    pub truncate_tool_args: Option<bool>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialReflectionConfig {
-    pub enabled: Option<bool>,
-    pub timeout_secs: Option<u64>,
-    pub check_items: Option<Vec<String>>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialArousalConfig {
-    pub initial_value: Option<f64>,
-    pub half_life_secs: Option<f64>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialIdleContextConfig {
-    pub max_output_buffer: Option<usize>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialSleepConfig {
-    pub short_term_retention_days: Option<u64>,
-    pub cache_expiry_days: Option<u64>,
-    pub max_cpu_seconds: Option<u64>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialExplorationConfig {
-    pub api_rate_per_minute: Option<u32>,
-    pub on_quota_exhausted: Option<String>,
-    #[serde(alias = "cooldown")]
-    pub cooldown_secs: Option<u64>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PartialIncubationConfig {
-    pub max_concurrent: Option<u32>,
-    pub enabled: Option<bool>,
-    #[serde(alias = "cooldown")]
-    pub cooldown_secs: Option<u64>,
-    pub incubation_threshold: Option<f64>,
-    pub high_value_threshold: Option<f64>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PartialMeditationConfig {
-    #[serde(alias = "cooldown")]
-    pub cooldown_secs: Option<u64>,
-    pub min_interval_ticks: Option<u32>,
-}
-
 pub struct ConfigLoader;
 
 impl ConfigLoader {
@@ -1426,169 +1263,7 @@ impl ConfigLoader {
 
 impl AgentConfig {
     pub fn merge(&mut self, patch: PartialAgentConfig) {
-        if let Some(runtime) = patch.runtime {
-            if let Some(v) = runtime.drain_timeout_sec {
-                self.runtime.drain_timeout_sec = v;
-            }
-            if let Some(v) = runtime.tool_timeout_sec {
-                self.runtime.tool_timeout_sec = v;
-            }
-        }
-
-        if let Some(event_bus) = patch.event_bus {
-            if let Some(mode) = event_bus.mode {
-                self.event_bus.mode = mode;
-            }
-            if let Some(max_queue_size) = event_bus.max_queue_size {
-                self.event_bus.max_queue_size = max_queue_size;
-            }
-            if let Some(persistence_patch) = event_bus.persistence {
-                let persistence = self
-                    .event_bus
-                    .persistence
-                    .get_or_insert_with(PersistenceConfig::default);
-                if let Some(wal_sync) = persistence_patch.wal_sync {
-                    persistence.wal_sync = wal_sync;
-                }
-                if let Some(checkpoint_interval) = persistence_patch.checkpoint_interval {
-                    persistence.checkpoint_interval = checkpoint_interval;
-                }
-            }
-        }
-
-        if let Some(plugin) = patch.plugin
-            && let Some(value) = plugin.enforce_dependency_check
-        {
-            self.plugin.enforce_dependency_check = value;
-        }
-
-        if let Some(source) = patch.source {
-            if let Some(value) = source.notify_on_complete {
-                self.source.notify_on_complete = value;
-            }
-            if let Some(patterns) = source.watch_patterns {
-                self.source.watch_patterns = patterns;
-            }
-        }
-
-        if let Some(workflow) = patch.workflow
-            && let Some(definitions) = workflow.definitions
-        {
-            self.workflow.definitions = definitions;
-        }
-
-        if let Some(security) = patch.security {
-            if let Some(value) = security.risky_capabilities_enabled {
-                self.security.risky_capabilities_enabled = value;
-            }
-            if let Some(value) = security.sandbox_enabled {
-                self.security.sandbox_enabled = value;
-            }
-            if let Some(value) = security.sandbox_fail_open {
-                self.security.sandbox_fail_open = value;
-            }
-            if let Some(value) = security.max_plugin_memory_mb {
-                self.security.max_plugin_memory_mb = value;
-            }
-            if let Some(value) = security.max_plugin_cpu_seconds {
-                self.security.max_plugin_cpu_seconds = value;
-            }
-            if let Some(value) = security.auto_approve_plugins {
-                self.security.auto_approve_plugins = value;
-            }
-        }
-
-        if let Some(idle) = patch.idle {
-            if let Some(v) = idle.enabled {
-                self.idle.enabled = v;
-            }
-            if let Some(v) = idle.personality {
-                self.idle.personality = v;
-            }
-            if let Some(reflection) = idle.reflection {
-                if let Some(v) = reflection.enabled {
-                    self.idle.reflection.enabled = v;
-                }
-                if let Some(v) = reflection.timeout_secs {
-                    self.idle.reflection.timeout_secs = v;
-                }
-                if let Some(v) = reflection.check_items {
-                    self.idle.reflection.check_items = v;
-                }
-            }
-            if let Some(arousal) = idle.arousal {
-                if let Some(v) = arousal.initial_value {
-                    self.idle.arousal.initial_value = v;
-                }
-                if let Some(v) = arousal.half_life_secs {
-                    self.idle.arousal.half_life_secs = v;
-                }
-            }
-            if let Some(context) = idle.context
-                && let Some(v) = context.max_output_buffer
-            {
-                self.idle.context.max_output_buffer = v;
-            }
-            if let Some(sleep) = idle.sleep {
-                if let Some(v) = sleep.short_term_retention_days {
-                    self.idle.sleep.short_term_retention_days = v;
-                }
-                if let Some(v) = sleep.cache_expiry_days {
-                    self.idle.sleep.cache_expiry_days = v;
-                }
-                if let Some(v) = sleep.max_cpu_seconds {
-                    self.idle.sleep.max_cpu_seconds = v;
-                }
-            }
-            if let Some(exploration) = idle.exploration {
-                if let Some(v) = exploration.api_rate_per_minute {
-                    self.idle.exploration.api_rate_per_minute = v;
-                }
-                if let Some(v) = exploration.on_quota_exhausted {
-                    self.idle.exploration.on_quota_exhausted = v;
-                }
-                if let Some(v) = exploration.cooldown_secs {
-                    self.idle.exploration.cooldown_secs = v;
-                }
-            }
-            if let Some(incubation) = idle.incubation {
-                if let Some(v) = incubation.max_concurrent {
-                    self.idle.incubation.max_concurrent = v;
-                }
-                if let Some(v) = incubation.enabled {
-                    self.idle.incubation.enabled = v;
-                }
-                if let Some(v) = incubation.cooldown_secs {
-                    self.idle.incubation.cooldown_secs = v;
-                }
-                if let Some(v) = incubation.incubation_threshold {
-                    self.idle.incubation.incubation_threshold = v;
-                }
-                if let Some(v) = incubation.high_value_threshold {
-                    self.idle.incubation.high_value_threshold = v;
-                }
-            }
-            if let Some(meditation) = idle.meditation {
-                if let Some(v) = meditation.cooldown_secs {
-                    self.idle.meditation.cooldown_secs = v;
-                }
-                if let Some(v) = meditation.min_interval_ticks {
-                    self.idle.meditation.min_interval_ticks = v;
-                }
-            }
-        }
-
-        if let Some(work_patch) = patch.work
-            && let Some(v) = work_patch.config
-        {
-            self.work = v;
-        }
-
-        if let Some(ui) = patch.ui
-            && let Some(v) = ui.locale
-        {
-            self.ui.locale = v;
-        }
+        ConfigPatch::merge(self, patch);
     }
 
     pub fn validate(&self) -> AmanResult<Vec<String>> {

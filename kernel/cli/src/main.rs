@@ -34,50 +34,97 @@ fn arg(args: &[String], i: usize) -> Result<String, i32> {
         .ok_or(2)
 }
 
-/// Dispatch a top-level subcommand to its `*_cmd` function and exit
-/// the process on any non-Ok return. Replaces the 16-arm `match`
-/// block that repeated `if let Err(code) = xxx_cmd(&args[1..]).await
-/// { std::process::exit(code); }` once per subcommand.
-macro_rules! dispatch {
-    ( $args:ident, $( $name:literal => $fn:path ),+ $(,)? ) => {
-        match $args.first().map(String::as_str) {
-            $( Some($name) => {
-                if let Err(code) = $fn(&$args[1..]).await {
-                    std::process::exit(code);
-                }
-            } )+
-            Some("--version") | Some("-V") => {
-                safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
-            }
-            _ => {
-                print_usage();
-                std::process::exit(2);
-            }
-        }
-    };
-}
-
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let Some(cmd) = args.first().map(String::as_str) else {
+        print_usage();
+        std::process::exit(2);
+    };
 
-    dispatch!(
-        args,
-        "run" => run_cmd,
-        "health" => health_cmd,
-        "agent" => agent_cmd,
-        "metrics" => metrics_cmd,
-        "audit-log" => audit_log_cmd,
-        "event" => event_cmd,
-        "dlq" => dlq_cmd,
-        "source" => source_cmd,
-        "plugin" => plugin_cmd,
-        "skill" => skill_cmd,
-        "workflow" => workflow_cmd,
-        "cron" => cron_cmd,
-        "serve" => serve_cmd,
-        "config" => config_cmd,
-    );
+    match cmd {
+        "run" => {
+            if let Err(code) = run_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "health" => {
+            if let Err(code) = health_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "agent" => {
+            if let Err(code) = agent_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "metrics" => {
+            if let Err(code) = metrics_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "audit-log" => {
+            if let Err(code) = audit_log_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "event" => {
+            if let Err(code) = event_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "dlq" => {
+            if let Err(code) = dlq_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "source" => {
+            if let Err(code) = source_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "plugin" => {
+            if let Err(code) = plugin_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "skill" => {
+            if let Err(code) = skill_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "workflow" => {
+            if let Err(code) = workflow_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "cron" => {
+            if let Err(code) = cron_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "serve" => {
+            if let Err(code) = serve_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "config" => {
+            if let Err(code) = config_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
+        "--version" | "-V" => {
+            safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
+        }
+        "--help" | "-h" => {
+            print_usage();
+            std::process::exit(0);
+        }
+        _ => {
+            print_usage();
+            std::process::exit(2);
+        }
+    }
 }
 
 async fn run_cmd(args: &[String]) -> Result<(), i32> {

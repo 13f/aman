@@ -664,6 +664,12 @@ pub struct SkillInfo {
     /// How the harness should execute this skill (explicit or auto-detected).
     #[serde(default)]
     pub react_mode: ReactMode,
+    /// Platform constraints (e.g. ["macos", "linux"]). Empty = all platforms.
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// Environment constraints (e.g. ["docker", "s6"]). Empty = all environments.
+    #[serde(default)]
+    pub environments: Vec<String>,
     #[serde(skip)]
     pub path: PathBuf,
 }
@@ -689,6 +695,92 @@ pub use export::*;
 /// Delegates to [`SkmRegistry`] backed by skm-core's spec-compliant parser.
 pub fn discover_llm_skills(root: &Path) -> Vec<SkillInfo> {
     skm_adapter::SkmRegistry::new(root).discover()
+}
+
+/// Detect the current operating system platform.
+///
+/// Returns one of `"macos"`, `"linux"`, `"windows"`, or `"unknown"`.
+#[must_use]
+pub fn detect_current_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "linux" => "linux",
+        "windows" => "windows",
+        _ => "unknown",
+    }
+}
+
+/// Detect active environment tags for the current runtime.
+///
+/// Checks for:
+/// - `docker`: running inside a Docker container
+/// - `s6`: s6-overlay supervisor is active
+/// - `kanban`: `AMAN_KANBAN_MODE` env var is `"1"` or `"true"`
+#[must_use]
+pub fn detect_active_environments() -> Vec<&'static str> {
+    let mut envs = Vec::new();
+
+    // Docker detection: /.dockerenv exists or /proc/1/cgroup mentions docker
+    if std::path::Path::new("/.dockerenv").exists()
+        || std::fs::read_to_string("/proc/1/cgroup")
+            .ok()
+            .is_some_and(|c| c.contains("docker"))
+    {
+        envs.push("docker");
+    }
+
+    // s6 detection: S6_SERVICEDIR env var or /run/s6 directory
+    if std::env::var("S6_SERVICEDIR").is_ok() || std::path::Path::new("/run/s6").exists() {
+        envs.push("s6");
+    }
+
+    // kanban detection
+    if let Ok(val) = std::env::var("AMAN_KANBAN_MODE")
+        && (val == "1" || val.eq_ignore_ascii_case("true"))
+    {
+        envs.push("kanban");
+    }
+
+    envs
+}
+
+/// Filter skills by the current platform and active environments.
+///
+/// Filtering rules:
+/// - If `platforms` is empty → skill is available on all platforms.
+/// - If `platforms` is non-empty → skill is only available if the current
+///   platform is in the list.
+/// - If `environments` is empty → skill is available in all environments.
+/// - If `environments` is non-empty → skill is only available if at least
+///   one active environment matches.
+#[must_use]
+pub fn filter_skills_by_runtime(mut skills: Vec<SkillInfo>) -> Vec<SkillInfo> {
+    let platform = detect_current_platform();
+    let active_envs = detect_active_environments();
+
+    skills.retain(|skill| {
+        // Platform check: if platforms specified, current platform must match one
+        if !skill.platforms.is_empty()
+            && !skill
+                .platforms
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(platform))
+        {
+            return false;
+        }
+        // Environment check: if environments specified, at least one must be active
+        if !skill.environments.is_empty()
+            && !skill.environments.iter().any(|e| {
+                active_envs
+                    .iter()
+                    .any(|active| active.eq_ignore_ascii_case(e))
+            })
+        {
+            return false;
+        }
+        true
+    });
+    skills
 }
 
 #[derive(Debug, Clone)]

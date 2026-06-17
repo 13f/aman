@@ -2862,7 +2862,7 @@ async fn chat_session_send(
     // Detect slash-command skill invocation (e.g. "/btc-bottom-model should I buy?").
     // When a skill is invoked directly by the user, load the full SKILL.md body and
     // inject it into the message so the LLM can follow the methodology immediately
-    // without a separate read_skill tool call.
+    // without a separate skill_view tool call.
     // Phase 3: Python self-module bridge for command parsing.
     let self_bridge = runtime.self_bridge().clone();
     let maybe_skill = self_bridge.parse_skill_command(&text);

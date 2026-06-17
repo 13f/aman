@@ -68,9 +68,10 @@ impl SkmRegistry {
     #[must_use]
     pub fn parse_one(&self, path: &Path) -> Option<SkillInfo> {
         let meta = self.parser.parse_metadata(path).ok()?;
-        // Extract aman-specific fields (category, array-form triggers, react_mode)
-        // from raw YAML since skm-core only exposes standard agentskills.io fields.
-        let (category, triggers, react_mode) = extract_raw_metadata(path);
+        // Extract aman-specific fields (category, array-form triggers, react_mode,
+        // platforms, environments) from raw YAML since skm-core only exposes
+        // standard agentskills.io fields.
+        let (category, triggers, react_mode, platforms, environments) = extract_raw_metadata(path);
         // If not explicitly declared, auto-detect from skill body
         let react_mode = react_mode.unwrap_or_else(|| {
             let body = extract_body(path);
@@ -82,6 +83,8 @@ impl SkmRegistry {
             category,
             triggers,
             react_mode,
+            platforms,
+            environments,
             path: meta.source_path,
         })
     }
@@ -100,7 +103,7 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<SkillInfo>)
         if path.is_dir() {
             collect_skills(parser, &path, skills);
         } else if path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md") {
-            let (category, triggers, react_mode) = extract_raw_metadata(&path);
+            let (category, triggers, react_mode, platforms, environments) = extract_raw_metadata(&path);
             let react_mode = react_mode.unwrap_or_else(|| {
                 let body = extract_body(&path);
                 detect_react_mode_from_body(&body)
@@ -112,9 +115,11 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<SkillInfo>)
                     category,
                     triggers,
                     react_mode,
+                    platforms,
+                    environments,
                     path: meta.source_path,
                 });
-            } else if let Some(skill) = fallback_parse_skill(&path, category, triggers, react_mode) {
+            } else if let Some(skill) = fallback_parse_skill(&path, category, triggers, react_mode, platforms, environments) {
                 // skm-core's RawFrontmatter uses HashMap<String, String> for metadata,
                 // which can't parse nested map values (e.g., metadata.hermes.tags).
                 // Fallback to flexible serde_yaml::Value parsing for these cases.
@@ -130,7 +135,7 @@ fn collect_skills(parser: &SkillParser, dir: &Path, skills: &mut Vec<SkillInfo>)
 /// fails when metadata values are maps or arrays (e.g., `metadata.hermes.tags`).
 /// This parser uses flexible `serde_yaml::Value`-based extraction to handle
 /// those files without being strict about the metadata field type.
-fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>, react_mode: ReactMode) -> Option<SkillInfo> {
+fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>, react_mode: ReactMode, platforms: Vec<String>, environments: Vec<String>) -> Option<SkillInfo> {
     let content = std::fs::read_to_string(path).ok()?;
 
     // Extract YAML frontmatter between --- delimiters
@@ -161,40 +166,43 @@ fn fallback_parse_skill(path: &Path, category: String, triggers: Vec<String>, re
         category,
         triggers,
         react_mode,
+        platforms,
+        environments,
         path: path.to_owned(),
     })
 }
 
 /// Extract aman-specific frontmatter fields (category, array-form triggers,
-/// react_mode) that skm-core's standard schema doesn't support.
+/// react_mode, platforms, environments) that skm-core's standard schema doesn't
+/// support.
 ///
 /// Checks both top-level `triggers` (aman format) and `metadata.triggers`
 /// (agentskills.io standard format). Falls back from top-level to metadata
-/// for compatibility with skm-core-using tools (e.g. cascade selector).
+/// for compatibility with skm-core-using tools.
 ///
 /// `react_mode` returns `Some(...)` when explicitly declared in frontmatter,
 /// `None` when absent (caller should auto-detect from body).
-fn extract_raw_metadata(path: &Path) -> (String, Vec<String>, Option<ReactMode>) {
+fn extract_raw_metadata(path: &Path) -> (String, Vec<String>, Option<ReactMode>, Vec<String>, Vec<String>) {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return (String::new(), vec![], None),
+        Err(_) => return (String::new(), vec![], None, vec![], vec![]),
     };
     let content = content.trim_start();
     if !content.starts_with("---") {
-        return (String::new(), vec![], None);
+        return (String::new(), vec![], None, vec![], vec![]);
     }
     let end = match content[3..].find("\n---") {
         Some(pos) => pos,
-        None => return (String::new(), vec![], None),
+        None => return (String::new(), vec![], None, vec![], vec![]),
     };
     let yaml_str = &content[3..3 + end];
     let value: serde_yaml::Value = match serde_yaml::from_str(yaml_str) {
         Ok(v) => v,
-        Err(_) => return (String::new(), vec![], None),
+        Err(_) => return (String::new(), vec![], None, vec![], vec![]),
     };
     let mapping = match value.as_mapping() {
         Some(m) => m,
-        None => return (String::new(), vec![], None),
+        None => return (String::new(), vec![], None, vec![], vec![]),
     };
 
     let category = mapping
@@ -233,7 +241,21 @@ fn extract_raw_metadata(path: &Path) -> (String, Vec<String>, Option<ReactMode>)
             _ => ReactMode::Full,
         });
 
-    (category, triggers, react_mode)
+    // Extract platforms (array or single string, lowercased for case-insensitive matching)
+    let platforms = extract_triggers_value(
+        mapping.get(serde_yaml::Value::String("platforms".to_owned())),
+    )
+    .map(|v| v.into_iter().map(|p| p.to_lowercase()).collect())
+    .unwrap_or_default();
+
+    // Extract environments (array or single string, lowercased)
+    let environments = extract_triggers_value(
+        mapping.get(serde_yaml::Value::String("environments".to_owned())),
+    )
+    .map(|v| v.into_iter().map(|e| e.to_lowercase()).collect())
+    .unwrap_or_default();
+
+    (category, triggers, react_mode, platforms, environments)
 }
 
 /// Extract the body portion of a SKILL.md file (everything after the YAML

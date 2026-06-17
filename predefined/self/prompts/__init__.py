@@ -31,7 +31,7 @@ def load_skill_prompt(prompts_dir: str, skill_key: str) -> str:
 
 
 from .soul_builder import Soul, parse_soul, soul_to_system_prompt
-from .skills_builder import build_skills_system_prompt, build_skill_activation_message
+from .skills_builder import build_skills_system_prompt, build_skill_view_reinforcement
 from .tools_builder import build_full_system_prompt, current_date_string
 from .reflection import extraction_prompt, format_conversation
 
@@ -41,7 +41,7 @@ __all__ = [
     "parse_soul",
     "soul_to_system_prompt",
     "build_skills_system_prompt",
-    "build_skill_activation_message",
+    "build_skill_view_reinforcement",
     "build_full_system_prompt",
     "current_date_string",
     "extraction_prompt",

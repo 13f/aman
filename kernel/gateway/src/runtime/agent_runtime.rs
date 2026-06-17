@@ -4773,6 +4773,37 @@ mod tests {
 }
 
 #[cfg(test)]
+mod build_tests {
+    use super::AgentRuntimeBuilder;
+    use config::AgentConfig;
+    use tempfile::TempDir;
+
+    /// Smoke test: verify that AgentRuntime::build() accepts the default
+    /// configuration without panicking or returning an unrecoverable error.
+    ///
+    /// This is a *characterization* test — it documents what the minimum
+    /// viable configuration looks like. If `build()` starts requiring new
+    /// fields or external services, this test will catch it.
+    #[test]
+    fn test_build_with_default_config_and_temp_dir() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _enter = rt.enter();
+        let tmp = TempDir::new().expect("temp dir");
+        let result = AgentRuntimeBuilder::new(AgentConfig::default())
+            .with_runtime_dir(tmp.path().to_path_buf())
+            .with_predefined_dir("predefined")
+            .with_runtime_handle(rt.handle().clone())
+            .build();
+
+        assert!(
+            result.is_ok(),
+            "AgentRuntime::build() with default config + temp dir should succeed, got: {:?}",
+            result.err()
+        );
+    }
+}
+
+#[cfg(test)]
 fn test_secret_backend() -> Option<Box<dyn SecretBackend>> {
     Some(Box::new(TestSecretBackend))
 }

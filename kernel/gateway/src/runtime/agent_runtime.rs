@@ -2050,8 +2050,14 @@ impl ToolEventSink for BusToolEventSink {
 /// Tool that allows the LLM to load a skill's full SKILL.md instructions on demand.
 ///
 /// The system prompt instructs the LLM to use `skill_view` when it needs more
-/// than the skill name+description index. This tool resolves skill names to
-/// the on-disk SKILL.md file and returns the full content.
+/// than the skill name+description index.
+///
+/// # Usage
+///
+/// - `skill_view(name)` — returns the full methodology, the skill's base
+///   directory, and a listing of supporting files with their absolute paths.
+/// - `skill_view(name, file_path="prompts/foo.md")` — reads a specific file
+///   from within the skill directory (path-traversal protected).
 struct SkillViewTool {
     skills: Vec<skill::SkillInfo>,
     agent_registry: OnceLock<Arc<super::AgentRegistry>>,
@@ -2088,7 +2094,7 @@ impl Tool for SkillViewTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill's full SKILL.md instructions by name. Skills contain specialized knowledge, step-by-step methodologies, analysis frameworks, and output templates for specific tasks (e.g., IPO research, code review, data analysis). Call this with the skill name to get its complete instructions."
+        "View a skill by name. Without file_path: returns the skill's full methodology, base directory, and a listing of all supporting files (scripts, templates, etc.) with their absolute paths. With file_path: reads a specific file from within the skill directory (e.g. prompts, templates, data files). Always use this instead of raw filesystem reads for skill files — it enforces path-traversal protection."
     }
 
     fn parameters(&self) -> &JsonSchema {
@@ -2100,6 +2106,10 @@ impl Tool for SkillViewTool {
                     "skill": {
                         "type": "string",
                         "description": "The name of the skill to load (e.g. \"ipo-research\")"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional: a path relative to the skill directory (e.g. \"prompts/bazi-prompt.md\"). When provided, reads and returns that specific file instead of the full skill listing."
                     }
                 }
             }))
@@ -2114,6 +2124,8 @@ impl Tool for SkillViewTool {
                 "properties": {
                     "name": {"type": "string"},
                     "content": {"type": "string"},
+                    "directory": {"type": "string"},
+                    "file_path": {"type": "string"},
                     "error": {"type": "string"}
                 }
             }))
@@ -2144,14 +2156,51 @@ impl Tool for SkillViewTool {
             }
         };
 
-        match std::fs::read_to_string(&skill.path) {
-            Ok(content) => Ok(serde_json::json!({
-                "name": skill.name, "content": content,
-            })),
-            Err(e) => Ok(serde_json::json!({
-                "name": skill_name, "content": "",
-                "error": format!("Failed to read skill file: {e}")
-            })),
+        let skill_dir = skill.path.parent().unwrap_or_else(|| Path::new("."));
+        let file_path = params.get("file_path").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+
+        // ── file_path mode: read a specific supporting file ──────────
+        if let Some(fp) = file_path {
+            match skill::execution::resolve_skill_file_path(skill_dir, fp) {
+                Some(resolved) => match std::fs::read_to_string(&resolved) {
+                    Ok(content) => Ok(serde_json::json!({
+                        "name": skill.name,
+                        "file_path": fp,
+                        "content": content,
+                    })),
+                    Err(e) => Ok(serde_json::json!({
+                        "name": skill_name,
+                        "file_path": fp,
+                        "content": "",
+                        "error": format!("Failed to read file '{fp}': {e}")
+                    })),
+                },
+                None => Ok(serde_json::json!({
+                    "name": skill_name,
+                    "file_path": fp,
+                    "content": "",
+                    "error": format!("Invalid file_path '{fp}': path traversal rejected or path is absolute")
+                })),
+            }
+        } else {
+            // ── Full skill view: methodology + directory + supporting files ──
+            let raw = match std::fs::read_to_string(&skill.path) {
+                Ok(c) => c,
+                Err(e) => return Ok(serde_json::json!({
+                    "name": skill_name, "content": "",
+                    "error": format!("Failed to read skill file: {e}")
+                })),
+            };
+            let body = skill::formatting::strip_frontmatter(&raw).trim().to_owned();
+            let (dir_header, supporting_files_footer) =
+                skill::execution::build_skill_directory_context(skill_dir);
+            let content = format!("{dir_header}\n{body}{supporting_files_footer}");
+
+            Ok(serde_json::json!({
+                "name": skill.name,
+                "content": content,
+                "directory": skill_dir.display().to_string(),
+            }))
         }
     }
 }

@@ -93,3 +93,99 @@ impl Default for MemoryProviderRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal mock provider for testing the registry.
+    struct MockProvider {
+        name: String,
+    }
+
+    impl MockProvider {
+        fn new(name: &str) -> Self {
+            Self { name: name.into() }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryProvider for MockProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    #[test]
+    fn registry_new_is_empty() {
+        let reg = MemoryProviderRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+        assert!(reg.names().is_empty());
+    }
+
+    #[test]
+    fn registry_register_and_get() {
+        let reg = MemoryProviderRegistry::new();
+        let p: Arc<dyn MemoryProvider> = Arc::new(MockProvider::new("test"));
+        reg.register(p).expect("register");
+
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+        assert_eq!(reg.names(), vec!["test"]);
+
+        let retrieved = reg.get("test");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().name(), "test");
+    }
+
+    #[test]
+    fn registry_register_duplicate_fails() {
+        let reg = MemoryProviderRegistry::new();
+        let p1: Arc<dyn MemoryProvider> = Arc::new(MockProvider::new("dup"));
+        let p2: Arc<dyn MemoryProvider> = Arc::new(MockProvider::new("dup"));
+
+        reg.register(p1).expect("first register");
+        let err = reg.register(p2).unwrap_err();
+        assert!(err.to_string().contains("memory_provider:dup"));
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn registry_unregister() {
+        let reg = MemoryProviderRegistry::new();
+        let p: Arc<dyn MemoryProvider> = Arc::new(MockProvider::new("alpha"));
+        reg.register(p).expect("register");
+
+        assert!(reg.unregister("alpha"));
+        assert!(reg.is_empty());
+
+        // Unregister non-existent provider returns false
+        assert!(!reg.unregister("nonexistent"));
+    }
+
+    #[test]
+    fn registry_get_returns_none_for_unknown() {
+        let reg = MemoryProviderRegistry::new();
+        assert!(reg.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn registry_names_sorted() {
+        let reg = MemoryProviderRegistry::new();
+        reg.register(Arc::new(MockProvider::new("z")) as Arc<dyn MemoryProvider>)
+            .expect("register z");
+        reg.register(Arc::new(MockProvider::new("a")) as Arc<dyn MemoryProvider>)
+            .expect("register a");
+        reg.register(Arc::new(MockProvider::new("m")) as Arc<dyn MemoryProvider>)
+            .expect("register m");
+
+        assert_eq!(reg.names(), vec!["a", "m", "z"]);
+    }
+
+    #[test]
+    fn registry_default_is_empty() {
+        let reg = MemoryProviderRegistry::default();
+        assert!(reg.is_empty());
+    }
+}

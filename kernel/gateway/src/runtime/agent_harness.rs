@@ -2521,3 +2521,71 @@ fn sanitize_api_keys(text: &str) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{process_remember_commands, sanitize_api_keys};
+
+    #[test]
+    fn process_remember_commands_extracts_remembered_items() {
+        let text = "Hello [remember:buy milk] world [remember:call mom]";
+        let (cleaned, remembered) = process_remember_commands(text);
+        assert_eq!(cleaned, "Hello  world");
+        assert_eq!(remembered, vec!["buy milk", "call mom"]);
+    }
+
+    #[test]
+    fn process_remember_commands_empty_text() {
+        let text = "";
+        let (cleaned, remembered) = process_remember_commands(text);
+        assert_eq!(cleaned, "");
+        assert!(remembered.is_empty());
+    }
+
+    #[test]
+    fn process_remember_commands_no_commands() {
+        let text = "Just a normal message without any remember commands.";
+        let (cleaned, remembered) = process_remember_commands(text);
+        assert_eq!(cleaned, "Just a normal message without any remember commands.");
+        assert!(remembered.is_empty());
+    }
+
+    #[test]
+    fn process_remember_commands_empty_content() {
+        let text = "[remember:]";
+        let (cleaned, remembered) = process_remember_commands(text);
+        // Empty content should not be added to remembered
+        assert!(remembered.is_empty());
+    }
+
+    #[test]
+    fn sanitize_api_keys_redacts_openai_key_in_json() {
+        let text = r#"{"apiKey": "sk-proj-ABCDEF1234567890abcdef1234567890"}"#;
+        let result = sanitize_api_keys(text);
+        assert!(!result.contains("sk-proj-"), "API key should be redacted: {result}");
+        assert!(result.contains("[REDACTED]"), "result should contain [REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_api_keys_redacts_bearer_token() {
+        let text = "Authorization: Bearer sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let result = sanitize_api_keys(text);
+        assert!(!result.contains("sk-ant-"), "API key should be redacted: {result}");
+        assert!(result.contains("[REDACTED]"), "result should contain [REDACTED]");
+    }
+
+    #[test]
+    fn sanitize_api_keys_leaves_short_sk_prefix() {
+        // Short strings starting with sk- that don't look like API keys
+        let text = "sky is blue, skill is power";
+        let result = sanitize_api_keys(text);
+        assert_eq!(result, "sky is blue, skill is power", "short sk- patterns should not be redacted");
+    }
+
+    #[test]
+    fn sanitize_api_keys_no_change_for_clean_text() {
+        let text = "This is a normal piece of text with no keys.";
+        let result = sanitize_api_keys(text);
+        assert_eq!(result, text);
+    }
+}

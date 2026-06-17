@@ -12,7 +12,7 @@
 
 use async_trait::async_trait;
 use config::{IncubationConfig, MemoryLlmConfig};
-use event_bus::{EventHandler, EventBus};
+use event_bus::{try_publish, EventHandler, EventBus};
 use idle::IdleKind;
 use kernel::event::{Event, EventType};
 use kernel::llm::{LlmChatRequest, LlmProvider};
@@ -380,7 +380,7 @@ async fn run_phases(
                             "domainB": hyp.domain_b,
                         }),
                     );
-                    let _ = bus.publish(event).await;
+                    try_publish(bus, event).await;
                 }
 
             stored_count += 1;
@@ -487,7 +487,7 @@ async fn run_think_and_finish(
                     "durationMs": elapsed.as_millis(),
                 }),
             );
-            let _ = bus.publish(event).await;
+            try_publish(bus, event).await;
         }
 
     Ok(())

@@ -19,7 +19,7 @@ use info_hub::adapters;
 use info_hub::config::InfoHubConfig;
 use info_hub::merge;
 use info_hub::types::{InfoItem, InfoSearchInput};
-use event_bus::EventBus;
+use event_bus::{try_publish, EventBus};
 use kernel::event::{Event, EventType};
 use kernel::memory::MemoryProvider;
 use kernel::AmanResult;
@@ -446,7 +446,7 @@ impl ExplorationRunner {
                         "durationMs": elapsed.as_millis(),
                     }),
                 );
-                let _ = bus.publish(event).await;
+                try_publish(&**bus, event).await;
             }
             // Signal idle depth reset — productive work completed, restart idle cycle
             coord.pending_depth_reset.store(true, Ordering::SeqCst);

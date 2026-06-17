@@ -17,7 +17,7 @@ use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use event_bus::EventBus;
+use event_bus::{try_publish, EventBus};
 use kernel::agent::AgentSystemState;
 use kernel::AmanResult;
 
@@ -237,9 +237,9 @@ impl AgentIdleManager {
                             arousal = coord.arousal.current(),
                             "Producing QueueDrained event"
                         );
-                        let _ = local_bus.publish(qd_event.clone()).await;
+                        try_publish(&*local_bus, qd_event.clone()).await;
                         if let Some(ref global) = global_bus {
-                            let _ = global.publish(qd_event).await;
+                            try_publish(&**global, qd_event).await;
                         }
                         // NOTE: Do NOT write AgentSystemState::Idle here.
                         // The system_state is managed by the agent harness
@@ -295,9 +295,9 @@ impl AgentIdleManager {
                             "Cold-start QueueDrained (bus empty for {}s)",
                             COLD_START_DELAY_SECS
                         );
-                        let _ = local_bus.publish(qd_event.clone()).await;
+                        try_publish(&*local_bus, qd_event.clone()).await;
                         if let Some(ref global) = global_bus {
-                            let _ = global.publish(qd_event).await;
+                            try_publish(&**global, qd_event).await;
                         }
                         // NOTE: Do NOT write AgentSystemState::Idle here
                         // (same reasoning as the busy→empty QueueDrained
@@ -367,11 +367,11 @@ impl AgentIdleManager {
                 );
 
                 // Publish to the agent's local bus for skill matching
-                let _ = local_bus.publish(event.clone()).await;
+                try_publish(&*local_bus, event.clone()).await;
                 // Also publish to the global bus so the Tauri UI event bridge
                 // can observe per-agent idle state
                 if let Some(ref global) = global_bus {
-                    let _ = global.publish(event).await;
+                    try_publish(&**global, event).await;
                 }
 
                 // Boredom action: check deferred tasks first (higher priority
@@ -420,9 +420,9 @@ impl AgentIdleManager {
                                             "background": true,
                                         }),
                                     );
-                                    let _ = local_bus.publish(event.clone()).await;
+                                    try_publish(&*local_bus, event.clone()).await;
                                     if let Some(ref global) = global_bus {
-                                        let _ = global.publish(event).await;
+                                        try_publish(&**global, event).await;
                                     }
                                     deferred_acted = true;
                                 }

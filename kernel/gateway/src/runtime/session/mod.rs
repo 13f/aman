@@ -16,6 +16,7 @@ use kernel::AmanResult;
 use serde_json::json;
 use workflow::{StateDef, StateTimeout, Transition, TransitionFrom, TransitionTo, WorkflowDef};
 
+use event_bus::try_publish;
 use super::agent_harness::AgentHarness;
 use super::agent_registry::AgentRegistry;
 use super::audit::AuditLogger;
@@ -412,9 +413,7 @@ impl SessionManager {
         );
 
         // Publish to global bus.
-        if let Err(e) = self.bus.publish(session_started_event.clone()).await {
-            tracing::warn!(session_id = %id, agent_id = %agent_id, error = %e, "failed to publish session:started event");
-        }
+        try_publish(&*self.bus, session_started_event.clone()).await;
 
         // Persist to the agent's session store.
         let created_at = instance.data.get("created_at")

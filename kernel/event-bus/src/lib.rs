@@ -247,6 +247,20 @@ pub trait EventBus: Send + Sync {
     fn can_poll(&self) -> bool;
 }
 
+/// Publish an event to the bus, logging a warning on failure.
+/// Replaces `let _ = bus.publish(event).await;` with
+/// `try_publish(&bus, event).await;`.
+pub async fn try_publish(bus: &dyn EventBus, event: Event) {
+    let event_type = event.event_type.clone();
+    if let Err(e) = bus.publish(event).await {
+        tracing::warn!(
+            %event_type,
+            error = %e,
+            "event bus publish failed; event dropped"
+        );
+    }
+}
+
 // ── EventPublisher impl ────────────────────────────────────────────
 // Newtype wrapper so we can coerce Arc<BusEventPublisher> → Arc<dyn EventPublisher>.
 // (Rust won't let us cast Arc<dyn EventBus> to Arc<dyn EventPublisher> directly

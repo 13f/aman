@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 use config::MeditationConfig;
-use event_bus::{EventHandler, EventBus};
+use event_bus::{try_publish, EventHandler, EventBus};
 use idle::IdleKind;
 use kernel::event::{Event, EventType};
 use kernel::memory::{EntityProfile, MemoryProvider, MemoryStats, ThinkConfig, ThinkResult};
@@ -427,7 +427,7 @@ impl MeditationRunner {
                         "durationMs": started.elapsed().as_millis(),
                     }),
                 );
-                let _ = bus.publish(event).await;
+                try_publish(&**bus, event).await;
             }
             if let Some(registry) = self.agent_registry.get()
                 && let Some(coord) = registry.get_idle_coordination(agent_id).await {

@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 
-use event_bus::EventBus;
+use event_bus::{try_publish, EventBus};
 use idle::coordination::IdleCoordination;
 use idle::types::{QueueDrained, ReflectionBreaker};
 use kernel::event::{Event, EventType};
@@ -425,9 +425,8 @@ impl Dispatcher {
                                         // No output → reset circuit breaker
                                         reflection_consecutive_count = 0;
                                     } else {
-                                        // Publish output events back to the bus
                                         for new_event in output_events {
-                                            let _ = event_bus.publish(new_event.clone()).await;
+                                            try_publish(&*event_bus, new_event.clone()).await;
                                         }
                                     }
                                 } else {
@@ -492,7 +491,7 @@ impl Dispatcher {
                             agent_id: None,
                         };
 
-                        let _ = event_bus.publish(drained.into()).await;
+                        try_publish(&*event_bus, drained.into()).await;
                         reflection_consecutive_count += 1;
                     }
 

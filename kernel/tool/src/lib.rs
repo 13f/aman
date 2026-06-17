@@ -821,7 +821,7 @@ fn monitor_detached_process(
             let exit_code = status.code().unwrap_or(-1);
             let success = status.success();
 
-            let _ = runtime.block_on(bus.publish(Event::new(
+            if let Err(e) = runtime.block_on(bus.publish(Event::new(
                 "tool:detached",
                 EventType::Custom("tool:completed".to_owned()),
                 json!({
@@ -832,7 +832,9 @@ fn monitor_detached_process(
                     "stdout": stdout_buf,
                     "stderr": stderr_buf,
                 }),
-            )));
+            ))) {
+                tracing::warn!(error = %e, "event bus publish failed; event dropped");
+            }
             return;
         }
 
@@ -851,7 +853,7 @@ fn monitor_detached_process(
                 }
             };
 
-            let _ = runtime.block_on(bus.publish(Event::new(
+            if let Err(e) = runtime.block_on(bus.publish(Event::new(
                 "tool:detached",
                 EventType::Custom("tool:progress".to_owned()),
                 json!({
@@ -860,7 +862,9 @@ fn monitor_detached_process(
                     "stream": stream,
                     "line": text,
                 }),
-            )));
+            ))) {
+                tracing::warn!(error = %e, "event bus publish failed; event dropped");
+            }
         }
 
         std::thread::sleep(Duration::from_millis(50));

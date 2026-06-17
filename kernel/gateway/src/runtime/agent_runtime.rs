@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 use config::{AgentConfig, BusMode};
-use event_bus::{DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
+use event_bus::{try_publish, DiscardHook, EventBus, InMemoryBus, InMemoryBusConfig};
 use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
 use kernel::hook::Hook;
@@ -469,14 +469,14 @@ impl AgentRuntimeBuilder {
                 // (idle → dispatch → completed) and the signals carry no useful
                 // information for other components.
                 if !result.executed.is_empty() && !is_idle {
-                    let _ = self.bus.publish(Event::new(
+                    try_publish(&*self.bus, Event::new(
                         "skill:dispatcher",
                         EventType::Custom("message:dispatch".to_owned()),
                         json!({
                             "trace_id": trace_id.to_string(),
                         }),
                     )).await;
-                    let _ = self.bus.publish(Event::new(
+                    try_publish(&*self.bus, Event::new(
                         "skill:dispatcher",
                         EventType::Custom("message:completed".to_owned()),
                         json!({
@@ -1998,7 +1998,7 @@ impl BusToolEventSink {
 #[async_trait::async_trait]
 impl ToolEventSink for BusToolEventSink {
     async fn on_tool_invoke(&self, tool_name: &str, pipeline_id: &str, instance_id: &str) {
-        let _ = self.bus.publish(Event::new(
+        try_publish(&*self.bus, Event::new(
             "pipeline:tool",
             EventType::Custom("tool:invoke".to_owned()),
             serde_json::json!({
@@ -2010,7 +2010,7 @@ impl ToolEventSink for BusToolEventSink {
     }
 
     async fn on_tool_completed(&self, tool_name: &str, pipeline_id: &str, instance_id: &str, duration_ms: u64) {
-        let _ = self.bus.publish(Event::new(
+        try_publish(&*self.bus, Event::new(
             "pipeline:tool",
             EventType::Custom("tool:completed".to_owned()),
             serde_json::json!({
@@ -2023,7 +2023,7 @@ impl ToolEventSink for BusToolEventSink {
     }
 
     async fn on_tool_failed(&self, tool_name: &str, pipeline_id: &str, instance_id: &str, error: &str) {
-        let _ = self.bus.publish(Event::new(
+        try_publish(&*self.bus, Event::new(
             "pipeline:tool",
             EventType::Custom("tool:failed".to_owned()),
             serde_json::json!({
@@ -3649,7 +3649,7 @@ impl AgentRuntime {
                 let prevented = self.runner.run(&event_type, &event.payload).await?;
                 if !prevented {
                     // Bubble event up to the global bus so global hooks see it.
-                    let _ = self.global_bus.publish(event).await;
+                    try_publish(&*self.global_bus, event).await;
                 }
                 Ok(())
             }
@@ -3803,7 +3803,7 @@ impl AgentRuntime {
                 "removed": old_caps.iter().filter(|c| !new_caps.contains(c)).cloned().collect::<Vec<_>>(),
             }),
         );
-        let _ = self.bus.publish(event).await;
+        try_publish(&*self.bus, event).await;
         Ok(())
     }
 
@@ -3825,7 +3825,7 @@ impl AgentRuntime {
             EventType::Custom(event_type.to_owned()),
             payload,
         );
-        let _ = self.bus.publish(event).await;
+        try_publish(&*self.bus, event).await;
     }
 
     /// Update the SOUL file content and trigger a hot reload.
@@ -3949,7 +3949,7 @@ impl AgentRuntime {
                         handle.spawn({
                             let bus = Arc::clone(&bus);
                             async move {
-                                let _ = bus.publish(event).await;
+                                try_publish(&*bus, event).await;
                             }
                         });
                     }
@@ -3997,7 +3997,7 @@ impl AgentRuntime {
                                 }),
                             );
                             async move {
-                                let _ = bus.publish(event).await;
+                                try_publish(&*bus, event).await;
                             }
                         });
                     }

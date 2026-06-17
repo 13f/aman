@@ -56,8 +56,8 @@ impl SseBroadcastState {
 }
 
 /// Create an empty SSE broadcast state (no background tasks yet).
-pub(crate) fn new_sse_state() -> Arc<SseBroadcastState> {
-    let (tx, _rx) = broadcast::channel::<SseMessage>(256);
+pub(crate) fn new_sse_state(capacity: usize) -> Arc<SseBroadcastState> {
+    let (tx, _rx) = broadcast::channel::<SseMessage>(capacity);
     Arc::new(SseBroadcastState {
         tx,
         tasks: tokio::sync::Mutex::new(Vec::new()),

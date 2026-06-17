@@ -2937,6 +2937,21 @@ async fn chat_session_send(
         payload["skill_context"] = sc;
     }
 
+    // Transition workflow: ACTIVE → PROCESSING (or IDLE → PROCESSING).
+    // Must happen before publishing the message event so the session
+    // is in PROCESSING state when LLM_REPLY_READY arrives later.
+    let transition_event = Event::new(
+        "session:control",
+        EventType::Custom("MESSAGE_RECEIVED".to_owned()),
+        json!({
+            "session_id": id,
+            "agent_id": chat_agent_id,
+        }),
+    );
+    if let Err(e) = runtime.workflow_engine().handle_event(&id, transition_event).await {
+        tracing::warn!(session_id = %id, error = %e, "failed to transition session workflow on MESSAGE_RECEIVED");
+    }
+
     // Publish the message event.
     let event = Event::new(
         "gateway:http",

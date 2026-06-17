@@ -1208,6 +1208,30 @@ impl AgentRuntimeBuilder {
                     );
                 }
 
+                // Transition workflow: ACTIVE → PROCESSING (or IDLE → PROCESSING).
+                // Must happen before spawning LLM processing so that
+                // LLM_REPLY_READY can transition PROCESSING → IDLE later.
+                let transition_event = Event::new(
+                    "session:control",
+                    EventType::Custom("MESSAGE_RECEIVED".to_owned()),
+                    json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                    }),
+                );
+                if let Err(e) = self.session_manager
+                    .workflow_engine()
+                    .handle_event(&session_id, transition_event)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        agent_id = %agent_id,
+                        error = %e,
+                        "MessageReceivedHandler: failed to transition session workflow on MESSAGE_RECEIVED"
+                    );
+                }
+
                 // Persist the incoming message to the session JSONL eagerly.
                 // This guards against any gap in the StoreAllEventsHandler path
                 // (e.g. race between ensure_session and StoreAllEvents dispatch)
@@ -1919,7 +1943,7 @@ impl AgentRuntimeBuilder {
         ));
 
         let plugin_approval_registry = Arc::new(PluginApprovalRegistry::new());
-        let sse_state = super::sse::new_sse_state();
+        let sse_state = super::sse::new_sse_state(config.runtime.sse_messages_capacity);
         let runtime = Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,

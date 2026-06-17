@@ -21,7 +21,7 @@ Each executor: read the plan fully before starting, honor its STOP conditions, a
 | 011 | Replace blocking std::sync::Mutex in Pipeline ConcurrencyController with tokio primitives | P1 | L | — | DONE |
 | 012 | Log silent event bus publish errors at ~30 call sites | P2 | L | — | DONE |
 | 013 | Add characterization tests for gateway core paths | P2 | L | — | DONE |
-| 014 | Add characterization tests for lifestyle crates | P3 | L | 008, 009 | TODO |
+| 014 | Add characterization tests for lifestyle crates | P3 | L | 008, 009 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

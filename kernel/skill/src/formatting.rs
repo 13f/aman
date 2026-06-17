@@ -8,23 +8,6 @@ use kernel::react::ChatMessage;
 
 use crate::SkillInfo;
 
-/// Build a lightweight skill activation message (Level 2 of Progressive Disclosure).
-///
-/// Unlike the previous version that embedded the full SKILL.md body, this version
-/// only signals the skill name and tells the LLM to call `read_skill` to load
-/// the methodology and output template. This makes the skill-loading step visible
-/// in the tool call stream so users see the skill being activated.
-pub fn build_skill_activation_message(skill: &SkillInfo) -> Option<String> {
-    let name = &skill.name;
-    Some(format!(
-        "[ACTIVATED SKILL: \"{name}\"]\n\
-         The skill \"{name}\" matches your query. Call `read_skill(skill: \"{name}\")` \n\
-         now to load its full methodology, analysis framework, and output template.\n\
-         You MUST load the skill with read_skill before proceeding — do not skip this step.\n\
-         Begin your response by stating \"[Skill: {name}]\" to confirm activation."
-    ))
-}
-
 /// Strip YAML frontmatter (`---\n...\n---`) from SKILL.md content.
 ///
 /// Returns only the body after the frontmatter block. If no frontmatter is
@@ -41,53 +24,31 @@ pub fn strip_frontmatter(raw: &str) -> &str {
     s
 }
 
-/// Build the lightweight skill index for the LLM system prompt (Level 1 of
-/// Progressive Disclosure — see agentskills.io).  Produces a categorized list
-/// of available skills with names and short descriptions.
+/// Build the categorized skill index for the LLM system prompt.
+///
+/// Produces a `## Skills` section with an `<available_skills>` XML-style block
+/// grouping skills by category. Skill matching is 100% LLM-driven — the model
+/// reads each description and decides which skills to load via `skill_view(name)`.
 pub fn build_skills_system_prompt(skills: &[SkillInfo]) -> String {
     if skills.is_empty() {
         return String::new();
     }
-    let mut out = String::from("\n\n## Decision Protocol (mandatory)\n\n");
 
-    // ── PATH A: Skill Match ──────────────────────────────────────────
+    let mut out = String::from("\n\n## Skills\n\n");
     out.push_str(
-        "### Step 1: Scan for matching skills\n\n\
-         Scan the skills listed below. If ANY skill matches or is even partially \
-         relevant to the task, you MUST load it with `read_skill(skill: \"...\")` \
-         and follow its instructions. Err on the side of loading — it is always \
-         better to have context you don't need than to miss critical steps, pitfalls, \
-         or established workflows.\n\n\
-         **If you found a matching skill → load it and follow it. You are done with \
-         this decision protocol.**\n\n",
+        "Before replying, scan the skills below. If a skill matches or is even partially \
+         relevant to your task, you MUST load it with skill_view(name) and follow its \
+         instructions.\n\n",
     );
 
-    // ── PATH B: No Skill Match → Complexity Assessment ───────────────
-    out.push_str(
-        "### Step 2: No matching skill — assess task complexity\n\n\
-         Only reach this step if you have scanned ALL skills above and genuinely \
-         none are relevant. Now assess the task:\n\n\
-         | Complexity | Signals | Action |\n\
-         |------------|---------|--------|\n\
-         | **Simple** | 1-5 tool calls, clear path, no architecture decisions, user says \"check/search/run/look at\" | Execute directly — do not create a plan or todo |\n\
-         | **Medium** | 3+ distinct steps, 2-5 files, needs progress tracking, user says \"add/fix/update\" | Load `todo` skill — track with task list, adjust as you go |\n\
-         | **Complex** | Multi-stage, architecture trade-offs, spans subsystems, destructive ops, user says \"refactor/migrate/implement\" | Load `plan` skill — explore read-only, write plan, get approval before executing |\n\n\
-         **When unsure between medium and complex, choose complex (plan).** \
-         A 30-second plan costs far less than a wrong implementation.\n\n\
-         Note: `plan`, `todo`, `writing-plans`, and `subagent-driven-development` \
-         are meta-skills for the fallback path — they guide HOW to work, not WHAT \
-         domain knowledge to apply. Only load them when no domain skill matches.\n\n",
-    );
+    out.push_str("<available_skills>\n");
 
-    // ── Skill Index ──────────────────────────────────────────────────
-    out.push_str("---\n\n### Available Skills\n\n");
-
-    // Group skills by category
+    // Group skills by category (sorted for deterministic output)
     let mut grouped: std::collections::BTreeMap<&str, Vec<&SkillInfo>> =
         std::collections::BTreeMap::new();
     for s in skills.iter() {
         let cat = if s.category.is_empty() {
-            "General"
+            "general"
         } else {
             s.category.as_str()
         };
@@ -95,24 +56,19 @@ pub fn build_skills_system_prompt(skills: &[SkillInfo]) -> String {
     }
 
     for (category, cat_skills) in &grouped {
-        out.push_str(&format!("### {category}\n"));
+        out.push_str(&format!("  {}:\n", category));
         for s in cat_skills {
-            out.push_str(&format!("- {}: {}\n", s.name, s.description));
+            out.push_str(&format!("    - {}: {}\n", s.name, s.description));
         }
-        out.push('\n');
     }
 
-    out.push_str(
-        "After completing a difficult or iterative task, consider offering to save \
-         the approach as a skill for future reuse by asking the user to create a new \
-         SKILL.md file.\n",
-    );
+    out.push_str("</available_skills>\n");
     out
 }
 
-/// Build a reinforcement message to inject after `read_skill` is invoked,
+/// Build a reinforcement message to inject after `skill_view` is invoked,
 /// telling the LLM that the loaded skill is authoritative guidance.
-pub fn build_read_skill_reinforcement(skill_name: &str) -> ChatMessage {
+pub fn build_skill_view_reinforcement(skill_name: &str) -> ChatMessage {
     ChatMessage::user(format!(
         "[The skill \"{skill_name}\" has been loaded and is now active. \
          Its instructions in the tool result above are authoritative \

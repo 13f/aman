@@ -59,9 +59,6 @@ skill = { path = "../skill", version = "0.1.0" }
 tool = { path = "../tool", version = "0.1.0" }
 workflow = { path = "../workflow", version = "0.1.0" }
 serde.workspace = true
-skm-core = "0.1.0"
-skm-embed = "0.1.0"
-skm-select = "0.1.0"
 serde_json.workspace = true
 serde_yaml = "0.9.34"
 tokio = { version = "1", features = ["net", "rt", "rt-multi-thread", "signal", "sync", "macros", "time"] }

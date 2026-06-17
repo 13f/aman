@@ -2862,7 +2862,7 @@ async fn chat_session_send(
     // Detect slash-command skill invocation (e.g. "/btc-bottom-model should I buy?").
     // When a skill is invoked directly by the user, load the full SKILL.md body and
     // inject it into the message so the LLM can follow the methodology immediately
-    // without a separate read_skill tool call.
+    // without a separate skill_view tool call.
     // Phase 3: Python self-module bridge for command parsing.
     let self_bridge = runtime.self_bridge().clone();
     let maybe_skill = self_bridge.parse_skill_command(&text);
@@ -2935,6 +2935,21 @@ async fn chat_session_send(
     });
     if let Some(sc) = skill_context {
         payload["skill_context"] = sc;
+    }
+
+    // Transition workflow: ACTIVE → PROCESSING (or IDLE → PROCESSING).
+    // Must happen before publishing the message event so the session
+    // is in PROCESSING state when LLM_REPLY_READY arrives later.
+    let transition_event = Event::new(
+        "session:control",
+        EventType::Custom("MESSAGE_RECEIVED".to_owned()),
+        json!({
+            "session_id": id,
+            "agent_id": chat_agent_id,
+        }),
+    );
+    if let Err(e) = runtime.workflow_engine().handle_event(&id, transition_event).await {
+        tracing::warn!(session_id = %id, error = %e, "failed to transition session workflow on MESSAGE_RECEIVED");
     }
 
     // Publish the message event.

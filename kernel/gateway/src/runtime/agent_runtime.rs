@@ -243,16 +243,12 @@ impl AgentRuntimeBuilder {
             tracing::warn!(path = %skills_dir.display(), error = %e, "failed to create skills directory");
         }
         let llm_skills = skill::discover_llm_skills(&skills_dir);
-        let llm_skills_arc = Arc::new(StdMutex::new(llm_skills.clone()));
         tracing::info!(count = llm_skills.len(), "discovered LLM instruction skills");
+        // Apply platform/environment filtering to discovered skills.
+        let llm_skills = skill::filter_skills_by_runtime(llm_skills);
+        tracing::info!(count = llm_skills.len(), "skills after platform/environment filtering");
+        let llm_skills_arc = Arc::new(StdMutex::new(llm_skills.clone()));
 
-        // Build skm-core registry + cascade selector for intelligent skill matching.
-        let (skill_registry, cascade_selector) = build_skill_selector(&skills_dir);
-        tracing::info!(
-            has_registry = skill_registry.is_some(),
-            has_selector = cascade_selector.is_some(),
-            "cascade selector initialized"
-        );
         let skills = Arc::new(skill::SkillRegistry::new());
         let tools = Arc::new(tool::ToolRegistry::new());
         if let Err(e) = tool::install_builtin_tools(&tools) {
@@ -260,14 +256,14 @@ impl AgentRuntimeBuilder {
         }
         // Register code agent tools for available CLI coding tools (claude, codex, etc.)
         tool::install_code_agent_tools(&tools);
-        // Register read_skill tool so the LLM can load SKILL.md instructions on demand.
-        // Store the Arc so we can wire agent_registry after its creation (line ~574+).
-        let read_skill_tool = Arc::new(ReadSkillTool {
+        // Register skill_view tool so the LLM can load SKILL.md instructions on demand.
+        // Store the Arc so we can wire agent_registry after its creation.
+        let skill_view_tool = Arc::new(SkillViewTool {
             skills: llm_skills.clone(),
             agent_registry: OnceLock::new(),
         });
-        if let Err(e) = tools.register(Arc::clone(&read_skill_tool) as Arc<dyn Tool>) {
-            tracing::warn!(error = %e, "failed to register read_skill tool");
+        if let Err(e) = tools.register(Arc::clone(&skill_view_tool) as Arc<dyn Tool>) {
+            tracing::warn!(error = %e, "failed to register skill_view tool");
         }
         let llm_chat_tool = Arc::new(LlmChatTool {
             agent_registry: OnceLock::new(),
@@ -543,8 +539,8 @@ impl AgentRuntimeBuilder {
             Arc::clone(&skills),
         );
         let agent_registry = Arc::new(agent_registry_inner);
-        // Wire agent_registry into ReadSkillTool for per-agent skill filtering.
-        read_skill_tool.set_agent_registry(Arc::clone(&agent_registry));
+        // Wire agent_registry into SkillViewTool for per-agent skill filtering.
+        skill_view_tool.set_agent_registry(Arc::clone(&agent_registry));
         llm_chat_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Plugin loading ──────────────────────────────────────────
@@ -1163,13 +1159,6 @@ impl AgentRuntimeBuilder {
                     return Ok(());
                 }
 
-                // Prepend skill activation message if a skill was pre-selected by cascade.
-                let text = event.payload.get("skill_activation_message")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(|activation| format!("{activation}\n\nUser query: {text}"))
-                    .unwrap_or(text);
-
                 // Prefer the session's owning agent from the event payload,
                 // falling back to first-enabled-agent routing for events
                 // that lack an explicit agent_id (e.g. external sources).
@@ -1205,6 +1194,30 @@ impl AgentRuntimeBuilder {
                         agent_id = %agent_id,
                         error = %e,
                         "MessageReceivedHandler: failed to ensure session"
+                    );
+                }
+
+                // Transition workflow: ACTIVE → PROCESSING (or IDLE → PROCESSING).
+                // Must happen before spawning LLM processing so that
+                // LLM_REPLY_READY can transition PROCESSING → IDLE later.
+                let transition_event = Event::new(
+                    "session:control",
+                    EventType::Custom("MESSAGE_RECEIVED".to_owned()),
+                    json!({
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                    }),
+                );
+                if let Err(e) = self.session_manager
+                    .workflow_engine()
+                    .handle_event(&session_id, transition_event)
+                    .await
+                {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        agent_id = %agent_id,
+                        error = %e,
+                        "MessageReceivedHandler: failed to transition session workflow on MESSAGE_RECEIVED"
                     );
                 }
 
@@ -1919,7 +1932,7 @@ impl AgentRuntimeBuilder {
         ));
 
         let plugin_approval_registry = Arc::new(PluginApprovalRegistry::new());
-        let sse_state = super::sse::new_sse_state();
+        let sse_state = super::sse::new_sse_state(config.runtime.sse_messages_capacity);
         let runtime = Arc::new(AgentRuntime {
             config,
             runtime_dir: self.runtime_dir,
@@ -1961,8 +1974,6 @@ impl AgentRuntimeBuilder {
             metrics,
             capability_registry: Default::default(),
             llm_skills: llm_skills_arc,
-            skill_registry,
-            cascade_selector,
             notifications,
             chat_session_store,
             channel_registry,
@@ -2038,15 +2049,21 @@ impl ToolEventSink for BusToolEventSink {
 
 /// Tool that allows the LLM to load a skill's full SKILL.md instructions on demand.
 ///
-/// The system prompt instructs the LLM to use `read_skill` when it needs more
-/// than the skill name+description index. This tool resolves skill names to
-/// the on-disk SKILL.md file and returns the full content.
-struct ReadSkillTool {
+/// The system prompt instructs the LLM to use `skill_view` when it needs more
+/// than the skill name+description index.
+///
+/// # Usage
+///
+/// - `skill_view(name)` — returns the full methodology, the skill's base
+///   directory, and a listing of supporting files with their absolute paths.
+/// - `skill_view(name, file_path="prompts/foo.md")` — reads a specific file
+///   from within the skill directory (path-traversal protected).
+struct SkillViewTool {
     skills: Vec<skill::SkillInfo>,
     agent_registry: OnceLock<Arc<super::AgentRegistry>>,
 }
 
-impl ReadSkillTool {
+impl SkillViewTool {
     fn set_agent_registry(&self, registry: Arc<super::AgentRegistry>) {
         let _ = self.agent_registry.set(registry);
     }
@@ -2067,9 +2084,9 @@ impl ReadSkillTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for ReadSkillTool {
+impl Tool for SkillViewTool {
     fn name(&self) -> &str {
-        "read_skill"
+        "skill_view"
     }
 
     fn mode(&self) -> ToolMode {
@@ -2077,7 +2094,7 @@ impl Tool for ReadSkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill's full SKILL.md instructions by name. Skills contain specialized knowledge, step-by-step methodologies, analysis frameworks, and output templates for specific tasks (e.g., IPO research, code review, data analysis). Call this with the skill name to get its complete instructions."
+        "View a skill by name. Without file_path: returns the skill's full methodology, base directory, and a listing of all supporting files (scripts, templates, etc.) with their absolute paths. With file_path: reads a specific file from within the skill directory (e.g. prompts, templates, data files). Always use this instead of raw filesystem reads for skill files — it enforces path-traversal protection."
     }
 
     fn parameters(&self) -> &JsonSchema {
@@ -2089,6 +2106,10 @@ impl Tool for ReadSkillTool {
                     "skill": {
                         "type": "string",
                         "description": "The name of the skill to load (e.g. \"ipo-research\")"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional: a path relative to the skill directory (e.g. \"prompts/bazi-prompt.md\"). When provided, reads and returns that specific file instead of the full skill listing."
                     }
                 }
             }))
@@ -2103,6 +2124,8 @@ impl Tool for ReadSkillTool {
                 "properties": {
                     "name": {"type": "string"},
                     "content": {"type": "string"},
+                    "directory": {"type": "string"},
+                    "file_path": {"type": "string"},
                     "error": {"type": "string"}
                 }
             }))
@@ -2133,14 +2156,51 @@ impl Tool for ReadSkillTool {
             }
         };
 
-        match std::fs::read_to_string(&skill.path) {
-            Ok(content) => Ok(serde_json::json!({
-                "name": skill.name, "content": content,
-            })),
-            Err(e) => Ok(serde_json::json!({
-                "name": skill_name, "content": "",
-                "error": format!("Failed to read skill file: {e}")
-            })),
+        let skill_dir = skill.path.parent().unwrap_or_else(|| Path::new("."));
+        let file_path = params.get("file_path").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+
+        // ── file_path mode: read a specific supporting file ──────────
+        if let Some(fp) = file_path {
+            match skill::execution::resolve_skill_file_path(skill_dir, fp) {
+                Some(resolved) => match std::fs::read_to_string(&resolved) {
+                    Ok(content) => Ok(serde_json::json!({
+                        "name": skill.name,
+                        "file_path": fp,
+                        "content": content,
+                    })),
+                    Err(e) => Ok(serde_json::json!({
+                        "name": skill_name,
+                        "file_path": fp,
+                        "content": "",
+                        "error": format!("Failed to read file '{fp}': {e}")
+                    })),
+                },
+                None => Ok(serde_json::json!({
+                    "name": skill_name,
+                    "file_path": fp,
+                    "content": "",
+                    "error": format!("Invalid file_path '{fp}': path traversal rejected or path is absolute")
+                })),
+            }
+        } else {
+            // ── Full skill view: methodology + directory + supporting files ──
+            let raw = match std::fs::read_to_string(&skill.path) {
+                Ok(c) => c,
+                Err(e) => return Ok(serde_json::json!({
+                    "name": skill_name, "content": "",
+                    "error": format!("Failed to read skill file: {e}")
+                })),
+            };
+            let body = skill::formatting::strip_frontmatter(&raw).trim().to_owned();
+            let (dir_header, supporting_files_footer) =
+                skill::execution::build_skill_directory_context(skill_dir);
+            let content = format!("{dir_header}\n{body}{supporting_files_footer}");
+
+            Ok(serde_json::json!({
+                "name": skill.name,
+                "content": content,
+                "directory": skill_dir.display().to_string(),
+            }))
         }
     }
 }
@@ -2890,10 +2950,6 @@ pub struct AgentRuntime {
     capability_registry: RwLock<HashMap<String, Vec<CapabilityEntry>>>,
     /// LLM-instruction skills (SKILL.md frontmatter, Agent Skills standard).
     llm_skills: Arc<StdMutex<Vec<skill::SkillInfo>>>,
-    /// skm-core registry for cascade selection (None if init failed).
-    skill_registry: Option<skm_core::SkillRegistry>,
-    /// Cascade selector for skill matching (None if init failed).
-    cascade_selector: Option<skm_select::CascadeSelector>,
     /// Registry for tool authorization requests (native macOS dialogs).
     auth_registry: Arc<tool::auth::AuthRegistry>,
     /// Registry for in-flight plugin capability approval requests.
@@ -3443,106 +3499,6 @@ impl AgentRuntime {
         Some(skill::formatting::strip_frontmatter(&raw).trim().to_owned())
     }
 
-    /// Use the cascade selector to find the top-1 matching skill for `text`.
-    ///
-    /// Returns the full SKILL.md content of the highest-confidence skill whose
-    /// confidence is `Medium` or higher. This is Level 2 of Progressive
-    /// Disclosure — the system pre-loads the best-matching skill so the LLM
-    /// doesn't need multiple `read_skill` tool calls while avoiding conflicting
-    /// instructions from multiple skills.
-    ///
-    /// When `allowed_skills` is `Some`, only skills in that list are considered.
-    ///
-    /// Returns an empty vec when:
-    /// - The selector is not initialized,
-    /// - Selection fails,
-    /// - No skill exceeds the confidence threshold.
-    #[must_use]
-    pub fn select_skills_for_text(&self, text: &str, allowed_skills: Option<&[String]>) -> Vec<String> {
-        let registry = match self.skill_registry.as_ref() {
-            Some(r) => r,
-            None => {
-                tracing::debug!("select_skills_for_text: no skill_registry (None)");
-                return vec![];
-            }
-        };
-        let selector = match self.cascade_selector.as_ref() {
-            Some(s) => s,
-            None => {
-                tracing::debug!("select_skills_for_text: no cascade_selector (None)");
-                return vec![];
-            }
-        };
-
-        // Log available skills in the registry for diagnostics
-        let catalog_len = pollster::block_on(registry.len());
-        tracing::debug!("select_skills_for_text: registry has {catalog_len} skills, query=\"{text}\"");
-
-        let ctx = skm_select::SelectionContext::new();
-        let outcome = match pollster::block_on(selector.select(text, registry, &ctx)) {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::warn!("select_skills_for_text: cascade select error: {e}");
-                return vec![];
-            }
-        };
-
-        tracing::debug!(
-            "select_skills_for_text: cascade used {:?}, {} results, latency={:?}",
-            outcome.strategies_used,
-            outcome.selected.len(),
-            outcome.total_latency,
-        );
-        for r in &outcome.selected {
-            tracing::debug!(
-                "  -> skill={}, confidence={:?}, score={}, strategy={}",
-                r.skill.as_ref(),
-                r.confidence,
-                r.score,
-                r.strategy,
-            );
-        }
-
-        // Top-1: only return the single highest-confidence skill at Medium+ level.
-        let result: Vec<String> = outcome
-            .selected
-            .into_iter()
-            .filter(|r| r.confidence >= skm_select::Confidence::Medium)
-            .max_by_key(|r| r.confidence as u8)
-            .and_then(|r| {
-                let skill_name = r.skill.as_ref();
-                let skills = self.llm_skills.lock().unwrap();
-                let skill = skills.iter().find(|s| s.name == skill_name)?;
-                let msg = skill::formatting::build_skill_activation_message(skill);
-                if msg.is_none() {
-                    tracing::warn!(
-                        "select_skills_for_text: cascade matched \"{skill_name}\" but build_skill_activation_message returned None"
-                    );
-                }
-                msg
-            })
-            .into_iter()
-            .collect();
-
-        // Apply per-agent allowed_skills filter, if specified.
-        let result = match allowed_skills {
-            Some(allowed) => result.into_iter().filter(|name| {
-                // The result contains the skill activation message text; we need
-                // to match it against allowed names. Each message starts with
-                // the skill name, so we check containment.
-                allowed.iter().any(|s| name.contains(s.as_str()))
-            }).collect(),
-            None => result,
-        };
-
-        if result.is_empty() {
-            tracing::debug!("select_skills_for_text: no skill met Medium+ threshold");
-        } else {
-            tracing::info!("select_skills_for_text: activating skill");
-        }
-
-        result
-    }
 
     #[must_use]
     pub fn workflow_engine(&self) -> Arc<WorkflowEngine> {
@@ -5395,100 +5351,4 @@ fn get_llm_api_key_or_inline(
     String::new()
 }
 
-/// Build an optional skm-core registry + cascade selector for skill matching.
-///
-/// Uses trigger-only strategy (no embedding model needed). Returns `(None, None)`
-/// if the skills directory has no valid SKILL.md files or the registry fails to
-/// initialize. This is non-fatal — the runtime falls back to listing all skills
-/// in the prompt and letting the LLM decide.
-fn build_skill_selector(
-    skills_dir: &Path,
-) -> (Option<skm_core::SkillRegistry>, Option<skm_select::CascadeSelector>) {
-    let registry = match pollster::block_on(skm_core::SkillRegistry::new(&[skills_dir])) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to create skm-core SkillRegistry");
-            return (None, None);
-        }
-    };
-
-    let trigger = match pollster::block_on(skm_select::TriggerStrategy::from_registry(&registry)) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to build trigger strategy");
-            return (Some(registry), None);
-        }
-    };
-
-    let mut cascade_builder = skm_select::CascadeSelector::builder()
-        .with_triggers(trigger);
-
-    // Attempt to add semantic strategy (embedding similarity) as second cascade
-    // level. If the embedding model fails to initialize (e.g. first launch model
-    // download, OOM, unsupported platform), gracefully fall back to trigger-only.
-    if let Some(semantic) = build_semantic_strategy(&registry) {
-        tracing::info!("semantic cascade strategy initialized");
-        cascade_builder = cascade_builder.with_semantic(
-            semantic.0,
-            semantic.1,
-            semantic.2,
-        );
-    } else {
-        tracing::info!("semantic cascade strategy not available — trigger only");
-    }
-
-    (Some(registry), Some(cascade_builder.build()))
-}
-
-/// Attempt to build a [`SemanticStrategy`] for the cascade selector.
-///
-/// Uses BGE-M3 (fastembed ONNX, 1024-dim) for local embedding inference.
-/// The embedding index is cached to `~/.aman/cache/embeddings.bin` to avoid
-/// re-embedding all skills on every startup. Cache is invalidated automatically
-/// when skill content changes (tracked via content_hash in skm-core).
-///
-/// Returns `None` if:
-/// - The BGE-M3 model cannot be loaded (first launch downloads ~100MB)
-/// - The embedding index fails to build or load from cache
-/// - The platform does not support ONNX inference
-fn build_semantic_strategy(
-    registry: &skm_core::SkillRegistry,
-) -> Option<(
-    Arc<dyn skm_embed::EmbeddingProvider>,
-    skm_embed::EmbeddingIndex,
-    skm_select::SemanticConfig,
-)> {
-    let cache_dir = super::skill_sync::aman_data_dir().join("cache");
-    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-        tracing::warn!(path = %cache_dir.display(), error = %e, "failed to create embedding cache directory");
-    }
-    let cache_path = cache_dir.join("embeddings.bin");
-
-    let provider = Arc::new(skm_embed::BgeM3Provider::new().ok()?);
-
-    let index = match skm_embed::EmbeddingIndex::load_cached(&cache_path, registry) {
-        Ok(Some(cached)) => {
-            tracing::info!("loaded cached embedding index ({} skills)", cached.len());
-            cached
-        }
-        _ => {
-            tracing::info!("building embedding index from skill registry...");
-            let idx = pollster::block_on(
-                skm_embed::EmbeddingIndex::build(registry, provider.as_ref(), Default::default()),
-            )
-            .ok()?;
-            if let Err(e) = idx.save(&cache_path) {
-                tracing::warn!(error = %e, "failed to cache embedding index");
-            }
-            tracing::info!("embedding index built ({} skills)", idx.len());
-            idx
-        }
-    };
-
-    let config = skm_select::SemanticConfig::default()
-        .with_top_k(3)
-        .with_min_score(0.65);
-
-    Some((provider, index, config))
-}
 

@@ -2312,34 +2312,34 @@ impl AgentHarness {
 
                 self.publish_tool_results_event(ctx, results.len()).await;
 
-                // read_skill detection + reinforcement
-                let has_read_skill = calls.iter().any(|c| c.tool_name == "read_skill");
-                if has_read_skill {
+                // skill_view detection + reinforcement
+                let has_skill_view = calls.iter().any(|c| c.tool_name == "skill_view");
+                if has_skill_view {
                     *loaded_skill_body = calls.iter()
-                        .position(|c| c.tool_name == "read_skill")
+                        .position(|c| c.tool_name == "skill_view")
                         .and_then(|idx| results.get(idx))
                         .map(|r| r.content.clone());
                 }
 
                 ctx.history.extend(results);
 
-                if has_read_skill
-                    && let Some(call) = calls.iter().find(|c| c.tool_name == "read_skill") {
+                if has_skill_view
+                    && let Some(call) = calls.iter().find(|c| c.tool_name == "skill_view") {
                         let skill_name = call.args.get("skill")
                             .and_then(|v| v.as_str())
                             .unwrap_or("skill");
-                        ctx.history.push(skill::formatting::build_read_skill_reinforcement(skill_name));
+                        ctx.history.push(skill::formatting::build_skill_view_reinforcement(skill_name));
                     }
 
                 // Format reminder after data-gathering turns
-                if ctx.turn >= 1 && !calls.iter().any(|c| c.tool_name == "read_skill") {
+                if ctx.turn >= 1 && !calls.iter().any(|c| c.tool_name == "skill_view") {
                     let skill_was_loaded = ctx.history.iter().any(|m| {
                         m.tool_calls.as_ref().is_some_and(|tcs| {
                             tcs.iter().any(|tc| {
                                 tc.get("function")
                                     .and_then(|f| f.get("name"))
                                     .and_then(|n| n.as_str())
-                                    == Some("read_skill")
+                                    == Some("skill_view")
                             })
                         })
                     });

@@ -38,16 +38,23 @@ pub struct RuntimeConfig {
     pub drain_timeout_sec: u64,
     #[serde(default = "default_tool_timeout")]
     pub tool_timeout_sec: u64,
+    /// Capacity of the SSE broadcast channel. Each connected SSE client
+    /// can buffer up to this many messages before the oldest are dropped.
+    /// Default: 2048.
+    #[serde(default = "default_sse_messages_capacity")]
+    pub sse_messages_capacity: usize,
 }
 
 fn default_drain_timeout() -> u64 { 30 }
 fn default_tool_timeout() -> u64 { 60 }
+fn default_sse_messages_capacity() -> usize { 2048 }
 
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             drain_timeout_sec: 30,
             tool_timeout_sec: 60,
+            sse_messages_capacity: 2048,
         }
     }
 }

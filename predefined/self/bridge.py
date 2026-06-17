@@ -54,7 +54,9 @@ def cmd_skills_prompt(args: dict) -> str:
         SkillInfo(
             name=s["name"],
             description=s.get("description", ""),
-            category=s.get("category", "General"),
+            category=s.get("category", "general"),
+            platforms=s.get("platforms", []),
+            environments=s.get("environments", []),
         )
         for s in skills_data
     ]

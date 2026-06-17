@@ -121,6 +121,8 @@ mod tests {
             category: String::new(),
             triggers: vec![],
             react_mode: ReactMode::default(),
+            platforms: vec![],
+            environments: vec![],
             path,
         }
     }
@@ -172,6 +174,8 @@ mod tests {
             category: String::new(),
             triggers: vec![],
             react_mode: ReactMode::default(),
+            platforms: vec![],
+            environments: vec![],
             path: tmp.join("nonexistent/SKILL.md"),
         }];
 

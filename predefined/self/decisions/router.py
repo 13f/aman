@@ -101,6 +101,37 @@ def strip_frontmatter(raw: str) -> str:
     return s
 
 
+def discover_supporting_files(skill_dir: str) -> list[tuple[str, str]]:
+    """Walk skill_dir, return (relative_path, absolute_path) for every file
+    except SKILL.md. Returns empty list if directory cannot be read."""
+    from pathlib import Path as P
+
+    files = []
+    base = P(skill_dir).resolve()
+    if not base.is_dir():
+        return files
+    for entry in base.rglob("*"):
+        if entry.is_file() and entry.name != "SKILL.md":
+            try:
+                rel = str(entry.relative_to(base))
+                files.append((rel, str(entry)))
+            except ValueError:
+                pass
+    files.sort(key=lambda x: x[0])
+    return files
+
+
+def build_supporting_files_footer(skill_dir: str) -> str:
+    """Build the ``[This skill has supporting files:]`` footer block."""
+    files = discover_supporting_files(skill_dir)
+    if not files:
+        return ""
+    lines = ["\n\n[This skill has supporting files:]"]
+    for rel, abs_path in files:
+        lines.append(f"- {rel}  ->  {abs_path}")
+    return "\n".join(lines) + "\n"
+
+
 def resolve_skill(
     skill_name: str,
     user_input: str,
@@ -125,8 +156,13 @@ def resolve_skill(
 
     body = strip_frontmatter(raw).strip()
 
+    skill_dir = str(Path(info.path).parent)
+    dir_header = f"[Skill directory: {skill_dir}]\n"
+    supporting_footer = build_supporting_files_footer(skill_dir)
+
     if not user_input:
         augmented = (
+            f"{dir_header}\n"
             f'[SKILL MODE] The user invoked skill "{skill_name}".\n\n'
             f"--- SKILL METHODOLOGY ---\n"
             f"{body}\n"
@@ -134,9 +170,11 @@ def resolve_skill(
             f"Follow the skill's methodology, analysis framework, and output "
             f"template exactly. Execute each step in order. Do not skip or "
             f"abbreviate any prescribed stage."
+            f"{supporting_footer}"
         )
     else:
         augmented = (
+            f"{dir_header}\n"
             f'[SKILL MODE] The user invoked skill "{skill_name}" with the '
             f"following input:\n\n"
             f"> {user_input}\n\n"
@@ -146,6 +184,7 @@ def resolve_skill(
             f"Process the user's input above using the skill's methodology, "
             f"analysis framework, and output template. Execute each step in "
             f"order. Do not skip or abbreviate any prescribed stage."
+            f"{supporting_footer}"
         )
 
     return SkillExecution(

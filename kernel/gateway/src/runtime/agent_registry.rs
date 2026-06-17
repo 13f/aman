@@ -1146,3 +1146,120 @@ impl AgentRegistry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use event_bus::EventBus;
+    use kernel::agent::{AgentDescriptor, AgentStatus};
+    use test_utils::fake_event_bus::{FakeBusConfig, FakeEventBus};
+
+    fn make_descriptor(agent_id: &str) -> AgentDescriptor {
+        AgentDescriptor {
+            agent_id: agent_id.to_string(),
+            display_name: agent_id.to_string(),
+            provider: "test-provider".to_string(),
+            model: "test-model".to_string(),
+            soul_path: None,
+            allowed_tools: None,
+            denied_tools: vec![],
+            allowed_skills: None,
+            enabled: true,
+            max_context_tokens: None,
+            max_output_tokens: None,
+        }
+    }
+
+    fn make_bus() -> Arc<FakeEventBus> {
+        Arc::new(FakeEventBus::new(FakeBusConfig::default()))
+    }
+
+    #[tokio::test]
+    async fn test_register_and_get() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        let desc = make_descriptor("test-agent");
+        reg.register(desc.clone()).await.unwrap();
+        let got = reg.get("test-agent").await;
+        assert!(got.is_some(), "expected agent to be found after register");
+        let instance = got.unwrap();
+        assert_eq!(instance.descriptor.agent_id, "test-agent");
+        assert_eq!(instance.status, AgentStatus::Idle);
+    }
+
+    #[tokio::test]
+    async fn test_register_twice_overwrites() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        reg.register(make_descriptor("dup")).await.unwrap();
+        // Registering again with the same id should succeed (overwrite).
+        reg.register(make_descriptor("dup")).await.unwrap();
+        let got = reg.get("dup").await;
+        assert!(got.is_some(), "expected agent to exist after second register");
+    }
+
+    #[tokio::test]
+    async fn test_list_agents() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        // Initially empty
+        assert!(reg.list().await.is_empty());
+        reg.register(make_descriptor("agent-1")).await.unwrap();
+        reg.register(make_descriptor("agent-2")).await.unwrap();
+        let agents = reg.list().await;
+        assert_eq!(agents.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_removes_agent() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        reg.register(make_descriptor("to-remove")).await.unwrap();
+        assert!(reg.get("to-remove").await.is_some());
+
+        reg.unregister("to-remove", "test cleanup").await.unwrap();
+        assert!(reg.get("to-remove").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_missing_returns_none() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        let got = reg.get("nonexistent").await;
+        assert!(got.is_none(), "expected None for missing agent");
+    }
+
+    #[tokio::test]
+    async fn test_set_status() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        reg.register(make_descriptor("status-test")).await.unwrap();
+
+        reg.set_status("status-test", AgentStatus::Busy).await.unwrap();
+        let instance = reg.get("status-test").await.unwrap();
+        assert_eq!(instance.status, AgentStatus::Busy);
+    }
+
+    #[tokio::test]
+    async fn test_tool_allowed_default() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        reg.register(make_descriptor("tool-test")).await.unwrap();
+        // Default: None allowed_tools means all tools allowed.
+        assert!(reg.tool_allowed("tool-test", "any_tool").await);
+        // Missing agent returns false.
+        assert!(!reg.tool_allowed("no-such-agent", "any_tool").await);
+    }
+
+    #[tokio::test]
+    async fn test_clear_removes_all() {
+        let bus: Arc<dyn EventBus> = make_bus();
+        let reg = AgentRegistry::new(bus);
+        reg.register(make_descriptor("agent-a")).await.unwrap();
+        reg.register(make_descriptor("agent-b")).await.unwrap();
+        assert_eq!(reg.list().await.len(), 2);
+
+        reg.clear().await;
+        assert!(reg.list().await.is_empty());
+    }
+}

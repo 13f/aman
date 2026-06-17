@@ -80,3 +80,10 @@ mcp-client = { path = "../mcp-client" }
 [[bin]]
 name = "aman"
 path = "src/main.rs"
+
+[dev-dependencies]
+test-utils = { path = "../test-utils", version = "0.1.0" }
+wiremock = "0.6"
+tempfile = "3"
+config = { path = "../config", version = "0.1.0" }
+serde_json.workspace = true

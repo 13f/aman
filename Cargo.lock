@@ -2856,6 +2856,8 @@ dependencies = [
  "soul",
  "source",
  "study",
+ "tempfile",
+ "test-utils",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2865,6 +2867,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "wiremock",
  "work",
  "workflow",
 ]

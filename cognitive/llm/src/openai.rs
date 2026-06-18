@@ -91,13 +91,45 @@ impl LlmOpenaiProvider {
             .filter_map(|tc| {
                 let id = tc.get("id")?.as_str()?.to_owned();
                 let name = tc.get("function")?.get("name")?.as_str()?.to_owned();
-                let args_str = tc
-                    .get("function")?
-                    .get("arguments")?
-                    .as_str()?
-                    .to_owned();
-                let args: Value =
-                    serde_json::from_str(&args_str).unwrap_or(Value::Object(Default::default()));
+                // Accept arguments as either a JSON string (OpenAI spec) or a
+                // pre-parsed JSON object (some non-OpenAI providers / local models).
+                let args = match tc.get("function").and_then(|f| f.get("arguments")) {
+                    Some(v) if v.is_string() => {
+                        let s = v.as_str().unwrap_or("");
+                        if s.is_empty() {
+                            tracing::warn!(
+                                tool_name = %name,
+                                "tool call with empty arguments string — defaulting to empty object"
+                            );
+                        }
+                        serde_json::from_str(s)
+                            .unwrap_or_else(|e| {
+                                tracing::warn!(
+                                    tool_name = %name,
+                                    error = %e,
+                                    "failed to parse tool call arguments JSON — defaulting to empty object"
+                                );
+                                Value::Object(Default::default())
+                            })
+                    }
+                    Some(v) if v.is_object() => {
+                        // Pre-parsed JSON object — use directly.
+                        if v.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                            tracing::warn!(
+                                tool_name = %name,
+                                "tool call with empty arguments object"
+                            );
+                        }
+                        v.clone()
+                    }
+                    _ => {
+                        tracing::warn!(
+                            tool_name = %name,
+                            "tool call with missing or unexpected arguments type — defaulting to empty object"
+                        );
+                        Value::Object(Default::default())
+                    }
+                };
                 Some(ParsedToolCall {
                     id,
                     tool_name: name,
@@ -257,17 +289,26 @@ impl LlmOpenaiProvider {
                             {
                                 entry["function"]["name"] = json!(name);
                             }
-                            if let Some(args) = tc
-                                .get("function")
-                                .and_then(|f| f.get("arguments"))
-                                .and_then(|a| a.as_str())
-                            {
-                                let current = entry["function"]["arguments"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_owned();
-                                entry["function"]["arguments"] = json!(current + args);
-                            }
+                            // Arguments may arrive as a string fragment (OpenAI
+                                // spec) or as a pre-parsed JSON object (some local
+                                // models / non-OpenAI providers). String fragments
+                                // are concatenated across deltas; a JSON object
+                                // overwrites any prior value (last-write-wins).
+                                if let Some(args) = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("arguments"))
+                                {
+                                    if let Some(fragment) = args.as_str() {
+                                        let current = entry["function"]["arguments"]
+                                            .as_str()
+                                            .unwrap_or("")
+                                            .to_owned();
+                                        entry["function"]["arguments"] =
+                                            json!(current + fragment);
+                                    } else if args.is_object() {
+                                        entry["function"]["arguments"] = args.clone();
+                                    }
+                                }
                         }
                     }
                 }
@@ -383,9 +424,44 @@ impl LlmOpenaiProvider {
                     .filter_map(|tc| {
                         let id = tc.get("id")?.as_str()?.to_owned();
                         let name = tc["function"]["name"].as_str()?.to_owned();
-                        let args_str = tc["function"]["arguments"].as_str()?.to_owned();
-                        let args: Value = serde_json::from_str(&args_str)
-                            .unwrap_or(Value::Object(Default::default()));
+                        // Accept arguments as either a JSON string (OpenAI spec) or a
+                        // pre-parsed JSON object (some non-OpenAI providers / local models).
+                        let args = match tc["function"].get("arguments") {
+                            Some(v) if v.is_string() => {
+                                let s = v.as_str().unwrap_or("");
+                                if s.is_empty() {
+                                    tracing::warn!(
+                                        tool_name = %name,
+                                        "non-streaming tool call with empty arguments string — defaulting to empty object"
+                                    );
+                                }
+                                serde_json::from_str(s)
+                                    .unwrap_or_else(|e| {
+                                        tracing::warn!(
+                                            tool_name = %name,
+                                            error = %e,
+                                            "non-streaming: failed to parse tool call arguments JSON — defaulting to empty object"
+                                        );
+                                        Value::Object(Default::default())
+                                    })
+                            }
+                            Some(v) if v.is_object() => {
+                                if v.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+                                    tracing::warn!(
+                                        tool_name = %name,
+                                        "non-streaming tool call with empty arguments object"
+                                    );
+                                }
+                                v.clone()
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    tool_name = %name,
+                                    "non-streaming tool call with missing or unexpected arguments type — defaulting to empty object"
+                                );
+                                Value::Object(Default::default())
+                            }
+                        };
                         Some(ParsedToolCall {
                             id,
                             tool_name: name,

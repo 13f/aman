@@ -948,7 +948,11 @@ impl Tool for ExecTool {
             .get("command")
             .and_then(Value::as_str)
             .ok_or_else(|| Error::ConfigInvalid {
-                message: "command must be a string".to_owned(),
+                message: format!(
+                    "exec requires a \"command\" field (non-empty string). \
+                     Received params: {} — pass e.g. {{\"command\": \"ls\", \"args\": [\"-la\"]}}",
+                    params
+                ),
             })?;
         let explicit_args = params
             .get("args")

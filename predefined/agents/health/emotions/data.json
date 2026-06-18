@@ -1,0 +1,140 @@
+{
+  "img_ext": "png",
+  "items": [
+  {
+    "id": "calm",
+    "tags": ["正常", "平静", "normal", "calm"],
+    "description": "中性表情，嘴角自然，眼神平和"
+  },
+  {
+    "id": "happy",
+    "tags": ["愉悦", "开心", "happy", "cheerful"],
+    "description": "微笑或露齿笑，眼睛微弯，眉梢上扬"
+  },
+  {
+    "id": "focused",
+    "tags": ["专注", "投入", "focused"],
+    "description": "眼神集中，眉头轻微下压，嘴唇轻抿"
+  },
+  {
+    "id": "curious",
+    "tags": ["好奇", "感兴趣", "curious"],
+    "description": "眼睛睁大，眉毛一高一低，微歪头表情"
+  },
+  {
+    "id": "relaxed",
+    "tags": ["放松", "悠闲", "relaxed"],
+    "description": "半闭眼或眼神柔和，嘴角微微上扬，面部肌肉松弛"
+  },
+  {
+    "id": "working",
+    "tags": ["工作中", "working"],
+    "description": "认真、略带严肃，眼神向下或平视，嘴唇紧闭"
+  },
+  {
+    "id": "studying",
+    "tags": ["学习", "阅读", "studying"],
+    "description": "眼睛聚焦，眉头微微皱起（思考状），嘴唇自然"
+  },
+  {
+    "id": "researching",
+    "tags": ["研究", "探索", "researching"],
+    "description": "眉头微蹙，眼睛半眯（审视状），嘴唇微启或轻咬"
+  },
+  {
+    "id": "thinking",
+    "tags": ["思考", "决策", "thinking"],
+    "description": "眼神放空或斜视，眉毛聚拢，手指触下巴姿态可暗示"
+  },
+  {
+    "id": "inspired",
+    "tags": ["灵感迸发", "inspired"],
+    "description": "眼睛突然睁大，眉毛高挑，嘴角上扬露出惊喜表情"
+  },
+  {
+    "id": "bored",
+    "tags": ["无聊", "bored"],
+    "description": "眼皮半垂，眼神涣散，嘴角微微下拉"
+  },
+  {
+    "id": "daze",
+    "tags": ["发呆", "放空", "daze", "blank"],
+    "description": "目光呆滞，双眼无神，嘴唇微张"
+  },
+  {
+    "id": "waiting",
+    "tags": ["等待", "waiting"],
+    "description": "眼神朝一侧看或向下看，眉毛轻微下压，略带不耐烦"
+  },
+  {
+    "id": "sleeping",
+    "tags": ["睡觉", "sleeping", "休息", "小憩", "resting"],
+    "description": "双眼紧闭，眉毛舒展，嘴唇轻合，可带轻微呼吸感（如微张嘴）"
+  },
+  {
+    "id": "tired",
+    "tags": ["疲惫", "劳累", "tired", "fatigued"],
+    "description": "眼皮沉重，眼袋或黑眼圈暗示，眉毛无力，嘴角下垂"
+  },
+  {
+    "id": "anxious",
+    "tags": ["焦虑", "着急", "anxious", "urgent"],
+    "description": "眉毛紧锁成倒八字，眼睛睁大且频繁眨眼感，嘴角向下或抿紧"
+  },
+  {
+    "id": "frustrated",
+    "tags": ["沮丧", "失落", "frustrated", "down"],
+    "description": "眉头紧皱，眼神下垂，嘴角明显下拉，面部阴影加重"
+  },
+  {
+    "id": "angry",
+    "tags": ["生气", "恼怒", "angry"],
+    "description": "眉毛下压并向中间挤，眼睛瞪大，嘴唇紧闭或咬牙状"
+  },
+  {
+    "id": "stressed",
+    "tags": ["紧张", "压力大", "stressed"],
+    "description": "眉毛高耸且紧绷，眼睛圆睁，嘴唇颤抖感（微启）"
+  },
+  {
+    "id": "embarrassed",
+    "tags": ["尴尬", "窘迫", "embarrassed"],
+    "description": "眉毛呈八字下垂，眼睛不敢直视（视线飘移），嘴部歪斜或苦笑"
+  },
+  {
+    "id": "surprised",
+    "tags": ["惊讶", "震惊", "surprised"],
+    "description": "眉毛高高挑起，眼睛睁大，嘴巴微张或O型"
+  },
+  {
+    "id": "skeptical",
+    "tags": ["怀疑", "质疑", "skeptical"],
+    "description": "眉毛一高一低，眼睛眯起，嘴角单边上扬（嘲讽/质疑状）"
+  },
+  {
+    "id": "romantic",
+    "tags": ["浪漫", "心动", "romantic", "smitten"],
+    "description": "眼睛放光（瞳孔放大感），嘴角温柔微笑，脸颊微红"
+  },
+  {
+    "id": "proud",
+    "tags": ["骄傲", "得意", "proud"],
+    "description": "下巴微抬，眉毛上扬，嘴角自信上扬，眼神睥睨"
+  },
+  {
+    "id": "ashamed",
+    "tags": ["羞愧", "懊悔", "ashamed"],
+    "description": "低头眼神（可通过构图暗示），眉毛下垂，嘴角下撇，脸颊红晕"
+  },
+  {
+    "id": "confused",
+    "tags": ["困惑", "迷茫", "confused"],
+    "description": "眉头紧锁，眼神茫然，嘴唇微噘，轻微歪头表情"
+  },
+  {
+    "id": "eager",
+    "tags": ["渴望", "期待", "eager"],
+    "description": "眼睛睁大且明亮，眉毛抬高，嘴唇微启（欲言又止状）"
+  }
+]
+}

@@ -2,6 +2,7 @@
   "version": 1,
   "skills": "skills/builtin-skills.json",
   "plugins": "plugins/builtin-plugins.json",
+  "agents": "agents/agents.json",
   "configs": [
     "cards.json",
     "agents/code-agents.json"

@@ -1,8 +1,43 @@
 ---
 name: plan
 category: agent
-description: Plan mode — when the task is complex, multi-stage, involves architecture decisions, or is destructive, enter planning mode. Explore the codebase (read-only), write a detailed implementation plan to .aman/plans/, do NOT execute any code changes. Use before any non-trivial implementation task.
-version: 1.0.0
+description: >
+  Plan mode — when the task is complex, multi-stage, involves architecture
+  decisions, or is destructive, enter planning mode. Explore the codebase
+  (read-only), write a structured implementation plan via planner.create +
+  planner.set_tasks, do NOT execute any code changes. The Orchestrator will
+  automatically execute tasks after the plan is created. Use before any
+  non-trivial implementation task.
+version: 1.1.0
+triggers:
+  - "plan"
+  - "make a plan"
+  - "create a plan"
+  - "规划"
+  - "计划"
+  - "方案"
+  - "设计"
+  - "design"
+  - "roadmap"
+  - "路线图"
+  - "architecture"
+  - "架构"
+  - "approach"
+  - "方案设计"
+  - "how would you"
+  - "怎么实现"
+  - "implement"
+  - "refactor"
+  - "重构"
+  - "migration"
+  - "迁移"
+  - "audit"
+  - "审计"
+tags:
+  - planning
+  - architecture
+  - design
+  - preparation
 metadata:
   hermes:
     tags: [planning, architecture, design, preparation]
@@ -34,8 +69,15 @@ Use the `planner` tool to persist the plan as structured state:
 1. **`planner.create`** — initialize the plan with goal, milestones, and success criteria
 2. **`planner.set_tasks`** — write the decomposed task list with dependencies
 
-This enables cross-session resume and structured progress tracking.
-See `planner` skill for the full operation reference.
+After these two calls, the **Orchestrator** takes over automatically:
+- Picks unblocked tasks and spawns anonymous sub-agents
+- Detects stalls and pivots directions
+- Escalates to human if all directions are exhausted
+
+You do NOT need to manually call `planner.start`, `planner.complete`, or
+`planner.increment_stale`. Monitor progress with `planner.status`.
+
+See `planner` skill for the full operation reference and file format details.
 
 ### Human-readable plan (supplementary)
 

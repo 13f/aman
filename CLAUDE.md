@@ -79,7 +79,7 @@ Workspace with ~40 crates:
 | `source` | `kernel/source` | Timer, Cron, FileWatch, Webhook, Signal, Socket |
 | `hook` | `kernel/hook` | Internal hook system |
 | `skill` | `kernel/skill` | YAML/SKILL.md loading, Tantivy search, hot-reload |
-| `tool` | `kernel/tool` | Tool runner, built-in tools (file/http/exec/db) |
+| `tool` | `kernel/tool` | Tool runner, built-in tools (file/http/exec/db/planner) |
 | `plugin` | `kernel/plugin` | WASM/Subprocess/InProcess plugin host, dependency graph |
 | `soul` | `kernel/soul` | SOUL identity system (SOUL.md parsing, boundary checks) |
 | `persistence` | `kernel/persistence` | WAL, StateStore, DLQ, overflow dir |

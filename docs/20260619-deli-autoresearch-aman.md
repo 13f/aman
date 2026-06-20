@@ -3,6 +3,7 @@
 > 2026-06-19 | 基于 https://victorchen96.github.io/auto_research/framework.html
 > 2026-06-20 修订 | 合并差距分析与整合路径，修正 aman 能力评估
 > 2026-06-20 三修 | CronManager 已移除，CronSource 简化为 EventSource 走 SourceRegistry 管理；同步更新整合路径
+> 2026-06-20 四修 | Planner tool 已实现（`kernel/tool/src/planner.rs`），覆盖 Gap #1（方向多样性）和 Gap #2（跨 session 进展追踪）
 
 ---
 
@@ -70,7 +71,7 @@
 
 ---
 
-### Gap #1: 方向多样性强制 ✅ **P0 — 完全缺失，核心防御机制**
+### Gap #1: 方向多样性强制 ✅ **P0 — 已由 Planner Tool 覆盖 (2026-06-20)**
 
 **Deli 做法**：`directions_tried.json` 追踪所有已尝试方向。stale_count ≥ 2 → 强制改变结构性约束（不仅是参数微调）。新方向必须与历史不同。
 
@@ -82,9 +83,9 @@
 - `OffTopicDrift` — 回复偏离任务主题
 - `Contradiction` — 输出与之前矛盾
 
-但这些是**单 session 内的信号检测**，不等同于方向多样性——`RotDetector` 告诉你"出问题了"，但不提供"换个方向试试"的机制。Deli 的方向多样性是在跨迭代层面强制改变探索策略，aman 完全缺失这一层。这是唯一一个 aman 没有任何等价物的 P0 项。
+但这些是**单 session 内的信号检测**，不等同于方向多样性——`RotDetector` 告诉你"出问题了"，但不提供"换个方向试试"的机制。
 
-**可能位置**：新 crate `kernel/direction`，或集成到 `kernel/eval`。
+> **2026-06-20 已解决**：`PlannerTool`（`kernel/tool/src/planner.rs`）的 `record_direction` 操作在 task 粒度上记录所有已尝试方向（`{id, description, parameters}`），planner status/resume 输出完整的方向历史。stale_count 由 `increment_stale` 累积、`complete` 归零。Direction diversity 的判断逻辑（读取历史→确保新方向有差异）由 agent/orchestrator 调用 planner 完成，不在 planner 内部实现。
 
 ```
 核心概念：
@@ -96,7 +97,7 @@
 
 ---
 
-### Gap #2: 跨 session 累积进展追踪 ⚠️ **P1 — per-session 评估已有且丰富，缺跨 session 累积**
+### Gap #2: 跨 session 累积进展追踪 ⚠️ **P1 — 已由 Planner Tool 覆盖 (2026-06-20)**
 
 **Deli 做法**：`progress.json` 有 `total_findings` 和 `stale_count`。每次迭代零新发现 → stale_count+1。≥2 → 强制转向，≥4 → 标记人类。
 
@@ -112,9 +113,9 @@
 - ❌ **没有 `stale_count`** — 不知道「这是第几次连续零进展」
 - ❌ **没有 `total_findings`** — 不知道总产出量
 
-**差距**：aman 的 per-session 评估比 Deli 更丰富（5 种信号 vs 1 个计数器），但缺少**跨 session 累积**能力。Deli 的 orchestrator 可以跨多次 work session 追踪 `stale_count`，aman 的 auto-continue 只在单次 `react_loop` 内判断（最多 5 次续跑），结束后状态不跨 session 持久化。
+**差距**：aman 的 per-session 评估比 Deli 更丰富（5 种信号 vs 1 个计数器），但缺少**跨 session 累积**能力。
 
-**可能位置**：扩展 `kernel/eval/src/session_progress.rs`，或在 `agent_harness` 层引入跨 session 的 `TaskProgressTracker`。
+> **2026-06-20 已解决**：`PlannerTool` 的 `.progress` 文件（`~/.aman/plans/{plan_id}.progress`）提供跨 session 持久化的进展状态：`iteration`、`stale_count`、`current_task_id`、`current_milestone_id`、`current_direction_id`、`last_progress_at`、`last_session_id`、`retry_counts`。`planner.resume` 操作在 session 重启时恢复状态并返回 next_task。不再需要单独的 `TaskProgressTracker` crate。
 
 ```rust
 // 跨 session 持久化的进展状态（缺失）
@@ -236,52 +237,55 @@ Deli 的 Pattern D 关键设计：
 
 ## 六、推荐整合路径
 
-### 第一阶段：P0 + P1 基础能力（~4–5 天）
+> **2026-06-20 更新**：第一阶段（P0 + P1）的核心能力已通过 `PlannerTool`（`kernel/tool/src/planner.rs`）实现。DirectionTracker 和 TaskProgressTracker 不再需要作为独立 crate——planner tool 统一管理方向记录、进展追踪和跨 session 状态持久化。以下原始方案保留作为设计参考。
 
-#### 1. DirectionTracker — 方向多样性（P0）
+### 第一阶段：P0 + P1 基础能力 ✅ 已通过 Planner Tool 实现
+
+#### 1. DirectionTracker → `planner.record_direction` ✅
+
+原本计划新增 `kernel/direction/` crate。现在由 planner tool 的 `record_direction` 操作替代：
+- `directions_tried` 存储在 `.plan` 文件的每个 task 上（`{id, description, parameters}`）
+- `stale_count` 通过 `planner.increment_stale` 累积、`planner.complete` 归零
+- Direction diversity 判断由 agent/orchestrator 读取 planner 数据后执行
+
+#### 2. TaskProgressTracker → `planner.{status,resume}` ✅
+
+原本计划新增 `kernel/persistence/src/task_progress.rs`。现在由 planner tool 的 `.progress` 文件替代：
+- `iteration`、`stale_count`、`current_task_id`、`current_milestone_id`、`current_direction_id`、`last_progress_at`、`last_session_id`、`retry_counts`
+- 跨 session 恢复通过 `planner.resume` → 返回 next_task 和完整状态
+- 文件位于 `~/.aman/plans/{plan_id}.progress`
+
+#### 原始方案（保留作为设计参考）
+
+<details>
+<summary>原 DirectionTracker 设计</summary>
 
 **新增** `kernel/direction/` crate，或集成到 `kernel/eval`。
 
 ```
 DirectionTracker {
-    tried: HashMap<DirectionHash, DirectionRecord>,  // 已尝试方向
-    similarity_threshold: f32,                        // Jaccard / embedding 阈值
+    tried: HashMap<DirectionHash, DirectionRecord>,
+    similarity_threshold: f32,
 }
-
-方法：
-- try_new_direction(hint: &str) -> Result<Direction, ConflictReason>
-- record_direction(dir: &Direction)                  // 标记已尝试
-- suggest_pivot(stale_count: u32) -> Direction        // 停滞时生成新方向
 ```
 
-- 与 `auto-continue` 联动：`stale_count >= 2` → 在 continuation context 中注入 pivot 方向
-- `Direction` 表示：prompt 策略标签 + 参数组合哈希
-- 差异判定：先用 Jaccard（快），必要时用 embedding（准）
+</details>
 
-**优先级理由**：这是 Deli 对 aman 最有价值的贡献——防止认知循环。aman 目前完全缺失。
-
-#### 2. TaskProgressTracker — 跨 session 累积进展（P1）
+<details>
+<summary>原 TaskProgressTracker 设计</summary>
 
 **新增** `kernel/persistence/src/task_progress.rs`，基于 `StateStore`。
 
 ```rust
 struct TaskProgress {
     task_id: String,
-    stale_count: u32,          // 连续零进展 session 数
-    total_findings: u32,       // 累计有效产出
-    sessions_completed: u32,   // 已完成的 session 数
-    last_evaluated_session: String,
-    last_progress_at: Timestamp,
+    stale_count: u32,
+    total_findings: u32,
+    ...
 }
 ```
 
-- 每次 `react_loop` 结束时写入（复用现有 `session_progress::evaluate()` 的输出）
-- `stale_count` 更新规则：`collision_found || best_partial_match 有增长` → 归零；否则 +1
-- 在 continuation context 构建时读取，注入跨 session 状态
-- `stale_count >= 2` → 触发 DirectionTracker 的 pivot 建议
-- `stale_count >= 4` → 发布 `ESCALATE` 事件（通知用户）
-
-**优先级理由**：aman 的 per-session 评估已经完善，补跨 session 累积是增量改进，且是 DirectionTracker 生效的前提。
+</details>
 
 #### 3. Cron 配置持久化（L1 心跳基础）—— 已完成 CronSource 简化
 

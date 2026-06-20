@@ -5,7 +5,9 @@
 > 2026-06-20 三修 | CronManager 已移除，CronSource 简化为 EventSource 走 SourceRegistry 管理；同步更新整合路径
 > 2026-06-20 四修 | Planner tool 已实现（`kernel/tool/src/planner.rs`），覆盖 Gap #1（方向多样性）和 Gap #2（跨 session 进展追踪）
 > 2026-06-20 五修 | Cron 配置持久化已实现（`kernel/source/src/cron_store.rs`），`~/.aman/agents/{agent_key}/cron/jobs.json`，重启后自动恢复
-> 2026-06-20 六修 | `spawn_anonymous` + `delegate_task` tool 已实现：匿名 agent 基础设施 + LLM 可调用的子 agent 派生 tool。SubAgentSpawner trait（`cognitive/llm`）解耦 cognitive 层与 gateway 实现。覆盖第二阶段 SubTaskScheduler 的 GoalDriven / ParallelExploration / PostIterationVerify 三种模式。
+> 2026-06-20 六修 | `spawn_anonymous` + `delegate_task` tool 已实现：匿名 agent 基础设施 + LLM 可调用的子 agent 派生 tool。SubAgentSpawner trait（`cognitive/llm`）解耦 cognitive 层与 gateway 实现。
+> 2026-06-20 七修 | `delegate_task(operation="collect")` 实现异步结果收集。`GatewaySubAgentSpawner` 内部 `pending_handles` HashMap（内存 store，不落盘）。
+> 2026-06-20 八修 | 确认 PollingExperiment 由 oneshot channel 自然覆盖——`collect` 内部 `oneshot::Receiver::await`，事件驱动阻塞等待，不需要 Timer 轮询。Deli 四种调度模式全部覆盖。
 
 ---
 
@@ -295,44 +297,40 @@ struct TaskProgress {
 >
 > **2026-06-20 已实施（五修）**：Cron 配置持久化已实现。新增 `CronStore`（`kernel/source/src/cron_store.rs`），以 `~/.aman/agents/{agent_key}/cron/jobs.json` 存储每个 agent 的定时任务配置（参考 Hermes 的 `~/.hermes/cron/jobs.json` 格式）。`add_cron_job`/`update_cron_job`/`remove_cron_job` 自动同步到磁盘；`Phase 4` 启动时从所有 agent 的 `jobs.json` 恢复 cron source 并注册到 `SourceRegistry`。接口层（gRPC/HTTP/stdio/CLI/tool dispatch）均增加 `agent_key` 参数。
 
-### 第二阶段：编排与调度（部分完成）
+### 第二阶段：编排与调度（核心已完成，Orchestrator 未开始）
 
-#### 4. SubTaskScheduler — 子任务调度模式 ✅ 核心原语已实现
+#### 4. SubTaskScheduler — 子任务调度模式 ✅ 四种模式全覆盖
 
-> **2026-06-20 六修**：核心理念已通过 `spawn_anonymous` + `delegate_task` tool 实现，
-> 但实现方式不同于原始设计。原始设计将模式定义为 `WorkflowDef`，实际实现采用
-> 更轻量的匿名 agent + tool 层方案。
+> **2026-06-20 六修**：`spawn_anonymous` + `delegate_task` tool 实现了核心原语。
+> **2026-06-20 七修**：`delegate_task(operation="collect")` 实现了异步结果收集。
+> **2026-06-20 八修**：确认 PollingExperiment 由 oneshot channel 自然覆盖（见下文分析）。
 
-**已实现**（`cognitive/llm/src/delegate_task.rs` + `kernel/gateway/src/runtime/subagent_spawner.rs`）：
+与原始设计的差异：原始设计将模式定义为 `WorkflowDef`，实际采用更轻量的匿名 agent + tool 层方案。
 
-| 模式 | 实现方式 |
-|------|---------|
-| **GoalDriven** | `delegate_task(prompt="...", background=false)` → 同步等待结果 |
-| **ParallelExploration** | 并行调用多个 `delegate_task(prompt="方向A/B/C", background=true)` → 各方向独立运行 |
-| **PostIterationVerify** | `delegate_task(prompt="审计这些 findings...", system_prompt="You are a skeptical auditor...")` |
+**四种模式实现状态：**
+
+| 模式 | 实现方式 | 状态 |
+|------|---------|------|
+| **GoalDriven** | `delegate_task(prompt="...")` — 同步等待结果 | ✅ |
+| **ParallelExploration** | 并行 `delegate_task(prompt="方向A/B", background=true)` → 各方向独立 → `delegate_task(operation="collect", agent_id="...")` 逐个取回 | ✅ |
+| **PostIterationVerify** | `delegate_task(prompt="审计 findings...", system_prompt="You are a skeptical auditor...")` — 独立上下文 + 审计角色 | ✅ |
+| **PollingExperiment** | `delegate_task(prompt="跑实验", background=true)` → 做其他事 → `delegate_task(operation="collect", agent_id="...")` — 阻塞等待完成，无需轮询 | ✅ |
+
+> **关于 PollingExperiment：** Deli 框架需要 Timer 轮询是因为它没有 channel/阻塞原语。
+> aman 的 `spawn_anonymous` 内部使用 `tokio::oneshot` channel — sender 在子 agent 完成后
+> 自动唤醒 receiver。`collect` 本质是 `oneshot::Receiver::await`，子 agent 没跑完就阻塞等待，
+> 跑完了立刻返回。事件驱动，无需轮询。
+>
+> Deli 的四种调度模式在 aman 中映射为 **一个 tool，两种 operation**（spawn + collect），
+> 不需要独立的 `WorkflowDef` 或 Timer 集成。
 
 **架构**：
 ```
-cognitive/llm/subagent.rs       SubAgentSpawner trait（认知层抽象）
-cognitive/llm/delegate_task.rs  DelegateTaskTool（LLM tool，只依赖 trait）
-gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（gateway 实现）
-gateway/runtime/agent_harness.rs     AgentHarness::spawn_anonymous（底层原语）
+cognitive/llm/subagent.rs       SubAgentSpawner trait（spawn + collect_result）
+cognitive/llm/delegate_task.rs  DelegateTaskTool（operation: spawn | collect）
+gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（pending_handles 内存 store）
+gateway/runtime/agent_harness.rs     spawn_anonymous()（oneshot channel 原语）
 ```
-
-> **2026-06-20 七修**：`collect_result` 已通过 `delegate_task(operation="collect")` 实现。
-> `GatewaySubAgentSpawner` 内部维护 `pending_handles` HashMap（纯内存），`background=true` 时
-> 存入 handle，`operation="collect"` 时取出并等待结果。
-
-**已实现**：
-
-| 模式 | 实现方式 |
-|------|---------|
-| **GoalDriven** | `delegate_task(prompt="...")` → 同步等待结果 |
-| **ParallelExploration** | 并行 `delegate_task(prompt="方向A/B", background=true)` → 各方向独立 → `delegate_task(operation="collect", agent_id="...")` 逐个取回 |
-| **PostIterationVerify** | `delegate_task(prompt="审计...", system_prompt="You are a skeptical auditor...")` |
-
-**未实现**：
-- **PollingExperiment** — 需要 Timer 轮询 + 编排逻辑（LLM 可通过 spawn→等待→collect 手动实现）
 
 #### 5. Orchestrator — 跨迭代编排 ❌ 未开始
 
@@ -406,7 +404,7 @@ Guardian 协议 (P1) ─────────────┘ (第三阶段，
 | `kernel/gateway/src/runtime/agent_registry.rs` | 修改 | 新增 `remove_llm_provider` 方法 |
 | `kernel/core/src/react.rs` | 修改 | `ReActContext` 新增 `anon_tool_policy` 字段 |
 | `kernel/gateway/src/runtime/agent_runtime.rs` | 修改 | 注册 `delegate_task` tool + 注入 `GatewaySubAgentSpawner` |
-| `kernel/workflow/src/orchestrator.rs` | **待新增** | OrchestratorWorkflow + OrchestratorAgent（未开始） |
+| `kernel/workflow/src/orchestrator.rs` | **待新增** | OrchestratorWorkflow + OrchestratorAgent（第二阶段剩余，依赖全部就绪） |
 | `kernel/eval/src/session_progress.rs` | 待修改 | 与 Planner progress 联动（未开始） |
 | `kernel/gateway/src/runtime/agent_harness.rs` | 待修改 | auto-continue 注入 pivot（未开始） |
 | `kernel/idle/src/guardian.rs` | **待新增** | GuardianAction 枚举及约束逻辑（第三阶段） |

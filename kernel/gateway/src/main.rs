@@ -393,12 +393,15 @@ fn build_runtime(
     let mut builder = AgentRuntimeBuilder::new(config)
         .with_bind_addr(bind)
         .with_api_token(api_token)
-        .with_runtime_handle(handle);
+        .with_runtime_handle(handle.clone());
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }
 
     let runtime = std::thread::spawn(move || {
+        // Enter the Tokio runtime context so that any tokio::spawn calls
+        // inside builder.build() (e.g. source registry) find a reactor.
+        let _guard = handle.enter();
         builder.build().map_err(|e| {
             safe_eprintln!("Runtime build error: {e}");
             1

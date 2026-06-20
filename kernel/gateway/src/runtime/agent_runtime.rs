@@ -35,7 +35,7 @@ use secret::{
     AwsSecretsManagerCliBackend, EnvSecretBackend, KeychainBackend, OnePasswordCliBackend,
     SecretBackend, SecretCacheFallbackConfig, SecretResolver, SecretResolverConfig, VaultCliBackend,
 };
-use source::{CronManager, CronSource, SourceRegistry};
+use source::{CronSource, SourceMode, SourceRegistry, TrustLevel};
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -290,9 +290,6 @@ impl AgentRuntimeBuilder {
         let workflow_engine = Arc::new(WorkflowEngine::new());
         super::session::SessionManager::register_workflow(&workflow_engine);
 
-        let cron_manager = Arc::new(Mutex::new(
-            CronManager::with_runtime_dir(self.runtime_dir.clone()),
-        ));
         let plugin_installer = Arc::new(PluginInstaller::new(self.runtime_dir.join("plugins")));
         let event_store = Arc::new(EventStore::new(2_000, 500));
 
@@ -667,7 +664,7 @@ impl AgentRuntimeBuilder {
             Arc::clone(&bus),
         ));
         rpc_handler.set_notifications(Arc::clone(&notifications));
-        rpc_handler.set_cron_manager(Arc::clone(&cron_manager));
+        rpc_handler.set_sources(Arc::clone(&sources));
         let mut plugin_loader_builder = PluginLoader::new(Arc::new(RuntimePluginRegistrar::new(
             Arc::clone(&skills),
             Arc::clone(&tools),
@@ -1954,7 +1951,6 @@ impl AgentRuntimeBuilder {
             skill_thread: Mutex::new(None),
             workflow_engine,
             plugin_loader: Mutex::new(plugin_loader),
-            cron_manager: Arc::clone(&cron_manager),
             plugin_installer,
             dlq,
             index_store,
@@ -2368,7 +2364,7 @@ struct RuntimeJsonRpcHandler {
     agent_registry: Arc<super::AgentRegistry>,
     bus: Arc<dyn EventBus>,
     notifications: OnceLock<Arc<notification::NotificationStore>>,
-    cron_manager: OnceLock<Arc<Mutex<CronManager>>>,
+    sources: OnceLock<Arc<SourceRegistry>>,
 }
 
 impl RuntimeJsonRpcHandler {
@@ -2377,7 +2373,7 @@ impl RuntimeJsonRpcHandler {
             agent_registry,
             bus,
             notifications: OnceLock::new(),
-            cron_manager: OnceLock::new(),
+            sources: OnceLock::new(),
         }
     }
 
@@ -2385,9 +2381,10 @@ impl RuntimeJsonRpcHandler {
         let _ = self.notifications.set(store);
     }
 
-    fn set_cron_manager(&self, cm: Arc<Mutex<CronManager>>) {
-        let _ = self.cron_manager.set(cm);
+    fn set_sources(&self, sources: Arc<SourceRegistry>) {
+        let _ = self.sources.set(sources);
     }
+
 }
 
 #[async_trait::async_trait]
@@ -2717,41 +2714,33 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                     .ok_or_else(|| kernel::Error::ConfigInvalid {
                         message: "cron expression is required".to_owned(),
                     })?;
-                // Validation is handled by CronSource::new below
-                let caller = format!("plugin:{plugin_name}");
-                // Basic validation: non-empty and has at least spaces for fields
                 if expression.trim().is_empty() {
                     return Err(kernel::Error::ConfigInvalid {
                         message: "cron expression is empty".to_owned(),
                     });
                 }
-                let cm = self
-                    .cron_manager
+                let sr = self
+                    .sources
                     .get()
                     .ok_or_else(|| kernel::Error::Unrecoverable {
-                        message: "cron manager not initialized".to_owned(),
+                        message: "source registry not initialized".to_owned(),
                     })?;
-                let mut guard = cm.lock().await;
-                let ctx = kernel::context::SourceContext {
-                    base: kernel::context::BaseContext {
-                        trace_id: kernel::types::TraceId::new(),
-                        timeout_ms: None,
-                        labels: Default::default(),
-                        extensions: Default::default(),
-                        event_bus: None,
-                    },
-                    source_name: Some(id.to_owned()),
-                };
                 let cron_source = source::CronSource::new(id.to_owned(), expression)
                     .map_err(|e| kernel::Error::Unrecoverable {
                         message: format!("invalid cron source: {e}"),
                     })?;
-                guard
-                    .add_with_caller(cron_source, ctx, &caller)
-                    .await
-                    .map_err(|e| kernel::Error::Unrecoverable {
-                        message: format!("add_cron_job failed: {e}"),
-                    })?;
+                sr.register(
+                    Box::new(cron_source),
+                    source::SourceMode::Pull,
+                    source::TrustLevel::Untrusted,
+                )
+                .await
+                .map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!("register cron source failed: {e}"),
+                })?;
+                sr.start(id).await.map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!("start cron source failed: {e}"),
+                })?;
                 tracing::info!(
                     plugin = %plugin_name,
                     cron_id = %id,
@@ -2929,7 +2918,6 @@ pub struct AgentRuntime {
     skill_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     workflow_engine: Arc<WorkflowEngine>,
     plugin_loader: Mutex<PluginLoader>,
-    cron_manager: Arc<Mutex<CronManager>>,
     plugin_installer: Arc<PluginInstaller>,
     dlq: Arc<InMemoryDeadLetterQueue>,
     index_store: Arc<persistence::IndexStore>,
@@ -4301,31 +4289,26 @@ impl AgentRuntime {
         Ok(())
     }
 
-    pub async fn add_cron_job(&self, id: String, expression: String, caller: &str) -> AmanResult<()> {
-        let ctx = source_context_for_cron();
-        let job = CronSource::new(id, expression)?;
-        self.cron_manager
-            .lock()
-            .await
-            .add_with_caller(job, ctx, caller)
-            .await
+    pub async fn add_cron_job(&self, id: String, expression: String, _caller: &str) -> AmanResult<()> {
+        let job = CronSource::new(&id, &expression)?;
+        self.sources
+            .register(Box::new(job), SourceMode::Pull, TrustLevel::Untrusted)
+            .await?;
+        self.sources.start(&id).await
     }
 
     pub async fn update_cron_job(
         &self,
         id: &str,
         config: serde_json::Value,
-        caller: &str,
+        _caller: &str,
     ) -> AmanResult<()> {
-        self.cron_manager
-            .lock()
-            .await
-            .update_with_caller(id, config, caller)
-            .await
+        self.sources.reconfigure(id, config).await
     }
 
-    pub async fn remove_cron_job(&self, id: &str, caller: &str) -> AmanResult<()> {
-        self.cron_manager.lock().await.remove_with_caller(id, caller)
+    pub async fn remove_cron_job(&self, id: &str, _caller: &str) -> AmanResult<()> {
+        self.sources.shutdown(id).await?;
+        self.sources.unregister(id).await
     }
 
     pub async fn enable_plugin(&self, plugin_name: &str) -> AmanResult<()> {
@@ -5016,12 +4999,6 @@ fn start_im_channel_sources(
     // TODO: Slack, Discord, Matrix — same pattern when their crates are wired.
 }
 
-fn source_context_for_cron() -> kernel::context::SourceContext {
-    kernel::context::SourceContext {
-        base: kernel::context::BaseContext::new(kernel::types::TraceId::new()),
-        source_name: Some("cron_manager".to_owned()),
-    }
-}
 
 /// Map an embedder name to its expected output dimension.
 ///

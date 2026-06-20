@@ -1384,122 +1384,36 @@ cron_jobs:
     # 运行时可通过 API：reconfigure("adaptive-poll", {interval: "10s"})
 ```
 
-### 6.4 运行时管理与安全守卫
+### 6.4 运行时管理
+
+`CronSource` 是一个精简的 `EventSource`（~210 行），通过 `SourceRegistry` 统一管理生命周期。
+调度由 `SourceRegistry` 的后台 `poll_loop` 驱动——不需要独立的 cron daemon。
 
 ```
-CronManager {
-    add_job(id, schedule, event_template)
-    remove_job(id)
-    update_job(id, new_schedule)
-    pause_job(id)
-    resume_job(id)
-    list_jobs() -> [JobStatus]
-    get_next_run(id) -> Timestamp
-}
+// CronSource 作为普通 EventSource 注册到 SourceRegistry
+sources.register(Box::new(CronSource::new(id, expression)?), SourceMode::Pull, TrustLevel::Untrusted).await?;
+sources.start(id).await?;
 
-// 安全守卫
-CronSource 硬编码约束：
-  - min_interval: "1s"       // 最小间隔硬限制，即使上层传更小值也要 clamp
-  - max_interval: "365d"     // 最大间隔硬限制
-  - rate_limit: 100          // 每秒最多产生 N 个 CRON_TICK 事件
-  - rate_limit_overflow: "delay"  // 超额事件行为：
-                                 //   delay（推荐）：超额事件延迟到下一秒注入，记录延迟日志
-                                 //                   没有 job 被漏跑，操作员可见延迟
-                                 //   drop：静默丢弃超额事件，可能导致部分 cron job 漏跑
-                                 //   queue：无限制排队，但可能在下游产生微风暴
-  - dynamic_interval_auth: true  // reconfigure 需要鉴权
-
-运行时 cron 变更操作的权限模型（覆盖 PUT /event-source/{id}/config 重配置 EventSource + POST /cron/add/update/remove 增删改 cron jobs）：
-  1. reconfigure 不是无防护的 API 端点
-  2. 内部事件 SOURCE: "cron-manager", TYPE: "CONFIG_CHANGE" 才允许修改
-  3. 所有运行时 cron 变更操作（含 POST /cron/add/update/remove）记录审计日志（old_interval, new_interval, caller, timestamp）
-  4. 动态频率变更受速率限制：每个 cron job 每分钟最多变更 1 次
-
-### 6.4.1 静态配置与运行时修改的合并语义
-
-运行时通过 API（POST /cron/add, POST /cron/{id}/update, POST /cron/{id}/remove）修改 cron job 时，
-需要明确与 YAML 静态配置的关系：
-
-```yaml
-优先级规则：
-  - YAML 静态配置定义"基态"——Agent 启动时加载的初始 cron job 集合
-  - 运行时修改（add/update/remove）存入独立的运行时存储层（override 文件），
-    不直接修改 YAML 配置文件
-  - 重启后合并行为：
-    1. Agent 启动 → 读取 YAML 静态配置 → 加载 cron_jobs
-    2. 检查运行时 override 层 → 按 id 合并：
-       - id 同时存在于静态配置和 override 中 → override 覆盖（运行时修改优先）
-       - id 仅存在于 override 中（运行时新增）→ 合并生效
-       - id 在 override 中标记为 removed → 从静态配置中移除（跳过加载）
-    3. 合并后的 cron_jobs 集合为实际运行时生效集合
-
-运行时持久化：
-  - override 文件存储位置：`<runtime_dir>/cron_override.yaml`（默认）
-  - 持久化操作同步（fsync 确认），确保重启不丢失
-  - 无运行时 override 文件 → 仅使用 YAML 静态配置（后退兼容）
-  - 清除运行时修改：删除 override 文件 → 重启后回到纯静态配置
-
-冲突场景示例：
-  - YAML 定义 id: "daily-report" 间隔 5 分钟 / 运行时 update 改为 10 分钟
-    → override 存储 {id: "daily-report", schedule: "*/10 * * * *"}
-    → 重启后合并为 10 分钟
-  - 运行时新增 id: "ad-hoc-backup"
-    → override 存储新增条目
-    → 重启后作为额外 job 生效
-  - 运行时删除 YAML 定义的 id: "market-price-poll"
-    → override 存储 {id: "market-price-poll", removed: true}
-    → 重启后跳过该 static job
-```
+// 运行时管理复用 SourceRegistry 的标准 API
+sources.reconfigure(id, config).await?;   // 修改 cron 表达式或时区
+sources.pause(id).await?;                  // 暂停
+sources.resume(id).await?;                 // 恢复
+sources.shutdown(id).await?;               // 关闭
+sources.unregister(id).await?;             // 移除
 ```
 
-### 6.5 Cron 重启 Catch-Up 策略
+**CronSource 简化原则**：
+- 去掉 DST 策略、leader election、rate limiting——这些属于部署层或已由 EventBus 背压覆盖
+- 去掉复杂的 catch-up 模式——poll 时只发射最近一次到期 tick（skip 语义），agent 定时器不需要补跑历史事件
+- `reconfigure` 支持动态修改 `expression` 和 `timezone`，立即生效
 
-Agent 重启或长时间停机后，错过的定时事件需要明确的回补策略。不同类型的 cron 任务有不同的 catch-up 需求。
+**与 TimerSource 的区别**：
 
-```yaml
-catch_up: skip | latest | all
-  - skip（默认）：错过的不补跑，从下次触发时间开始正常调度
-    - 适合：高频心跳类、状态轮询（skip 意味着"下次轮询自然会更新"）
-  - latest：只执行错过的最近一次触发
-    - 适合：日报、定时报告（只需要最新的一份结果）
-  - all：全部补跑，但受 rate limit 约束
-    - 适合：对时间敏感的数据采集、审计日志回填
-    - 注意：多个错过事件同时涌入可能产生"微风暴"，框架自动施加 rate_limit（见 §6.4）
-    - catch_up + rate_limit 交互：如果历史错过事件较多（如停机 2 小时的每秒 cron → 7200 个错失事件），
-      rate_limit（100/s）会将这些事件拉长到 >1 分钟注入，期间新产生的实时事件排队等候
-    - 此行为是设计意图：防止 catch_up 抑制实时调度
-
-CronSource 重启恢复流程：
-  1. 读取持久化的 last_trigger_timestamp
-  2. 计算当前时间与 last_trigger_timestamp 之间的错过的触发点
-  3. 按 catch_up 策略生成恢复事件
-  4. 恢复事件继承 original_trigger_timestamp（在 payload 中附加）
-  5. 即使是 all 模式，恢复事件的注入也受 rate_limit（每秒最多 N 个 CRON_TICK）
-
-跨实例防重复：
-  - 主备模式下，cron 事件应通过分布式锁或 leader 选举避免重复触发
-  - 可选配置: leader_election: true | false（默认 false，单机无需设置）
-  - 如果设置了 leader_election: true，只有持有锁的实例才产 CRON_TICK
-
-TimerSource（固定间隔）与 CronSource（cron 表达式）的 catch-up 区别：
-  - TimerSource 默认 catch_up: skip（固定间隔本身意味着"跳过错过的"）
-  - CronSource 默认 catch_up: latest（cron 按时间点触发，通常希望补最近一次）
-  - 两者均可通过 catch_up 配置覆盖默认值
-```
-
-### 6.6 运行时管理
-
-```
-CronManager {
-    add_job(id, schedule, event_template)
-    remove_job(id)
-    update_job(id, new_schedule)
-    pause_job(id)
-    resume_job(id)
-    list_jobs() -> [JobStatus]
-    get_next_run(id) -> Timestamp
-}
-```
+| | CronSource | TimerSource |
+|---|-----------|------------|
+| 触发方式 | cron 表达式（时间点语义） | 固定间隔 ms |
+| 典型场景 | "每天 9:00"、"每周五 17:00" | 心跳、轮询 |
+| 事件类型 | `CronTick` | `Heartbeat` / `TimerTick` |
 
 ---
 

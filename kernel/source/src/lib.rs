@@ -12,7 +12,7 @@ mod socket;
 mod timer;
 mod webhook;
 
-pub use cron::{CronManager, CronSource};
+pub use cron::CronSource;
 pub use file_watch::FileWatchSource;
 pub use registry::{
     should_pause_push_sources, SourceLifecycleState, SourceMode, SourceRegistry, SourceSnapshot,

@@ -277,21 +277,22 @@ M13 集成与打磨       ██████████████████
 - [x] 实现 `reconfigure`（动态调整间隔）
 - [x] 测试：间隔精度验证
 
-### 3.3 CronSource (`cron.rs`)
+### 3.3 CronSource (`cron.rs`) — 2026-06-20 重构
+
+**重构后（210 行）**：`CronManager` 已移除，`CronSource` 精简为纯 `EventSource`，通过 `SourceRegistry` 管理生命周期和调度。
 
 - [x] 集成 `cron` crate 解析 cron 表达式
 - [x] 支持 5 字段（标准）和 6 字段（秒级）
 - [x] 实现时区支持（`timezone` 配置，默认 UTC）
-- [x] 实现夏令时策略（skip | repeat\_once | wall\_clock）
-- [x] 实现 `catch_up` 策略（skip | latest | all）
-- [x] 实现 `rate_limit` 安全守卫（最小间隔 1s，每秒最多 100 个 CRON\_TICK）
-- [x] 实现 `rate_limit_overflow: delay`（超额延迟而非丢弃）
-- [x] 实现 `leader_election` 支持（可选，主备模式防重复）
-- [x] 实现运行时管理接口（CronManager: add/remove/update/pause/resume/list/get\_next\_run）
-- [x] 实现 `cron_override.yaml` 持久化（见 §6.4.1 合并语义）
-- [x] 实现审计日志（每次 cron 变更记录 old\_interval, new\_interval, caller, timestamp）
+- [x] ~~夏令时策略~~（已移除 — agent 定时器不需要 DST 策略）
+- [x] ~~catch_up 策略~~（已移除 — 简化为 skip 语义）
+- [x] ~~rate_limit 安全守卫~~（已移除 — EventBus 背压覆盖）
+- [x] ~~leader_election~~（已移除 — 属于部署层）
+- [x] ~~CronManager 运行时管理接口~~（已移除 — CronSource 直接通过 SourceRegistry 管理）
+- [x] ~~cron_override.yaml 持久化~~（已移除 — 待通过 SourceRegistry + StateStore 重新实现）
+- [x] ~~审计日志~~（已移除 — 待与 SourceRegistry 事件追踪统一）
 - [x] 测试：时区转换正确性
-- [x] 测试：夏令时边界行为
+- [x] 测试：poll/pause/shutdown/reconfigure 行为
 - [x] 测试：catch\_up 恢复事件注入限速
 
 ### 3.4 FileWatchSource (`file_watch.rs`)

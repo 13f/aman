@@ -295,7 +295,7 @@ Produced by `source::timer::TimerSource`. Configurable interval. When `interval_
 |------|--------|---------|-------------------|
 | `CronTick` | `cron:{id}` | depends on cron config | `kernel/source/src/cron.rs:119` |
 
-Produced by `source::cron::CronSource`. Uses cron expressions (6-field: sec min hour dom mon dow). Managed through the runtime's `CronManager`.
+Produced by `source::cron::CronSource`. Uses cron expressions (5 or 6 fields). Managed through `SourceRegistry` as a standard `EventSource` — scheduling is driven by the registry's background `poll_loop`.
 
 ### Message Events
 

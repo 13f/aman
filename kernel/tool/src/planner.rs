@@ -17,6 +17,7 @@
 //! ```
 
 use kernel::context::ToolContext;
+use kernel::event::{Event, EventType};
 use kernel::schema::JsonSchema;
 use kernel::tool::Tool;
 use kernel::types::ToolMode;
@@ -353,7 +354,7 @@ impl Tool for PlannerTool {
         &RETURNS
     }
 
-    async fn execute(&self, params: Value, _ctx: ToolContext) -> AmanResult<Value> {
+    async fn execute(&self, params: Value, ctx: ToolContext) -> AmanResult<Value> {
         let operation = params
             .get("operation")
             .and_then(Value::as_str)
@@ -364,7 +365,7 @@ impl Tool for PlannerTool {
                     .to_owned(),
             })?;
 
-        match operation {
+        let result = match operation {
             OP_CREATE => self.op_create(&params),
             OP_SET_TASKS => self.op_set_tasks(&params),
             OP_START => self.op_start(&params),
@@ -381,7 +382,40 @@ impl Tool for PlannerTool {
                     VALID_OPERATIONS.join(", ")
                 ),
             }),
+        };
+
+        // Publish plan lifecycle events so the Orchestrator can react.
+        if let Ok(ref val) = result
+            && let Some(bus) = &ctx.base.event_bus
+        {
+            match operation {
+                    OP_CREATE => {
+                        let plan_id = val["plan_id"].as_str().unwrap_or("");
+                        let goal = params.get("goal").and_then(|v| v.as_str()).unwrap_or("");
+                        let _ = bus.publish(Event::new(
+                            "tool:planner",
+                            EventType::Custom("plan:created".to_owned()),
+                            json!({"plan_id": plan_id, "goal": goal}),
+                        )).await;
+                    }
+                    OP_RESUME => {
+                        let plan_id = val["plan_id"].as_str().unwrap_or("");
+                        let _ = bus.publish(Event::new(
+                            "tool:planner",
+                            EventType::Custom("plan:resumed".to_owned()),
+                            json!({
+                                "plan_id": plan_id,
+                                "next_task": val["next_task"],
+                                "stale_count": val["stale_count"],
+                                "iteration": val["iteration"],
+                            }),
+                        )).await;
+                    }
+                    _ => {}
+                }
         }
+
+        result
     }
 }
 

@@ -925,7 +925,47 @@ impl AgentRuntimeBuilder {
             Arc::clone(&agent_registry),
             Arc::clone(&agent_harness),
         ));
-        delegate_task_tool.set_spawner(subagent_spawner);
+        delegate_task_tool.set_spawner(subagent_spawner.clone());
+
+        // ── Create orchestrators for each agent ────────────────────────
+        // Orchestrators subscribe to plan:created / plan:resumed events
+        // and autonomously iterate through plan tasks.
+        {
+            let agents = pollster::block_on(agent_registry.list());
+            for agent in agents {
+                let orchestrator = Arc::new(super::orchestrator::Orchestrator::new(
+                    agent.descriptor.agent_id.clone(),
+                    Arc::clone(&agent_registry),
+                    Arc::clone(&tools),
+                    Arc::clone(&subagent_spawner),
+                ));
+                pollster::block_on(agent_registry.set_orchestrator(
+                    &agent.descriptor.agent_id,
+                    Arc::clone(&orchestrator),
+                ));
+
+                // Subscribe to plan lifecycle events on the agent's local bus.
+                let local_bus =
+                    pollster::block_on(agent_registry.get_local_bus(&agent.descriptor.agent_id));
+                if let Some(local_bus) = local_bus {
+                    let handler = Box::new(super::orchestrator::PlanEventHandler::new(
+                        Arc::clone(&orchestrator),
+                    ));
+                    let _ = pollster::block_on(local_bus.subscribe(
+                        event_bus::SubscriptionFilter {
+                            event_types: Some(vec![
+                                EventType::Custom("plan:created".to_owned()),
+                                EventType::Custom("plan:resumed".to_owned()),
+                            ]),
+                            sources: None,
+                            priorities: None,
+                            payload_match: None,
+                        },
+                        handler,
+                    ));
+                }
+            }
+        }
 
         // ── Session manager ──────────────────────────────────────────
         let session_manager = Arc::new(super::session::SessionManager::new(

@@ -56,6 +56,8 @@ pub struct AgentRegistry {
     emotion_latest: RwLock<HashMap<String, Arc<tokio::sync::Mutex<Option<String>>>>>,
     /// Per-agent MCP client managers (None = MCP not initialized for this agent).
     mcp_managers: RwLock<HashMap<String, Arc<mcp_client::McpClientManager>>>,
+    /// Per-agent plan orchestrators (autonomous plan iteration).
+    orchestrators: RwLock<HashMap<String, Arc<super::orchestrator::Orchestrator>>>,
     bus: Arc<dyn EventBus>,
     /// Skill search index for BoredomActor tag-based skill lookup.
     skill_search: Option<Arc<skill::SkillSearch>>,
@@ -81,6 +83,7 @@ impl AgentRegistry {
             emotion_evaluators: RwLock::new(HashMap::new()),
             emotion_latest: RwLock::new(HashMap::new()),
             mcp_managers: RwLock::new(HashMap::new()),
+            orchestrators: RwLock::new(HashMap::new()),
             bus,
             skill_search: None,
             skill_registry: None,
@@ -1150,6 +1153,27 @@ impl AgentRegistry {
         for agent_id in &agent_ids {
             self.init_mcp_for_agent(agent_id, Arc::clone(&tools)).await;
         }
+    }
+
+    // ── Orchestrator ──────────────────────────────────────────────────
+
+    /// Set the plan orchestrator for an agent.
+    pub async fn set_orchestrator(
+        &self,
+        agent_id: &str,
+        orchestrator: Arc<super::orchestrator::Orchestrator>,
+    ) {
+        let mut orchs = self.orchestrators.write().await;
+        orchs.insert(agent_id.to_owned(), orchestrator);
+    }
+
+    /// Get the plan orchestrator for an agent.
+    pub async fn get_orchestrator(
+        &self,
+        agent_id: &str,
+    ) -> Option<Arc<super::orchestrator::Orchestrator>> {
+        let orchs = self.orchestrators.read().await;
+        orchs.get(agent_id).cloned()
     }
 }
 

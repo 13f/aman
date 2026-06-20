@@ -8,6 +8,7 @@
 > 2026-06-20 六修 | `spawn_anonymous` + `delegate_task` tool 已实现：匿名 agent 基础设施 + LLM 可调用的子 agent 派生 tool。SubAgentSpawner trait（`cognitive/llm`）解耦 cognitive 层与 gateway 实现。
 > 2026-06-20 七修 | `delegate_task(operation="collect")` 实现异步结果收集。`GatewaySubAgentSpawner` 内部 `pending_handles` HashMap（内存 store，不落盘）。
 > 2026-06-20 八修 | 确认 PollingExperiment 由 oneshot channel 自然覆盖——`collect` 内部 `oneshot::Receiver::await`，事件驱动阻塞等待，不需要 Timer 轮询。Deli 四种调度模式全部覆盖。
+> 2026-06-20 九修 | Orchestrator 实现：事件驱动（plan:created/resumed）→ 确定性状态机循环（resume → stale check → pivot/escalate → spawn → eval → complete/inc_stale）。Planner tool 增加事件发布。第二阶段全部完成。
 
 ---
 
@@ -332,24 +333,37 @@ gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（pending_handles �
 gateway/runtime/agent_harness.rs     spawn_anonymous()（oneshot channel 原语）
 ```
 
-#### 5. Orchestrator — 跨迭代编排 ❌ 未开始
+#### 5. Orchestrator — 跨迭代编排 ✅ 已实现
 
-**新增** `kernel/workflow/src/orchestrator.rs`。
+> **2026-06-20 九修**：Orchestrator 已实现（`kernel/gateway/src/runtime/orchestrator.rs`）。
+> 事件驱动（`plan:created` / `plan:resumed`）→ 确定性状态机循环：
+> resume → 检测 stale → pivot/escalate → start task → spawn sub-agent →
+> evaluate → complete/increment_stale → 下一轮。
 
-基于现有 `WorkflowDef` 的状态机：
+**文件** `kernel/gateway/src/runtime/orchestrator.rs`。
 
+**触发**：`planner.create` / `planner.resume` 成功时发布 `plan:created` / `plan:resumed`
+事件到 agent local bus → `PlanEventHandler` 路由到 `Orchestrator::on_plan_event()`。
+
+**循环逻辑**（确定性，零 LLM 调用）：
 ```
-ACTIVE → ITERATING ⇄ STALLED → PIVOTING → ITERATING
-                  ↘ ESCALATED (需人工介入)
-                  → COMPLETE
+run_cycles(plan_id):
+  for cycle in 0..MAX_CYCLES:
+    wait_until_idle()
+    status = planner.resume(plan_id)
+    if stale_count >= 6 → escalate (mark blocked, notify human)
+    if stale_count >= 3 → pivot (generate fresh direction, record to planner)
+    if no next_task → plan complete
+    planner.start(task_id)
+    prompt = build_task_prompt(title, desc, directions_tried)
+    result = subagent_spawner.spawn(descriptor, soul, prompt, sync)
+    if evaluate_reply(result.reply) → planner.complete(task_id, result)
+    else → planner.increment_stale(plan_id)
 ```
 
-`OrchestratorAgent`：内置 agent（类似 idle 的 BoredomActor），负责：
-- 创建/恢复 workflow 实例
-- 每轮迭代通过 `delegate_task` tool 启动 subagent
-- 监听 subagent 完成，调用 `session_progress::evaluate()` + Planner progress
-- 检测停滞 → 调用 Planner pivot → 发布 `PIVOT` 事件
-- 更新迭代指标
+**与原始设计的差异**：不使用 `WorkflowDef` FSM——采用更轻量的确定性循环。
+不使用 `session_progress::evaluate()`（因为它需要完整 message history，
+子 agent 只返回 final reply）——采用简化的 reply 文本评估。
 
 ### 第三阶段：Guardian 协议（P1，按需）
 
@@ -404,7 +418,7 @@ Guardian 协议 (P1) ─────────────┘ (第三阶段，
 | `kernel/gateway/src/runtime/agent_registry.rs` | 修改 | 新增 `remove_llm_provider` 方法 |
 | `kernel/core/src/react.rs` | 修改 | `ReActContext` 新增 `anon_tool_policy` 字段 |
 | `kernel/gateway/src/runtime/agent_runtime.rs` | 修改 | 注册 `delegate_task` tool + 注入 `GatewaySubAgentSpawner` |
-| `kernel/workflow/src/orchestrator.rs` | **待新增** | OrchestratorWorkflow + OrchestratorAgent（第二阶段剩余，依赖全部就绪） |
+| `kernel/gateway/src/runtime/orchestrator.rs` | **新增** | Orchestrator 确定性循环 + PlanEventHandler（事件驱动） |
 | `kernel/eval/src/session_progress.rs` | 待修改 | 与 Planner progress 联动（未开始） |
 | `kernel/gateway/src/runtime/agent_harness.rs` | 待修改 | auto-continue 注入 pivot（未开始） |
 | `kernel/idle/src/guardian.rs` | **待新增** | GuardianAction 枚举及约束逻辑（第三阶段） |

@@ -2767,6 +2767,129 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                 );
                 Ok(serde_json::json!({"ok": true, "id": id}))
             }
+            "aman.update_cron_job" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "id is required".to_owned(),
+                    })?;
+                let expression = params
+                    .get("expression")
+                    .and_then(|v| v.as_str());
+                let timezone = params
+                    .get("timezone")
+                    .and_then(|v| v.as_str());
+                let agent_key = params
+                    .get("agent_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let sr = self
+                    .sources
+                    .get()
+                    .ok_or_else(|| kernel::Error::Unrecoverable {
+                        message: "source registry not initialized".to_owned(),
+                    })?;
+                // Reconfigure the running source if expression or timezone changed.
+                if let Some(expr) = expression {
+                    let mut config = serde_json::json!({"expression": expr});
+                    if let Some(tz) = timezone {
+                        config["timezone"] = serde_json::Value::String(tz.to_owned());
+                    }
+                    sr.reconfigure(id, config)
+                        .await
+                        .map_err(|e| kernel::Error::Unrecoverable {
+                            message: format!("reconfigure cron source failed: {e}"),
+                        })?;
+                }
+                // Persist.
+                if let Some(expr) = expression {
+                    let store = source::CronStore::new(agent_cron_dir(agent_key));
+                    let tz = timezone.unwrap_or("UTC");
+                    if let Err(e) = store.update(id, expr, tz).await {
+                        tracing::warn!(
+                            plugin = %plugin_name,
+                            cron_id = %id,
+                            error = %e,
+                            "updated cron job but failed to persist"
+                        );
+                    }
+                }
+                tracing::info!(
+                    plugin = %plugin_name,
+                    cron_id = %id,
+                    "plugin updated cron job"
+                );
+                Ok(serde_json::json!({"ok": true, "id": id}))
+            }
+            "aman.remove_cron_job" => {
+                let id = params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "id is required".to_owned(),
+                    })?;
+                let agent_key = params
+                    .get("agent_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let sr = self
+                    .sources
+                    .get()
+                    .ok_or_else(|| kernel::Error::Unrecoverable {
+                        message: "source registry not initialized".to_owned(),
+                    })?;
+                sr.shutdown(id).await.map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!("shutdown cron source failed: {e}"),
+                })?;
+                sr.unregister(id).await.map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!("unregister cron source failed: {e}"),
+                })?;
+                // Remove from persistence.
+                let store = source::CronStore::new(agent_cron_dir(agent_key));
+                if let Err(e) = store.remove(id).await {
+                    tracing::warn!(
+                        plugin = %plugin_name,
+                        cron_id = %id,
+                        error = %e,
+                        "removed cron job but failed to persist"
+                    );
+                }
+                tracing::info!(
+                    plugin = %plugin_name,
+                    cron_id = %id,
+                    "plugin removed cron job"
+                );
+                Ok(serde_json::json!({"ok": true, "id": id}))
+            }
+            "aman.list_cron_jobs" => {
+                let agent_key = params
+                    .get("agent_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let store = source::CronStore::new(agent_cron_dir(agent_key));
+                let jobs = store.load().await.map_err(|e| kernel::Error::Unrecoverable {
+                    message: format!("failed to load cron jobs: {e}"),
+                })?;
+                let list: Vec<serde_json::Value> = jobs
+                    .iter()
+                    .map(|j| {
+                        serde_json::json!({
+                            "id": j.id,
+                            "name": j.name,
+                            "expression": j.expression,
+                            "timezone": j.timezone,
+                            "enabled": j.enabled,
+                            "created_at": j.created_at,
+                            "updated_at": j.updated_at,
+                            "last_run_at": j.last_run_at,
+                            "last_status": j.last_status,
+                            "last_error": j.last_error,
+                        })
+                    })
+                    .collect();
+                Ok(serde_json::json!({"jobs": list, "agent_key": agent_key}))
+            }
             other => Err(kernel::Error::Unrecoverable {
                 message: format!("unknown rpc method: {other}"),
             }),

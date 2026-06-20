@@ -30,6 +30,12 @@
       ]
     },
     {
+      "name": "planner",
+      "files": [
+        "planner/SKILL.md"
+      ]
+    },
+    {
       "name": "writing-plans",
       "files": [
         "agent/writing-plans/SKILL.md"
@@ -111,6 +117,12 @@
       "name": "create-skill",
       "files": [
         "agent/create-skill/SKILL.md"
+      ]
+    },
+    {
+      "name": "cron",
+      "files": [
+        "agent/cron/SKILL.md"
       ]
     },
     {

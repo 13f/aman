@@ -181,6 +181,12 @@ impl SubprocessPluginBridge {
             message: format!("subprocess plugin `{plugin_name}`: stderr not available"),
         })?;
 
+        // Capture the Tokio runtime handle so the reader threads can enter
+        // the runtime context. This is needed because handle_plugin_request
+        // calls pollster::block_on which calls async handlers that may
+        // invoke tokio::spawn internally.
+        let tokio_handle = tokio::runtime::Handle::try_current().ok();
+
         let bridge = Arc::new(Self {
             plugin_name: plugin_name.to_owned(),
             child: Mutex::new(Some(child)),
@@ -194,7 +200,9 @@ impl SubprocessPluginBridge {
 
         // Spawn reader thread for plugin → server messages (stdout)
         let bridge_clone = Arc::clone(&bridge);
+        let stdout_handle = tokio_handle.clone();
         std::thread::spawn(move || {
+            let _guard = stdout_handle.as_ref().map(|h| h.enter());
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
                 if bridge_clone.shutdown.load(Ordering::Acquire) {
@@ -213,7 +221,9 @@ impl SubprocessPluginBridge {
 
         // Spawn reader thread for plugin stderr → TUI log panel
         let pname = plugin_name.to_owned();
+        let stderr_handle = tokio_handle.clone();
         std::thread::spawn(move || {
+            let _guard = stderr_handle.as_ref().map(|h| h.enter());
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
                 match line {

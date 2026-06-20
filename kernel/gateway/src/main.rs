@@ -117,7 +117,7 @@ async fn run() -> Result<(), i32> {
         })?
         .config;
 
-    let runtime = build_runtime(config, bind, api_token, soul_path, tokio::runtime::Handle::current())?;
+    let runtime = build_runtime(config, bind, api_token, soul_path).await?;
 
     tracing::info!(bind = %bind, "starting gateway");
 
@@ -263,7 +263,7 @@ async fn run_tui_mode(
         })?
         .config;
 
-    let runtime = build_runtime(config, bind, api_token, soul_path, tokio::runtime::Handle::current())?;
+    let runtime = build_runtime(config, bind, api_token, soul_path).await?;
 
     tracing::info!(bind = %bind, "starting gateway (TUI mode)");
 
@@ -383,34 +383,32 @@ fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<St
 }
 
 #[allow(clippy::print_stderr)] // Pre-tracing startup error: runtime construction failed before subscriber is wired.
-fn build_runtime(
+async fn build_runtime(
     config: config::AgentConfig,
     bind: SocketAddr,
     api_token: Option<String>,
     soul_path: Option<PathBuf>,
-    handle: tokio::runtime::Handle,
 ) -> Result<Arc<gateway::runtime::AgentRuntime>, i32> {
+    let handle = tokio::runtime::Handle::current();
     let mut builder = AgentRuntimeBuilder::new(config)
         .with_bind_addr(bind)
         .with_api_token(api_token)
-        .with_runtime_handle(handle.clone());
+        .with_runtime_handle(handle);
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }
 
-    let runtime = std::thread::spawn(move || {
-        // Enter the Tokio runtime context so that any tokio::spawn calls
-        // inside builder.build() (e.g. source registry) find a reactor.
-        let _guard = handle.enter();
+    // Use spawn_blocking so builder.build() runs off the async worker
+    // threads but still has a valid Tokio runtime context — any
+    // tokio::spawn call inside build() (e.g. source registry) needs it.
+    tokio::task::spawn_blocking(move || {
         builder.build().map_err(|e| {
             safe_eprintln!("Runtime build error: {e}");
             1
         })
     })
-    .join()
-    .expect("build thread panicked")?;
-
-    Ok(runtime)
+    .await
+    .expect("build thread panicked")
 }
 
 fn write_pid_file() {

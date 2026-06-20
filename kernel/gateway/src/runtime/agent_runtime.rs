@@ -35,7 +35,7 @@ use secret::{
     AwsSecretsManagerCliBackend, EnvSecretBackend, KeychainBackend, OnePasswordCliBackend,
     SecretBackend, SecretCacheFallbackConfig, SecretResolver, SecretResolverConfig, VaultCliBackend,
 };
-use source::{CronSource, SourceMode, SourceRegistry, TrustLevel};
+use source::{CronJobConfig, CronSource, CronStore, SourceMode, SourceRegistry, TrustLevel};
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -2719,6 +2719,10 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                         message: "cron expression is empty".to_owned(),
                     });
                 }
+                let agent_key = params
+                    .get("agent_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let sr = self
                     .sources
                     .get()
@@ -2741,6 +2745,20 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                 sr.start(id).await.map_err(|e| kernel::Error::Unrecoverable {
                     message: format!("start cron source failed: {e}"),
                 })?;
+
+                // Persist to agent's cron directory.
+                let store = source::CronStore::new(agent_cron_dir(agent_key));
+                if let Err(e) = store
+                    .add(&source::CronJobConfig::new(id.to_owned(), expression))
+                    .await
+                {
+                    tracing::warn!(
+                        plugin = %plugin_name,
+                        cron_id = %id,
+                        error = %e,
+                        "plugin registered cron job but failed to persist"
+                    );
+                }
                 tracing::info!(
                     plugin = %plugin_name,
                     cron_id = %id,
@@ -4113,6 +4131,72 @@ impl AgentRuntime {
                     self.agent_registry.init_mcp_all(self.tools()).await;
                 }
 
+                // Restore persisted cron jobs for every agent before starting
+                // sources.  New sources are registered (but not yet started);
+                // the existing loop below calls start() on everything.
+                for agent in self.agent_registry.list().await {
+                    let store = CronStore::new(agent_cron_dir(&agent.descriptor.agent_id));
+                    match store.load().await {
+                        Ok(jobs) => {
+                            for job in &jobs {
+                                if !job.enabled {
+                                    continue;
+                                }
+                                match CronSource::new(&job.id, &job.expression) {
+                                    Ok(mut cron_source) => {
+                                        // Restore saved timezone.
+                                        if job.timezone != "UTC" {
+                                            let _ = cron_source
+                                                .reconfigure(serde_json::json!({
+                                                    "timezone": &job.timezone,
+                                                }))
+                                                .await;
+                                        }
+                                        if let Err(e) = self
+                                            .sources
+                                            .register(
+                                                Box::new(cron_source),
+                                                SourceMode::Pull,
+                                                TrustLevel::Untrusted,
+                                            )
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                agent = %agent.descriptor.agent_id,
+                                                job = %job.id,
+                                                error = %e,
+                                                "failed to restore cron job (already registered?)"
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            agent = %agent.descriptor.agent_id,
+                                            job = %job.id,
+                                            error = %e,
+                                            "failed to restore cron job (invalid expression)"
+                                        );
+                                    }
+                                }
+                            }
+                            if !jobs.is_empty() {
+                                tracing::info!(
+                                    agent = %agent.descriptor.agent_id,
+                                    count = jobs.len(),
+                                    "restored cron jobs"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                agent = %agent.descriptor.agent_id,
+                                error = %e,
+                                "failed to load cron jobs"
+                            );
+                        }
+                    }
+                }
+
                 let snapshots = self.sources.list().await;
                 for source in snapshots {
                     if self.lifecycle.shutdown_requested() {
@@ -4289,26 +4373,58 @@ impl AgentRuntime {
         Ok(())
     }
 
-    pub async fn add_cron_job(&self, id: String, expression: String, _caller: &str) -> AmanResult<()> {
+    pub async fn add_cron_job(
+        &self,
+        id: String,
+        expression: String,
+        agent_key: &str,
+        _caller: &str,
+    ) -> AmanResult<()> {
         let job = CronSource::new(&id, &expression)?;
         self.sources
             .register(Box::new(job), SourceMode::Pull, TrustLevel::Untrusted)
             .await?;
-        self.sources.start(&id).await
+        self.sources.start(&id).await?;
+
+        // Persist to agent's cron directory.
+        let store = CronStore::new(agent_cron_dir(agent_key));
+        store
+            .add(&CronJobConfig::new(id.clone(), expression))
+            .await?;
+        Ok(())
     }
 
     pub async fn update_cron_job(
         &self,
         id: &str,
         config: serde_json::Value,
+        agent_key: &str,
         _caller: &str,
     ) -> AmanResult<()> {
-        self.sources.reconfigure(id, config).await
+        self.sources.reconfigure(id, config.clone()).await?;
+
+        // Persist expression/timezone updates.
+        if let (Some(expression), Some(timezone)) = (
+            config.get("expression").and_then(|v| v.as_str()),
+            config.get("timezone").and_then(|v| v.as_str()),
+        ) {
+            let store = CronStore::new(agent_cron_dir(agent_key));
+            store.update(id, expression, timezone).await?;
+        } else if let Some(expression) = config.get("expression").and_then(|v| v.as_str()) {
+            let store = CronStore::new(agent_cron_dir(agent_key));
+            store.update(id, expression, "UTC").await?;
+        }
+        Ok(())
     }
 
-    pub async fn remove_cron_job(&self, id: &str, _caller: &str) -> AmanResult<()> {
+    pub async fn remove_cron_job(&self, id: &str, agent_key: &str, _caller: &str) -> AmanResult<()> {
         self.sources.shutdown(id).await?;
-        self.sources.unregister(id).await
+        self.sources.unregister(id).await?;
+
+        // Remove from agent's cron directory.
+        let store = CronStore::new(agent_cron_dir(agent_key));
+        store.remove(id).await?;
+        Ok(())
     }
 
     pub async fn enable_plugin(&self, plugin_name: &str) -> AmanResult<()> {
@@ -4507,6 +4623,18 @@ fn default_runtime_dir() -> PathBuf {
         .map_or(0, |d| d.as_nanos());
     let pid = std::process::id();
     std::env::temp_dir().join(format!("aman-runtime-{pid}-{nanos}"))
+}
+
+/// Returns the per-agent cron directory: `~/.aman/agents/{agent_key}/cron`.
+fn agent_cron_dir(agent_key: &str) -> PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "/tmp".to_owned());
+    PathBuf::from(home)
+        .join(".aman")
+        .join("agents")
+        .join(agent_key)
+        .join("cron")
 }
 
 fn build_runtime_bus(

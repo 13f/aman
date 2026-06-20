@@ -642,7 +642,8 @@ pub trait EventSource: Send + Sync {
 | 类型 | 文件 | 模式 | 说明 |
 |------|------|------|------|
 | `TimerSource` | `kernel/source/src/timer.rs` | Pull | 定时触发 |
-| `CronSource` | `kernel/source/src/cron.rs` | Pull | Cron 表达式触发 |
+| `CronSource` | `kernel/source/src/cron.rs` | Pull | Cron 表达式触发，通过 `CronStore` 持久化到 `~/.aman/agents/{agent_key}/cron/jobs.json` |
+| `CronStore` | `kernel/source/src/cron_store.rs` | — | 管理单个 agent 的 cron 配置持久化（load/save/add/update/remove） |
 | `FileWatchSource` | `kernel/source/src/file_watch.rs` | Pull | 文件变化监控 |
 | `WebhookSource` | `kernel/source/src/webhook.rs` | Push | HTTP Webhook |
 | `SocketSource` | `kernel/source/src/socket.rs` | Push | TCP/UDP/Unix Socket |

@@ -994,6 +994,8 @@ async fn plugin_install(
 struct CronAddRequest {
     id: String,
     expression: String,
+    #[serde(default)]
+    agent_key: String,
 }
 
 async fn cron_add(
@@ -1002,7 +1004,7 @@ async fn cron_add(
     Json(req): Json<CronAddRequest>,
 ) -> Response {
     let caller = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
-    match runtime.add_cron_job(req.id, req.expression, caller).await {
+    match runtime.add_cron_job(req.id, req.expression, &req.agent_key, caller).await {
         Ok(()) => {
             runtime
                 .audit()
@@ -1025,7 +1027,12 @@ async fn cron_update(
     Json(payload): Json<Value>,
 ) -> Response {
     let caller = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
-    match runtime.update_cron_job(&id, payload, caller).await {
+    let agent_key = payload
+        .get("agent_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    match runtime.update_cron_job(&id, payload, &agent_key, caller).await {
         Ok(()) => {
             runtime
                 .audit()
@@ -1045,13 +1052,20 @@ async fn cron_update(
     }
 }
 
+#[derive(Deserialize)]
+struct CronRemoveRequest {
+    #[serde(default)]
+    agent_key: String,
+}
+
 async fn cron_remove(
     State(runtime): State<Arc<AgentRuntime>>,
     headers: HeaderMap,
     Path(id): Path<String>,
+    Json(req): Json<CronRemoveRequest>,
 ) -> Response {
     let caller = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
-    match runtime.remove_cron_job(&id, caller).await {
+    match runtime.remove_cron_job(&id, &req.agent_key, caller).await {
         Ok(()) => {
             runtime
                 .audit()

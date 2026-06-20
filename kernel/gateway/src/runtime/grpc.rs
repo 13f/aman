@@ -740,7 +740,7 @@ impl Aman for AmanServiceImpl {
     async fn add_cron_job(&self, req: Request<AddCronJobRequest>) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         self.runtime
-            .add_cron_job(r.id, r.expression, "grpc")
+            .add_cron_job(r.id, r.expression, &r.agent_key, "grpc")
             .await
             .map_err(map_error)?;
         Ok(Response::new(Empty {}))
@@ -751,7 +751,7 @@ impl Aman for AmanServiceImpl {
         let patch: serde_json::Value =
             serde_json::from_slice(&r.patch).unwrap_or(serde_json::Value::Null);
         self.runtime
-            .update_cron_job(&r.id, patch, "grpc")
+            .update_cron_job(&r.id, patch, &r.agent_key, "grpc")
             .await
             .map_err(map_error)?;
         Ok(Response::new(Empty {}))
@@ -760,7 +760,7 @@ impl Aman for AmanServiceImpl {
     async fn remove_cron_job(&self, req: Request<RemoveCronJobRequest>) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         self.runtime
-            .remove_cron_job(&r.id, "grpc")
+            .remove_cron_job(&r.id, &r.agent_key, "grpc")
             .await
             .map_err(map_error)?;
         Ok(Response::new(Empty {}))

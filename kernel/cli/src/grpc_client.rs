@@ -512,23 +512,45 @@ impl GrpcClient {
 
     // -- Cron --
 
-    pub async fn add_cron(&mut self, id: String, expression: String) -> Result<(), tonic::Status> {
+    pub async fn add_cron(
+        &mut self,
+        id: String,
+        expression: String,
+        agent_key: String,
+    ) -> Result<(), tonic::Status> {
         self.inner
-            .add_cron_job(AddCronJobRequest { id, expression })
+            .add_cron_job(AddCronJobRequest {
+                id,
+                expression,
+                agent_key,
+            })
             .await?;
         Ok(())
     }
 
-    pub async fn update_cron(&mut self, id: String, patch: Vec<u8>) -> Result<(), tonic::Status> {
+    pub async fn update_cron(
+        &mut self,
+        id: String,
+        patch: Vec<u8>,
+        agent_key: String,
+    ) -> Result<(), tonic::Status> {
         self.inner
-            .update_cron_job(UpdateCronJobRequest { id, patch })
+            .update_cron_job(UpdateCronJobRequest {
+                id,
+                patch,
+                agent_key,
+            })
             .await?;
         Ok(())
     }
 
-    pub async fn remove_cron(&mut self, id: String) -> Result<(), tonic::Status> {
+    pub async fn remove_cron(
+        &mut self,
+        id: String,
+        agent_key: String,
+    ) -> Result<(), tonic::Status> {
         self.inner
-            .remove_cron_job(RemoveCronJobRequest { id })
+            .remove_cron_job(RemoveCronJobRequest { id, agent_key })
             .await?;
         Ok(())
     }

@@ -392,15 +392,18 @@ message InstallPluginResponse {
 message AddCronJobRequest {
   string id = 1;
   string expression = 2;
+  string agent_key = 3;
 }
 
 message UpdateCronJobRequest {
   string id = 1;
   bytes patch = 2;
+  string agent_key = 3;
 }
 
 message RemoveCronJobRequest {
   string id = 1;
+  string agent_key = 2;
 }
 
 // ── Sources ──

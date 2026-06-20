@@ -946,20 +946,23 @@ fn base64_decode(s: &str) -> AmanResult<Vec<u8>> {
 async fn cron_add(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult<Value> {
     let id = require_param_str(params, "id")?;
     let expression = require_param_str(params, "expression")?;
-    runtime.add_cron_job(id, expression, "cli").await?;
+    let agent_key = get_param_str(params, "agent_key").unwrap_or_default();
+    runtime.add_cron_job(id, expression, &agent_key, "cli").await?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
 async fn cron_update(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult<Value> {
     let id = require_param_str(params, "id")?;
     let patch = get_param_value(params, "patch").unwrap_or(Value::Null);
-    runtime.update_cron_job(&id, patch, "cli").await?;
+    let agent_key = get_param_str(params, "agent_key").unwrap_or_default();
+    runtime.update_cron_job(&id, patch, &agent_key, "cli").await?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
 async fn cron_remove(runtime: &AgentRuntime, params: Option<&Value>) -> AmanResult<Value> {
     let id = require_param_str(params, "id")?;
-    runtime.remove_cron_job(&id, "cli").await?;
+    let agent_key = get_param_str(params, "agent_key").unwrap_or_default();
+    runtime.remove_cron_job(&id, &agent_key, "cli").await?;
     Ok(serde_json::json!({ "ok": true }))
 }
 

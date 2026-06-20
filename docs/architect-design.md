@@ -1187,25 +1187,44 @@ pub struct SourceRegistry {
 
 ### 12.2 Cron 引擎
 
+每个 `CronSource` 表示一个 cron 定时任务，由 `SourceRegistry` 统一管理。
+配置通过 `CronStore` 持久化到 `~/.aman/agents/{agent_key}/cron/jobs.json`，重启后自动恢复。
+
 ```rust
 pub struct CronSource {
-    jobs: DashMap<String, CronJob>,
-    cron_parser: cron::Schedule,       // 支持 5/6 字段 + 时区
-    catch_up: CatchUpStrategy,         // Skip | Latest | All
-    min_interval: Duration,            // 硬编码下限 1s
-    rate_limit: RateLimiter,           // 100/s
-    override_file: Option<PathBuf>,    // 运行时修改持久化
+    id: String,
+    expression: String,               // 5 或 6 字段 cron 表达式
+    schedule: cron::Schedule,         // 解析后的调度
+    timezone: chrono_tz::Tz,          // 时区（默认 UTC）
+    next_run_at: Option<DateTime<Tz>>,
+    initialized: bool,
+    paused: bool,
 }
 
-pub struct CronJob {
+// 持久化类型（kernel/source/src/cron.rs）
+
+pub struct CronJobConfig {
     pub id: String,
-    pub schedule: cron::Schedule,
-    pub timezone: chrono_tz::Tz,
-    pub event_template: Event,
+    pub name: Option<String>,
+    pub expression: String,
+    pub timezone: String,             // "UTC", "Asia/Shanghai", ...
     pub enabled: bool,
-    pub catch_up: CatchUpStrategy,
-    pub daylight_saving: DaylightSavingPolicy,
-    pub last_trigger: Option<DateTime<Utc>>,
+    pub created_at: String,           // ISO 8601
+    pub updated_at: Option<String>,
+    pub last_run_at: Option<String>,
+    pub last_status: Option<String>,  // "ok" | "error"
+    pub last_error: Option<String>,
+}
+
+pub struct CronJobsFile {
+    pub jobs: Vec<CronJobConfig>,
+    pub updated_at: String,
+}
+
+// 持久化管理器（kernel/source/src/cron_store.rs）
+
+pub struct CronStore {
+    dir: PathBuf,  // ~/.aman/agents/{agent_key}/cron/
 }
 ```
 

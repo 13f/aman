@@ -4,6 +4,7 @@
 > 2026-06-20 修订 | 合并差距分析与整合路径，修正 aman 能力评估
 > 2026-06-20 三修 | CronManager 已移除，CronSource 简化为 EventSource 走 SourceRegistry 管理；同步更新整合路径
 > 2026-06-20 四修 | Planner tool 已实现（`kernel/tool/src/planner.rs`），覆盖 Gap #1（方向多样性）和 Gap #2（跨 session 进展追踪）
+> 2026-06-20 五修 | Cron 配置持久化已实现（`kernel/source/src/cron_store.rs`），`~/.aman/agents/{agent_key}/cron/jobs.json`，重启后自动恢复
 
 ---
 
@@ -287,13 +288,11 @@ struct TaskProgress {
 
 </details>
 
-#### 3. Cron 配置持久化（L1 心跳基础）—— 已完成 CronSource 简化
+#### 3. Cron 配置持久化（L1 心跳基础）—— 已完成 ✅
 
 > **2026-06-20 已实施**：`CronManager` 已移除，`CronSource` 精简为 ~210 行纯 `EventSource`，直接通过 `SourceRegistry` 管理生命周期。调度由 `SourceRegistry` 的后台 `poll_loop` 统一驱动。
-
-**待完成**：`SourceRegistry` 当前是纯内存的——重启后 cron 配置丢失。需要：
-- `SourceRegistry` 增加配置导出/导入钩子，或
-- `AgentRuntime` 在 Phase 4 启动时从 config 文件恢复 cron source 并注册到 `SourceRegistry`
+>
+> **2026-06-20 已实施（五修）**：Cron 配置持久化已实现。新增 `CronStore`（`kernel/source/src/cron_store.rs`），以 `~/.aman/agents/{agent_key}/cron/jobs.json` 存储每个 agent 的定时任务配置（参考 Hermes 的 `~/.hermes/cron/jobs.json` 格式）。`add_cron_job`/`update_cron_job`/`remove_cron_job` 自动同步到磁盘；`Phase 4` 启动时从所有 agent 的 `jobs.json` 恢复 cron source 并注册到 `SourceRegistry`。接口层（gRPC/HTTP/stdio/CLI/tool dispatch）均增加 `agent_key` 参数。
 
 ### 第二阶段：编排与调度（~5–7 天）
 
@@ -368,7 +367,16 @@ Cron 配置持久化 ────────────┤   SubTaskScheduler 
 | `kernel/direction/src/lib.rs` | **新增** | DirectionTracker（P0：方向多样性） |
 | `kernel/persistence/src/task_progress.rs` | **新增** | TaskProgressTracker（P1：跨 session 进展） |
 | `kernel/persistence/src/lib.rs` | 修改 | 加 `pub mod task_progress;` |
-| `kernel/source/src/cron.rs` | **已完成** | CronSource 精简为 ~210 行纯 EventSource；CronManager 已移除 |
+| `kernel/source/src/cron.rs` | **已完成** | CronSource 精简为 ~210 行纯 EventSource；CronManager 已移除；新增 `CronJobConfig`、`CronJobsFile` |
+| `kernel/source/src/cron_store.rs` | **已完成** | `CronStore` — 读写 `~/.aman/agents/{agent_key}/cron/jobs.json`，atomic write |
+| `kernel/source/src/lib.rs` | **已完成** | 导出 `CronStore`, `CronJobConfig`, `CronJobsFile` |
+| `kernel/gateway/src/runtime/agent_runtime.rs` | **已完成** | cron 接口增加 `agent_key` 参数 + 持久化；Phase 4 恢复逻辑 |
+| `kernel/gateway/src/runtime/grpc.rs` | **已完成** | `AddCronJobRequest` 等增加 `agent_key` 字段 |
+| `kernel/gateway/src/runtime/http.rs` | **已完成** | cron handler 提取 `agent_key` |
+| `kernel/gateway/src/runtime/stdio.rs` | **已完成** | cron handler 提取 `agent_key` |
+| `kernel/cli/src/main.rs` | **已完成** | CLI `cron add/update/remove` 增加 `--agent-key` 选项 |
+| `kernel/cli/src/grpc_client.rs` | **已完成** | gRPC client wrapper 增加 `agent_key` 参数 |
+| `proto/aman.proto` | **已完成** | Request message 增加 `agent_key` 字段 |
 | `kernel/workflow/src/patterns.rs` | **新增** | SubTaskScheduler 四种调度模式 |
 | `kernel/workflow/src/orchestrator.rs` | **新增** | OrchestratorWorkflow + OrchestratorAgent |
 | `kernel/workflow/src/lib.rs` | 修改 | 加 `pub mod patterns;` `pub mod orchestrator;` |

@@ -5,6 +5,7 @@
 
 
 mod cron;
+mod cron_store;
 mod file_watch;
 mod registry;
 mod signal;
@@ -12,7 +13,8 @@ mod socket;
 mod timer;
 mod webhook;
 
-pub use cron::CronSource;
+pub use cron::{CronJobConfig, CronJobsFile, CronSource};
+pub use cron_store::CronStore;
 pub use file_watch::FileWatchSource;
 pub use registry::{
     should_pause_push_sources, SourceLifecycleState, SourceMode, SourceRegistry, SourceSnapshot,

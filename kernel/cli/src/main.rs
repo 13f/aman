@@ -1911,6 +1911,7 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
         "add" => {
             let mut id: Option<String> = None;
             let mut expression: Option<String> = None;
+            let mut agent_key: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -1922,12 +1923,17 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
                         expression = Some(arg(&rest, i)?);
                         i += 2;
                     }
+                    "--agent-key" => {
+                        agent_key = Some(arg(&rest, i)?);
+                        i += 2;
+                    }
                     _ => return Err(2),
                 }
             }
             let body = serde_json::json!({
                 "id": id.ok_or(2)?,
                 "expression": expression.ok_or(2)?,
+                "agent_key": agent_key.unwrap_or_default(),
             });
             let res = opts
                 .apply_headers(client.post(opts.url("/cron/add")).json(&body))
@@ -1943,6 +1949,7 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
         "update" => {
             let mut id: Option<String> = None;
             let mut patch: Option<serde_json::Value> = None;
+            let mut agent_key: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -1957,11 +1964,20 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
                         );
                         i += 2;
                     }
+                    "--agent-key" => {
+                        agent_key = Some(arg(&rest, i)?);
+                        i += 2;
+                    }
                     _ => return Err(2),
                 }
             }
             let id = id.ok_or(2)?;
-            let patch = patch.ok_or(2)?;
+            let mut patch = patch.ok_or(2)?;
+            if let Some(obj) = patch.as_object_mut()
+                && let Some(ak) = agent_key
+            {
+                obj.insert("agent_key".to_owned(), serde_json::Value::String(ak));
+            }
             let res = opts
                 .apply_headers(client.post(opts.url(&format!("/cron/{id}/update"))).json(&patch))
                 .send()
@@ -1975,6 +1991,7 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
         }
         "remove" => {
             let mut id: Option<String> = None;
+            let mut agent_key: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -1982,12 +1999,19 @@ async fn cron_cmd(args: &[String]) -> Result<(), i32> {
                         id = Some(arg(&rest, i)?);
                         i += 2;
                     }
+                    "--agent-key" => {
+                        agent_key = Some(arg(&rest, i)?);
+                        i += 2;
+                    }
                     _ => return Err(2),
                 }
             }
             let id = id.ok_or(2)?;
+            let body = serde_json::json!({
+                "agent_key": agent_key.unwrap_or_default(),
+            });
             let res = opts
-                .apply_headers(client.post(opts.url(&format!("/cron/{id}/remove"))))
+                .apply_headers(client.post(opts.url(&format!("/cron/{id}/remove"))).json(&body))
                 .send()
                 .await
                 .map_err(|_| 1)?;
@@ -2007,6 +2031,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
         "add" => {
             let mut id: Option<String> = None;
             let mut expression: Option<String> = None;
+            let mut agent_key: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -2018,17 +2043,22 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
                         expression = Some(arg(&rest, i)?);
                         i += 2;
                     }
+                    "--agent-key" => {
+                        agent_key = Some(arg(&rest, i)?);
+                        i += 2;
+                    }
                     _ => return Err(2),
                 }
             }
             client
-                .add_cron(id.ok_or(2)?, expression.ok_or(2)?)
+                .add_cron(id.ok_or(2)?, expression.ok_or(2)?, agent_key.unwrap_or_default())
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "update" => {
             let mut id: Option<String> = None;
             let mut patch: Option<serde_json::Value> = None;
+            let mut agent_key: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -2043,17 +2073,22 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
                         );
                         i += 2;
                     }
+                    "--agent-key" => {
+                        agent_key = Some(arg(&rest, i)?);
+                        i += 2;
+                    }
                     _ => return Err(2),
                 }
             }
             let patch_bytes = serde_json::to_vec(&patch.ok_or(2)?).map_err(|_| 1)?;
             client
-                .update_cron(id.ok_or(2)?, patch_bytes)
+                .update_cron(id.ok_or(2)?, patch_bytes, agent_key.unwrap_or_default())
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
         "remove" => {
             let mut id: Option<String> = None;
+            let mut agent_key: Option<String> = None;
             let mut i = 0;
             while i < rest.len() {
                 match rest[i].as_str() {
@@ -2061,11 +2096,15 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
                         id = Some(arg(&rest, i)?);
                         i += 2;
                     }
+                    "--agent-key" => {
+                        agent_key = Some(arg(&rest, i)?);
+                        i += 2;
+                    }
                     _ => return Err(2),
                 }
             }
             client
-                .remove_cron(id.ok_or(2)?)
+                .remove_cron(id.ok_or(2)?, agent_key.unwrap_or_default())
                 .await
                 .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
         }
@@ -2153,7 +2192,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 
 fn print_usage() {
     safe_eprintln!(
-        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
+        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }
 

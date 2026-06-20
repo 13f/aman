@@ -15,6 +15,7 @@ use kernel::event::{Event, EventType};
 use kernel::source::EventSource;
 use kernel::types::{HealthStatus, SourceType};
 use kernel::{AmanResult, Error};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;
 
@@ -26,6 +27,82 @@ pub struct CronSource {
     next_run_at: Option<DateTime<Tz>>,
     initialized: bool,
     paused: bool,
+}
+
+// ── Persistence types ──────────────────────────────────────────────
+
+/// Serializable configuration for one cron job.
+///
+/// Persisted to `~/.aman/agents/{agent_key}/cron/jobs.json`.  Follows the
+/// same shape as Hermesʼ `~/.hermes/cron/jobs.json` entries but keeps only
+/// the fields that aman actually needs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronJobConfig {
+    /// Unique job identifier (also the `SourceRegistry` key).
+    pub id: String,
+    /// Human-readable label (defaults to `id` when absent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Cron expression — 5 or 6 whitespace-separated fields.
+    pub expression: String,
+    /// IANA timezone name, e.g. `"Asia/Shanghai"`.  Defaults to `"UTC"`.
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    /// Whether this job should be auto-started on gateway restart.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// ISO-8601 creation timestamp.
+    pub created_at: String,
+    /// Last update timestamp (ISO-8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+    /// Most recent run timestamp (ISO-8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run_at: Option<String>,
+    /// Status of the last run: `"ok"` or `"error"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_status: Option<String>,
+    /// Error message from the last run (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+/// Top-level JSON file persisted to
+/// `~/.aman/agents/{agent_key}/cron/jobs.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronJobsFile {
+    pub jobs: Vec<CronJobConfig>,
+    pub updated_at: String,
+}
+
+fn default_timezone() -> String {
+    "UTC".to_owned()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl CronJobConfig {
+    /// Create a new config with sensible defaults.
+    ///
+    /// `created_at` is set to now; `enabled` defaults to `true`;
+    /// `timezone` defaults to `"UTC"`.
+    #[must_use]
+    pub fn new(id: impl Into<String>, expression: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: None,
+            expression: expression.into(),
+            timezone: "UTC".to_owned(),
+            enabled: true,
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: None,
+            last_run_at: None,
+            last_status: None,
+            last_error: None,
+        }
+    }
 }
 
 impl CronSource {

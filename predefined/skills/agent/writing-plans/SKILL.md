@@ -6,7 +6,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [planning, task-decomposition, implementation, specification]
-    related_skills: [plan, subagent-driven-development, todo]
+    related_skills: [planner, plan, subagent-driven-development, todo]
 ---
 
 # Writing Implementation Plans
@@ -133,3 +133,23 @@ After all tasks, include:
 - ❌ "Refactor as you see fit" — the subagent needs precise instructions
 - ❌ Skipping the test step — every task must verify its work
 - ❌ Combining unrelated changes in one task — one concern per task
+
+## Structured Plan Output
+
+After writing the markdown plan, also persist the task list as structured state
+via the `planner` tool. This enables cross-session resume and progress tracking:
+
+1. **`planner.create`** — with `goal`, `milestones`, and `success_criteria`
+2. **`planner.set_tasks`** — with the task list as structured JSON
+
+Each task in `planner.set_tasks` maps from the markdown plan:
+
+| Markdown field | planner field |
+|---------------|---------------|
+| Task N title | `title` |
+| Objective | `description` |
+| Files section | implied in `description` |
+| Task dependency list | `depends_on` |
+
+The structured plan is the authoritative state — the markdown file is a
+human-readable supplement. See the `planner` skill for the full operation reference.

@@ -6,7 +6,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [task-tracking, organization, execution, progress]
-    related_skills: [plan, writing-plans]
+    related_skills: [planner, plan, writing-plans]
 ---
 
 # Todo Mode
@@ -76,3 +76,15 @@ pending → in_progress → completed
 - ❌ Marking a task complete when tests are still failing
 - ❌ Having 3+ tasks in_progress at once
 - ❌ Tasks that are too vague to verify ("Improve the code")
+
+## When to Use Planner Instead
+
+Todo lists are in-memory and ephemeral — they die with the session. For tasks that
+should survive session restarts (long-horizon research, multi-day work, cross-session
+recovery), use the `planner` tool instead:
+
+1. `planner.create` to initialize the plan with a goal
+2. `planner.set_tasks` to write the task list as structured state
+3. `planner.start` / `planner.complete` / `planner.fail` for task lifecycle
+
+See the `planner` skill for the full operation reference.

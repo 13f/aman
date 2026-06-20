@@ -6,7 +6,7 @@ version: 1.0.0
 metadata:
   hermes:
     tags: [planning, architecture, design, preparation]
-    related_skills: [writing-plans, subagent-driven-development, todo]
+    related_skills: [planner, writing-plans, subagent-driven-development, todo]
 ---
 
 # Plan Mode
@@ -27,9 +27,21 @@ Your only job: understand the task, explore the codebase (read-only), and produc
 
 ## Output
 
-Write ONE file: `.aman/plans/YYYY-MM-DD_HHMMSS-<slug>.md`
+### Structured plan (primary)
 
-The plan must be self-contained and machine-readable — any subagent should be able to execute it with zero additional context.
+Use the `planner` tool to persist the plan as structured state:
+
+1. **`planner.create`** — initialize the plan with goal, milestones, and success criteria
+2. **`planner.set_tasks`** — write the decomposed task list with dependencies
+
+This enables cross-session resume and structured progress tracking.
+See `planner` skill for the full operation reference.
+
+### Human-readable plan (supplementary)
+
+Optionally write a markdown plan to `.aman/plans/YYYY-MM-DD_HHMMSS-<slug>.md`
+for human review. This is a supplementary artifact — the structured plan from
+the `planner` tool is the authoritative state.
 
 ## When to Use Plan Mode
 
@@ -64,3 +76,9 @@ These are simple tasks; execute directly.
 ## Core Principle
 
 When unsure, plan first. A plan costs 30 seconds of discussion. Guessing wrong can waste the entire session.
+
+## Cross-Session Recovery
+
+Plans persisted via the `planner` tool survive session restarts. To resume a plan
+from a previous session, call `planner.resume` — it returns the full plan state
+and the next task to execute. See the `planner` skill for details.

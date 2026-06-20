@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod anthropic;
+pub mod delegate_task;
 pub mod embed;
 pub(crate) mod net_proxy;
 pub mod openai;
@@ -32,6 +33,7 @@ pub mod prompt;
 pub mod provider;
 pub mod react;
 pub mod simple;
+pub mod subagent;
 
 use std::sync::{Arc, Mutex};
 

@@ -271,6 +271,10 @@ impl AgentRuntimeBuilder {
         if let Err(e) = tools.register(Arc::clone(&llm_chat_tool) as Arc<dyn Tool>) {
             tracing::warn!(error = %e, "failed to register llm_chat tool");
         }
+        // Register delegate_task tool for anonymous sub-agent spawning.
+        // Returns the Arc so we can wire GatewaySubAgentSpawner after
+        // the agent harness is created.
+        let delegate_task_tool = install_delegate_task_tool(&tools);
         let skill_search = Arc::new(skill::SkillSearch::new());
         let skill_versions = Arc::new(skill::SkillVersionManager::from_root(
             self.runtime_dir.join("skill-history"),
@@ -916,6 +920,12 @@ impl AgentRuntimeBuilder {
             Some(tool_security),
             self.runtime_handle.clone().expect("runtime_handle must be set before build()"),
         ));
+        // Wire GatewaySubAgentSpawner into delegate_task tool
+        let subagent_spawner = Arc::new(super::subagent_spawner::GatewaySubAgentSpawner::new(
+            Arc::clone(&agent_registry),
+            Arc::clone(&agent_harness),
+        ));
+        delegate_task_tool.set_spawner(subagent_spawner);
 
         // ── Session manager ──────────────────────────────────────────
         let session_manager = Arc::new(super::session::SessionManager::new(
@@ -5541,6 +5551,18 @@ fn convert_chat_message_kernel_to_cognitive(
         tool_calls: m.tool_calls,
         reasoning_content: m.reasoning_content,
     }
+}
+
+/// Register the `delegate_task` tool and return its `Arc` so the caller
+/// can wire [`GatewaySubAgentSpawner`] after the agent harness is created.
+fn install_delegate_task_tool(
+    tools: &tool::ToolRegistry,
+) -> Arc<cognitive_llm::delegate_task::DelegateTaskTool> {
+    let tool = Arc::new(cognitive_llm::delegate_task::DelegateTaskTool::new());
+    if let Err(e) = tools.register(Arc::clone(&tool) as Arc<dyn kernel::tool::Tool>) {
+        tracing::warn!(error = %e, "failed to register delegate_task tool");
+    }
+    tool
 }
 
 /// Wrap a provider into an LLM-based `CognitiveEngine`.

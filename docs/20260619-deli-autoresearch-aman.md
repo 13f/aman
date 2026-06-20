@@ -5,6 +5,7 @@
 > 2026-06-20 三修 | CronManager 已移除，CronSource 简化为 EventSource 走 SourceRegistry 管理；同步更新整合路径
 > 2026-06-20 四修 | Planner tool 已实现（`kernel/tool/src/planner.rs`），覆盖 Gap #1（方向多样性）和 Gap #2（跨 session 进展追踪）
 > 2026-06-20 五修 | Cron 配置持久化已实现（`kernel/source/src/cron_store.rs`），`~/.aman/agents/{agent_key}/cron/jobs.json`，重启后自动恢复
+> 2026-06-20 六修 | `spawn_anonymous` + `delegate_task` tool 已实现：匿名 agent 基础设施 + LLM 可调用的子 agent 派生 tool。SubAgentSpawner trait（`cognitive/llm`）解耦 cognitive 层与 gateway 实现。覆盖第二阶段 SubTaskScheduler 的 GoalDriven / ParallelExploration / PostIterationVerify 三种模式。
 
 ---
 
@@ -294,22 +295,35 @@ struct TaskProgress {
 >
 > **2026-06-20 已实施（五修）**：Cron 配置持久化已实现。新增 `CronStore`（`kernel/source/src/cron_store.rs`），以 `~/.aman/agents/{agent_key}/cron/jobs.json` 存储每个 agent 的定时任务配置（参考 Hermes 的 `~/.hermes/cron/jobs.json` 格式）。`add_cron_job`/`update_cron_job`/`remove_cron_job` 自动同步到磁盘；`Phase 4` 启动时从所有 agent 的 `jobs.json` 恢复 cron source 并注册到 `SourceRegistry`。接口层（gRPC/HTTP/stdio/CLI/tool dispatch）均增加 `agent_key` 参数。
 
-### 第二阶段：编排与调度（~5–7 天）
+### 第二阶段：编排与调度（部分完成）
 
-#### 4. SubTaskScheduler — 子任务调度模式
+#### 4. SubTaskScheduler — 子任务调度模式 ✅ 核心原语已实现
 
-**新增** `kernel/workflow/src/patterns.rs`。
+> **2026-06-20 六修**：核心理念已通过 `spawn_anonymous` + `delegate_task` tool 实现，
+> 但实现方式不同于原始设计。原始设计将模式定义为 `WorkflowDef`，实际实现采用
+> 更轻量的匿名 agent + tool 层方案。
 
-四种调度模式定义为 `WorkflowDef`，复用现有 `AgentMessage::TaskDelegation` + `FanOut`：
+**已实现**（`cognitive/llm/src/delegate_task.rs` + `kernel/gateway/src/runtime/subagent_spawner.rs`）：
 
-| 模式 | 实现 |
-|------|------|
-| GoalDriven | 单 agent → 目标 prompt → 收集 `findings` → 返回 |
-| ParallelExploration | `FanOut` N 个 agent（不同方向）→ 收集结果 → 去重 |
-| PollingExperiment | 提交 → `TimerSource` 轮询 → 检测完成/失败 → 重试或返回 |
-| PostIterationVerify | 独立 agent 读取 `findings` → 审计证据链 → 标记 verified/rejected |
+| 模式 | 实现方式 |
+|------|---------|
+| **GoalDriven** | `delegate_task(prompt="...", background=false)` → 同步等待结果 |
+| **ParallelExploration** | 并行调用多个 `delegate_task(prompt="方向A/B/C", background=true)` → 各方向独立运行 |
+| **PostIterationVerify** | `delegate_task(prompt="审计这些 findings...", system_prompt="You are a skeptical auditor...")` |
 
-#### 5. Orchestrator — 跨迭代编排
+**架构**：
+```
+cognitive/llm/subagent.rs       SubAgentSpawner trait（认知层抽象）
+cognitive/llm/delegate_task.rs  DelegateTaskTool（LLM tool，只依赖 trait）
+gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（gateway 实现）
+gateway/runtime/agent_harness.rs     AgentHarness::spawn_anonymous（底层原语）
+```
+
+**未实现**：
+- **PollingExperiment** — 需要 `TimerSource` 轮询 + 异步结果收集，尚无 `collect_result(agent_id)` tool
+- 异步模式下的结果收集机制（`background=true` 后如何取回结果）
+
+#### 5. Orchestrator — 跨迭代编排 ❌ 未开始
 
 **新增** `kernel/workflow/src/orchestrator.rs`。
 
@@ -323,10 +337,10 @@ ACTIVE → ITERATING ⇄ STALLED → PIVOTING → ITERATING
 
 `OrchestratorAgent`：内置 agent（类似 idle 的 BoredomActor），负责：
 - 创建/恢复 workflow 实例
-- 每轮迭代通过 `AgentMessage::TaskDelegation` 启动 subagent
-- 监听 subagent 完成，调用 `session_progress::evaluate()` + `TaskProgressTracker`
-- 检测停滞 → 调用 `DirectionTracker::suggest_pivot()` → 发布 `PIVOT` 事件
-- 更新 `WorkflowInstance.data` 中的迭代指标
+- 每轮迭代通过 `delegate_task` tool 启动 subagent
+- 监听 subagent 完成，调用 `session_progress::evaluate()` + Planner progress
+- 检测停滞 → 调用 Planner pivot → 发布 `PIVOT` 事件
+- 更新迭代指标
 
 ### 第三阶段：Guardian 协议（P1，按需）
 
@@ -340,23 +354,19 @@ ACTIVE → ITERATING ⇄ STALLED → PIVOTING → ITERATING
 
 ---
 
-## 七、依赖关系
+## 七、依赖关系（2026-06-20 六修后）
 
 ```
-DirectionTracker (P0) ──────┐
-                            ├──→ Orchestrator (阶段二)
-TaskProgressTracker (P1) ───┤        ↑
-                            │        │
-Cron 配置持久化 ────────────┤   SubTaskScheduler (阶段二)
-                            │        ↑
-                            └────────┘
-                               (复用 AgentMessage)
+Planner tool (P0+P1) ✅  ──────┐
+                                ├──→ Orchestrator (阶段二，未开始)
+spawn_anonymous ✅  ────────────┤        ↑
+delegate_task tool ✅  ─────────┤        │
+SubAgentSpawner trait ✅  ──────┘        │
+                                ├────────┘
+Cron 配置持久化 ✅  ────────────┤
+                                │
+Guardian 协议 (P1) ─────────────┘ (第三阶段，独立)
 ```
-
-- DirectionTracker、TaskProgressTracker、Cron 配置持久化三者**互相独立**，可并行开发
-- SubTaskScheduler 依赖 TaskProgressTracker + 现有 AgentMessage
-- Orchestrator 依赖 DirectionTracker + TaskProgressTracker + Cron 配置持久化 + SubTaskScheduler
-- Guardian 协议与其他组件独立，可随时进行
 
 ---
 
@@ -377,13 +387,19 @@ Cron 配置持久化 ────────────┤   SubTaskScheduler 
 | `kernel/cli/src/main.rs` | **已完成** | CLI `cron add/update/remove` 增加 `--agent-key` 选项 |
 | `kernel/cli/src/grpc_client.rs` | **已完成** | gRPC client wrapper 增加 `agent_key` 参数 |
 | `proto/aman.proto` | **已完成** | Request message 增加 `agent_key` 字段 |
-| `kernel/workflow/src/patterns.rs` | **新增** | SubTaskScheduler 四种调度模式 |
-| `kernel/workflow/src/orchestrator.rs` | **新增** | OrchestratorWorkflow + OrchestratorAgent |
-| `kernel/workflow/src/lib.rs` | 修改 | 加 `pub mod patterns;` `pub mod orchestrator;` |
-| `kernel/eval/src/session_progress.rs` | 修改 | 与 TaskProgressTracker 联动：评估结果写入跨 session 状态 |
-| `kernel/gateway/src/runtime/agent_harness.rs` | 修改 | auto-continue 注入 DirectionTracker pivot；react_loop 结束时写入 TaskProgressTracker |
-| `kernel/idle/src/guardian.rs` | **新增** | GuardianAction 枚举及约束逻辑（第三阶段） |
-| `kernel/config/src/lib.rs` | 修改 | 扩展 `WorkflowConfig`（stale 阈值），新增 `OrchestratorConfig` |
+| `cognitive/llm/src/subagent.rs` | **新增** | `SubAgentSpawner` trait + `SubAgentResult`（认知层抽象） |
+| `cognitive/llm/src/delegate_task.rs` | **新增** | `DelegateTaskTool` — LLM 可调用的子 agent 派生 tool |
+| `cognitive/llm/src/lib.rs` | 修改 | 加 `pub mod subagent;` `pub mod delegate_task;` |
+| `kernel/gateway/src/runtime/subagent_spawner.rs` | **新增** | `GatewaySubAgentSpawner` — 实现 `SubAgentSpawner` trait |
+| `kernel/gateway/src/runtime/agent_harness.rs` | **修改** | 新增 `spawn_anonymous`、`process_anonymous_message`、`AnonymousAgentHandle`、`build_tool_descriptors_anon`、`with_tool_policy_override` |
+| `kernel/gateway/src/runtime/agent_registry.rs` | 修改 | 新增 `remove_llm_provider` 方法 |
+| `kernel/core/src/react.rs` | 修改 | `ReActContext` 新增 `anon_tool_policy` 字段 |
+| `kernel/gateway/src/runtime/agent_runtime.rs` | 修改 | 注册 `delegate_task` tool + 注入 `GatewaySubAgentSpawner` |
+| `kernel/workflow/src/orchestrator.rs` | **待新增** | OrchestratorWorkflow + OrchestratorAgent（未开始） |
+| `kernel/eval/src/session_progress.rs` | 待修改 | 与 Planner progress 联动（未开始） |
+| `kernel/gateway/src/runtime/agent_harness.rs` | 待修改 | auto-continue 注入 pivot（未开始） |
+| `kernel/idle/src/guardian.rs` | **待新增** | GuardianAction 枚举及约束逻辑（第三阶段） |
+| `kernel/config/src/lib.rs` | 待修改 | 扩展 `WorkflowConfig`（stale 阈值），新增 `OrchestratorConfig` |
 
 ---
 

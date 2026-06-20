@@ -28,7 +28,7 @@ aman 提供三层扩展机制，从简单到复杂依次为：
 
 ## 2. 内置工具参考
 
-aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
+aman 默认注册了 12 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
 
 ### 2.1 文件操作工具
 
@@ -195,7 +195,63 @@ aman 默认注册了 11 个内置工具，Agent 通过 ReAct 循环调用它们�
 ```
 加载并返回名为 `skill-name` 的完整 SKILL.md 指令。用于 Agent 的按需技能发现（Hermes 渐进式披露模型）。
 
-### 2.6 工具注册与扩展
+### 2.6 Agent 编排工具
+
+#### delegate_task — 派生匿名子 Agent
+
+```json
+{
+  "prompt": "审查 src/auth.rs 的安全性，查找 SQL 注入和权限绕过",
+  "model": "claude-sonnet-4-6",
+  "system_prompt": "You are a security auditor. Be thorough and skeptical.",
+  "allowed_tools": ["read", "grep", "write"],
+  "background": false
+}
+```
+
+派生一个临时的匿名子 Agent，独立运行 ReAct 循环完成任务。子 Agent 不注册到 Agent 列表、不写配置文件、用完即焚。
+
+**参数：**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `prompt` | **是** | 子 Agent 的任务描述 |
+| `model` | 否 | 模型名，默认继承父 Agent |
+| `system_prompt` | 否 | 子 Agent 的 system prompt（soul），默认通用助手提示 |
+| `allowed_tools` | 否 | 工具白名单。`["*"]` 表示全部。默认继承父 Agent 的 tool policy |
+| `background` | 否 | `true` = 立即返回 agent_id（异步），`false` = 等待完成（同步，默认） |
+
+**返回值：**
+
+```json
+{
+  "agent_id": "anon-019e4e62-bbdc-7b43-b83c",
+  "session_id": "019e4e63-cced-8c54-c94d",
+  "reply": "审查完成：发现 2 个高危问题…",
+  "background": false
+}
+```
+
+**三种使用模式：**
+
+| 模式 | 用法 | 对应 Deli 调度模式 |
+|------|------|-------------------|
+| **同步委托** | `background: false`（默认），等待子 Agent 完成后拿到完整回复 | GoalDriven |
+| **并行探索** | 并行调用多个 `background: true`，各子 Agent 独立运行不同方向 | ParallelExploration |
+| **独立审计** | `system_prompt` 设为审计角色，独立上下文验证 findings | PostIterationVerify |
+
+**注意：** 子 Agent 拥有独立的上下文窗口和 token 预算，与父 Agent 不共享。`background: true` 时子 Agent 的结果需通过后续机制收集（当前版本未实现异步结果收集 tool）。
+
+**架构层级：**
+
+```
+cognitive/llm/subagent.rs       SubAgentSpawner trait（认知层抽象）
+cognitive/llm/delegate_task.rs  DelegateTaskTool（LLM tool）
+gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（实现）
+gateway/runtime/agent_harness.rs     spawn_anonymous()（底层原语）
+```
+
+### 2.7 工具注册与扩展
 
 工具注册点在 `kernel/tool/src/lib.rs`：
 

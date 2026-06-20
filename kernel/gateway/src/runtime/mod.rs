@@ -8,6 +8,7 @@ mod agent_harness;
 mod agent_registry;
 mod agent_runtime;
 mod date_util;
+mod subagent_spawner;
 mod event_consts;
 mod reflection;
 mod sleep;

@@ -270,6 +270,16 @@ pub struct ReActContext {
     /// Optional interrupt flag, set by the harness to cancel long-running
     /// operations (e.g. detached process execution).
     pub interrupt_flag: Option<Arc<crate::interrupt::InterruptFlag>>,
+    /// Optional tool permission policy for anonymous agents.
+    ///
+    /// When `Some`, `ToolExecutor` uses these inline allow/deny lists
+    /// instead of calling `AgentRegistry::tool_allowed()`. This lets
+    /// anonymous (non-registered) agents execute tools without an entry
+    /// in the agents HashMap.
+    ///
+    /// Tuple: `(allowed_tools, denied_tools)` where `allowed_tools` is
+    /// `None` = all allowed (subject to denylist).
+    pub anon_tool_policy: Option<(Option<Vec<String>>, Vec<String>)>,
 }
 
 impl std::fmt::Debug for ReActContext {
@@ -286,6 +296,7 @@ impl std::fmt::Debug for ReActContext {
             .field("token_budget", &self.token_budget)
             .field("model", &self.model)
             .field("stream_cb", &self.stream_cb.as_ref().map(|_| "Some(cb)"))
+            .field("anon_tool_policy", &self.anon_tool_policy.as_ref().map(|_| "Some(...)"))
             .finish()
     }
 }
@@ -317,6 +328,7 @@ impl ReActContext {
             model: model.into(),
             stream_cb: None,
             interrupt_flag: None,
+            anon_tool_policy: None,
         }
     }
 }

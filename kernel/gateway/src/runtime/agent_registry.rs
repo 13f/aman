@@ -913,6 +913,12 @@ impl AgentRegistry {
         providers.insert(agent_id.to_owned(), provider);
     }
 
+    /// Remove the LLM provider for an agent (used to clean up anonymous agents).
+    pub async fn remove_llm_provider(&self, agent_id: &str) {
+        let mut providers = self.llm_providers.write().await;
+        providers.remove(agent_id);
+    }
+
     /// Get the LLM provider for an agent.
     pub async fn get_llm_provider(&self, agent_id: &str) -> Option<Arc<dyn LlmProvider>> {
         let providers = self.llm_providers.read().await;

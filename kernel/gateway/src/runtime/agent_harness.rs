@@ -10,7 +10,7 @@ use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
 use kernel::interrupt::InterruptFlag;
 use context_manager::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
-use kernel::llm::{self, LlmChatRequest};
+use kernel::llm::{self, LlmChatRequest, LlmProvider};
 use kernel::prompt::PromptPipeline;
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
@@ -95,6 +95,35 @@ pub enum ContinuationMode {
     Continue,
     /// Gateway-restart recovery — faithful full-history reconstruction.
     Replay,
+}
+
+/// Handle to a running anonymous agent spawned via [`AgentHarness::spawn_anonymous`].
+///
+/// The anonymous agent runs in a background task with its own ReAct loop.
+/// Call [`AnonymousAgentHandle::wait`] to await its final reply.
+///
+/// Dropping the handle does **not** cancel the agent — it runs to completion
+/// independently. The result is simply discarded if not awaited.
+pub struct AnonymousAgentHandle {
+    /// Unique identifier for the anonymous agent (format: `anon-{uuid}`).
+    pub agent_id: String,
+    /// Session identifier for this execution.
+    pub session_id: String,
+    result_rx: tokio::sync::oneshot::Receiver<AmanResult<String>>,
+}
+
+impl AnonymousAgentHandle {
+    /// Wait for the anonymous agent to complete and return its final reply.
+    ///
+    /// Returns an error if the agent task panicked or was cancelled.
+    #[allow(clippy::missing_errors_doc)]
+    pub async fn wait(self) -> AmanResult<String> {
+        self.result_rx
+            .await
+            .map_err(|_| Error::ConfigInvalid {
+                message: "anonymous agent task cancelled".to_owned(),
+            })?
+    }
 }
 
 // ── Detached process helpers ──────────────────────────────────────────────
@@ -210,6 +239,13 @@ pub struct ToolExecutor {
     tool_timeout_ms: u64,
     /// Optional interrupt flag for interrupting detached process execution.
     interrupt_flag: Option<Arc<InterruptFlag>>,
+    /// Anonymous agent tool policy override.
+    ///
+    /// When set, `execute_for_agent` uses these lists directly instead of
+    /// calling `AgentRegistry::tool_allowed()`. This lets anonymous agents
+    /// execute tools without a registered entry in the agents HashMap.
+    /// Tuple: `(allowed_tools, denied_tools)`.
+    anon_tool_policy: Option<(Option<Vec<String>>, Vec<String>)>,
 }
 
 impl ToolExecutor {
@@ -226,6 +262,7 @@ impl ToolExecutor {
             security_config: None,
             tool_timeout_ms,
             interrupt_flag: None,
+            anon_tool_policy: None,
         }
     }
 
@@ -243,6 +280,21 @@ impl ToolExecutor {
         self
     }
 
+    /// Set an inline tool permission policy for anonymous agents.
+    ///
+    /// When set, `execute_for_agent` checks these lists directly instead
+    /// of calling `AgentRegistry::tool_allowed()`. This lets anonymous
+    /// (non-registered) agents execute tools.
+    #[must_use]
+    pub fn with_tool_policy_override(
+        mut self,
+        allowed: Option<Vec<String>>,
+        denied: Vec<String>,
+    ) -> Self {
+        self.anon_tool_policy = Some((allowed, denied));
+        self
+    }
+
     /// Execute a tool call for a specific agent, checking permissions first.
     ///
     /// Returns a structured result — permission denials are returned as
@@ -256,11 +308,23 @@ impl ToolExecutor {
         let tool_name = &call.tool_name;
 
         // Permission check: is this agent allowed to use this tool?
-        if !self
-            .agent_registry
-            .tool_allowed(agent_id, tool_name)
-            .await
-        {
+        let allowed = if let Some((ref allowed_list, ref denied_list)) = self.anon_tool_policy {
+            // Anonymous agent: use inline policy
+            if denied_list.iter().any(|d| d == tool_name) {
+                false
+            } else {
+                match allowed_list {
+                    Some(list) => list.iter().any(|a| a == tool_name || a == "*"),
+                    None => true,
+                }
+            }
+        } else {
+            self.agent_registry
+                .tool_allowed(agent_id, tool_name)
+                .await
+        };
+
+        if !allowed {
             return react::ToolCallResult {
                 id: call.id.clone(),
                 tool_name: tool_name.clone(),
@@ -777,6 +841,11 @@ impl kernel::react::ReActEngine for LlmReActEngine {
         if let Some(ref config) = self.security_config {
             executor_builder = executor_builder.with_security_config(config.clone());
         }
+        // Pass anonymous agent tool policy override from ReActContext
+        if let Some((ref allowed, ref denied)) = ctx.anon_tool_policy {
+            executor_builder = executor_builder
+                .with_tool_policy_override(allowed.clone(), denied.clone());
+        }
         let executor = Arc::new(executor_builder);
 
         const TOOL_MAX_RETRIES: u32 = 3;
@@ -1277,6 +1346,89 @@ impl AgentHarness {
         })
     }
 
+    /// Spawn an anonymous, ephemeral agent that runs a single task and
+    /// returns its result via an [`AnonymousAgentHandle`].
+    ///
+    /// The anonymous agent is **not** registered in the `AgentRegistry`
+    /// agents HashMap — it has no persistent identity, no SOUL.md, and
+    /// leaves no trace after completion. It inherits the caller's LLM
+    /// provider and uses the given [`AgentDescriptor`] for model, tool
+    /// allow/deny lists, and token budget configuration.
+    ///
+    /// # Arguments
+    /// * `descriptor` — Inline agent configuration (model, provider key,
+    ///   tool allow/deny lists, token limits).  Constructed at runtime,
+    ///   not read from config.
+    /// * `soul_snapshot` — System prompt for this agent.  Built from an
+    ///   arbitrary string — no `SOUL.md` file needed.
+    /// * `user_text` — The task prompt to send to the agent.
+    /// * `llm_provider` — The LLM API client to use (typically cloned
+    ///   from the parent agent's provider).
+    /// * `background` — If true, enables auto-continuation on max turns.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_anonymous(
+        self: &Arc<Self>,
+        descriptor: kernel::agent::AgentDescriptor,
+        soul_snapshot: SoulSnapshot,
+        user_text: String,
+        llm_provider: Arc<dyn LlmProvider>,
+        background: bool,
+    ) -> AnonymousAgentHandle {
+        let anon_id = format!("anon-{}", uuid::Uuid::new_v4());
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+        // Clone for the handle before moving into the spawned task
+        let handle_agent_id = anon_id.clone();
+        let handle_session_id = session_id.clone();
+
+        let harness = Arc::clone(self);
+        self.runtime.spawn(async move {
+            // Register the LLM provider so execute_turn can find it via
+            // registry.get_llm_provider(anon_id).  This maps to the
+            // llm_providers HashMap — NOT the agents HashMap — so the
+            // anonymous agent is never visible in agent listings.
+            harness
+                .registry
+                .set_llm_provider(&anon_id, llm_provider)
+                .await;
+
+            let result = harness
+                .process_anonymous_message(
+                    &anon_id,
+                    &session_id,
+                    &user_text,
+                    &descriptor,
+                    soul_snapshot,
+                    background,
+                )
+                .await;
+
+            // Clean up the temporary LLM provider mapping
+            harness
+                .registry
+                .remove_llm_provider(&anon_id)
+                .await;
+
+            if let Err(ref e) = result {
+                tracing::warn!(
+                    agent_id = %anon_id,
+                    session_id = %session_id,
+                    error = %e,
+                    "anonymous agent failed"
+                );
+            }
+
+            let _ = result_tx.send(result);
+        });
+
+        AnonymousAgentHandle {
+            agent_id: handle_agent_id,
+            session_id: handle_session_id,
+            result_rx,
+        }
+    }
+
     /// Process a user message through the full ReAct loop.
     ///
     /// This is the main entry point called when a `MESSAGE_RECEIVED` event arrives.
@@ -1662,6 +1814,190 @@ impl AgentHarness {
         }
 
         Ok(final_reply)
+    }
+
+    /// Process a message through the ReAct loop for an anonymous agent.
+    ///
+    /// This is a streamlined version of [`process_message`] that bypasses
+    /// all registry operations (no agent lookup, no idle coordination, no
+    /// memory retrieval, no status updates).  The anonymous agent is
+    /// self-contained — everything it needs comes from the inline
+    /// [`AgentDescriptor`] and [`SoulSnapshot`].
+    async fn process_anonymous_message(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        user_text: &str,
+        descriptor: &kernel::agent::AgentDescriptor,
+        soul_snapshot: SoulSnapshot,
+        background: bool,
+    ) -> AmanResult<String> {
+        // 1. Build tool descriptors from the descriptor's allow/deny lists.
+        let available_tools = self.build_tool_descriptors_anon(descriptor).await;
+
+        // 2. Build initial conversation history (just the user message).
+        let history = vec![ChatMessage::user(user_text)];
+
+        // 3. Initialize token budget from descriptor fields directly.
+        let model = descriptor.model.clone();
+        let mut token_budget = match (
+            descriptor.max_context_tokens,
+            descriptor.max_output_tokens,
+        ) {
+            (Some(ctx), Some(out)) => {
+                context_manager::TokenBudget::with_window(&model, ctx, out)
+            }
+            (Some(ctx), None) => context_manager::TokenBudget::with_window(
+                &model,
+                ctx,
+                self.budget_policy
+                    .max_output_tokens(&model, descriptor.max_output_tokens),
+            ),
+            _ => {
+                let ctx = self.budget_policy.context_window(&model);
+                let out = self
+                    .budget_policy
+                    .max_output_tokens(&model, None);
+                context_manager::TokenBudget::with_window(&model, ctx, out)
+            }
+        };
+        token_budget.set_system_tokens(context_manager::TokenBudget::estimate_tokens(
+            &soul_snapshot.system_prompt,
+        ));
+        let tool_schema_text: String = available_tools
+            .iter()
+            .map(|t| format!("{}: {}", t.name, t.parameters))
+            .collect::<Vec<_>>()
+            .join("\n");
+        token_budget.set_tool_schema_tokens(context_manager::TokenBudget::estimate_tokens(
+            &tool_schema_text,
+        ));
+        let initial_history_tokens: usize = history
+            .iter()
+            .map(|m| context_manager::TokenBudget::estimate_tokens(&m.content))
+            .sum();
+        token_budget.set_history_tokens(initial_history_tokens);
+
+        // 4. Create ReActContext with anon_tool_policy so ToolExecutor
+        //    checks permissions against the descriptor instead of the registry.
+        let max_output_tokens = token_budget.max_output_tokens as u64;
+        let max_turns = descriptor
+            .max_context_tokens
+            .map(|_| self.max_react_turns)
+            .unwrap_or(self.max_react_turns);
+        let mut ctx = ReActContext::new(
+            agent_id.to_owned(),
+            session_id.to_owned(),
+            soul_snapshot,
+            history,
+            available_tools,
+            &*model,
+            max_turns,
+            self.budget_policy.session_token_limit(),
+            max_output_tokens,
+        );
+        // Set the anonymous tool policy so ToolExecutor bypasses registry
+        ctx.anon_tool_policy = Some((
+            descriptor.allowed_tools.clone(),
+            descriptor.denied_tools.clone(),
+        ));
+
+        // 5. Register interrupt flag
+        let interrupt_flag = Arc::new(InterruptFlag::new());
+        self.register_interrupt(session_id, Arc::clone(&interrupt_flag));
+        ctx.interrupt_flag = Some(Arc::clone(&interrupt_flag));
+
+        // 6. Run the ReAct loop
+        let result = self
+            .react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag), background)
+            .await;
+
+        // Save history before unregistering interrupt
+        self.session_history.clear(session_id);
+        self.session_history.extend(session_id, ctx.history.clone());
+
+        // Unregister interrupt
+        self.unregister_interrupt(session_id);
+
+        // 7. Extract final reply
+        let (raw_reply, _max_turns_reached) = match result {
+            Ok(ReactOutcome::Finished(reply)) => (reply, false),
+            Ok(ReactOutcome::Interrupted(reply)) => (reply, false),
+            Ok(ReactOutcome::MaxTurnsReached { turns }) => {
+                let msg = format!(
+                    "[max {} turns reached — anonymous agent stopped]",
+                    turns
+                );
+                (msg, true)
+            }
+            Ok(ReactOutcome::AwaitingDetach { .. }) => {
+                // Anonymous agents don't support detach — treat as finished
+                (String::new(), false)
+            }
+            Err(e) => {
+                tracing::error!(
+                    agent_id = %agent_id,
+                    session_id = %session_id,
+                    error = %e,
+                    "anonymous agent react_loop failed"
+                );
+                return Err(e);
+            }
+        };
+
+        // Sanitize API key patterns from output
+        let final_reply = sanitize_api_keys(&raw_reply);
+
+        Ok(final_reply)
+    }
+
+    /// Build tool descriptors for an anonymous agent, filtering by the
+    /// descriptor's inline allow/deny lists instead of calling
+    /// `AgentRegistry::tool_allowed()`.
+    async fn build_tool_descriptors_anon(
+        &self,
+        descriptor: &kernel::agent::AgentDescriptor,
+    ) -> Vec<ToolDescriptor> {
+        let names = self.tool_registry.list_tools();
+        let mut descriptors = Vec::new();
+
+        for name in names {
+            // Skip LLM provider tools (internal)
+            if name.starts_with("llm_") || name.starts_with("llm_provider_") {
+                continue;
+            }
+
+            // Check allow/deny from the inline descriptor (not registry)
+            let allowed = if descriptor
+                .denied_tools
+                .iter()
+                .any(|d| d == &name)
+            {
+                false
+            } else {
+                match &descriptor.allowed_tools {
+                    Some(allow_list) => {
+                        allow_list.iter().any(|a| a == &name || a == "*")
+                    }
+                    None => true,
+                }
+            };
+
+            if !allowed {
+                continue;
+            }
+
+            if let Some(tool) = self.tool_registry.get(&name) {
+                descriptors.push(ToolDescriptor {
+                    name: tool.name().to_owned(),
+                    description: tool.description().to_owned(),
+                    parameters: serde_json::to_value(tool.parameters())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+
+        descriptors
     }
 
     // ── process_message helpers ──────────────────────────────────────

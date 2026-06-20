@@ -319,9 +319,20 @@ gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（gateway 实现）
 gateway/runtime/agent_harness.rs     AgentHarness::spawn_anonymous（底层原语）
 ```
 
+> **2026-06-20 七修**：`collect_result` 已通过 `delegate_task(operation="collect")` 实现。
+> `GatewaySubAgentSpawner` 内部维护 `pending_handles` HashMap（纯内存），`background=true` 时
+> 存入 handle，`operation="collect"` 时取出并等待结果。
+
+**已实现**：
+
+| 模式 | 实现方式 |
+|------|---------|
+| **GoalDriven** | `delegate_task(prompt="...")` → 同步等待结果 |
+| **ParallelExploration** | 并行 `delegate_task(prompt="方向A/B", background=true)` → 各方向独立 → `delegate_task(operation="collect", agent_id="...")` 逐个取回 |
+| **PostIterationVerify** | `delegate_task(prompt="审计...", system_prompt="You are a skeptical auditor...")` |
+
 **未实现**：
-- **PollingExperiment** — 需要 `TimerSource` 轮询 + 异步结果收集，尚无 `collect_result(agent_id)` tool
-- 异步模式下的结果收集机制（`background=true` 后如何取回结果）
+- **PollingExperiment** — 需要 Timer 轮询 + 编排逻辑（LLM 可通过 spawn→等待→collect 手动实现）
 
 #### 5. Orchestrator — 跨迭代编排 ❌ 未开始
 

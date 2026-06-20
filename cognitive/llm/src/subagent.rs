@@ -34,7 +34,7 @@ pub struct SubAgentResult {
 /// - Resolving the LLM provider and model
 /// - Inheriting tool policy from the parent agent
 /// - Creating and running the anonymous agent
-/// - Returning the result
+/// - Storing background handles for later collection
 #[async_trait]
 pub trait SubAgentSpawner: Send + Sync {
     /// Spawn an anonymous sub-agent with the given descriptor, soul, and
@@ -43,8 +43,9 @@ pub trait SubAgentSpawner: Send + Sync {
     /// When `background` is false, blocks until the sub-agent completes
     /// and returns the full reply.
     ///
-    /// When `background` is true, returns immediately with the agent's
-    /// metadata so the caller can collect results later.
+    /// When `background` is true, stores the handle internally and returns
+    /// immediately with the agent's metadata.  Call [`collect_result`]
+    /// later to retrieve the result.
     async fn spawn(
         &self,
         descriptor: AgentDescriptor,
@@ -52,4 +53,11 @@ pub trait SubAgentSpawner: Send + Sync {
         prompt: String,
         background: bool,
     ) -> AmanResult<SubAgentResult>;
+
+    /// Collect the result of a previously spawned background sub-agent.
+    ///
+    /// Blocks until the sub-agent completes, then removes the handle.
+    /// Returns an error if the agent_id is unknown or the agent has
+    /// already been collected.
+    async fn collect_result(&self, agent_id: &str) -> AmanResult<SubAgentResult>;
 }

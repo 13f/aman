@@ -232,15 +232,26 @@ aman 默认注册了 12 个内置工具，Agent 通过 ReAct 循环调用它们�
 }
 ```
 
+**`collect` 操作 — 取回后台子 Agent 结果：**
+
+```json
+{
+  "operation": "collect",
+  "agent_id": "anon-019e4e62-bbdc-7b43-b83c"
+}
+```
+
+阻塞等待指定子 Agent 完成，返回其最终回复。如果 agent_id 不存在或已被收集过，返回错误。
+
 **三种使用模式：**
 
 | 模式 | 用法 | 对应 Deli 调度模式 |
 |------|------|-------------------|
 | **同步委托** | `background: false`（默认），等待子 Agent 完成后拿到完整回复 | GoalDriven |
-| **并行探索** | 并行调用多个 `background: true`，各子 Agent 独立运行不同方向 | ParallelExploration |
+| **并行探索** | 并行调用多个 `background: true` → 各方向独立运行 → 逐个 `collect` 取结果 | ParallelExploration |
 | **独立审计** | `system_prompt` 设为审计角色，独立上下文验证 findings | PostIterationVerify |
 
-**注意：** 子 Agent 拥有独立的上下文窗口和 token 预算，与父 Agent 不共享。`background: true` 时子 Agent 的结果需通过后续机制收集（当前版本未实现异步结果收集 tool）。
+**注意：** 子 Agent 拥有独立的上下文窗口和 token 预算，与父 Agent 不共享。`background: true` 的 handle 存在内存中（不过期），需显式 `collect`。Gateway 重启后 pending handle 丢失。
 
 **架构层级：**
 

@@ -4,9 +4,14 @@
 //! Gateway implementation of [`cognitive_llm::subagent::SubAgentSpawner`].
 //!
 //! Bridges the cognitive-layer trait to the gateway's concrete
-//! [`AgentHarness::spawn_anonymous`] and [`AgentRegistry`] for LLM
-//! provider resolution and tool-policy inheritance.
+//! [`super::agent_harness::AgentHarness::spawn_anonymous`] and
+//! [`AgentRegistry`] for LLM provider resolution and tool-policy
+//! inheritance.
+//!
+//! Also maintains a pending-handle store so background sub-agents can
+//! be collected later via [`SubAgentSpawner::collect_result`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,26 +19,31 @@ use cognitive_llm::subagent::{SubAgentResult, SubAgentSpawner};
 use kernel::agent::AgentDescriptor;
 use kernel::react::SoulSnapshot;
 use kernel::{AmanResult, Error};
+use tokio::sync::RwLock;
 
-use super::agent_harness::AgentHarness;
+use super::agent_harness::{AgentHarness, AnonymousAgentHandle};
 use super::agent_registry::AgentRegistry;
 
 pub struct GatewaySubAgentSpawner {
     registry: Arc<AgentRegistry>,
     harness: Arc<AgentHarness>,
+    /// Pending background sub-agent handles, keyed by agent_id.
+    /// Inserted on `spawn(background=true)`, removed on `collect_result`.
+    pending_handles: RwLock<HashMap<String, AnonymousAgentHandle>>,
 }
 
 impl GatewaySubAgentSpawner {
     pub fn new(registry: Arc<AgentRegistry>, harness: Arc<AgentHarness>) -> Self {
-        Self { registry, harness }
+        Self {
+            registry,
+            harness,
+            pending_handles: RwLock::new(HashMap::new()),
+        }
     }
 
-    /// Resolve the parent agent from [`ToolContext`] extensions.
-    /// Returns the first enabled agent if the context has no agent_id.
+    /// Resolve the parent agent from the registry.
+    /// Returns the first enabled agent.
     async fn resolve_parent_agent_id(&self) -> Option<String> {
-        // Walk the registry for the first enabled agent as the "parent".
-        // In practice, ToolContext carries agent_id; we use this as
-        // fallback for contexts where extensions are not populated.
         for agent in self.registry.list().await {
             if agent.descriptor.enabled {
                 return Some(agent.descriptor.agent_id.clone());
@@ -43,7 +53,6 @@ impl GatewaySubAgentSpawner {
     }
 
     /// Merge the user-supplied descriptor with the parent agent's defaults.
-    /// Fields that the caller left empty/unset are inherited from the parent.
     async fn merge_with_parent(
         &self,
         parent_agent_id: &str,
@@ -61,32 +70,21 @@ impl GatewaySubAgentSpawner {
 
         let pd = &parent.descriptor;
 
-        // Inherit provider if not specified
         if descriptor.provider.is_empty() {
             descriptor.provider = pd.provider.clone();
         }
-
-        // Inherit model if not specified
         if descriptor.model.is_empty() {
             descriptor.model = pd.model.clone();
         }
-
-        // Inherit tool policy if not explicitly overridden
-        // allowed_tools: None in the user descriptor means "inherit"
-        // allowed_tools: Some(...) means "use this explicit list"
         if descriptor.allowed_tools.is_none() {
             descriptor.allowed_tools = pd.allowed_tools.clone();
         }
         if descriptor.denied_tools.is_empty() {
             descriptor.denied_tools = pd.denied_tools.clone();
         }
-
-        // Inherit skill policy
         if descriptor.allowed_skills.is_none() {
             descriptor.allowed_skills = pd.allowed_skills.clone();
         }
-
-        // Inherit token limits if not specified
         if descriptor.max_context_tokens.is_none() {
             descriptor.max_context_tokens = pd.max_context_tokens;
         }
@@ -107,7 +105,6 @@ impl SubAgentSpawner for GatewaySubAgentSpawner {
         prompt: String,
         background: bool,
     ) -> AmanResult<SubAgentResult> {
-        // ── Resolve parent and merge defaults ────────────────────────
         let parent_id = self
             .resolve_parent_agent_id()
             .await
@@ -117,7 +114,6 @@ impl SubAgentSpawner for GatewaySubAgentSpawner {
 
         self.merge_with_parent(&parent_id, &mut descriptor).await?;
 
-        // ── Get LLM provider for the parent ──────────────────────────
         let llm_provider = self
             .registry
             .get_llm_provider(&parent_id)
@@ -128,7 +124,6 @@ impl SubAgentSpawner for GatewaySubAgentSpawner {
                 ),
             })?;
 
-        // ── Spawn ────────────────────────────────────────────────────
         let handle = self.harness.spawn_anonymous(
             descriptor,
             soul_snapshot,
@@ -141,6 +136,11 @@ impl SubAgentSpawner for GatewaySubAgentSpawner {
         let session_id = handle.session_id.clone();
 
         if background {
+            // Store for later collection
+            self.pending_handles
+                .write()
+                .await
+                .insert(agent_id.clone(), handle);
             Ok(SubAgentResult {
                 agent_id,
                 session_id,
@@ -156,5 +156,31 @@ impl SubAgentSpawner for GatewaySubAgentSpawner {
                 background: false,
             })
         }
+    }
+
+    async fn collect_result(&self, agent_id: &str) -> AmanResult<SubAgentResult> {
+        let handle = self
+            .pending_handles
+            .write()
+            .await
+            .remove(agent_id)
+            .ok_or_else(|| Error::NotFound {
+                name: format!(
+                    "sub-agent '{agent_id}' not found in pending handles \
+                     (already collected, never spawned, or expired)"
+                ),
+            })?;
+
+        // Snapshot before wait() consumes the handle
+        let sid = handle.session_id.clone();
+
+        let reply = handle.wait().await?;
+
+        Ok(SubAgentResult {
+            agent_id: agent_id.to_owned(),
+            session_id: sid,
+            reply,
+            background: false,
+        })
     }
 }

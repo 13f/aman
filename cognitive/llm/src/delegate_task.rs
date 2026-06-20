@@ -1,8 +1,13 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-//! `delegate_task` tool — spawn an anonymous sub-agent to work on a
-//! subtask in parallel, then return its result.
+//! `delegate_task` tool — spawn anonymous sub-agents and collect their
+//! results.
+//!
+//! Two operations (same pattern as `planner`):
+//! - **spawn** (default): create a sub-agent and optionally wait for it.
+//! - **collect**: retrieve the result of a previously spawned background
+//!   sub-agent by its `agent_id`.
 //!
 //! Depends on [`super::SubAgentSpawner`] (trait), not on any gateway
 //! type.  The gateway injects its concrete implementation at startup.
@@ -54,40 +59,50 @@ impl Tool for DelegateTaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a temporary anonymous sub-agent to work on a subtask independently. \
-         The sub-agent gets its own ReAct loop, context, and tool access. \
-         Results are returned directly. \
-         Use this for: parallel exploration of different approaches, \
-         independent verification/audit of findings, or offloading \
-         self-contained work so the main agent can continue."
+        "Spawn a temporary anonymous sub-agent to work on a subtask independently, \
+         or collect the result of a previously spawned background sub-agent. \
+         Two operations: \
+         'spawn' (default) — create a sub-agent with its own ReAct loop. \
+           Set background=true to run asynchronously and collect later. \
+         'collect' — retrieve the result of a background sub-agent by agent_id. \
+         Use for: parallel exploration, independent verification/audit, \
+         or offloading self-contained work."
     }
 
     fn parameters(&self) -> &JsonSchema {
         static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
             JsonSchema::from(json!({
                 "type": "object",
-                "required": ["prompt"],
                 "properties": {
+                    "operation": {
+                        "type": "string",
+                        "description": "Which operation to perform: 'spawn' (default) or 'collect'.",
+                        "enum": ["spawn", "collect"]
+                    },
                     "prompt": {
                         "type": "string",
-                        "description": "The task for the sub-agent to complete. Be specific about what to produce and how to report results."
+                        "description": "spawn: the task for the sub-agent to complete."
                     },
                     "model": {
                         "type": "string",
-                        "description": "Optional: model name for the sub-agent. Defaults to the parent agent's model."
+                        "description": "spawn: model name. Defaults to parent agent's model."
                     },
                     "system_prompt": {
                         "type": "string",
-                        "description": "Optional: system prompt (soul) for the sub-agent. Defaults to a generic assistant prompt."
+                        "description": "spawn: system prompt (soul) for the sub-agent."
                     },
                     "allowed_tools": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional: explicit tool whitelist. If omitted, inherits parent policy. Use ['*'] to allow all non-LLM tools."
+                        "description": "spawn: tool whitelist. Inherits parent policy if omitted."
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "If true, spawn and return immediately. If false (default), wait for completion."
+                        "description": "spawn: if true, return immediately with agent_id. Collect later with operation='collect'."
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "collect: the agent_id returned by a previous spawn with background=true."
                     }
                 }
             }))
@@ -110,11 +125,11 @@ impl Tool for DelegateTaskTool {
                     },
                     "reply": {
                         "type": "string",
-                        "description": "The sub-agent's final reply. Empty when background=true."
+                        "description": "The sub-agent's final reply text. Empty for background spawns."
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "Whether this was a background spawn."
+                        "description": "Whether the spawn was background (collect returns background:false)."
                     }
                 }
             }))
@@ -134,13 +149,30 @@ impl Tool for DelegateTaskTool {
                 message: "delegate_task: SubAgentSpawner not wired".to_owned(),
             })?;
 
-        // ── Parse parameters ─────────────────────────────────────────
+        let operation = params
+            .get("operation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("spawn");
+
+        match operation {
+            "collect" => self.execute_collect(spawner.as_ref(), &params).await,
+            _ => self.execute_spawn(spawner.as_ref(), &params).await,
+        }
+    }
+}
+
+impl DelegateTaskTool {
+    async fn execute_spawn(
+        &self,
+        spawner: &dyn SubAgentSpawner,
+        params: &Value,
+    ) -> AmanResult<Value> {
         let prompt = params
             .get("prompt")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| Error::ConfigInvalid {
-                message: "delegate_task: missing required parameter 'prompt'"
+                message: "delegate_task spawn: missing required parameter 'prompt'"
                     .to_owned(),
             })?;
 
@@ -178,12 +210,11 @@ impl Tool for DelegateTaskTool {
                 }
             });
 
-        // ── Build descriptor ─────────────────────────────────────────
         let model = model_override.unwrap_or("");
         let descriptor = AgentDescriptor {
             agent_id: String::new(),
             display_name: format!("subagent-{}", uuid::Uuid::new_v4()),
-            provider: String::new(), // spawner resolves this
+            provider: String::new(),
             model: model.to_owned(),
             soul_path: None,
             allowed_tools: tool_override.unwrap_or(None),
@@ -196,7 +227,6 @@ impl Tool for DelegateTaskTool {
 
         let soul = SoulSnapshot::new("subagent", system_prompt);
 
-        // ── Spawn ────────────────────────────────────────────────────
         let result = spawner
             .spawn(descriptor, soul, prompt.to_owned(), background)
             .await?;
@@ -206,6 +236,30 @@ impl Tool for DelegateTaskTool {
             "session_id": result.session_id,
             "reply": result.reply,
             "background": result.background,
+        }))
+    }
+
+    async fn execute_collect(
+        &self,
+        spawner: &dyn SubAgentSpawner,
+        params: &Value,
+    ) -> AmanResult<Value> {
+        let agent_id = params
+            .get("agent_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| Error::ConfigInvalid {
+                message: "delegate_task collect: missing required parameter 'agent_id'"
+                    .to_owned(),
+            })?;
+
+        let result = spawner.collect_result(agent_id).await?;
+
+        Ok(json!({
+            "agent_id": result.agent_id,
+            "session_id": result.session_id,
+            "reply": result.reply,
+            "background": false,
         }))
     }
 }

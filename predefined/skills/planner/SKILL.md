@@ -2,84 +2,19 @@
 name: planner
 category: agent
 description: >
-  Structured plan state management for long-running, multi-step, or cross-session
-  tasks. Use when: (1) the user asks for something that will take many steps —
-  research, audits, migrations, multi-file refactors; (2) the task may span
-  multiple sessions and needs to survive restarts; (3) you need to track which
-  approaches have been tried to avoid repeating yourself; (4) the user explicitly
-  asks for a plan, roadmap, or structured execution.  Do NOT use for: single-turn
-  lookups, trivial one-file edits, or tasks completable in under 3 trivial steps.
-  After creating a plan, the system will automatically execute tasks via the
-  Orchestrator — monitor progress with planner.status.
-version: 1.1.0
-triggers:
-  - "plan"
-  - "make a plan"
-  - "create a plan"
-  - "规划"
-  - "计划"
-  - "roadmap"
-  - "路线图"
-  - "milestone"
-  - "里程碑"
-  - "分解任务"
-  - "break down"
-  - "多步骤"
-  - "multi-step"
-  - "long running"
-  - "long-running"
-  - "audit"
-  - "审计"
-  - "migration"
-  - "迁移"
-  - "deep research"
-  - "深度研究"
-  - "thorough"
-  - "comprehensive"
-  - "全面"
-tags:
-  - planner
-  - planning
-  - task-tracking
-  - execution
-  - long-horizon
+  API reference for the planner tool — structured plan state management with
+  persistent storage under ~/.aman/plans/.  Covers all operations: create,
+  set_tasks, start, complete, fail, append_finding, record_direction,
+  increment_stale, status, resume.  For guidance on WHEN to create plans,
+  see the `plan` skill.
+version: 1.2.0
 metadata:
   hermes:
     tags: [planner, planning, task-tracking, execution, long-horizon, state-management, cross-session]
     related_skills: [plan, writing-plans, todo, subagent-driven-development]
 ---
 
-# Planner — Structured Plan State Management
-
-## When to Use This Skill
-
-**Activate planner when the task meets ANY of these criteria:**
-
-| Criteria | Example |
-|----------|---------|
-| **Multi-step** — 4+ distinct steps with dependencies | "Refactor the auth system across 5 crates" |
-| **Cross-session** — likely won't finish in one conversation | "Do a comprehensive security audit of the codebase" |
-| **Exploratory** — you don't know the answer yet, need to try approaches | "Investigate why backpressure OOM happens under load" |
-| **Parallelizable** — subtasks can run concurrently | "Audit SQL injection risk in all 12 endpoint handlers" |
-| **User explicitly asks** — "make a plan", "规划一下", "roadmap" | "Plan the migration from Postgres to MySQL" |
-| **Unbounded scope** — "audit everything", "全面检查", "find all bugs" | "Find all memory leaks in the kernel crates" |
-
-**Do NOT use planner for:**
-
-| Criteria | Example — just do it directly |
-|----------|-------------------------------|
-| Single-turn lookup | "What does AgentRegistry do?" |
-| Trivial edit | "Fix the typo in README" |
-| ≤ 3 simple steps | "Rename this function and update callers" |
-| Purely conversational | "Explain how the event bus works" |
-
-**What happens after you create a plan:**
-
-1. You call `planner.create` + `planner.set_tasks` to define the work
-2. The **Orchestrator** automatically picks up the plan (via `plan:created` event)
-3. Each task is executed by a fresh anonymous sub-agent with its own context
-4. Stalled tasks get automatic direction pivots; blocked tasks escalate to human
-5. You can monitor progress anytime with `planner.status` or `planner.resume`
+# Planner — API Reference
 
 ## Overview
 
@@ -338,10 +273,11 @@ Direction object:
 
 Returns: `{ ok, operation, plan_id, task_id, directions_count }`
 
-### `increment_stale` — Signal no progress (orchestrator use)
+### `increment_stale` — Signal no progress
 
-Increments `stale_count` by 1. Used by orchestrator or watchdog when detecting
-that a task has made no progress. `stale_count` resets to 0 on `complete`.
+Increments `stale_count` by 1. Used by the Orchestrator (or manually) when
+a task iteration produced no progress. `stale_count` resets to 0 on `complete`.
+At ≥ 3 the Orchestrator auto-pivots; at ≥ 6 it escalates to human.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -436,47 +372,23 @@ planner.resume
   → [continue work on task 2...]
 ```
 
-### Stall recovery (automatic)
+### Stall recovery (reference)
 
-Stall recovery is handled **automatically** by the Orchestrator. You do not need
-to call `increment_stale` or `record_direction` manually. The flow is:
+Stall detection and pivot are handled automatically by the Orchestrator.
+This section documents the underlying operations for advanced/manual use.
 
+```json
+// Signal no progress:
+{"operation": "increment_stale", "plan_id": "sess_abc123"}
+
+// After stale_count >= 3, record a new direction:
+{"operation": "record_direction", "plan_id": "sess_abc123", "task_id": "3",
+ "direction": {"id": "d2", "description": "Alternative approach"}}
+
+// Revise tasks and resume:
+planner.set_tasks(revised_tasks)
+planner.resume
 ```
-# Orchestrator cycle 1-2: task runs normally
-planner.start(id="3") → spawn sub-agent → result looks good → planner.complete
-
-# If sub-agent returns no progress:
-Orchestrator: planner.increment_stale → stale_count=1
-
-# Next attempt:
-Orchestrator: planner.increment_stale → stale_count=2
-
-# stale_count reaches 3 — auto-pivot:
-Orchestrator: planner.record_direction(task_id="3", direction={
-  id: "pivot-1",
-  description: "Pivot #1: try a different approach. Previously tried: [heaptrack profiling]"
-})
-→ spawn sub-agent with pivot direction in prompt
-
-# If sub-agent succeeds → planner.complete, stale_count resets to 0
-# If still failing → stale_count climbs to 6 → escalate to human
-```
-
-## Automatic Execution (Orchestrator)
-
-After `planner.create` + `planner.set_tasks`, the **Orchestrator** takes over
-automatically. It is a background actor that:
-
-1. Picks the next unblocked task
-2. Spawns an anonymous sub-agent with the task description and tried-directions history
-3. Evaluates the result
-4. Marks the task complete or increments `stale_count`
-5. At `stale_count >= 3`, generates a **pivot** direction so the next attempt tries a different approach
-6. At `stale_count >= 6`, **escalates** to human (marks task blocked)
-
-**You don't need to manually call `start`, `complete`, or `increment_stale`** —
-the Orchestrator handles the entire execution lifecycle. Just create the plan
-and monitor with `planner.status`.
 
 ## Integration with Agent Skills
 
@@ -484,11 +396,10 @@ The planner tool is the **structured state layer**. Agent skills describe **meth
 
 | Skill | How it uses planner |
 |-------|-------------------|
-| `plan` | After exploring the codebase (read-only), calls `planner.create` + `planner.set_tasks` to persist the structured plan. May also write a human-readable markdown plan as supplementary documentation. |
+| `plan` | After exploring the codebase (read-only), calls `planner.create` + `planner.set_tasks` to persist the structured plan. The Orchestrator then picks up the plan automatically — no manual `start`/`complete` needed. |
 | `writing-plans` | Describes plan quality standards. After writing a markdown plan, calls `planner.set_tasks` to produce the structured equivalent. |
 | `todo` | For short-lived, single-session tasks, continue using in-memory todo lists. For long-lived tasks, delegate to `planner.create` + `planner.set_tasks`. |
 | `subagent-driven-development` | Subagents call `planner.start` / `planner.complete` / `planner.fail` per task, using the plan_id from the orchestrator. |
-| **Orchestrator (built-in)** | The system automatically runs the execution loop: picks tasks, spawns sub-agents, detects stalls, pivots directions. Zero manual intervention needed. |
 
 ## File Format Details
 

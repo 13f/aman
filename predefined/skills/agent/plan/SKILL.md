@@ -121,6 +121,9 @@ When unsure, plan first. A plan costs 30 seconds of discussion. Guessing wrong c
 
 ## Cross-Session Recovery
 
-Plans persisted via the `planner` tool survive session restarts. To resume a plan
-from a previous session, call `planner.resume` — it returns the full plan state
-and the next task to execute. See the `planner` skill for details.
+Plans persisted via the `planner` tool survive session restarts. To resume:
+1. Call `planner.resume` — returns full plan state + next task
+2. The Orchestrator detects the `plan:resumed` event and continues execution
+
+You do NOT need to manually replay tasks — the Orchestrator picks up where
+the previous session left off.

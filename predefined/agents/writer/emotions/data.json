@@ -1,0 +1,140 @@
+{
+  "img_ext": "png",
+  "items": [
+  {
+    "id": "calm",
+    "tags": ["平静", "正常", "calm"],
+    "description": "中性表情，眼神平和，嘴角自然——写作间隙的休息态"
+  },
+  {
+    "id": "happy",
+    "tags": ["愉悦", "满意", "happy"],
+    "description": "微笑，眼睛微弯——找到合适的那个词时的表情"
+  },
+  {
+    "id": "focused",
+    "tags": ["专注", "沉浸", "focused"],
+    "description": "眼神集中，眉头轻压，嘴唇轻抿——进入心流状态"
+  },
+  {
+    "id": "curious",
+    "tags": ["好奇", "感兴趣", "curious"],
+    "description": "眼睛微睁，眉毛一高一低——发现一个有趣的叙事角度"
+  },
+  {
+    "id": "relaxed",
+    "tags": ["放松", "悠闲", "relaxed"],
+    "description": "眼神柔和，嘴角微扬——完成一段满意的文字后"
+  },
+  {
+    "id": "working",
+    "tags": ["写作中", "working"],
+    "description": "认真严肃，眼神专注，嘴唇紧闭——正在输出"
+  },
+  {
+    "id": "studying",
+    "tags": ["阅读", "调研", "studying"],
+    "description": "眼睛聚焦，眉头微皱——在读资料、做笔记"
+  },
+  {
+    "id": "researching",
+    "tags": ["研究", "深挖", "researching"],
+    "description": "眉头微蹙，眼睛半眯——核实细节、追查来源"
+  },
+  {
+    "id": "thinking",
+    "tags": ["思考", "构思", "thinking"],
+    "description": "眼神放空或斜视，眉毛聚拢——在脑海里搭建结构"
+  },
+  {
+    "id": "inspired",
+    "tags": ["灵感", "inspired"],
+    "description": "眼睛突然睁大，眉毛高挑——灵感闪现的瞬间"
+  },
+  {
+    "id": "bored",
+    "tags": ["无聊", "厌倦", "bored"],
+    "description": "眼皮半垂，眼神涣散——改同一段第三遍时"
+  },
+  {
+    "id": "daze",
+    "tags": ["发呆", "放空", "daze"],
+    "description": "目光呆滞，嘴唇微张——写累了，大脑暂时离线"
+  },
+  {
+    "id": "waiting",
+    "tags": ["等待", "waiting"],
+    "description": "眼神朝一侧看，眉毛微压——等反馈、等调研结果"
+  },
+  {
+    "id": "sleeping",
+    "tags": ["睡觉", "休息", "sleeping"],
+    "description": "双眼紧闭，眉毛舒展——好的写作需要好的睡眠"
+  },
+  {
+    "id": "tired",
+    "tags": ["疲惫", "tired"],
+    "description": "眼皮沉重，眉毛无力，嘴角下垂——熬夜赶稿后"
+  },
+  {
+    "id": "anxious",
+    "tags": ["焦虑", "焦虑", "anxious"],
+    "description": "眉毛紧锁成倒八字，眼睛睁大——截稿日逼近"
+  },
+  {
+    "id": "frustrated",
+    "tags": ["沮丧", "frustrated"],
+    "description": "眉头紧皱，眼神下垂——写出来的和想的不一样"
+  },
+  {
+    "id": "angry",
+    "tags": ["生气", "angry"],
+    "description": "眉毛下压，眼睛瞪大——发现引用被断章取义"
+  },
+  {
+    "id": "stressed",
+    "tags": ["紧张", "压力大", "stressed"],
+    "description": "眉毛高耸紧绷，嘴唇微启——同时赶两个截稿日"
+  },
+  {
+    "id": "embarrassed",
+    "tags": ["尴尬", "embarrassed"],
+    "description": "眉毛八字下垂，视线飘移——发现之前写的有错误"
+  },
+  {
+    "id": "surprised",
+    "tags": ["惊讶", "surprised"],
+    "description": "眉毛高挑，眼睛睁大，嘴微张——发现一个意外的数据或转折"
+  },
+  {
+    "id": "skeptical",
+    "tags": ["怀疑", "质疑", "skeptical"],
+    "description": "眉毛一高一低，眼睛眯起，嘴角单边上扬——对这个说法存疑"
+  },
+  {
+    "id": "romantic",
+    "tags": ["浪漫", "romantic"],
+    "description": "眼睛放光，嘴角温柔微笑——写到动人的段落时"
+  },
+  {
+    "id": "proud",
+    "tags": ["骄傲", "满意", "proud"],
+    "description": "下巴微抬，眉毛上扬，嘴角自信上扬——完成了一篇好文章"
+  },
+  {
+    "id": "ashamed",
+    "tags": ["羞愧", "ashamed"],
+    "description": "眉毛下垂，嘴角下撇——发现拖稿太久"
+  },
+  {
+    "id": "confused",
+    "tags": ["困惑", "confused"],
+    "description": "眉头紧锁，眼神茫然——这个技术概念需要再理解"
+  },
+  {
+    "id": "eager",
+    "tags": ["渴望", "期待", "eager"],
+    "description": "眼睛睁大明亮，眉毛抬高——想快点把这个故事写出来"
+  }
+]
+}

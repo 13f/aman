@@ -108,6 +108,42 @@
         "agents/money/emotions/waiting.png",
         "agents/money/emotions/working.png"
       ]
+    },
+    {
+      "key": "writer",
+      "display_name": "写作者",
+      "files": [
+        "agents/writer/SOUL.md",
+        "agents/writer/INTERESTS.md",
+        "agents/writer/emotions/data.json",
+        "agents/writer/emotions/angry.png",
+        "agents/writer/emotions/anxious.png",
+        "agents/writer/emotions/ashamed.png",
+        "agents/writer/emotions/bored.png",
+        "agents/writer/emotions/calm.png",
+        "agents/writer/emotions/confused.png",
+        "agents/writer/emotions/curious.png",
+        "agents/writer/emotions/daze.png",
+        "agents/writer/emotions/eager.png",
+        "agents/writer/emotions/embarrassed.png",
+        "agents/writer/emotions/focused.png",
+        "agents/writer/emotions/frustrated.png",
+        "agents/writer/emotions/happy.png",
+        "agents/writer/emotions/inspired.png",
+        "agents/writer/emotions/proud.png",
+        "agents/writer/emotions/relaxed.png",
+        "agents/writer/emotions/researching.png",
+        "agents/writer/emotions/romantic.png",
+        "agents/writer/emotions/skeptical.png",
+        "agents/writer/emotions/sleeping.png",
+        "agents/writer/emotions/stressed.png",
+        "agents/writer/emotions/studying.png",
+        "agents/writer/emotions/surprised.png",
+        "agents/writer/emotions/thinking.png",
+        "agents/writer/emotions/tired.png",
+        "agents/writer/emotions/waiting.png",
+        "agents/writer/emotions/working.png"
+      ]
     }
   ]
 }

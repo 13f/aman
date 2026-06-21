@@ -539,7 +539,7 @@ pub async fn get_soul_info(state: State<'_, AppState>) -> Result<SoulInfo, Strin
 #[tauri::command]
 pub async fn preview_system_prompt(state: State<'_, AppState>) -> Result<String, String> {
     let client = require_gateway(&state).await?;
-    client.soul_system_prompt().await
+    client.get_system_prompt().await
 }
 
 #[tauri::command]

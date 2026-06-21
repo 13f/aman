@@ -615,6 +615,12 @@ impl Plugin for InfoHubPlugin {
     }
 
     async fn on_load(&mut self, _ctx: PluginContext) -> AmanResult<()> {
+        // Initialize the Python prompt bridge so all LLM prompt text comes
+        // from prompts.py, not hardcoded Rust strings.
+        ai::init_prompt_bridge(
+            self.config.python_runtime.clone(),
+            self.config.prompts_script.clone(),
+        );
         Ok(())
     }
 

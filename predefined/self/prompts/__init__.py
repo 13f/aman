@@ -35,6 +35,17 @@ from .skills_builder import build_skills_system_prompt, build_skill_view_reinfor
 from .tools_builder import build_full_system_prompt, current_date_string
 from .reflection import extraction_prompt, format_conversation
 
+# Re-export unified system_prompt module for the primary entry point
+from ..system_prompt import (
+    build_system_prompt,
+    build_skills_section,
+    build_tool_list,
+    build_format_reminder,
+    strip_frontmatter,
+    SkillInfo,
+    ToolDescriptor,
+)
+
 __all__ = [
     "load_skill_prompt",
     "Soul",
@@ -46,4 +57,12 @@ __all__ = [
     "current_date_string",
     "extraction_prompt",
     "format_conversation",
+    # Unified system_prompt module exports
+    "build_system_prompt",
+    "build_skills_section",
+    "build_tool_list",
+    "build_format_reminder",
+    "strip_frontmatter",
+    "SkillInfo",
+    "ToolDescriptor",
 ]

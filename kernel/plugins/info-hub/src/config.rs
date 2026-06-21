@@ -17,10 +17,25 @@ pub struct InfoHubConfig {
     pub sources: Vec<SourceConfig>,
     #[serde(default)]
     pub llm: Option<LlmConfig>,
+    /// Python runtime for the prompts bridge (default: "python3").
+    #[serde(default = "default_python_runtime")]
+    pub python_runtime: String,
+    /// Path to prompts.py. Relative to CWD or absolute.
+    /// Default tries predefined/plugins/info-hub/prompts.py.
+    #[serde(default = "default_prompts_script")]
+    pub prompts_script: String,
 }
 
 fn default_timeout_ms() -> u64 {
     10_000
+}
+
+fn default_python_runtime() -> String {
+    "python3".to_owned()
+}
+
+fn default_prompts_script() -> String {
+    "predefined/plugins/info-hub/prompts.py".to_owned()
 }
 
 impl Default for InfoHubConfig {
@@ -29,6 +44,8 @@ impl Default for InfoHubConfig {
             timeout_ms: default_timeout_ms(),
             sources: Vec::new(),
             llm: None,
+            python_runtime: default_python_runtime(),
+            prompts_script: default_prompts_script(),
         }
     }
 }
@@ -48,6 +65,10 @@ impl<'de> serde::Deserialize<'de> for InfoHubConfig {
                 sources: Vec<SourceConfig>,
                 #[serde(default)]
                 llm: Option<LlmConfig>,
+                #[serde(default = "default_python_runtime")]
+                python_runtime: String,
+                #[serde(default = "default_prompts_script")]
+                prompts_script: String,
             },
             Array(Vec<SourceConfig>),
         }
@@ -57,15 +78,21 @@ impl<'de> serde::Deserialize<'de> for InfoHubConfig {
                 timeout_ms,
                 sources,
                 llm,
+                python_runtime,
+                prompts_script,
             } => Ok(Self {
                 timeout_ms,
                 sources,
                 llm,
+                python_runtime,
+                prompts_script,
             }),
             RawConfig::Array(sources) => Ok(Self {
                 timeout_ms: default_timeout_ms(),
                 sources,
                 llm: None,
+                python_runtime: default_python_runtime(),
+                prompts_script: default_prompts_script(),
             }),
         }
     }

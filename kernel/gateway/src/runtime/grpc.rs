@@ -990,8 +990,10 @@ impl Aman for AmanServiceImpl {
             .soul_runtime()
             .map(|sr| {
                 let soul = sr.current_soul();
+                let skills_json = serde_json::to_value(&*self.runtime.llm_skills()).unwrap_or_default();
+                let tools_json = serde_json::json!([]);
                 self.runtime.self_bridge()
-                    .build_soul_prompt(&soul.raw)
+                    .build_full_system_prompt(&soul.raw, &skills_json, &tools_json, None)
                     .unwrap_or_else(|| soul.raw.clone())
             })
             .unwrap_or_default();

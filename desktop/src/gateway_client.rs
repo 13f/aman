@@ -377,20 +377,20 @@ impl GatewayClient {
         }
     }
 
-    pub async fn soul_system_prompt(&self) -> Result<String, String> {
+    pub async fn get_system_prompt(&self) -> Result<String, String> {
         let resp = self
             .client
-            .get(self.url("/soul/system-prompt"))
+            .get(self.url("/system-prompt"))
             .send()
             .await
-            .map_err(|e| format!("soul_system_prompt: {e}"))?;
+            .map_err(|e| format!("get_system_prompt: {e}"))?;
         if resp.status().is_success() {
-            let v: Value = resp.json().await.map_err(|e| format!("soul_system_prompt decode: {e}"))?;
+            let v: Value = resp.json().await.map_err(|e| format!("get_system_prompt decode: {e}"))?;
             Ok(v["system_prompt"].as_str().unwrap_or("").to_owned())
         } else if resp.status().as_u16() == 404 {
             Err("No SOUL configured".to_owned())
         } else {
-            Err(status_error("soul_system_prompt", resp.status()).await)
+            Err(status_error("get_system_prompt", resp.status()).await)
         }
     }
 

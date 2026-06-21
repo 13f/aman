@@ -6,12 +6,13 @@ Usage:
   python3 bridge.py <method> [json-args]
 
 Methods:
-  soul-prompt      Parse SOUL.md content → system prompt string
-  skills-prompt    Build skills section from SkillInfo JSON list
-  full-prompt      Assemble complete system prompt (soul + tools + memory)
-  extraction-prompt  Return the extraction prompt template
-  parse-command    Parse a slash-command string → {skill_name, user_input}
-  match-prefix     Match skill prefix → [matching skill names]
+  system-prompt     Build complete system prompt (soul + skills + tools + memory)
+  soul-prompt       Parse SOUL.md content → system prompt string (legacy)
+  skills-prompt     Build skills section from SkillInfo JSON list (legacy)
+  extraction-prompt Return the extraction prompt template
+  entity-extraction-prompt  Return the entity extraction prompt
+  parse-command     Parse a slash-command string → {skill_name, user_input}
+  match-prefix      Match skill prefix → [matching skill names]
 
 All methods read additional data from stdin as JSON, and write JSON to stdout.
 Exit code 0 on success, 1 on error (with error message on stderr).
@@ -63,11 +64,34 @@ def cmd_skills_prompt(args: dict) -> str:
     return build_skills_system_prompt(skills)
 
 
-def cmd_full_prompt(args: dict) -> str:
-    """Assemble the complete system prompt sent to the LLM."""
-    from self.prompts.tools_builder import build_full_system_prompt, ToolDescriptor
+def cmd_system_prompt(args: dict) -> str:
+    """Build the complete system prompt (soul + skills + tools + memory).
 
-    soul_prompt = args.get("soul_prompt", "")
+    This is the primary entry point — replaces the old two-step
+    soul-prompt + skills-prompt + full-prompt dance.
+    """
+    from self.system_prompt import build_system_prompt, SkillInfo, ToolDescriptor
+
+    soul_content = args.get("soul_content", "")
+    if not soul_content:
+        filepath = args.get("file", "")
+        if filepath:
+            soul_content = open(filepath).read()
+    if not soul_content:
+        raise ValueError("system-prompt requires 'soul_content' or 'file' in args")
+
+    skills_data = args.get("skills", [])
+    skills = [
+        SkillInfo(
+            name=s["name"],
+            description=s.get("description", ""),
+            category=s.get("category", "general"),
+            platforms=s.get("platforms", []),
+            environments=s.get("environments", []),
+        )
+        for s in skills_data
+    ]
+
     tools_data = args.get("tools", [])
     tools = [
         ToolDescriptor(
@@ -77,14 +101,21 @@ def cmd_full_prompt(args: dict) -> str:
         )
         for t in tools_data
     ]
+
     memory = args.get("memory", None)
-    return build_full_system_prompt(soul_prompt, tools, memory)
+    return build_system_prompt(soul_content, skills, tools, memory)
 
 
 def cmd_extraction_prompt(args: dict) -> str:
     """Return the session extraction prompt template."""
     from self.prompts.reflection import extraction_prompt
     return extraction_prompt()
+
+
+def cmd_entity_extraction_prompt(args: dict) -> str:
+    """Return the entity extraction prompt for incubation memory indexing."""
+    from self.system_prompt import build_entity_extraction_prompt
+    return build_entity_extraction_prompt()
 
 
 def cmd_parse_command(args: dict) -> dict:
@@ -120,10 +151,11 @@ def cmd_match_prefix(args: dict) -> list:
 # ── Method registry ──────────────────────────────────────────────────
 
 METHODS = {
+    "system-prompt": cmd_system_prompt,
     "soul-prompt": cmd_soul_prompt,
     "skills-prompt": cmd_skills_prompt,
-    "full-prompt": cmd_full_prompt,
     "extraction-prompt": cmd_extraction_prompt,
+    "entity-extraction-prompt": cmd_entity_extraction_prompt,
     "parse-command": cmd_parse_command,
     "match-prefix": cmd_match_prefix,
 }

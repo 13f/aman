@@ -11,7 +11,6 @@ use kernel::interrupt::InterruptFlag;
 use context_manager::TokenBudgetPolicy;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest, LlmProvider};
-use kernel::prompt::PromptPipeline;
 use kernel::react::{
     self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine as _, ReActTurn,
     SoulSnapshot, StreamEvent, ToolDescriptor,
@@ -556,8 +555,6 @@ pub struct LlmReActEngine {
     tool_registry: Arc<ToolRegistry>,
     agent_registry: Arc<AgentRegistry>,
     bus: Arc<dyn EventBus>,
-    /// Prompt pipeline for building system prompts.
-    prompt_pipeline: Box<dyn PromptPipeline>,
     /// Per-tool timeout (ms), sourced from runtime.tool_timeout_sec.
     tool_timeout_ms: u64,
     /// Tool security config for path/network/command allowlist enforcement.
@@ -569,7 +566,6 @@ impl LlmReActEngine {
         tool_registry: Arc<ToolRegistry>,
         agent_registry: Arc<AgentRegistry>,
         bus: Arc<dyn EventBus>,
-        prompt_pipeline: Box<dyn PromptPipeline>,
         tool_timeout_ms: u64,
         security_config: Option<ToolSecurityConfig>,
     ) -> Self {
@@ -577,7 +573,6 @@ impl LlmReActEngine {
             tool_registry,
             agent_registry,
             bus,
-            prompt_pipeline,
             tool_timeout_ms,
             security_config,
         }
@@ -710,15 +705,16 @@ impl kernel::react::ReActEngine for LlmReActEngine {
 
             .await;
 
-        // Build the system prompt from soul + conversation history
-        let system_prompt = self
-            .prompt_pipeline
-            .build_system_prompt(
-                &ctx.soul_snapshot,
-                &ctx.agent_tools,
-                ctx.memory_context.as_deref(),
-            )
-            .await;
+        // Use the session-cached system prompt — no per-turn assembly.
+        // Soul + skills + tools + date were built once at session start.
+        // Memory context is appended inline when present (retrieved per-turn).
+        let system_prompt = if let Some(ref mem) = ctx.memory_context
+            && !mem.is_empty()
+        {
+            format!("{}\n\n## Retrieved Memories\n{}", ctx.soul_snapshot.system_prompt, mem)
+        } else {
+            ctx.soul_snapshot.system_prompt.clone()
+        };
 
         let cb = ctx.stream_cb.as_ref().map(Arc::clone);
         let model = ctx.model.clone();
@@ -1147,7 +1143,6 @@ impl AgentHarness {
         registry: Arc<AgentRegistry>,
         tool_registry: Arc<ToolRegistry>,
         bus: Arc<dyn EventBus>,
-        prompt_pipeline: Box<dyn PromptPipeline>,
         session_history: Box<dyn SessionHistoryStore>,
         budget_policy: Box<dyn TokenBudgetPolicy>,
         agent_router: Box<dyn AgentRouter>,
@@ -1161,7 +1156,6 @@ impl AgentHarness {
             Arc::clone(&tool_registry),
             Arc::clone(&registry),
             Arc::clone(&bus),
-            prompt_pipeline,
             tool_timeout_ms,
             security_config,
         );

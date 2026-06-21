@@ -8,8 +8,6 @@
 //! Python-first with transparent Rust fallback.
 
 use config::SelfConfig;
-use kernel::prompt::PromptPipeline;
-use kernel::react::{SoulSnapshot, ToolDescriptor};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, warn};
@@ -74,25 +72,37 @@ impl SelfBridge {
         self.call("skills-prompt", &args)
     }
 
-    /// Assemble the complete system prompt (soul + date + tools + memory).
-    pub fn build_full_prompt(
+    /// Build the complete system prompt (soul + skills + tools + date + memory).
+    ///
+    /// Calls `python3 bridge.py system-prompt` which uses the unified
+    /// `system_prompt.py` module. This is the primary entry point —
+    /// replaces the old multi-step soul-prompt + skills-prompt + full-prompt dance.
+    pub fn build_full_system_prompt(
         &self,
-        soul_prompt: &str,
+        soul_content: &str,
+        skills_json: &serde_json::Value,
         tools_json: &serde_json::Value,
         memory: Option<&str>,
     ) -> Option<String> {
         let args = serde_json::json!({
-            "soul_prompt": soul_prompt,
+            "soul_content": soul_content,
+            "skills": skills_json,
             "tools": tools_json,
             "memory": memory,
         });
-        self.call("full-prompt", &args)
+        self.call("system-prompt", &args)
     }
 
     /// Get the session extraction prompt template.
     pub fn extraction_prompt(&self) -> Option<String> {
         let args = serde_json::json!({});
         self.call("extraction-prompt", &args)
+    }
+
+    /// Get the entity extraction prompt for incubation memory indexing.
+    pub fn entity_extraction_prompt(&self) -> Option<String> {
+        let args = serde_json::json!({});
+        self.call("entity-extraction-prompt", &args)
     }
 
     /// Parse a slash-command string. Returns `(skill_name, user_input)`.
@@ -121,14 +131,6 @@ impl SelfBridge {
         let output = self.call("match-prefix", &args)?;
         let names: Vec<String> = serde_json::from_str(&output).ok()?;
         Some(names)
-    }
-
-    // ── Internal ─────────────────────────────────────────────────────
-
-    /// Build a `PromptPipeline` implementation backed by this bridge.
-    #[must_use]
-    pub fn prompt_pipeline(&self) -> SelfBridgePromptPipeline {
-        SelfBridgePromptPipeline { bridge: self.clone() }
     }
 
     // ── Internal ─────────────────────────────────────────────────────
@@ -182,78 +184,59 @@ impl SelfBridge {
     }
 }
 
-/// [`PromptPipeline`] backed by the Python self-module bridge.
+/// Build a complete system prompt without Python — pure Rust fallback.
 ///
-/// Replaces [`kernel::prompt::DefaultPromptPipeline`]. On bridge failure,
-/// falls back to a minimal inline assembly (soul + date + tools list).
-pub struct SelfBridgePromptPipeline {
-    bridge: SelfBridge,
-}
-
-#[async_trait::async_trait]
-impl PromptPipeline for SelfBridgePromptPipeline {
-    async fn build_system_prompt(
-        &self,
-        soul: &SoulSnapshot,
-        tools: &[ToolDescriptor],
-        memory: Option<&str>,
-    ) -> String {
-        let tools_json = serde_json::to_value(tools).unwrap_or_default();
-        if let Some(prompt) = self.bridge.build_full_prompt(
-            &soul.system_prompt,
-            &tools_json,
-            memory,
-        ) {
-            return prompt;
-        }
-        // Minimal inline fallback when the Python bridge is unavailable.
-        // Does NOT call any replaced Rust module (soul, formatting, etc.).
-        let mut parts: Vec<String> = Vec::new();
-        parts.push(soul.system_prompt.clone());
-        parts.push(format!("Current date: {}", kernel::prompt::current_date_string()));
-        if !tools.is_empty() {
-            let tool_list: Vec<String> = tools
-                .iter()
-                .map(|t| format!("- {}: {} (parameters: {})", t.name, t.description, t.parameters))
-                .collect();
-            parts.push(format!(
-                "\n## Available Tools\nYou can use these tools when responding:\n{}",
-                tool_list.join("\n")
-            ));
-            parts.push(
-                "\n## File Operations (safe, no shell)\n\
-                 - read(path): read file contents\n\
-                 - write(path, content): write file (auto-creates parent dirs)\n\
-                 - edit(file_path, old_string, new_string): replace exact matching text in file\n\
-                 - list(path): list directory entries\n\
-                 - find(pattern, base): search files by name (recursive, case-insensitive)\n\
-                 - grep(pattern, path, glob?): search file contents via ripgrep (multi-threaded)"
-                    .to_owned(),
-            );
-            parts.push(
-                "\nWhen you need to use a tool, respond with a JSON tool call in the format:\
-                 \n```tool_call\n{\"name\": \"tool_name\", \"arguments\": {...}}\n```"
-                    .to_owned(),
-            );
-            parts.push(
-                "\nImportant: If the user asks about current events, recent data, prices, dates, \
-                 or any time-sensitive information, use the web_search tool first rather than \
-                 relying on your training data. For example, search for \"recent\" or \"today\" \
-                 queries instead of answering from memory."
-                    .to_owned(),
-            );
-            parts.push(
-                "\nTo read the full content of a web page, fetch a specific URL, or download raw \
-                 data from an API endpoint, use the web_fetch tool. Typical flow: find URLs \
-                 via web_search, then read them via web_fetch."
-                    .to_owned(),
-            );
-        }
-        if let Some(mem) = memory
-            && !mem.is_empty()
-        {
-            parts.push(format!("\n## Retrieved Memories\n{mem}"));
-        }
-        parts.join("\n\n")
+/// Assembles: soul_prompt + skills_prompt + date + tools + file ops +
+/// tool format + web reminders. Used when the Python bridge is unavailable
+/// or disabled.
+pub fn build_system_prompt_fallback(
+    soul_prompt: &str,
+    skills_prompt: &str,
+    tools: &[kernel::react::ToolDescriptor],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    parts.push(soul_prompt.to_owned());
+    if !skills_prompt.is_empty() {
+        parts.push(skills_prompt.to_owned());
     }
+    parts.push(format!("Current date: {}", super::date_util::current_date_string()));
+    if !tools.is_empty() {
+        let tool_list: Vec<String> = tools
+            .iter()
+            .map(|t| format!("- {}: {} (parameters: {})", t.name, t.description, t.parameters))
+            .collect();
+        parts.push(format!(
+            "\n## Available Tools\nYou can use these tools when responding:\n{}",
+            tool_list.join("\n")
+        ));
+        parts.push(
+            "\n## File Operations (safe, no shell)\n\
+             - read(path): read file contents\n\
+             - write(path, content): write file (auto-creates parent dirs)\n\
+             - edit(file_path, old_string, new_string): replace exact matching text in file\n\
+             - list(path): list directory entries\n\
+             - find(pattern, base): search files by name (recursive, case-insensitive)\n\
+             - grep(pattern, path, glob?): search file contents via ripgrep (multi-threaded)"
+                .to_owned(),
+        );
+        parts.push(
+            "\nWhen you need to use a tool, respond with a JSON tool call in the format:\
+             \n```tool_call\n{\"name\": \"tool_name\", \"arguments\": {...}}\n```"
+                .to_owned(),
+        );
+        parts.push(
+            "\nImportant: If the user asks about current events, recent data, prices, dates, \
+             or any time-sensitive information, use the web_search tool first rather than \
+             relying on your training data. For example, search for \"recent\" or \"today\" \
+             queries instead of answering from memory."
+                .to_owned(),
+        );
+        parts.push(
+            "\nTo read the full content of a web page, fetch a specific URL, or download raw \
+             data from an API endpoint, use the web_fetch tool. Typical flow: find URLs \
+             via web_search, then read them via web_fetch."
+                .to_owned(),
+        );
+    }
+    parts.join("\n\n")
 }

@@ -23,7 +23,6 @@ pub mod event;
 pub mod fs;
 pub mod llm;
 pub mod memory;
-pub mod prompt;
 pub mod redactor;
 pub mod router;
 pub mod sanitizer;

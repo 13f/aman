@@ -45,6 +45,7 @@ pub struct IncubationRunner {
     incubation_config: OnceLock<IncubationConfig>,
     global_bus: OnceLock<Arc<dyn EventBus>>,
     memory_llm: OnceLock<MemoryLlmConfig>,
+    self_bridge: OnceLock<super::self_bridge::SelfBridge>,
 }
 
 impl IncubationRunner {
@@ -54,6 +55,7 @@ impl IncubationRunner {
             incubation_config: OnceLock::new(),
             global_bus: OnceLock::new(),
             memory_llm: OnceLock::new(),
+            self_bridge: OnceLock::new(),
         }
     }
 
@@ -71,6 +73,10 @@ impl IncubationRunner {
 
     pub fn set_memory_llm(&self, config: MemoryLlmConfig) {
         let _ = self.memory_llm.set(config);
+    }
+
+    pub fn set_self_bridge(&self, bridge: super::self_bridge::SelfBridge) {
+        let _ = self.self_bridge.set(bridge);
     }
 }
 
@@ -134,6 +140,13 @@ impl EventHandler for IncubationRunner {
         let registry_clone = Arc::clone(registry);
         let bus = self.global_bus.get().cloned();
 
+        // Get entity extraction prompt from Python bridge (no hardcoded Rust prompts).
+        let extraction_prompt = self
+            .self_bridge
+            .get()
+            .and_then(|b: &super::self_bridge::SelfBridge| b.entity_extraction_prompt())
+            .unwrap_or_default();
+
         let spawned = incubation_manager
             .spawn(
                 format!("incubation:{agent_id_owned}"),
@@ -144,6 +157,7 @@ impl EventHandler for IncubationRunner {
                         memory_llm_cfg.as_ref(),
                         &registry_clone,
                         bus.as_deref(),
+                        &extraction_prompt,
                     )
                     .await;
                 },
@@ -170,6 +184,7 @@ async fn run_phases(
     memory_llm: Option<&MemoryLlmConfig>,
     registry: &AgentRegistry,
     global_bus: Option<&dyn EventBus>,
+    extraction_prompt: &str,
 ) -> AmanResult<()> {
     let started = Instant::now();
 
@@ -248,6 +263,7 @@ async fn run_phases(
                 memory_llm,
                 &unique_contents,
                 &*provider,
+                extraction_prompt,
             )
             .await
         } else {
@@ -517,6 +533,7 @@ async fn extract_entities_batch(
     memory_llm: Option<&MemoryLlmConfig>,
     contents: &[&str],
     provider: &dyn MemoryProvider,
+    system_prompt: &str,
 ) -> Vec<Vec<String>> {
     if contents.is_empty() {
         return Vec::new();
@@ -531,15 +548,6 @@ async fn extract_entities_batch(
     let model = memory_llm
         .map(|c| c.model.as_str())
         .unwrap_or("default");
-
-    let system_prompt = "\
-        You are an entity extraction system. Extract named entities \
-        (people, places, organizations, concepts, technical terms, product names, \
-        project names, tool names) from each content block below. \
-        Return ONLY a JSON object where keys are content indices (\"1\", \"2\", etc.) \
-        and values are arrays of entity strings. \
-        Example: {\"1\": [\"Neural Networks\", \"Yann LeCun\"], \"2\": [\"Rust\", \"Actix-Web\"]} \
-        If no entities are found in a block, return an empty array.";
 
     let req = LlmChatRequest {
         model: model.to_owned(),

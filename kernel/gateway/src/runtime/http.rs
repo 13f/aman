@@ -154,7 +154,7 @@ fn build_router(runtime: Arc<AgentRuntime>, plugin_routes: Vec<axum::Router<()>>
         .route("/soul/info", get(soul_info))
         .route("/soul/raw", get(soul_raw))
         .route("/soul/update", post(soul_update))
-        .route("/soul/system-prompt", get(soul_system_prompt))
+        .route("/system-prompt", get(get_system_prompt))
         .route("/capabilities", get(capability_list))
         .route("/dlq/depth", get(dlq_depth))
         .route("/debug/metrics", get(debug_metrics))
@@ -2909,29 +2909,61 @@ async fn chat_session_send(
         .unwrap_or("aman");
     runtime.agent_registry().set_system_state(chat_agent_id, AgentSystemState::Chatting).await;
 
-    // Build system prompt: soul identity + skill index.
-    // Cached per session via SessionManager so LLM prompt caching stays effective.
-    // Phase 3: Python self-module bridge only (no Rust fallback).
+    // Build the complete system prompt once per session: soul + skills + tools + date.
+    // Cached via SessionManager so LLM prompt caching stays effective across turns.
+    // No per-turn reassembly — execute_turn() reads the cached prompt directly.
     let combined_prompt = {
         let llm_skills = runtime.llm_skills();
         let self_bridge = runtime.self_bridge().clone();
+        let agent_registry = runtime.agent_registry();
+        let tool_registry = runtime.tools();
+        let agent_id = chat_agent_id.to_owned();
         runtime.session_manager().get_system_prompt(&id, || {
             if let Some(soul_runtime) = runtime.soul_runtime() {
                 let soul = soul_runtime.current_soul();
+                let skills_json = serde_json::to_value(&*llm_skills).unwrap_or_default();
+
+                // Build tool descriptors for this agent
+                let tool_descriptors: Vec<kernel::react::ToolDescriptor> = tool_registry
+                    .list_tools()
+                    .into_iter()
+                    .filter(|name| {
+                        !name.starts_with("llm_") && !name.starts_with("llm_provider_")
+                    })
+                    .filter(|name| {
+                        pollster::block_on(agent_registry.tool_allowed(&agent_id, name))
+                    })
+                    .filter_map(|name| tool_registry.get(&name))
+                    .map(|tool| kernel::react::ToolDescriptor {
+                        name: tool.name().to_owned(),
+                        description: tool.description().to_owned(),
+                        parameters: serde_json::to_value(tool.parameters()).unwrap_or_default(),
+                    })
+                    .collect();
+                let tools_json = serde_json::to_value(&tool_descriptors).unwrap_or_default();
+
+                // Python-first: unified system_prompt.py
+                if let Some(prompt) = self_bridge.build_full_system_prompt(
+                    &soul.raw,
+                    &skills_json,
+                    &tools_json,
+                    None, // memory is retrieved per-turn, injected later
+                ) {
+                    return prompt;
+                }
+
+                // Rust fallback when Python is unavailable
                 let soul_prompt = self_bridge
                     .build_soul_prompt(&soul.raw)
                     .unwrap_or_else(|| soul.raw.clone());
-
-                let skills_json = serde_json::to_value(&*llm_skills).unwrap_or_default();
                 let skills_prompt = self_bridge
                     .build_skills_prompt(&skills_json)
                     .unwrap_or_default();
-
-                if skills_prompt.is_empty() {
-                    soul_prompt
-                } else {
-                    format!("{}{}", soul_prompt, skills_prompt)
-                }
+                super::self_bridge::build_system_prompt_fallback(
+                    &soul_prompt,
+                    &skills_prompt,
+                    &tool_descriptors,
+                )
             } else {
                 String::new()
             }
@@ -3321,14 +3353,24 @@ async fn events_recent(
 
 // ── Soul system prompt ─────────────────────────────────────────────────
 
-async fn soul_system_prompt(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+async fn get_system_prompt(State(runtime): State<Arc<AgentRuntime>>) -> Response {
     let Some(soul) = runtime.soul_runtime() else {
         return ApiError::not_found("no soul configured".to_owned(),).into_response();
     };
     let soul = soul.current_soul();
+    let skills_json = serde_json::to_value(&*runtime.llm_skills()).unwrap_or_default();
+    let tools_json = serde_json::json!([]);
     let prompt = runtime.self_bridge()
-        .build_soul_prompt(&soul.raw)
-        .unwrap_or_else(|| soul.raw.clone());
+        .build_full_system_prompt(&soul.raw, &skills_json, &tools_json, None)
+        .unwrap_or_else(|| {
+            let soul_prompt = runtime.self_bridge()
+                .build_soul_prompt(&soul.raw)
+                .unwrap_or_else(|| soul.raw.clone());
+            let skills_prompt = runtime.self_bridge()
+                .build_skills_prompt(&skills_json)
+                .unwrap_or_default();
+            super::self_bridge::build_system_prompt_fallback(&soul_prompt, &skills_prompt, &[])
+        });
     (StatusCode::OK, Json(json!({ "system_prompt": prompt }))).into_response()
 }
 

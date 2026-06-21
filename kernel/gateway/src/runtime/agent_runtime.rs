@@ -910,7 +910,6 @@ impl AgentRuntimeBuilder {
             Arc::clone(&agent_registry),
             Arc::clone(&tools),
             Arc::clone(&bus),
-            Box::new(self_bridge.prompt_pipeline()),
             Box::new(InMemorySessionHistory::new()),
             Box::new(context_manager::DefaultTokenBudgetPolicy::new()),
             Box::new(super::agent_harness::FirstEnabledAgentRouter),
@@ -1135,6 +1134,7 @@ impl AgentRuntimeBuilder {
         if let Some(cfg) = memory_llm_for_incubation {
             incubation_runner.set_memory_llm(cfg);
         }
+        incubation_runner.set_self_bridge(self_bridge.clone());
 
         {
             struct IncubationSub {
@@ -1844,13 +1844,19 @@ impl AgentRuntimeBuilder {
                 };
                 let model = agent.descriptor.model.clone();
 
-                // Build SoulSnapshot from current soul (via Python self bridge).
+                // Build SoulSnapshot with the complete system prompt (soul + skills + tools + date).
                 let soul_snapshot = self.soul_runtime.as_ref()
                     .map(|sr| {
                         let soul = sr.current_soul();
+                        let skills_json = serde_json::json!([]);
+                        let tools_json = serde_json::json!([]);
                         let prompt = self.self_bridge
-                            .build_soul_prompt(&soul.raw)
-                            .unwrap_or_else(|| soul.raw.clone());
+                            .build_full_system_prompt(&soul.raw, &skills_json, &tools_json, None)
+                            .unwrap_or_else(|| {
+                                self.self_bridge
+                                    .build_soul_prompt(&soul.raw)
+                                    .unwrap_or_else(|| soul.raw.clone())
+                            });
                         kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
                     })
                     .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""));

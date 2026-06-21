@@ -2,18 +2,94 @@
 //!
 //! Uses the LLM configured via `memory.llm` in aman config. Makes
 //! OpenAI-compatible chat completion calls via `cognitive_llm`. No provider-specific logic.
+//!
+//! All prompt text lives in `predefined/plugins/info-hub/prompts.py` —
+//! no hardcoded prompt strings in Rust.
 
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::Value;
-use tracing::debug;
+use std::process::Command;
+use std::sync::OnceLock;
+use tracing::{debug, warn};
 
 // Re-export LLM API primitives from the shared crate.
 pub use cognitive_llm::simple::LlmApiConfig as LlmConfig;
 pub use cognitive_llm::simple::parse_json_response;
 use cognitive_llm::simple::SimpleLlmClient;
 
+#[allow(dead_code)]
 const DESCRIPTION_MAX_LEN: usize = 384;
+
+// ── Prompt bridge (calls prompts.py instead of hardcoding) ──────────────
+
+/// Global bridge config — set once during plugin init.
+static PROMPT_BRIDGE: OnceLock<PromptBridge> = OnceLock::new();
+
+struct PromptBridge {
+    python: String,
+    script: String,
+}
+
+impl PromptBridge {
+    fn call(&self, method: &str, args: &serde_json::Value) -> Option<(String, String)> {
+        let args_str = args.to_string();
+        let result = Command::new(&self.python)
+            .arg(&self.script)
+            .arg(method)
+            .arg(&args_str)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+
+        match result {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parsed: serde_json::Value = serde_json::from_str(&stdout).ok()?;
+                let system = parsed.get("system")?.as_str()?.to_owned();
+                let user = parsed.get("user")?.as_str()?.to_owned();
+                debug!(method, "prompts.py call succeeded");
+                Some((system, user))
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                warn!(
+                    method,
+                    stderr = %stderr.trim(),
+                    "prompts.py call failed, using minimal fallback"
+                );
+                None
+            }
+            Err(e) => {
+                warn!(
+                    method,
+                    error = %e,
+                    "failed to spawn prompts.py, using minimal fallback"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Initialize the prompt bridge. Called once during plugin startup.
+pub fn init_prompt_bridge(python: String, script: String) {
+    let bridge = PromptBridge { python, script };
+    let _ = PROMPT_BRIDGE.set(bridge);
+}
+
+/// Call the Python prompts module. Falls back to an empty system prompt on failure.
+fn build_prompt(method: &str, args: &serde_json::Value) -> (String, String) {
+    if let Some(bridge) = PROMPT_BRIDGE.get()
+        && let Some((system, user)) = bridge.call(method, args)
+    {
+        return (system, user);
+    }
+    // Minimal fallback — the LLM can still infer the task from the user message format.
+    warn!(method, "PromptBridge unavailable, using empty system prompt");
+    (String::new(), String::new())
+}
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -106,221 +182,48 @@ pub async fn chat_completion_with_retries(
 pub fn build_scoring_prompt(
     articles: &[ArticleInput],
 ) -> (String, String) {
-    let system = "你是一个技术内容策展人，正在为一份面向技术爱好者的每日精选摘要筛选文章。".to_string();
-
-    let articles_list = articles
+    let articles_json: Vec<serde_json::Value> = articles
         .iter()
-        .map(|a| {
-            let tag_line = if !a.category.is_empty() || !a.keywords.is_empty() {
-                let kw_str = a.keywords.join(", ");
-                if !a.category.is_empty() && !kw_str.is_empty() {
-                    format!("[{} | {}] ", a.category, kw_str)
-                } else if !a.category.is_empty() {
-                    format!("[{}] ", a.category)
-                } else {
-                    format!("[{}] ", kw_str)
-                }
-            } else {
-                String::new()
-            };
-            format!(
-                "Index {}: {tag_line}[{source}] {title}\n{desc}",
-                a.index,
-                source = a.source_name,
-                title = a.title,
-                desc = truncate_description(&a.description, DESCRIPTION_MAX_LEN),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-
-    let user = format!(
-        r#"请对以下文章进行三个维度的评分（1-10 整数，10 分最高）。
-
-每篇文章前的 [category | keywords] 标签已预先标注，评分时请结合这些标签判断文章在所属领域内的价值。
-
-## 评分维度
-
-### 1. 相关性 (relevance) - 对技术/编程/AI/互联网从业者的价值
-- 10: 所有技术人都应该知道的重大事件/突破
-- 7-9: 对大部分技术从业者有价值
-- 4-6: 对特定技术领域有价值
-- 1-3: 与技术行业关联不大
-
-### 2. 质量 (quality) - 文章本身的深度和写作质量
-- 10: 深度分析，原创洞见，引用丰富
-- 7-9: 有深度，观点独到
-- 4-6: 信息准确，表达清晰
-- 1-3: 浅尝辄止或纯转述
-
-### 3. 时效性 (timeliness) - 当前是否值得阅读
-- 10: 正在发生的重大事件/刚发布的重要工具
-- 7-9: 近期热点相关
-- 4-6: 常青内容，不过时
-- 1-3: 过时或无时效价值
-
-## 待评分文章
-
-{articles_list}
-
-请严格按 JSON 格式返回，不要包含 markdown 代码块或其他文字：
-{{
-  "results": [
-    {{
-      "index": 0,
-      "relevance": 8,
-      "quality": 7,
-      "timeliness": 9
-    }}
-  ]
-}}"#
-    );
-
-    (system, user)
+        .map(|a| serde_json::to_value(a).unwrap_or_default())
+        .collect();
+    let args = serde_json::json!({"articles": articles_json});
+    build_prompt("scoring", &args)
 }
 
 pub fn build_tagging_prompt(
     articles: &[ArticleInput],
 ) -> (String, String) {
-    let system = "你是一个技术内容分类专家，负责快速识别文章所属的行业/领域。".to_string();
-
-    let articles_list = articles
+    let articles_json: Vec<serde_json::Value> = articles
         .iter()
-        .map(|a| {
-            format!(
-                "Index {}: [{}] {}\n{}",
-                a.index,
-                a.source_name,
-                a.title,
-                truncate_description(&a.description, DESCRIPTION_MAX_LEN)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-
-    let user = format!(
-        r#"请为每篇文章分配一个分类标签，并提取 1-3 个关键词。
-
-## 分类标签
-根据文章内容自由选择一个最合适的分类标签（用英文，简短，如 "ai-ml", "security", "engineering", "tools", "opinion", "linux", "rust", "database", "frontend", "career" 等，也可以自创更精确的分类）。
-
-## 关键词提取
-提取 1-3 个最能代表文章主题的关键词（用英文，简短，如 "Rust", "LLM", "database", "performance"）。
-
-## 待分类文章
-
-{articles_list}
-
-请严格按 JSON 格式返回，不要包含 markdown 代码块或其他文字：
-{{
-  "results": [
-    {{
-      "index": 0,
-      "category": "engineering",
-      "keywords": ["Rust", "compiler"]
-    }}
-  ]
-}}"#
-    );
-
-    (system, user)
+        .map(|a| serde_json::to_value(a).unwrap_or_default())
+        .collect();
+    let args = serde_json::json!({"articles": articles_json});
+    build_prompt("tagging", &args)
 }
 
 pub fn build_summary_prompt(
     articles: &[ArticleInput],
     lang: &str,
 ) -> (String, String) {
-    let system = "你是一个技术内容摘要专家。".to_string();
-
-    let articles_list = articles
+    let articles_json: Vec<serde_json::Value> = articles
         .iter()
-        .map(|a| {
-            format!(
-                "Index {}: [{}] {}\n{}",
-                a.index,
-                a.source_name,
-                a.title,
-                truncate_description(&a.description, 600)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-
-    let lang_instruction = if lang == "zh" {
-        "请用中文撰写摘要和推荐理由。如果原文是英文，请翻译为中文。标题翻译也用中文。"
-    } else {
-        "Write summaries, reasons, and title translations in English."
-    };
-
-    let user = format!(
-        r#"请为以下文章完成三件事：
-
-1. **中文标题** (title_zh): 将英文标题翻译成自然的中文。如果原标题已经是中文则保持不变。
-2. **摘要** (summary): 4-6 句话的结构化摘要，让读者不点进原文也能了解核心内容。包含：
-   - 文章讨论的核心问题或主题（1 句）
-   - 关键论点、技术方案或发现（2-3 句）
-   - 结论或作者的核心观点（1 句）
-3. **推荐理由** (reason): 1 句话说明"为什么值得读"，区别于摘要（摘要说"是什么"，推荐理由说"为什么"）。
-
-{lang_instruction}
-
-摘要要求：
-- 直接说重点，不要用"本文讨论了..."、"这篇文章介绍了..."这种开头
-- 包含具体的技术名词、数据、方案名称或观点
-- 保留关键数字和指标（如性能提升百分比、用户数、版本号等）
-- 如果文章涉及对比或选型，要点出比较对象和结论
-- 目标：读者花 30 秒读完摘要，就能决定是否值得花 10 分钟读原文
-
-## 待摘要文章
-
-{articles_list}
-
-请严格按 JSON 格式返回：
-{{
-  "results": [
-    {{
-      "index": 0,
-      "title_zh": "中文翻译的标题",
-      "summary": "摘要内容...",
-      "reason": "推荐理由..."
-    }}
-  ]
-}}"#
-    );
-
-    (system, user)
+        .map(|a| serde_json::to_value(a).unwrap_or_default())
+        .collect();
+    let args = serde_json::json!({"articles": articles_json, "lang": lang});
+    build_prompt("summary", &args)
 }
 
 pub fn build_highlights_prompt(
     articles_json: &str,
     lang: &str,
 ) -> (String, String) {
-    let system = "你是一个技术趋势分析专家。".to_string();
-    let lang_note = if lang == "zh" {
-        "用中文回答。"
-    } else {
-        "Write in English."
-    };
-
-    let user = format!(
-        r#"根据以下今日精选技术文章列表，写一段 3-5 句话的"今日看点"总结。
-要求：
-- 提炼出今天技术圈的 2-3 个主要趋势或话题
-- 不要逐篇列举，要做宏观归纳
-- 风格简洁有力，像新闻导语
-{lang_note}
-
-文章列表：
-{articles_json}
-
-直接返回纯文本总结，不要 JSON，不要 markdown 格式。"#
-    );
-
-    (system, user)
+    let args = serde_json::json!({"articles_json": articles_json, "lang": lang});
+    build_prompt("highlights", &args)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 fn truncate_description(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         return text.to_string();

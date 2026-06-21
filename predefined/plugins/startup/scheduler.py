@@ -8,6 +8,7 @@ Tasks:
   - trend_watcher: weekly trend scan for tracked niches
   - rat_reminder: daily check for overdue RAT experiments
   - market_monitor: weekly competitor landscape refresh
+  - burnout_watcher: weekly burnout risk assessment
 """
 
 from __future__ import annotations
@@ -276,6 +277,70 @@ def make_market_monitor(
     return run
 
 
+def make_burnout_watcher(
+    store: Any,
+    send_notification_fn: Callable,
+) -> Callable[[], None]:
+    """Run a weekly burnout risk assessment across all ideas.
+
+    Uses direct function calls (not HTTP) since burnout_early_warning is a
+    pure Python module with no gateway dependencies beyond LlmClient.
+    """
+    def run() -> None:
+        if store is None:
+            return
+        _log("BurnoutWatcher: assessing...")
+        try:
+            from skills.burnout_early_warning import detect_burnout_risk
+
+            ideas = store.list_ideas()
+            if not ideas:
+                _log("BurnoutWatcher: no ideas to assess")
+                return
+
+            # Gather score histories
+            scores = {}
+            for idea in ideas:
+                slug = idea.get("slug", "")
+                if slug:
+                    history = store.get_score_history(slug) if store else []
+                    if history:
+                        scores[slug] = history
+
+            decisions = store.list_decision_entries() if store else []
+            latest_ikigai = store.get_latest_ikigai_check() if store else None
+
+            result = detect_burnout_risk(
+                ideas,
+                scores_history=scores,
+                decisions=decisions,
+                latest_ikigai=latest_ikigai,
+                store=store,
+            )
+
+            if result and store:
+                store.store_burnout_check(result)
+                risk_level = result.get("risk_level", "low")
+                risk_score = result.get("risk_score", 0)
+                _log(f"BurnoutWatcher: {risk_level} risk (score: {risk_score})")
+
+                if risk_level in ("high", "critical"):
+                    interpretation = result.get("interpretation", "")
+                    recommendations = result.get("recommendations", [])
+                    top_rec = recommendations[0] if recommendations else "Review your burnout assessment."
+                    send_notification_fn(
+                        title=f"Burnout Risk: {risk_level.upper()}",
+                        message=f"Risk score: {risk_score}/100.\n{interpretation}\n\n"
+                                f"Top recommendation: {top_rec}",
+                        severity="warning",
+                        category="plugin",
+                    )
+        except Exception as e:
+            _log(f"BurnoutWatcher: failed: {e}")
+
+    return run
+
+
 # ---------------------------------------------------------------------------
 # Scheduler lifecycle
 # ---------------------------------------------------------------------------
@@ -301,6 +366,10 @@ class StartupScheduler:
         self.tasks.append(ScheduledTask(
             "market_monitor", self.WEEKLY,
             make_market_monitor(store, send_notification_http, agent_id),
+        ))
+        self.tasks.append(ScheduledTask(
+            "burnout_watcher", self.WEEKLY,
+            make_burnout_watcher(store, send_notification_http),
         ))
 
     def start(self) -> None:

@@ -79,6 +79,7 @@ _SKILL_PROMPTS = {
     "feedback": "feedback_synthesis",
     "journal": "decision_journal",
     "ikigai": "ikigai",
+    "burnout": "burnout_early_warning",
     "what_if": "what_if",
     "trends": "trend_analysis",
 }
@@ -133,10 +134,17 @@ def _render_startup_index() -> dict:
 
     cards_html = "\n".join(idea_cards) if idea_cards else '<div class="empty">No ideas yet. Start by evaluating one.</div>'
 
+    # Build JSON data for What-If idea picker (works even when grid is hidden)
+    ideas_json = json.dumps([
+        {"slug": idea.get("slug", ""), "label": idea.get("slug", "")}
+        for idea in ideas
+    ])
+
     tmpl = _load_template("startup-index.html")
     html = tmpl.substitute(
         idea_cards=cards_html,
         idea_count=str(len(ideas)),
+        ideas_json=ideas_json,
     )
     return _html_response(html)
 
@@ -948,12 +956,32 @@ def handle_route(method: str, path: str, query: Optional[str],
         return _handle_reflection_skill("journal")
     if method == "POST" and clean == "/startup/api/reflection/ikigai":
         return _handle_reflection_skill("ikigai")
+    if method == "POST" and clean == "/startup/api/reflection/burnout":
+        return _handle_reflection_skill("burnout")
 
     # ── AI-Native ──────────────────────────────────────────────────
     m_whatif = re.match(r"/startup/api/ideas/([^/]+)/what-if$", clean)
     if m_whatif and method == "POST":
         body_json = _parse_body(body)
         return _handle_what_if(m_whatif.group(1), body_json)
+
+    # ── UI pages (GET) for reflection / strategy / execution ────────
+    # Render the index page so sidebar nav is available; user clicks
+    # the module to trigger inline action or navigates properly.
+    _ui_pages = [
+        "/startup/reflection/journal",
+        "/startup/reflection/ikigai",
+        "/startup/reflection/burnout",
+        "/startup/ai-native/what-if",
+        "/startup/strategy/landing-page",
+        "/startup/strategy/gtm",
+        "/startup/strategy/pricing-page",
+        "/startup/strategy/outreach",
+        "/startup/execution/mvp-scope",
+        "/startup/execution/feedback",
+    ]
+    if method == "GET" and clean in _ui_pages:
+        return _render_startup_index()
 
     # ── Incubation bridge (for Gateway IncubationRunner) ──────────────
     if method == "GET" and clean == "/startup/api/incubation-data":
@@ -1240,14 +1268,80 @@ def _handle_reflection_skill(skill_type: str) -> dict:
             lambda: audit_decisions([e for e in entries], llm=llm), None, [])
     elif skill_type == "ikigai":
         scores = {}
+        competitor_data = {}
         for idea in ideas:
             slug = idea.get("slug", "")
             if slug:
                 scores[slug] = _store.get_score_history(slug) if _store else []
+                comp = _store.get_competitor_analysis(slug) if _store else None
+                if comp:
+                    competitor_data[slug] = comp
+        market_insights = _store.get_market_insights() if _store else []
+        decisions = _store.list_decision_entries() if _store else []
         result = _run_or_fallback(f"[reflect] ikigai",
-            lambda: check_ikigai(ideas, scores_history=scores, llm=llm), None, [])
+            lambda: check_ikigai(
+                ideas,
+                scores_history=scores,
+                llm=llm,
+                competitor_data=competitor_data if competitor_data else None,
+                market_insights=market_insights if market_insights else None,
+                decisions=decisions if decisions else None,
+            ), None, [])
         if result and _store:
             _store.store_ikigai_check(result)
+
+            # Auto-trigger burnout check if high-severity contradictions found
+            contradictions = result.get("contradictions", [])
+            detected = result.get("detected_contradictions", [])
+            all_c = contradictions + detected
+            high_sev = [c for c in all_c if isinstance(c, dict) and c.get("severity") == "high"]
+            if high_sev:
+                _log(f"[reflect] ikigai: {len(high_sev)} high-severity contradictions → auto burnout check")
+                try:
+                    from skills import detect_burnout_risk
+                    burnout_result = detect_burnout_risk(
+                        ideas,
+                        scores_history=scores,
+                        decisions=decisions if decisions else None,
+                        latest_ikigai=result,
+                        store=_store,
+                        llm=llm,
+                    )
+                    if burnout_result and _store:
+                        _store.store_burnout_check(burnout_result)
+                        risk_level = burnout_result.get("risk_level", "low")
+                        if risk_level in ("high", "critical"):
+                            send_notification("aman.emit_event", {
+                                "event_type": "startup:burnout_alert",
+                                "payload": {
+                                    "risk_level": risk_level,
+                                    "risk_score": burnout_result.get("risk_score", 0),
+                                    "interpretation": burnout_result.get("interpretation", ""),
+                                },
+                            })
+                            _log(f"[reflect] burnout alert: {risk_level} risk (score: {burnout_result.get('risk_score', 0)})")
+                except Exception as e:
+                    _log(f"[reflect] auto-burnout check failed: {e}")
+    elif skill_type == "burnout":
+        from skills import detect_burnout_risk
+        scores = {}
+        for idea in ideas:
+            slug = idea.get("slug", "")
+            if slug:
+                scores[slug] = _store.get_score_history(slug) if _store else []
+        decisions = _store.list_decision_entries() if _store else []
+        latest_ikigai = _store.get_latest_ikigai_check() if _store else None
+        result = _run_or_fallback(f"[reflect] burnout",
+            lambda: detect_burnout_risk(
+                ideas,
+                scores_history=scores,
+                decisions=decisions if decisions else None,
+                latest_ikigai=latest_ikigai,
+                store=_store,
+                llm=llm,
+            ), None, [])
+        if result and _store:
+            _store.store_burnout_check(result)
     else:
         return _json_response({"error": f"unknown reflection skill: {skill_type}"}, 400)
 

@@ -17,6 +17,7 @@ SurrealDB document types (all in namespace "startup", database "ideas"):
     feedback_synthesis:{slug}       — user feedback analysis
     decision_entry:{id}             — founder decision journal
     ikigai_check:{id}               — ikigai alignment results
+    burnout_check:{id}              — burnout risk assessments
 
 Graph edges (RELATE):
     idea:{slug} -> competes_with -> competitor:{name}
@@ -403,12 +404,86 @@ class StartupStore:
         check_id = f"ikigai-{int(datetime.now().timestamp())}"
         return self._create_or_update("ikigai_check", check_id, {
             "alignment_score": check.get("alignment_score", 0),
+            "quadrant_scores": check.get("quadrant_scores", {}),
+            "dominant_quadrant": check.get("dominant_quadrant", ""),
             "overlapping_quadrants": check.get("overlapping_quadrants", []),
             "missing_quadrant": check.get("missing_quadrant", ""),
-            "contradiction": check.get("contradiction", ""),
-            "suggested_adjustment": check.get("suggested_adjustment", ""),
+            "contradictions": check.get("contradictions", []),
+            "detected_contradictions": check.get("detected_contradictions", []),
+            "trend": check.get("trend", ""),
+            "recommendation": check.get("recommendation", ""),
+            "ikigai_summary": check.get("ikigai_summary", ""),
+            "profile": check.get("profile", {}),
+            "ideas_analyzed": check.get("ideas_analyzed", 0),
             "checked_at": now,
         })
+
+    def get_ikigai_history(self, limit: int = 10) -> list:
+        """Get ikigai check history for trend analysis (newest first)."""
+        return self._unwrap(self.db.query(f"""
+            SELECT * FROM ikigai_check
+            ORDER BY checked_at DESC
+            LIMIT {limit}
+        """))
+
+    def get_latest_ikigai_check(self) -> Optional[dict]:
+        """Return the most recent ikigai check, if any."""
+        history = self.get_ikigai_history(limit=1)
+        return history[0] if history else None
+
+    # ── Burnout Early Warning ───────────────────────────────────────
+
+    def store_burnout_check(self, check: dict) -> dict:
+        """Store a burnout risk assessment result (upsert by id)."""
+        now = datetime.now(timezone.utc).isoformat()
+        check_id = f"burnout-{int(datetime.now().timestamp())}"
+        return self._create_or_update("burnout_check", check_id, {
+            "risk_score": check.get("risk_score", 0),
+            "risk_level": check.get("risk_level", "low"),
+            "signals": check.get("signals", []),
+            "productivity_decline_pct": check.get("productivity_decline_pct"),
+            "decision_quality_trend": check.get("decision_quality_trend"),
+            "ikigai_contradiction_count": check.get("ikigai_contradiction_count", 0),
+            "pursuit_stuck_ideas": check.get("pursuit_stuck_ideas", []),
+            "health_anomalies": check.get("health_anomalies", []),
+            "recommendations": check.get("recommendations", []),
+            "risk_factors": check.get("risk_factors", []),
+            "protective_factors": check.get("protective_factors", []),
+            "interpretation": check.get("interpretation", ""),
+            "burnout_narrative": check.get("burnout_narrative", ""),
+            "profile": check.get("profile", {}),
+            "ideas_analyzed": check.get("ideas_analyzed", 0),
+            "checked_at": now,
+        })
+
+    def get_burnout_history(self, limit: int = 10) -> list:
+        """Get burnout check history for trend analysis (newest first)."""
+        return self._unwrap(self.db.query(f"""
+            SELECT * FROM burnout_check
+            ORDER BY checked_at DESC
+            LIMIT {limit}
+        """))
+
+    def get_latest_burnout_check(self) -> Optional[dict]:
+        """Return the most recent burnout check, if any."""
+        history = self.get_burnout_history(limit=1)
+        return history[0] if history else None
+
+    def get_health_signals(self) -> list:
+        """Read health signals from the DailyLifeSystem bridge file.
+
+        Returns an empty list if the file does not exist (graceful fallback
+        for when health data integration is not yet wired up).
+        """
+        import json
+        health_file = os.path.expanduser("~/.aman/lifelight/health_signals.json")
+        if not os.path.isfile(health_file):
+            return []
+        try:
+            with open(health_file) as f:
+                return json.load(f)
+        except Exception:
+            return []
 
     # ── Cross-idea Queries ─────────────────────────────────────────
 

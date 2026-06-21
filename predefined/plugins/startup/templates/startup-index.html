@@ -8,7 +8,7 @@
   <script src="/api/v1/startup/static/startup.js" defer></script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
 </head>
-<body x-data="startupNav()" class="startup-layout">
+<body x-data="startupNav()" x-init="restoreCache()" class="startup-layout">
 
   <!-- Left Sidebar Navigation -->
   <nav class="sidebar">
@@ -85,15 +85,402 @@
     </div>
 
     <!-- Default Content: Idea Grid -->
-    <div class="content-header">
-      <h1>Your Ideas</h1>
-      <span class="idea-total" x-text="ideaCount + ' total'"></span>
-    </div>
+    <template x-if="!showResultPanel">
+      <div>
+        <div class="content-header">
+          <h1>Your Ideas</h1>
+          <span class="idea-total" x-text="ideaCount + ' total'"></span>
+        </div>
 
-    <div class="idea-grid" id="idea-grid">
-      $idea_cards
-    </div>
+        <div class="idea-grid" id="idea-grid">
+          $idea_cards
+        </div>
+      </div>
+    </template>
+
+    <!-- Reflection / AI-Native Result Panel -->
+    <template x-if="showResultPanel">
+      <div class="result-panel">
+        <div class="content-header">
+          <button class="back-link" @click="closeResultPanel()">&larr; Back to Ideas</button>
+          <h1 x-text="resultPanelTitle"></h1>
+          <button class="btn-refresh" x-show="isReflectionCached"
+                  @click="refreshReflection()" title="Re-run analysis">
+            &#x21bb; Refresh
+          </button>
+        </div>
+
+        <!-- Loading -->
+        <div x-show="resultPanelLoading" class="result-loading">
+          <div class="spinner"></div>
+          <p>Running analysis across all ideas…</p>
+        </div>
+
+        <!-- Error -->
+        <div x-show="resultPanelError" class="result-error">
+          <p x-text="resultPanelError"></p>
+        </div>
+
+        <!-- What-If Picker -->
+        <template x-if="resultPanelData?._whatIfPicker">
+          <div class="what-if-picker">
+            <p class="hint">Select an idea and describe your hypothetical scenario:</p>
+            <div class="what-if-form">
+              <select id="whatIfSlug" class="what-if-select">
+                <option value="">— Choose an idea —</option>
+                <template x-for="idea in whatIfIdeas" :key="idea.slug">
+                  <option :value="idea.slug" x-text="idea.label"></option>
+                </template>
+              </select>
+              <textarea id="whatIfQuestion" class="what-if-textarea"
+                        placeholder="What if I pivoted to B2B enterprise pricing? What if Instagram featured us?"></textarea>
+              <button class="btn-primary" @click="runWhatIf(
+                document.getElementById('whatIfSlug').value,
+                document.getElementById('whatIfQuestion').value
+              )">Simulate</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Ikigai Result -->
+        <template x-if="isIkigaiResult()">
+          <div class="ikigai-result">
+            <!-- Alignment score -->
+            <div class="ikigai-score-card">
+              <div class="big-score">
+                <span class="big-number" x-text="resultPanelData.alignment_score"></span>
+                <span class="big-label">/100 alignment</span>
+              </div>
+              <p class="ikigai-summary" x-text="resultPanelData.ikigai_summary"></p>
+            </div>
+
+            <!-- Quadrant bars -->
+            <div class="ikigai-quadrants">
+              <template x-for="q in [{label:'❤️ What You Love', key:'love'},{label:'🛠️ What You\'re Good At', key:'good_at'},{label:'🌍 What World Needs', key:'world_needs'},{label:'💰 What You Can Be Paid For', key:'paid_for'}]" :key="q.key">
+                <div class="quadrant-bar-wrap">
+                  <div class="quadrant-label">
+                    <span x-text="q.label"></span>
+                    <span class="quadrant-value" x-text="(resultPanelData.quadrant_scores?.[q.key] || 0) + '/100'"></span>
+                  </div>
+                  <div class="quadrant-track">
+                    <div class="quadrant-fill" :style="'width:' + Math.min(100, Math.max(0, resultPanelData.quadrant_scores?.[q.key] || 0)) + '%'"></div>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Quadrant analysis -->
+            <div class="ikigai-detail-row">
+              <div class="ikigai-detail-card dominant">
+                <h4>🏆 Dominant</h4>
+                <p x-text="resultPanelData.dominant_quadrant?.replace(/_/g, ' ')"></p>
+              </div>
+              <div class="ikigai-detail-card missing">
+                <h4>⚠️ Missing</h4>
+                <p x-text="resultPanelData.missing_quadrant?.replace(/_/g, ' ')"></p>
+              </div>
+              <div class="ikigai-detail-card trend">
+                <h4>📈 Trend</h4>
+                <p x-text="resultPanelData.trend"></p>
+              </div>
+            </div>
+
+            <!-- Overlapping quadrants -->
+            <div class="ikigai-overlap" x-show="resultPanelData.overlapping_quadrants?.length">
+              <h4>Overlapping</h4>
+              <div class="tag-row">
+                <template x-for="q in resultPanelData.overlapping_quadrants" :key="q">
+                  <span class="tag tag-overlap" x-text="q.replace(/_/g, ' ')"></span>
+                </template>
+              </div>
+            </div>
+
+            <!-- Contradictions -->
+            <div class="contradictions-section" x-show="resultPanelData.contradictions?.length">
+              <h4>🔍 Contradictions Detected</h4>
+              <template x-for="c in resultPanelData.contradictions" :key="c.stated">
+                <div class="contradiction-card" :class="'severity-' + (c.severity || 'low')">
+                  <div class="contradiction-stated">
+                    <span class="label">Stated:</span> <span x-text="c.stated"></span>
+                  </div>
+                  <div class="contradiction-revealed">
+                    <span class="label">Revealed:</span> <span x-text="c.revealed"></span>
+                  </div>
+                  <div class="contradiction-severity" x-text="c.severity?.toUpperCase()"></div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Recommendation -->
+            <div class="ikigai-recommendation" x-show="resultPanelData.recommendation">
+              <h4>💡 Recommendation</h4>
+              <p x-text="resultPanelData.recommendation"></p>
+            </div>
+
+            <!-- Data profile (collapsed) -->
+            <details class="profile-details">
+              <summary>📊 Data Profile (extracted signals)</summary>
+              <div class="profile-grid">
+                <template x-for="(items, circle) in resultPanelData.profile || {}" :key="circle">
+                  <div class="profile-circle">
+                    <h5 x-text="circle.replace(/_/g, ' ')"></h5>
+                    <ul>
+                      <template x-for="item in (Array.isArray(items) ? items : [])" :key="item">
+                        <li x-text="item"></li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+              </div>
+            </details>
+          </div>
+        </template>
+
+        <!-- Journal Result -->
+        <template x-if="isJournalResult()">
+          <div class="journal-result">
+            <!-- Decision Quality Score -->
+            <div class="journal-score-card" x-show="resultPanelData.decision_quality_score !== undefined">
+              <div class="big-score">
+                <span class="big-number" x-text="resultPanelData.decision_quality_score"></span>
+                <span class="big-label">/100 decision quality</span>
+              </div>
+              <p x-show="resultPanelData.quality_trend" x-text="'Trend: ' + resultPanelData.quality_trend"></p>
+            </div>
+
+            <!-- Key Metrics -->
+            <div class="journal-detail-row">
+              <div class="journal-card" x-show="resultPanelData.decisions_analyzed">
+                <h4>📊 Analyzed</h4>
+                <p x-text="resultPanelData.decisions_analyzed + ' decisions'"></p>
+              </div>
+              <div class="journal-card" x-show="resultPanelData.learning_rate">
+                <h4>📈 Learning Rate</h4>
+                <p x-text="resultPanelData.learning_rate"></p>
+              </div>
+              <div class="journal-card" x-show="resultPanelData.blind_spots?.length">
+                <h4>🕳️ Blind Spots</h4>
+                <p x-text="resultPanelData.blind_spots.length + ' found'"></p>
+              </div>
+            </div>
+
+            <!-- Full bias list -->
+            <div class="journal-biases" x-show="resultPanelData.detected_biases?.length">
+              <h4>🔍 Detected Biases</h4>
+              <template x-for="b in resultPanelData.detected_biases" :key="b.bias">
+                <div class="bias-card">
+                  <div class="bias-header">
+                    <strong x-text="b.bias"></strong>
+                    <span class="bias-severity" :class="'sev-' + (b.severity || 'medium')" x-text="b.severity || 'medium'"></span>
+                  </div>
+                  <p x-text="b.evidence"></p>
+                  <div class="bias-affected" x-show="b.affected_decisions?.length">
+                    <small x-text="'Affected: ' + (b.affected_decisions || []).join(', ')"></small>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <!-- Blind Spots -->
+            <div class="journal-blindspots" x-show="resultPanelData.blind_spots?.length">
+              <h4>🕳️ Blind Spots</h4>
+              <ul>
+                <template x-for="bs in resultPanelData.blind_spots" :key="bs">
+                  <li x-text="bs"></li>
+                </template>
+              </ul>
+            </div>
+
+            <!-- Most Expensive Mistake -->
+            <div class="journal-mistake" x-show="resultPanelData.most_expensive_mistake?.decision">
+              <h4>💸 Most Expensive Mistake</h4>
+              <p><strong x-text="resultPanelData.most_expensive_mistake.decision"></strong></p>
+              <p x-show="resultPanelData.most_expensive_mistake.cost_estimate">
+                <small x-text="'Cost: ' + resultPanelData.most_expensive_mistake.cost_estimate"></small>
+              </p>
+              <p x-show="resultPanelData.most_expensive_mistake.root_cause_bias">
+                <small x-text="'Root cause: ' + resultPanelData.most_expensive_mistake.root_cause_bias"></small>
+              </p>
+            </div>
+
+            <!-- Recommendations -->
+            <div class="journal-recommendation" x-show="resultPanelData.recommendations?.length">
+              <h4>💡 Recommendations</h4>
+              <ol>
+                <template x-for="r in resultPanelData.recommendations" :key="r">
+                  <li x-text="r"></li>
+                </template>
+              </ol>
+            </div>
+
+            <!-- Raw result fallback -->
+            <pre class="raw-result" x-show="!resultPanelData.decision_quality_score && !resultPanelData.detected_biases"
+                 x-text="JSON.stringify(resultPanelData, null, 2)"></pre>
+          </div>
+        </template>
+
+        <!-- Burnout Result -->
+        <template x-if="isBurnoutResult()">
+          <div class="burnout-result">
+            <!-- Risk Score Card (color-coded by level) -->
+            <div class="burnout-score-card"
+                 :class="'risk-' + (resultPanelData.risk_level || 'low')">
+              <div class="big-score">
+                <span class="big-number" x-text="resultPanelData.risk_score"></span>
+                <span class="big-label">/100 burnout risk</span>
+              </div>
+              <div class="risk-level-badge" x-text="(resultPanelData.risk_level || 'low').toUpperCase()"></div>
+              <p class="burnout-interpretation" x-show="resultPanelData.interpretation"
+                 x-text="resultPanelData.interpretation"></p>
+            </div>
+
+            <!-- Key Metrics Row -->
+            <div class="burnout-metrics" x-show="resultPanelData.productivity_decline_pct !== undefined || resultPanelData.decision_quality_trend">
+              <div class="metric-card" x-show="resultPanelData.productivity_decline_pct !== null && resultPanelData.productivity_decline_pct !== undefined">
+                <h4>📉 Productivity</h4>
+                <span class="metric-value" :class="(resultPanelData.productivity_decline_pct || 0) >= 40 ? 'metric-danger' : 'metric-ok'"
+                      x-text="(resultPanelData.productivity_decline_pct || 0) + '% decline'"></span>
+              </div>
+              <div class="metric-card" x-show="resultPanelData.decision_quality_trend">
+                <h4>🧠 Decisions</h4>
+                <span class="metric-value" x-text="resultPanelData.decision_quality_trend"></span>
+              </div>
+              <div class="metric-card" x-show="resultPanelData.ikigai_contradiction_count">
+                <h4>🎌 Ikigai Gaps</h4>
+                <span class="metric-value" x-text="resultPanelData.ikigai_contradiction_count + ' contradictions'"></span>
+              </div>
+              <div class="metric-card" x-show="resultPanelData.pursuit_stuck_ideas?.length">
+                <h4>🛑 Stuck Ideas</h4>
+                <span class="metric-value" x-text="resultPanelData.pursuit_stuck_ideas.length"></span>
+              </div>
+            </div>
+
+            <!-- Detected Signals -->
+            <div class="burnout-signals" x-show="resultPanelData.signals?.length">
+              <h4>🚨 Detected Signals</h4>
+              <template x-for="s in resultPanelData.signals" :key="s.signal">
+                <div class="signal-card" :class="'severity-' + (s.severity || 'low')">
+                  <div class="signal-header">
+                    <span class="signal-category" x-text="'[' + s.category + ']'"></span>
+                    <span class="signal-severity" x-text="s.severity?.toUpperCase()"></span>
+                  </div>
+                  <p class="signal-text" x-text="s.signal"></p>
+                  <ul class="signal-evidence" x-show="s.evidence?.length">
+                    <template x-for="ev in (s.evidence || []).slice(0, 3)" :key="ev">
+                      <li x-text="ev"></li>
+                    </template>
+                  </ul>
+                </div>
+              </template>
+            </div>
+
+            <!-- Burnout Narrative -->
+            <div class="burnout-narrative" x-show="resultPanelData.burnout_narrative">
+              <h4>💭 Your Inner Voice</h4>
+              <blockquote x-text="resultPanelData.burnout_narrative"></blockquote>
+            </div>
+
+            <!-- Risk & Protective Factors -->
+            <div class="burnout-factors" x-show="resultPanelData.risk_factors?.length || resultPanelData.protective_factors?.length">
+              <div class="factors-risk" x-show="resultPanelData.risk_factors?.length">
+                <h4>⚠️ Risk Factors</h4>
+                <ul>
+                  <template x-for="r in resultPanelData.risk_factors" :key="r">
+                    <li x-text="r"></li>
+                  </template>
+                </ul>
+              </div>
+              <div class="factors-protective" x-show="resultPanelData.protective_factors?.length">
+                <h4>🛡️ Protective Factors</h4>
+                <ul>
+                  <template x-for="p in resultPanelData.protective_factors" :key="p">
+                    <li x-text="p"></li>
+                  </template>
+                </ul>
+              </div>
+            </div>
+
+            <!-- Recommendations -->
+            <div class="burnout-recommendations" x-show="resultPanelData.recommendations?.length">
+              <h4>💡 Recommendations</h4>
+              <ol>
+                <template x-for="r in resultPanelData.recommendations" :key="r">
+                  <li x-text="r"></li>
+                </template>
+              </ol>
+            </div>
+
+            <!-- Stuck Ideas Detail -->
+            <div class="burnout-stuck" x-show="resultPanelData.pursuit_stuck_ideas?.length">
+              <h4>🛑 Stuck Ideas (30+ days, no progress)</h4>
+              <div class="tag-row">
+                <template x-for="slug in resultPanelData.pursuit_stuck_ideas" :key="slug">
+                  <span class="tag tag-stuck" x-text="slug"></span>
+                </template>
+              </div>
+            </div>
+
+            <!-- Health Anomalies -->
+            <div class="burnout-health" x-show="resultPanelData.health_anomalies?.length">
+              <h4>🏥 Health Anomalies</h4>
+              <ul>
+                <template x-for="h in resultPanelData.health_anomalies" :key="h">
+                  <li x-text="h"></li>
+                </template>
+              </ul>
+            </div>
+
+            <!-- Data Profile (collapsed) -->
+            <details class="profile-details" x-show="resultPanelData.profile">
+              <summary>📊 Data Profile (extraction evidence)</summary>
+              <div class="profile-grid">
+                <template x-for="(items, category) in resultPanelData.profile?.extraction_evidence || {}" :key="category">
+                  <div class="profile-circle" x-show="items.length">
+                    <h5 x-text="category.replace(/_/g, ' ')"></h5>
+                    <ul>
+                      <template x-for="item in (Array.isArray(items) ? items.slice(0, 3) : [])" :key="item">
+                        <li x-text="item"></li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+              </div>
+            </details>
+          </div>
+        </template>
+
+        <!-- What-If Result -->
+        <template x-if="isWhatIfResult()">
+          <div class="what-if-result">
+            <div class="journal-score-card">
+              <h4>🔄 Cascading Effects</h4>
+            </div>
+            <div class="journal-detail-row">
+              <template x-for="effect in resultPanelData.cascading_effects" :key="effect.area">
+                <div class="journal-card">
+                  <h4 x-text="'📌 ' + (effect.area || '')"></h4>
+                  <p><strong>Before:</strong> <span x-text="effect.before || '—'"></span></p>
+                  <p><strong>After:</strong> <span x-text="effect.after || '—'"></span></p>
+                  <p><strong>Confidence:</strong> <span x-text="(effect.confidence || 'medium')"></span></p>
+                </div>
+              </template>
+            </div>
+            <div class="journal-recommendation" x-show="resultPanelData.recommendation">
+              <h4>💡 Verdict</h4>
+              <p x-text="resultPanelData.recommendation"></p>
+            </div>
+            <pre class="raw-result" x-show="!resultPanelData.cascading_effects"
+                 x-text="JSON.stringify(resultPanelData, null, 2)"></pre>
+          </div>
+        </template>
+      </div>
+    </template>
   </main>
+
+  <!-- Server-injected idea list for What-If picker (works even when grid is hidden) -->
+  <script>
+    window.__startupIdeas = $ideas_json;
+  </script>
 
 </body>
 </html>

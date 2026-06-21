@@ -42,6 +42,7 @@ from skills.mvp_scope import negotiate_mvp
 from skills.feedback_synthesis import synthesize_feedback
 from skills.decision_journal import audit_decisions
 from skills.ikigai import check_ikigai
+from skills.burnout_early_warning import detect_burnout_risk
 from skills.what_if import simulate_what_if
 
 __all__ = [
@@ -70,6 +71,7 @@ __all__ = [
     # Reflection
     "audit_decisions",
     "check_ikigai",
+    "detect_burnout_risk",
     # AI-Native
     "simulate_what_if",
 ]

@@ -11,6 +11,10 @@ use tauri::Emitter;
 use tokio::sync::Mutex;
 
 use crate::gateway_client::GatewayClient;
+use crate::tts::AutoReader;
+
+/// Event type for final assistant reply — used to trigger TTS auto-read.
+const EVT_AGENT_REPLY_READY: &str = "agent:reply_ready";
 
 /// Base delay for exponential backoff on reconnect.
 const BASE_DELAY: Duration = Duration::from_millis(500);
@@ -22,9 +26,13 @@ const MAX_DELAY: Duration = Duration::from_secs(30);
 /// Connects to `{gateway_base_url}/events/stream`, parses SSE frames, and
 /// dispatches each received message to the matching Tauri event name.
 /// Automatically reconnects on disconnect with exponential backoff.
+///
+/// When `auto_reader` is `Some`, `agent:reply_ready` events also trigger
+/// TTS speech synthesis and playback.
 pub async fn run_sse_listener(
     app_handle: tauri::AppHandle,
     gateway_client: Arc<Mutex<Option<GatewayClient>>>,
+    auto_reader: Option<Arc<AutoReader>>,
 ) {
     let mut delay = BASE_DELAY;
 
@@ -101,6 +109,16 @@ pub async fn run_sse_listener(
                                     let payload: Value =
                                         serde_json::from_str(&data_buf)
                                             .unwrap_or(Value::Null);
+                                    // Trigger TTS auto-read for final assistant replies.
+                                    if event_type == EVT_AGENT_REPLY_READY
+                                        && let Some(ref reader) = auto_reader
+                                    {
+                                        let reader = Arc::clone(reader);
+                                        let tts_payload = payload.clone();
+                                        tokio::spawn(async move {
+                                            reader.on_reply_ready(tts_payload).await;
+                                        });
+                                    }
                                     let _ = app_handle.emit(&event_type, payload);
                                 }
                                 event_type.clear();

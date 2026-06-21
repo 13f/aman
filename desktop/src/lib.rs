@@ -14,9 +14,11 @@ pub mod models;
 pub mod rate_limiter;
 pub mod sse_client;
 pub mod state;
+pub mod tts;
 
 use i18n::Translator;
 use state::AppState;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Emitter;
 use tauri::Manager;
@@ -338,9 +340,12 @@ pub fn run() {
 
             let sse_handle = app.handle().clone();
 
+            // Auto-reader for TTS — created when desktop.auto_read + model.tts are configured.
+            let auto_reader = tts::AutoReader::from_config().map(Arc::new);
+
             // Single SSE listener replacing 5 polling loops.
             rt.spawn(async move {
-                sse_client::run_sse_listener(sse_handle, sse_gc).await;
+                sse_client::run_sse_listener(sse_handle, sse_gc, auto_reader).await;
             });
 
             Ok(())

@@ -534,6 +534,16 @@ pub struct AgentConfig {
     pub ui: UiConfig,
 }
 
+/// Desktop app specific configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, macros::ConfigPatch)]
+#[serde(default)]
+pub struct DesktopConfig {
+    /// Auto-read LLM final responses aloud via TTS.
+    /// Requires `llm.tts` to be set to a valid TTS model.
+    /// Default: false.
+    pub auto_read: bool,
+}
+
 /// MCP (Model Context Protocol) server integration configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 #[serde(default)]
@@ -686,11 +696,21 @@ fn default_max_output_tokens() -> usize {
 }
 
 /// Default LLM model configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// All fields are optional — when not using a global default model,
+/// omit or leave fields unset. Agents configure their own provider/model
+/// individually.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DefaultModelConfig {
-    pub default: String,
-    pub provider: String,
-    pub base_url: String,
+    /// Default LLM model ID (e.g., `deepseek-v4-pro`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Default LLM provider key (e.g., `deepseek`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Default LLM API base URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
 }
 
 /// Per-agent tool access configuration.
@@ -748,6 +768,13 @@ const fn default_enabled() -> bool {
 ///   default: gpt-5
 ///   provider: openai
 ///   base_url: https://api.openai.com/v1
+/// llm:
+///   api_type: openai
+///   embedding: qwen3-embedding-8b             # default embedding model
+///   tts: qwen3-tts-12hz-1.7b                  # text-to-speech model
+///   summary: deepseek-v4-flash                # summarization LLM
+/// desktop:
+///   auto_read: true                          # auto-read LLM responses via TTS
 /// agents:
 ///   cortana:
 ///     display_name: Cortana
@@ -792,21 +819,40 @@ pub struct AmanConfig {
     /// Evaluation system configuration.
     #[serde(default)]
     pub eval: Option<eval::config::EvalConfig>,
+    /// Desktop app specific configuration.
+    #[serde(default)]
+    pub desktop: Option<DesktopConfig>,
 }
 
-/// Top-level LLM configuration (optional).
+/// Top-level LLM model assignments.
 ///
-/// Allows selecting the LLM provider type independently of individual
-/// provider entries. When set, this is the primary source for `api_type`.
+/// Maps global model IDs to functional roles. Each model ID must be defined
+/// in `models` and assigned to a provider in `providers.<name>.models`.
 ///
 /// ```yaml
 /// llm:
-///   api_type: openai  # openai | claude
+///   api_type: openai                          # openai | claude
+///   embedding: qwen3-embedding-8b             # default embedding model
+///   tts: qwen3-tts-12hz-1.7b                  # text-to-speech model
+///   summary: deepseek-v4-flash                # LLM summarization model
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmConfig {
     #[serde(default = "default_api_type")]
     pub api_type: String,
+    /// Default embedding model ID (e.g., `qwen3-embedding-8b`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<String>,
+    /// TTS (text-to-speech) model ID (e.g., `qwen3-tts-12hz-1.7b`).
+    /// When set and `desktop.auto_read` is true, the desktop auto-reads
+    /// LLM responses aloud via this model at its resolved provider URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tts: Option<String>,
+    /// Summary model ID (e.g., `deepseek-v4-flash`).
+    /// When set, TTS auto-read uses this LLM to generate a one-sentence
+    /// summary. Falls back to heuristic truncation if unset or on error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Memory subsystem configuration.
@@ -1834,9 +1880,9 @@ runtime:
             },
         );
         config.model = Some(super::DefaultModelConfig {
-            default: "gpt-5".to_string(),
-            provider: "openai".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            default: Some("gpt-5".to_string()),
+            provider: Some("openai".to_string()),
+            base_url: Some("https://api.openai.com/v1".to_string()),
         });
         config.agents.insert(
             "cortana".to_string(),

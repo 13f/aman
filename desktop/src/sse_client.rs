@@ -109,12 +109,29 @@ pub async fn run_sse_listener(
                                     let payload: Value =
                                         serde_json::from_str(&data_buf)
                                             .unwrap_or(Value::Null);
+                                    // The SSE bridge (SseBusHandler) wraps every event
+                                    // as "event:processed" regardless of its actual type.
+                                    // The real event type lives inside the serialized
+                                    // Event struct at .event_type (or .type alias).
+                                    let inner_event_type = payload
+                                        .get("event_type")
+                                        .or_else(|| payload.get("type"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(&event_type);
                                     // Trigger TTS auto-read for final assistant replies.
-                                    if event_type == EVT_AGENT_REPLY_READY
+                                    if inner_event_type == EVT_AGENT_REPLY_READY
                                         && let Some(ref reader) = auto_reader
                                     {
                                         let reader = Arc::clone(reader);
-                                        let tts_payload = payload.clone();
+                                        // The serialized Event wraps the real data in
+                                        // its .payload field: { id, source, event_type,
+                                        //   payload: { reply, background, ... } }.
+                                        // Extract the inner payload so on_reply_ready
+                                        // sees { reply, background, ... } at the top level.
+                                        let tts_payload = payload
+                                            .get("payload")
+                                            .cloned()
+                                            .unwrap_or_else(|| payload.clone());
                                         tokio::spawn(async move {
                                             reader.on_reply_ready(tts_payload).await;
                                         });

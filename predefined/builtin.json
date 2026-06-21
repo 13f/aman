@@ -61,7 +61,8 @@
       "self/config.yaml",
       "self/llm.py",
       "self/jsonrpc.py",
-      "self/html_utils.py"
+      "self/html_utils.py",
+      "self/system_prompt.py"
     ]
   }
 }

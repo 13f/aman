@@ -7,6 +7,7 @@
 mod agent_harness;
 mod agent_registry;
 mod agent_runtime;
+mod analytics_handler;
 mod date_util;
 mod orchestrator;
 mod subagent_spawner;

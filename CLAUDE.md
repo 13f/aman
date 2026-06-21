@@ -41,6 +41,9 @@ cargo clippy --fix --workspace -- -D warnings
 # New cognitive engine crates
 cargo test -p cognitive-engine -p cognitive-llm
 
+# New analytics crate
+cargo test -p analytics
+
 # Info-hub plugin
 cargo test -p info-hub
 ```
@@ -51,6 +54,7 @@ cargo test -p info-hub
 aman/
 ├── kernel/              ← infrastructure crates (event bus, dispatcher, pipeline, …)
 │   ├── core/            ← package: kernel — core types, traits, error types, redactor
+│   ├── analytics/       ← trend detection, anomaly alerting, time-series analysis
 │   ├── event-bus/       ← InMemoryBus w/ backpressure
 │   ├── gateway/         ← agent gateway daemon (binary: aman)
 │   ├── plugins/         ← messaging, memory-store, info-hub
@@ -71,6 +75,7 @@ Workspace with ~40 crates:
 | Crate | Path | Purpose |
 |---|---|---|
 | `kernel` | `kernel/core` | Kernel types: Event, Error, Pipeline, Schema, Retry, Tool traits, redactor |
+| `analytics` | `kernel/analytics` | Trend detection + anomaly alerting on trace/session/audit data. HTTP `POST /analytics/analyze`, CLI `aman analyze trends\|anomalies` |
 | `macros` | `kernel/macros` | Proc macros |
 | `event-bus` | `kernel/event-bus` | InMemoryBus w/ 6-level backpressure (L1→L2→L3→L4A→L4B→Critical), overflow-to-disk, dedup |
 | `dispatcher` | `kernel/dispatcher` | Event routing: EventBus → Pipeline/Skill dispatch |
@@ -207,6 +212,43 @@ pub trait CognitiveEngine: Send + Sync {
 - **`LlmCognitiveEngine`** (`cognitive/llm/`) — current implementation: ReAct loop + OpenAI API
 - Future engines (world model, hybrid) implement the same trait
 
+## Analytics Architecture
+
+The `analytics` crate (`kernel/analytics/`) provides time-series analysis of agent
+operational data. It consumes traces, sessions, and audit logs via an
+`AnalyticsDataSource` trait (implemented by the gateway to avoid circular deps).
+
+```rust
+// kernel/analytics/src/lib.rs
+#[async_trait]
+pub trait AnalyticsEngine: Send + Sync {
+    async fn analyze(&self, request: AnalysisRequest) -> AmanResult<AnalysisReport>;
+}
+```
+
+- **Data sources**: `SqliteTraceStore` (time-range queries), `SessionStore`
+  (session lifecycle), `AuditLogger` (operational events).
+- **Trend detection**: Simple Moving Average crossover, OLS linear regression
+  (R² confidence), rate-of-change (>20% threshold). Buckets auto-scale: hourly
+  for ≤3-day windows, daily for longer.
+- **Anomaly detection**: Z-score (|z| > 2.5 → Warning, > 3.5 → Critical),
+  neighbor-median spike detection (3× multiplier), plus 4 predefined threshold
+  rules (error rate > 50%, failure rate > 30%, tool failure > 25%, zero activity).
+- **9 tracked metrics**: throughput, success rate, error rate, avg/P95 duration,
+  tool failure rate, tool latency, session count, avg messages per session.
+- **Time range**: Defaults to *today* (midnight UTC → now). Accepts ISO 8601,
+  `"today"`, `"yesterday"`, `"now"` shortcuts.
+- **Output**: `AnalysisReport` with `Vec<Trend>`, `Vec<Anomaly>`, and
+  `ReportSummary` (total traces, success rate, avg/P95 duration, critical count).
+
+### Integration
+
+| Entry Point | Description |
+|---|---|
+| `POST /analytics/analyze` | HTTP endpoint accepting `AnalysisRequest` JSON → `AnalysisReport` JSON |
+| `aman analyze trends\|anomalies` | CLI subcommand with `--from`/`--to`/`--agent` flags |
+| `GatewayAnalyticsDataSource` | Bridges `AgentRuntime` stores to `AnalyticsDataSource` trait |
+
 ## CLI Architecture
 
 The `aman` CLI (`kernel/cli/`) supports three protocols for communicating with the gateway:
@@ -223,4 +265,5 @@ All three protocols share the same `AgentRuntime` methods — no new business lo
 - `config show` → pretty-printed JSON via `serde_json::to_string_pretty`
 - `skill validate` / `skill export` → human-readable text (local, no gateway needed)
 - `aman run` → prints bind address to stdout, then blocks
+- `aman analyze trends|anomalies` → runs analytics engine, prints JSON report to stdout
 - `metrics` supports `--format json` (only accepted value)

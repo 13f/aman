@@ -73,6 +73,7 @@ crossterm = "0.29"
 tonic.workspace = true
 prost.workspace = true
 mcp-client = { path = "../mcp-client" }
+analytics = { path = "../analytics", version = "0.1.0" }
 
 [[bin]]
 name = "aman"

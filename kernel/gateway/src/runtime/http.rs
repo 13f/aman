@@ -169,6 +169,7 @@ fn build_router(runtime: Arc<AgentRuntime>, plugin_routes: Vec<axum::Router<()>>
         .route("/agent/{agent_id}/status", post(agent_set_status))
         .route("/agent/{agent_id}/reload", post(agent_reload))
         .route("/agents/idle-availability", get(agents_idle_availability))
+        .route("/analytics/analyze", post(super::analytics_handler::analytics_analyze))
         // MCP endpoints (per-agent)
         .route("/mcp/agent/{agent_key}/servers", get(mcp_list_servers))
         .route("/mcp/agent/{agent_key}/server/{name}/connect", post(mcp_connect_server))

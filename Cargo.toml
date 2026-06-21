@@ -53,6 +53,7 @@ members = [
   "kernel/mcp-client",
   "kernel/skm-core-patched",
   "kernel/llm-api",
+  "kernel/analytics",
   "kernel/eval",
   "kernel/context-manager",
   "shared/i18n",

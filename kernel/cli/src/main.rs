@@ -58,6 +58,11 @@ async fn main() {
                 std::process::exit(code);
             }
         }
+        "analyze" => {
+            if let Err(code) = analyze_cmd(&args[1..]).await {
+                std::process::exit(code);
+            }
+        }
         "metrics" => {
             if let Err(code) = metrics_cmd(&args[1..]).await {
                 std::process::exit(code);
@@ -408,6 +413,167 @@ async fn agent_cmd(args: &[String]) -> Result<(), i32> {
     } else {
         Err(1)
     }
+}
+
+// ---------------------------------------------------------------------------
+// analyze
+// ---------------------------------------------------------------------------
+
+async fn analyze_cmd(args: &[String]) -> Result<(), i32> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    match sub {
+        "trends" | "anomalies" => analyze_run(sub, &args[1..]).await,
+        _ => {
+            safe_eprintln!("usage: aman analyze trends|anomalies [--from <iso>] [--to <iso>] [--agent <id>] [--addr <ip:port>] [--token <token>] [--grpc]");
+            Err(2)
+        }
+    }
+}
+
+async fn analyze_run(sub: &str, args: &[String]) -> Result<(), i32> {
+    let (opts, rest) = parse_api_opts(args)?;
+
+    let mut from_str = String::from("today");
+    let mut to_str = String::from("now");
+    let mut agent: Option<String> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--from" => {
+                from_str = rest.get(i + 1).ok_or(2)?.clone();
+                i += 2;
+            }
+            "--to" => {
+                to_str = rest.get(i + 1).ok_or(2)?.clone();
+                i += 2;
+            }
+            "--agent" => {
+                agent = Some(rest.get(i + 1).ok_or(2)?.clone());
+                i += 2;
+            }
+            _ => {
+                safe_eprintln!("unknown flag: {}", rest[i]);
+                return Err(2);
+            }
+        }
+    }
+
+    // Build the request body
+    // Parse time shortcuts
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let start_ms = parse_time_shortcut(&from_str, now_ms)?;
+    let end_ms = parse_time_shortcut(&to_str, now_ms)?;
+
+    let analyses = match sub {
+        "trends" => vec!["trends"],
+        "anomalies" => vec!["anomalies"],
+        _ => vec!["trends", "anomalies"],
+    };
+
+    let mut body = serde_json::json!({
+        "time_range": {
+            "start_ms": start_ms,
+            "end_ms": end_ms
+        },
+        "analyses": analyses,
+    });
+    if let Some(ref a) = agent {
+        body["agent_filter"] = serde_json::json!([a]);
+    }
+
+    if opts.use_grpc {
+        // gRPC: send via REST for now (analytics doesn't have gRPC endpoint yet)
+        let client = build_client()?;
+        let res = opts
+            .apply_headers(client.post(opts.url("/analytics/analyze")).json(&body))
+            .send()
+            .await
+            .map_err(|_| 1)?;
+        let status = res.status();
+        let text = res.text().await.map_err(|_| 1)?;
+        if status.is_success() {
+            safe_println!("{text}");
+            Ok(())
+        } else {
+            safe_eprintln!("{text}");
+            Err(1)
+        }
+    } else {
+        let client = build_client()?;
+        let res = opts
+            .apply_headers(client.post(opts.url("/analytics/analyze")).json(&body))
+            .send()
+            .await
+            .map_err(|_| 1)?;
+        let status = res.status();
+        let text = res.text().await.map_err(|_| 1)?;
+        if status.is_success() {
+            safe_println!("{text}");
+            Ok(())
+        } else {
+            safe_eprintln!("{text}");
+            Err(1)
+        }
+    }
+}
+
+fn parse_time_shortcut(input: &str, now_ms: i64) -> Result<i64, i32> {
+    match input {
+        "now" => Ok(now_ms),
+        "today" => {
+            // Start of current UTC day
+            let day_ms = 86_400_000i64;
+            Ok((now_ms / day_ms) * day_ms)
+        }
+        "yesterday" => {
+            let day_ms = 86_400_000i64;
+            Ok((now_ms / day_ms - 1) * day_ms)
+        }
+        other => {
+            // Try ISO 8601: "2026-06-21T00:00:00" or "2026-06-21"
+            let s = other.trim();
+            // Very simple ISO parser: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS
+            if s.len() >= 10 {
+                let year: i64 = s[0..4].parse().map_err(|_| 2)?;
+                let month: i64 = s[5..7].parse().map_err(|_| 2)?;
+                let day: i64 = s[8..10].parse().map_err(|_| 2)?;
+                let (hour, min, sec) = if s.len() >= 19 && s.as_bytes().get(10) == Some(&b'T') {
+                    (
+                        s[11..13].parse::<i64>().map_err(|_| 2)?,
+                        s[14..16].parse::<i64>().map_err(|_| 2)?,
+                        s[17..19].parse::<i64>().map_err(|_| 2)?,
+                    )
+                } else {
+                    (0i64, 0i64, 0i64)
+                };
+                // Approximate days since epoch (civil calendar)
+                let days = days_from_civil(year, month as u32, day as u32);
+                let ms = (days * 86_400 + hour * 3_600 + min * 60 + sec) * 1000;
+                Ok(ms)
+            } else {
+                safe_eprintln!("invalid time: {other} (use ISO 8601, 'today', 'yesterday', or 'now')");
+                Err(2)
+            }
+        }
+    }
+}
+
+/// Days from UNIX epoch to (y, m, d). Approximation using civil calendar.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
+    let yoe = (y - era * 400) as u32;
+    let doy = if m <= 2 {
+        153 * (m + 9) / 5
+    } else {
+        153 * (m - 3) / 5
+    } + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe as i64) - 719_468
 }
 
 async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
@@ -2192,7 +2358,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 
 fn print_usage() {
     safe_eprintln!(
-        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
+        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman analyze trends|anomalies [--from <iso|today|yesterday>] [--to <iso|now>] [--agent <id>] [--addr <ip:port>] [--token <token>]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
     );
 }
 

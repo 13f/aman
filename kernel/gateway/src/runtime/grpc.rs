@@ -993,7 +993,14 @@ impl Aman for AmanServiceImpl {
                 let skills_json = serde_json::to_value(&*self.runtime.llm_skills()).unwrap_or_default();
                 let tools_json = serde_json::json!([]);
                 self.runtime.self_bridge()
-                    .build_full_system_prompt(&soul.raw, &skills_json, &tools_json, None)
+                    .build_full_system_prompt(
+                        &soul.raw, &skills_json, &tools_json, None,
+                        &super::self_bridge::SystemPromptContext {
+                            claude_md_content: None,
+                            cwd: std::env::current_dir().ok().as_ref().and_then(|p| p.to_str()),
+                            platform: "desktop", model: None, provider: None,
+                        },
+                    )
                     .unwrap_or_else(|| soul.raw.clone())
             })
             .unwrap_or_default();

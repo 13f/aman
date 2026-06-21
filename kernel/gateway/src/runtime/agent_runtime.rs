@@ -1851,7 +1851,14 @@ impl AgentRuntimeBuilder {
                         let skills_json = serde_json::json!([]);
                         let tools_json = serde_json::json!([]);
                         let prompt = self.self_bridge
-                            .build_full_system_prompt(&soul.raw, &skills_json, &tools_json, None)
+                            .build_full_system_prompt(
+                                &soul.raw, &skills_json, &tools_json, None,
+                                &super::self_bridge::SystemPromptContext {
+                                    claude_md_content: None,
+                                    cwd: std::env::current_dir().ok().as_ref().and_then(|p| p.to_str()),
+                                    platform: "cli", model: None, provider: None,
+                                },
+                            )
                             .unwrap_or_else(|| {
                                 self.self_bridge
                                     .build_soul_prompt(&soul.raw)

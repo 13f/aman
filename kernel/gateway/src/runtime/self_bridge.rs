@@ -25,6 +25,23 @@ pub struct SelfBridge {
     bridge_script: PathBuf,
 }
 
+/// Extra context for [`SelfBridge::build_full_system_prompt`].
+///
+/// Groups optional session-level metadata that Python injects into
+/// the VOLATILE and CONTEXT layers of the system prompt.
+pub struct SystemPromptContext<'a> {
+    /// Content of CLAUDE.md discovered from the working directory.
+    pub claude_md_content: Option<&'a str>,
+    /// Current working directory (for environment hints, git posture).
+    pub cwd: Option<&'a str>,
+    /// Platform identifier: "cli", "desktop", etc.
+    pub platform: &'a str,
+    /// LLM model name (for the timestamp line).
+    pub model: Option<&'a str>,
+    /// LLM provider name (for the timestamp line).
+    pub provider: Option<&'a str>,
+}
+
 impl SelfBridge {
     /// Create a new bridge from config and the predefined directory path.
     ///
@@ -72,24 +89,38 @@ impl SelfBridge {
         self.call("skills-prompt", &args)
     }
 
-    /// Build the complete system prompt (soul + skills + tools + date + memory).
+    /// Build the complete system prompt (three-layer Hermes-style assembly).
     ///
     /// Calls `python3 bridge.py system-prompt` which uses the unified
-    /// `system_prompt.py` module. This is the primary entry point —
-    /// replaces the old multi-step soul-prompt + skills-prompt + full-prompt dance.
+    /// `system_prompt.py` module. USER.md and MEMORY.md are auto-discovered
+    /// by Python from ~/.aman/ — no need to pass paths unless overriding.
     pub fn build_full_system_prompt(
         &self,
         soul_content: &str,
         skills_json: &serde_json::Value,
         tools_json: &serde_json::Value,
         memory: Option<&str>,
+        ctx: &SystemPromptContext<'_>,
     ) -> Option<String> {
-        let args = serde_json::json!({
+        let mut args = serde_json::json!({
             "soul_content": soul_content,
             "skills": skills_json,
             "tools": tools_json,
             "memory": memory,
+            "platform": ctx.platform,
         });
+        if let Some(c) = ctx.claude_md_content {
+            args["claude_md_content"] = serde_json::Value::String(c.to_owned());
+        }
+        if let Some(c) = ctx.cwd {
+            args["cwd"] = serde_json::Value::String(c.to_owned());
+        }
+        if let Some(m) = ctx.model {
+            args["model"] = serde_json::Value::String(m.to_owned());
+        }
+        if let Some(p) = ctx.provider {
+            args["provider"] = serde_json::Value::String(p.to_owned());
+        }
         self.call("system-prompt", &args)
     }
 

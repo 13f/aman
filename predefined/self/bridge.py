@@ -103,7 +103,19 @@ def cmd_system_prompt(args: dict) -> str:
     ]
 
     memory = args.get("memory", None)
-    return build_system_prompt(soul_content, skills, tools, memory)
+    return build_system_prompt(
+        soul_content,
+        skills,
+        tools,
+        memory,
+        user_md_path=args.get("user_md_path"),
+        memory_md_path=args.get("memory_md_path"),
+        claude_md_content=args.get("claude_md_content"),
+        cwd=args.get("cwd"),
+        platform=args.get("platform", "cli"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+    )
 
 
 def cmd_extraction_prompt(args: dict) -> str:

@@ -2943,11 +2943,20 @@ async fn chat_session_send(
                 let tools_json = serde_json::to_value(&tool_descriptors).unwrap_or_default();
 
                 // Python-first: unified system_prompt.py
+                let current_dir = std::env::current_dir().ok();
+                let prompt_ctx = super::self_bridge::SystemPromptContext {
+                    claude_md_content: None,  // TODO: discover CLAUDE.md from cwd
+                    cwd: current_dir.as_ref().and_then(|p| p.to_str()),
+                    platform: "desktop",
+                    model: None,
+                    provider: None,
+                };
                 if let Some(prompt) = self_bridge.build_full_system_prompt(
                     &soul.raw,
                     &skills_json,
                     &tools_json,
-                    None, // memory is retrieved per-turn, injected later
+                    None,  // memory is retrieved per-turn
+                    &prompt_ctx,
                 ) {
                     return prompt;
                 }
@@ -3361,7 +3370,14 @@ async fn get_system_prompt(State(runtime): State<Arc<AgentRuntime>>) -> Response
     let skills_json = serde_json::to_value(&*runtime.llm_skills()).unwrap_or_default();
     let tools_json = serde_json::json!([]);
     let prompt = runtime.self_bridge()
-        .build_full_system_prompt(&soul.raw, &skills_json, &tools_json, None)
+        .build_full_system_prompt(
+            &soul.raw, &skills_json, &tools_json, None,
+            &super::self_bridge::SystemPromptContext {
+                claude_md_content: None,
+                cwd: std::env::current_dir().ok().as_ref().and_then(|p| p.to_str()),
+                platform: "desktop", model: None, provider: None,
+            },
+        )
         .unwrap_or_else(|| {
             let soul_prompt = runtime.self_bridge()
                 .build_soul_prompt(&soul.raw)

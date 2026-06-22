@@ -2063,62 +2063,26 @@ pub async fn list_provider_models(
 // Agent management (multi-agent P2) — LOCAL filesystem operations
 // ---------------------------------------------------------------------------
 
-/// Scan `~/.aman/agents/` for subdirectories containing `SOUL.md` that are
-/// not yet in config.yaml, and auto-register them with empty provider (disabled).
+/// Check whether config.yaml already has any agents registered, and skip
+/// filesystem sync entirely if it does. This replaces the old per-directory
+/// iteration with a single bulk check: once local agents exist, no more
+/// auto-syncing from predefined or filesystem discovery.
 fn sync_filesystem_agents_to_config(t: &Translator) -> Result<(), String> {
     let agents_dir = crate::agent_fs::agents_dir();
     if !agents_dir.exists() {
         return Ok(());
     }
 
-    let config_path = default_config_path();
-    let mut aman_config = config::AmanConfig::from_default_path()
+    let aman_config = config::AmanConfig::from_default_path()
         .map_err(|e| t_with(t, "desktop.error.config_read", &[("detail", &e.to_string())]))?;
 
-    let entries = std::fs::read_dir(&agents_dir).map_err(|e| t_with(t, "desktop.error.read_agents_dir", &[("detail", &e.to_string())]))?;
-    let mut changed = false;
-
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let key = entry.file_name().to_string_lossy().to_string();
-        if !config::is_valid_identifier(&key) {
-            continue;
-        }
-        if aman_config.agents.contains_key(&key) {
-            continue;
-        }
-        if !entry.path().join("SOUL.md").exists() {
-            continue;
-        }
-
-        let display_name = crate::agent_fs::soul_summary(&key)
-            .lines()
-            .next()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .unwrap_or_else(|| key.clone());
-
-        aman_config.agents.insert(
-            key.clone(),
-            config::AgentEntryConfig {
-                display_name,
-                provider: String::new(),
-                model: String::new(),
-                system_prompt_override: None,
-                enabled: false,
-                tools: None,
-                skills: None,
-                event_bus: None,
-            },
-        );
-        changed = true;
+    // If config already has any agents, skip entirely — no per-agent checking.
+    if !aman_config.agents.is_empty() {
+        return Ok(());
     }
 
-    if changed {
-        aman_config.save(&config_path).map_err(|e| t_with(t, "desktop.error.config_save", &[("detail", &e.to_string())]))?;
-    }
+    // No agents in config yet — seed_builtin_agents (gateway side) handles
+    // first-run setup. Nothing to discover here.
     Ok(())
 }
 

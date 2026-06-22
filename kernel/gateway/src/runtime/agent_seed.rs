@@ -76,151 +76,63 @@ fn existing_agent_count(dir: &Path) -> usize {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Scan `~/.aman/agents/` for subdirectories containing `SOUL.md` that are
-/// not yet registered in config.yaml, and auto-register them with empty
-/// provider (disabled).  This allows users to copy agent directories into
-/// `~/.aman/agents/` and have them discovered automatically on next restart.
+/// Discover agents that exist on the filesystem but aren't yet in config.yaml.
 ///
-/// Returns the keys of newly discovered agents.
+/// This is a bulk check: if config.yaml already has any agents registered, we
+/// skip discovery entirely — no per-directory iteration. New agents should be
+/// created through the UI (`create_agent`), not by manually copying directories.
+///
+/// Returns the keys of newly discovered agents (always empty when config already
+/// has agents).
 pub fn discover_filesystem_agents() -> Vec<String> {
-    let config_path = aman_data_dir().join("config.yaml");
-    let agents_dir = agents_data_dir();
-
-    // Nothing to discover if the agents directory doesn't exist yet.
-    if !agents_dir.exists() {
+    // If config already has agents registered, skip entirely — no per-agent checking.
+    if config_has_agents() {
+        tracing::info!("config.yaml already has agents — skipping filesystem discovery");
         return Vec::new();
     }
 
-    let mut config: serde_yaml::Value = if config_path.exists() {
-        let raw = match std::fs::read_to_string(&config_path) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        serde_yaml::from_str(&raw).unwrap_or(serde_yaml::Value::Mapping(
-            serde_yaml::Mapping::new(),
-        ))
-    } else {
-        return Vec::new(); // no config yet — seed_builtin_agents handles that
-    };
-
-    let entries = match std::fs::read_dir(&agents_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-
-    let agents_map = match config.as_mapping_mut() {
-        Some(m) => m,
-        None => return Vec::new(),
-    };
-
-    let agents_entry = agents_map
-        .entry(serde_yaml::Value::String("agents".to_string()))
-        .or_insert_with(|| {
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
-        });
-
-    let agents = match agents_entry.as_mapping_mut() {
-        Some(m) => m,
-        None => return Vec::new(),
-    };
-
-    let mut discovered = Vec::new();
-
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let key = entry.file_name().to_string_lossy().to_string();
-        let key_val = serde_yaml::Value::String(key.clone());
-
-        // Skip agents already registered in config.
-        if agents.contains_key(&key_val) {
-            continue;
-        }
-
-        // Must have a SOUL.md to be a valid agent directory.
-        if !entry.path().join("SOUL.md").exists() {
-            continue;
-        }
-
-        let display_name = extract_display_name(&entry.path()).unwrap_or_else(|| key.clone());
-
-        let mut entry_map = serde_yaml::Mapping::new();
-        entry_map.insert(
-            serde_yaml::Value::String("display_name".to_string()),
-            serde_yaml::Value::String(display_name),
-        );
-        // Always register user-discovered agents with no provider — the user
-        // must explicitly configure a provider before the agent can be used.
-        entry_map.insert(
-            serde_yaml::Value::String("provider".to_string()),
-            serde_yaml::Value::String(String::new()),
-        );
-        entry_map.insert(
-            serde_yaml::Value::String("model".to_string()),
-            serde_yaml::Value::String(String::new()),
-        );
-        entry_map.insert(
-            serde_yaml::Value::String("enabled".to_string()),
-            serde_yaml::Value::Bool(false),
-        );
-
-        agents.insert(key_val, serde_yaml::Value::Mapping(entry_map));
-        discovered.push(key.clone());
-        tracing::info!(agent = %key, "discovered filesystem agent");
-    }
-
-    if discovered.is_empty() {
-        return Vec::new();
-    }
-
-    if let Some(parent) = config_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match serde_yaml::to_string(&config) {
-        Ok(yaml) => {
-            if let Err(e) = std::fs::write(&config_path, yaml) {
-                tracing::warn!(path = %config_path.display(), error = %e, "failed to write config after discovering agents");
-            } else {
-                tracing::info!(
-                    path = %config_path.display(),
-                    count = discovered.len(),
-                    "updated config.yaml with discovered agents"
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to serialize config after discovering agents");
-        }
-    }
-
-    discovered
+    // No config yet — seed_builtin_agents handles first-run setup.
+    Vec::new()
 }
 
-/// Try to extract a display name from an agent directory's SOUL.md.
-/// Looks for the first `# Title` line.
-fn extract_display_name(agent_dir: &std::path::Path) -> Option<String> {
-    let soul_path = agent_dir.join("SOUL.md");
-    let content = std::fs::read_to_string(&soul_path).ok()?;
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if let Some(stripped) = trimmed.strip_prefix("# ") {
-            let title = stripped.trim();
-            if !title.is_empty() {
-                return Some(title.to_string());
-            }
-        }
+/// Check whether config.yaml already has any agents registered.
+fn config_has_agents() -> bool {
+    let config_path = aman_data_dir().join("config.yaml");
+    if !config_path.exists() {
+        return false;
     }
-    None
+    let raw = match std::fs::read_to_string(&config_path) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let config: serde_yaml::Value = match serde_yaml::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    config
+        .get("agents")
+        .and_then(|a| a.as_mapping())
+        .is_some_and(|m| !m.is_empty())
 }
 
 /// Seed predefined agents into `~/.aman/agents/` if no agents exist yet.
 ///
-/// Also updates `~/.aman/config.yaml` to register the agents if the config
-/// exists but has no agents, or creates a minimal config if none exists.
+/// Checks config.yaml FIRST (primary gate), then the filesystem. If either
+/// already has agents, seeding is skipped entirely — no per-agent checking.
 ///
 /// Returns the list of agent keys that were seeded.
 pub fn seed_builtin_agents() -> Vec<String> {
+    // Primary gate: if config.yaml already has agents registered, skip.
+    // This catches cases where the filesystem check might return 0 due to
+    // a transient read_dir error or the agents directory not existing yet.
+    if config_has_agents() {
+        tracing::info!(
+            "config.yaml already has agents — skipping seed"
+        );
+        return Vec::new();
+    }
+
+    // Secondary gate: if the agents directory already has subdirectories, skip.
     let agents_dir = agents_data_dir();
     let count = existing_agent_count(&agents_dir);
     if count > 0 {
@@ -258,7 +170,17 @@ pub fn seed_builtin_agents() -> Vec<String> {
 /// Files are written to `agent_dir` with relative paths preserved from the
 /// manifest. Directories are created as needed. Both text and binary content
 /// are handled.
+///
+/// If the agent directory already contains a SOUL.md, the agent is assumed to
+/// already exist and seeding is skipped for it — this is the ultimate backstop
+/// against overwriting user data.
 fn seed_one_agent(agent_dir: &Path, agent: &BuiltinAgentDef) -> Result<(), String> {
+    // Ultimate backstop: never overwrite an agent that already has a SOUL.md.
+    if agent_dir.join("SOUL.md").exists() {
+        tracing::info!(agent = agent.key, path = %agent_dir.display(), "agent already exists — skipping seed for this agent");
+        return Ok(());
+    }
+
     // Ensure runtime directories exist (not part of the manifest).
     std::fs::create_dir_all(agent_dir.join("memory"))
         .map_err(|e| format!("create memory dir: {e}"))?;

@@ -204,13 +204,30 @@ impl TokenBudget {
     }
 
     /// Estimate the number of tokens in a text string.
-    /// Uses a conservative chars-to-tokens ratio to avoid underestimation
-    /// (code, JSON, and CJK text have higher token density than English prose).
+    ///
+    /// Uses byte length (`text.len()` in Rust) divided by 2.
+    ///
+    /// In UTF-8, CJK characters take 3 bytes while ASCII takes 1 byte,
+    /// so byte count already inherently weights non-English text more
+    /// heavily — no character classification needed. A 3-byte CJK char
+    /// counts as 1.5 estimated tokens, which covers the common BPE case
+    /// (1–2 tokens/char) for OpenAI, DeepSeek, and Anthropic tokenizers.
+    ///
+    /// For English prose (~4 bytes/token) this overestimates by ~2×,
+    /// triggering compression earlier than strictly necessary. That is
+    /// intentional: it is safer to compress early than to hit an API
+    /// 400 because the budget underestimated the real token count.
+    ///
+    /// This replaces the old `bytes / 3` heuristic which could
+    /// underestimate real token counts by 2–6× for CJK-heavy text.
     pub fn estimate_tokens(text: &str) -> usize {
         if text.is_empty() {
             return 0;
         }
-        (text.len() / 3).max(1)
+        // bytes / 2: conservative across all BPE tokenizers.
+        // CJK (3 bytes/char, 1–2 tokens/char) → 1.5 estimated → safe.
+        // English (4 bytes/token) → 2 estimated → safe, overestimates ~2×.
+        (text.len() / 2).max(1)
     }
 
     /// Current total prompt usage (system + tool schemas + history).
@@ -361,10 +378,44 @@ mod tests {
 
     #[test]
     fn test_estimate_tokens() {
-        assert_eq!(TokenBudget::estimate_tokens("hello"), 1);
         assert_eq!(TokenBudget::estimate_tokens(""), 0);
+        // "hello" = 5 bytes → 5/2 = 2
+        assert_eq!(TokenBudget::estimate_tokens("hello"), 2);
+        // 100 ASCII chars = 100 bytes → 100/2 = 50
         let long = "a".repeat(100);
-        assert_eq!(TokenBudget::estimate_tokens(&long), 33);
+        assert_eq!(TokenBudget::estimate_tokens(&long), 50);
+    }
+
+    #[test]
+    fn test_estimate_tokens_cjk_conservative() {
+        // "你好" = 6 bytes, 2 chars → 6/2 = 3 estimated.
+        // Actual BPE tokens for common CJK: ~2. Estimate ≥ actual. ✓
+        assert_eq!(TokenBudget::estimate_tokens("你好"), 3);
+        // "你好世界" = 12 bytes → 12/2 = 6 estimated.
+        // Actual: ~4–6 tokens. Estimate ≥ actual. ✓
+        assert_eq!(TokenBudget::estimate_tokens("你好世界"), 6);
+    }
+
+    #[test]
+    fn test_estimate_tokens_mixed() {
+        // "hello你好" = 5 ASCII + 6 CJK = 11 bytes → 11/2 = 5
+        assert_eq!(TokenBudget::estimate_tokens("hello你好"), 5);
+    }
+
+    #[test]
+    fn test_estimate_tokens_never_zero_for_non_empty() {
+        // Single byte: "/" → 1/2 = 0 in integer div, but .max(1) ensures 1
+        assert_eq!(TokenBudget::estimate_tokens("x"), 1);
+        assert_eq!(TokenBudget::estimate_tokens("."), 1);
+    }
+
+    #[test]
+    fn test_estimate_tokens_json() {
+        // JSON with mixed ASCII structure + CJK values
+        let json = r#"{"tool":"search","args":{"query":"北京天氣"}}"#;
+        let est = TokenBudget::estimate_tokens(json);
+        // ~48 bytes → 48/2 = 24 estimated. Actual for this JSON: ~18–28.
+        assert!(est >= 20, "estimate {est} should be >= 20");
     }
 
     #[test]

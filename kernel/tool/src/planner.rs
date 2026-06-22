@@ -258,7 +258,7 @@ impl Tool for PlannerTool {
                                 },
                                 "milestone_id": {
                                     "type": "string",
-                                    "description": "Optional milestone this task contributes to"
+                                    "description": "Optional milestone this task contributes to. References a milestone id from the plan. If the referenced milestone doesn't exist, the reference is silently dropped."
                                 }
                             }
                         }
@@ -664,7 +664,7 @@ impl PlannerTool {
                 message: "set_tasks requires a \"tasks\" array.".to_owned(),
             })?;
 
-        let tasks: Vec<TaskDef> = tasks_raw
+        let mut tasks: Vec<TaskDef> = tasks_raw
             .into_iter()
             .map(serde_json::from_value)
             .collect::<Result<Vec<_>, _>>()
@@ -687,18 +687,17 @@ impl PlannerTool {
             }
         }
 
-        // Validate milestone references.
+        // Clean milestone references: if a task references a milestone that
+        // doesn't exist in the plan (or the plan has no milestones at all),
+        // silently strip the reference rather than erroring. The LLM may not
+        // always know the milestone list — especially when milestones were
+        // omitted during create.
         let milestone_ids: Vec<&str> = state.milestones.iter().map(|m| m.id.as_str()).collect();
-        for task in &tasks {
+        for task in &mut tasks {
             if let Some(ref mid) = task.milestone_id
                 && !milestone_ids.contains(&mid.as_str())
             {
-                return Err(Error::ConfigInvalid {
-                    message: format!(
-                        "task '{}' references milestone '{}' which is not in the milestone list",
-                        task.id, mid
-                    ),
-                });
+                task.milestone_id = None;
             }
         }
 
@@ -1487,15 +1486,20 @@ mod tests {
         let state = PlannerTool::read_plan(plan_id).unwrap();
         assert_eq!(state.tasks[0].milestone_id.as_deref(), Some("m1"));
 
-        // Bad milestone reference should fail.
-        let result = exec(json!({
+        // Bad milestone reference: silently stripped instead of erroring.
+        // The LLM may not know the milestone list, so we just drop the ref.
+        let set2 = exec(json!({
             "operation": "set_tasks",
             "plan_id": plan_id,
             "tasks": [
                 {"id": "1", "title": "Bad ref", "description": "...", "milestone_id": "m99"}
             ]
-        }));
-        assert!(result.is_err());
+        })).unwrap();
+        assert!(set2["ok"].as_bool().unwrap());
+
+        let state2 = PlannerTool::read_plan(plan_id).unwrap();
+        assert_eq!(state2.tasks[0].milestone_id, None,
+            "milestone_id 'm99' should have been stripped since it's not in the plan");
 
         teardown_test_home(&home);
     }

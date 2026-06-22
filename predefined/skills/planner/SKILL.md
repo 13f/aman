@@ -7,7 +7,7 @@ description: >
   set_tasks, start, complete, fail, append_finding, record_direction,
   increment_stale, status, resume.  For guidance on WHEN to create plans,
   see the `plan` skill.
-version: 1.2.0
+version: 1.3.0
 metadata:
   hermes:
     tags: [planner, planning, task-tracking, execution, long-horizon, state-management, cross-session]
@@ -104,7 +104,7 @@ Task object fields:
 - `title` (string, required) — Human-readable title
 - `description` (string, required) — What this task should accomplish
 - `depends_on` (array of strings, optional) — Task ids that must complete before this one
-- `milestone_id` (string, optional) — Milestone this task contributes to
+- `milestone_id` (string, optional) — Milestone this task contributes to. If the referenced milestone doesn't exist in the plan, the reference is silently dropped (no error).
 
 ```json
 {

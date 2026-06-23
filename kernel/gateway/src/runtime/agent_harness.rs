@@ -3011,6 +3011,60 @@ impl AgentHarness {
         descriptors
     }
 
+    /// Build the full system prompt (soul + skills + tools + date + discipline + hints).
+    ///
+    /// Used by both foreground HTTP sessions and background idle_run sessions so the
+    /// LLM always receives a consistent, complete system prompt.  The caller supplies
+    /// the soul content, skill list, and the [`super::self_bridge::SelfBridge`] for
+    /// Python-first prompt assembly; this method handles tool filtering (via
+    /// [`build_tool_descriptors`]) and the Rust fallback path.
+    pub async fn build_full_system_prompt(
+        &self,
+        agent_id: &str,
+        soul_raw: &str,
+        skills: &[skill::SkillInfo],
+        self_bridge: &super::self_bridge::SelfBridge,
+        cwd: Option<&str>,
+    ) -> String {
+        let skills_json = serde_json::to_value(skills).unwrap_or_default();
+
+        // Build tool descriptors filtered by agent policy.
+        let tool_descriptors = self.build_tool_descriptors(agent_id).await;
+        let tools_json = serde_json::to_value(&tool_descriptors).unwrap_or_default();
+
+        let prompt_ctx = super::self_bridge::SystemPromptContext {
+            claude_md_content: None,
+            cwd,
+            platform: "desktop",
+            model: None,
+            provider: None,
+        };
+
+        // Python-first: unified system_prompt.py
+        if let Some(prompt) = self_bridge.build_full_system_prompt(
+            soul_raw,
+            &skills_json,
+            &tools_json,
+            None, // memory is retrieved per-turn
+            &prompt_ctx,
+        ) {
+            return prompt;
+        }
+
+        // Rust fallback when Python is unavailable
+        let soul_prompt = self_bridge
+            .build_soul_prompt(soul_raw)
+            .unwrap_or_else(|| soul_raw.to_owned());
+        let skills_prompt = self_bridge
+            .build_skills_prompt(&skills_json)
+            .unwrap_or_default();
+        super::self_bridge::build_system_prompt_fallback(
+            &soul_prompt,
+            &skills_prompt,
+            &tool_descriptors,
+        )
+    }
+
     /// Set up streaming for one ReAct turn: create an mpsc channel, attach it
     /// as the streaming callback on the context, and spawn a task that forwards
     /// each event to the event bus as `agent:reply_*` events.

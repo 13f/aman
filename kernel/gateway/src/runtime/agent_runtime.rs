@@ -1295,6 +1295,9 @@ impl AgentRuntimeBuilder {
 
                 // Build SoulSnapshot from pre-built prompt in event payload, or fall back
                 // to current soul (which includes skill instructions from the HTTP handler).
+                // For background/idle_run sessions without a pre-built prompt, build the
+                // full system prompt (soul + skills + tools + date + discipline + hints)
+                // matching foreground chat sessions.
                 let soul_snapshot = event.payload.get("soul_system_prompt")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
@@ -1308,9 +1311,19 @@ impl AgentRuntimeBuilder {
                         self.soul_runtime.as_ref()
                             .map(|sr| {
                                 let soul = sr.current_soul();
-                                let prompt = self.self_bridge
-                                    .build_soul_prompt(&soul.raw)
-                                    .unwrap_or_else(|| soul.raw.clone());
+                                let skills = self.llm_skills.lock()
+                                    .ok()
+                                    .map(|g| g.clone())
+                                    .unwrap_or_default();
+                                let cwd = std::env::current_dir()
+                                    .ok()
+                                    .and_then(|p| p.to_str().map(String::from));
+                                let prompt = pollster::block_on(
+                                    self.agent_harness.build_full_system_prompt(
+                                        &agent_id, &soul.raw, &skills,
+                                        &self.self_bridge, cwd.as_deref(),
+                                    ),
+                                );
                                 kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
                             })
                             .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""))

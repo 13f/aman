@@ -14,6 +14,7 @@ pub mod incubation;
 pub mod manager;
 pub mod metrics;
 pub mod personality;
+pub mod sleep;
 pub mod types;
 
 pub use types::{
@@ -24,3 +25,4 @@ pub use coordination::IdleCoordination;
 pub use manager::AgentIdleManager;
 pub use boredom::BoredomActor;
 pub use deferred_memory::MemoryDeferredTaskQueue;
+pub use sleep::{SleepActor, SleepActorConfig, SleepHousekeeper, SleepPhaseOutput};

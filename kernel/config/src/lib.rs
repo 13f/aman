@@ -324,11 +324,21 @@ pub struct SleepConfig {
     pub cache_expiry_days: u64,
     #[serde(default = "default_max_cpu_seconds")]
     pub max_cpu_seconds: u64,
+    /// Days before a stale background session is eligible for cleanup.
+    #[serde(default = "default_stale_background_retention_days")]
+    pub stale_background_retention_days: u64,
+    /// Minimum total characters in agent replies to keep a background session.
+    /// Sessions whose replies are shorter than this are considered "no-output"
+    /// and will be cleaned up.
+    #[serde(default = "default_stale_background_min_reply_chars")]
+    pub stale_background_min_reply_chars: usize,
 }
 
 fn default_short_term_retention_days() -> u64 { 7 }
 fn default_cache_expiry_days() -> u64 { 30 }
 fn default_max_cpu_seconds() -> u64 { 300 }
+fn default_stale_background_retention_days() -> u64 { 7 }
+fn default_stale_background_min_reply_chars() -> usize { 200 }
 
 impl Default for SleepConfig {
     fn default() -> Self {
@@ -336,6 +346,8 @@ impl Default for SleepConfig {
             short_term_retention_days: 7,
             cache_expiry_days: 30,
             max_cpu_seconds: 300,
+            stale_background_retention_days: 7,
+            stale_background_min_reply_chars: 200,
         }
     }
 }

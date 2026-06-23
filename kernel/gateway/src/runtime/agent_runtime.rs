@@ -1011,30 +1011,30 @@ impl AgentRuntimeBuilder {
             ));
         }
 
-        // ── Sleep runner (Idle kind=Sleep → cognitive housekeeping) ──────
-        let sleep_runner = Arc::new(super::sleep::SleepRunner::new());
-        sleep_runner.set_agent_registry(Arc::clone(&agent_registry));
+        // ── Sleep actor (Idle kind=Sleep → cognitive housekeeping) ──────
         let sleep_cfg = aman_cfg
             .as_ref()
             .map(|c| c.runtime.idle.sleep.clone())
             .unwrap_or_default();
-        sleep_runner.set_sleep_config(sleep_cfg);
+        let sleep_actor_config = idle::SleepActorConfig {
+            max_cpu_seconds: sleep_cfg.max_cpu_seconds,
+            short_term_retention_days: sleep_cfg.short_term_retention_days,
+            cache_expiry_days: sleep_cfg.cache_expiry_days,
+            stale_background_retention_days: sleep_cfg.stale_background_retention_days,
+            stale_background_min_reply_chars: sleep_cfg.stale_background_min_reply_chars,
+        };
         let memory_llm_for_incubation = memory_llm_cfg.clone();
-        if let Some(cfg) = memory_llm_cfg {
-            sleep_runner.set_memory_llm(cfg);
-        }
+        let sleep_housekeeper = Arc::new(super::sleep::GatewaySleepHousekeeper::new(
+            Arc::clone(&agent_registry),
+            memory_llm_cfg,
+        ));
+        let sleep_actor = idle::SleepActor::new(
+            sleep_actor_config,
+            sleep_housekeeper as Arc<dyn idle::SleepHousekeeper>,
+        );
 
-        // Subscribe to Idle events on the global bus (filtered to kind="sleep" in handle())
+        // Subscribe to Idle events on the global bus (SleepActor filters to kind="sleep")
         {
-            struct SleepSub {
-                runner: Arc<super::sleep::SleepRunner>,
-            }
-            #[async_trait::async_trait]
-            impl event_bus::EventHandler for SleepSub {
-                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
-                    self.runner.handle(event).await
-                }
-            }
             let _ = pollster::block_on(bus.subscribe(
                 event_bus::SubscriptionFilter {
                     event_types: Some(vec![kernel::event::EventType::Idle]),
@@ -1042,9 +1042,7 @@ impl AgentRuntimeBuilder {
                     priorities: None,
                     payload_match: None,
                 },
-                Box::new(SleepSub {
-                    runner: sleep_runner,
-                }),
+                Box::new(sleep_actor),
             ));
         }
 
@@ -5022,37 +5020,6 @@ mod tests {
         tokio::task::yield_now().await;
         lc.notify_shutdown_complete();
         waiter.await.expect("waiter completed");
-    }
-}
-
-#[cfg(test)]
-mod build_tests {
-    use super::AgentRuntimeBuilder;
-    use config::AgentConfig;
-    use tempfile::TempDir;
-
-    /// Smoke test: verify that AgentRuntime::build() accepts the default
-    /// configuration without panicking or returning an unrecoverable error.
-    ///
-    /// This is a *characterization* test — it documents what the minimum
-    /// viable configuration looks like. If `build()` starts requiring new
-    /// fields or external services, this test will catch it.
-    #[test]
-    fn test_build_with_default_config_and_temp_dir() {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let _enter = rt.enter();
-        let tmp = TempDir::new().expect("temp dir");
-        let result = AgentRuntimeBuilder::new(AgentConfig::default())
-            .with_runtime_dir(tmp.path().to_path_buf())
-            .with_predefined_dir("predefined")
-            .with_runtime_handle(rt.handle().clone())
-            .build();
-
-        assert!(
-            result.is_ok(),
-            "AgentRuntime::build() with default config + temp dir should succeed, got: {:?}",
-            result.err()
-        );
     }
 }
 

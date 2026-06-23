@@ -312,6 +312,129 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Delete background sessions older than `older_than_days` whose total
+    /// agent reply text is shorter than `min_reply_chars` characters.  These
+    /// are typically idle-run sessions (prize games, luck, etc.) that ran
+    /// without producing any useful output.
+    ///
+    /// Only considers sessions with `message_count > 0` — sessions with zero
+    /// messages are handled by [`delete_empty_sessions`].
+    ///
+    /// Returns the number of sessions deleted.
+    pub fn delete_stale_low_value_sessions(
+        &self,
+        agent_id: &str,
+        older_than_days: u64,
+        min_reply_chars: usize,
+    ) -> AmanResult<usize> {
+        let cutoff_ms = {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            now - (older_than_days as i64 * 86400 * 1000)
+        };
+
+        // Collect candidate session ids: background, stale, with at least one
+        // message but not so many that we'd expect real content.
+        let candidates: Vec<(String, i64)> = {
+            let db = self.db.lock().expect("session store lock");
+            let mut stmt = db
+                .prepare(
+                    "SELECT id, message_count FROM sessions
+                     WHERE session_type = 'background'
+                       AND agent_id = ?1
+                       AND created_at < ?2
+                       AND message_count > 0
+                     ORDER BY created_at ASC",
+                )
+                .map_err(|e| kernel::Error::ConfigInvalid {
+                    message: format!("session store stale candidates: {e}"),
+                })?;
+            stmt.query_map(rusqlite::params![agent_id, cutoff_ms], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| kernel::Error::ConfigInvalid {
+                message: format!("session store stale candidates rows: {e}"),
+            })?
+            .filter_map(|r| r.ok())
+            .collect()
+        };
+
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+
+        // Inspect each candidate's JSONL to measure actual reply content.
+        let mut to_delete: Vec<String> = Vec::new();
+        for (id, _msg_count) in &candidates {
+            let events = self.load_session_events(id);
+            let total_reply_chars: usize = events
+                .iter()
+                .filter_map(|e| {
+                    let et = e["event_type"].as_str()?;
+                    if et.contains("reply_ready") || et == "llm_reply_ready" {
+                        // Reply text lives in payload.reply or payload.full_text
+                        let payload = &e["payload"];
+                        payload["reply"]
+                            .as_str()
+                            .or_else(|| payload["full_text"].as_str())
+                            .map(|s| s.chars().count())
+                    } else {
+                        None
+                    }
+                })
+                .sum();
+
+            if total_reply_chars < min_reply_chars {
+                to_delete.push(id.clone());
+            }
+        }
+
+        if to_delete.is_empty() {
+            return Ok(0);
+        }
+
+        // Delete DB records
+        let deleted = {
+            let db = self.db.lock().expect("session store lock");
+            let mut count = 0usize;
+            for id in &to_delete {
+                match db.execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id]) {
+                    Ok(n) => count += n,
+                    Err(e) => {
+                        tracing::warn!(
+                            agent_id,
+                            session_id = %id,
+                            error = %e,
+                            "Sleep: failed to delete stale background session from DB"
+                        );
+                    }
+                }
+            }
+            count
+        };
+
+        // Remove JSONL files
+        for id in &to_delete {
+            let jsonl = self.jsonl_path(id);
+            if let Err(e) = std::fs::remove_file(&jsonl) {
+                // File may not exist — that's fine
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        agent_id,
+                        session_id = %id,
+                        path = %jsonl.display(),
+                        error = %e,
+                        "Sleep: failed to remove JSONL for stale background session"
+                    );
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
     /// JSONL file path for a session's persisted events.
     fn jsonl_path(&self, session_id: &str) -> std::path::PathBuf {
         let _ = std::fs::create_dir_all(&self.sessions_dir);

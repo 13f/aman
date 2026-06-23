@@ -18,6 +18,8 @@ use semver::Version;
 use serde_json::{json, Value};
 use tracing::warn;
 
+use cognitive_llm::provider::ResponseFormat;
+
 use ai::{
     ArticleInput, LlmConfig, ScoreResult, SummaryResult, TagResult,
     build_highlights_prompt, build_scoring_prompt, build_summary_prompt,
@@ -31,6 +33,93 @@ const TAGGING_TEMPERATURE: f64 = 0.265;
 const SCORING_TEMPERATURE: f64 = 0.377;
 const SUMMARIZING_TEMPERATURE: f64 = 0.465;
 const HIGHLIGHTS_TEMPERATURE: f64 = 0.578;
+
+// JSON schemas for structured output (json_schema mode).
+static TAGGING_SCHEMA: LazyLock<ResponseFormat> = LazyLock::new(|| {
+    ResponseFormat::JsonSchema {
+        name: "tagging".into(),
+        strict: true,
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": { "type": "integer" },
+                            "category": { "type": "string" },
+                            "keywords": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            }
+                        },
+                        "required": ["index", "category", "keywords"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["results"],
+            "additionalProperties": false
+        }),
+    }
+});
+
+static SCORING_SCHEMA: LazyLock<ResponseFormat> = LazyLock::new(|| {
+    ResponseFormat::JsonSchema {
+        name: "scoring".into(),
+        strict: true,
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": { "type": "integer" },
+                            "relevance": { "type": "integer" },
+                            "quality": { "type": "integer" },
+                            "timeliness": { "type": "integer" }
+                        },
+                        "required": ["index", "relevance", "quality", "timeliness"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["results"],
+            "additionalProperties": false
+        }),
+    }
+});
+
+static SUMMARY_SCHEMA: LazyLock<ResponseFormat> = LazyLock::new(|| {
+    ResponseFormat::JsonSchema {
+        name: "summary".into(),
+        strict: true,
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": { "type": "integer" },
+                            "title_zh": { "type": "string" },
+                            "summary": { "type": "string" },
+                            "reason": { "type": "string" }
+                        },
+                        "required": ["index", "title_zh", "summary", "reason"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["results"],
+            "additionalProperties": false
+        }),
+    }
+});
 
 // ── info_search ───────────────────────────────────────────────────────
 
@@ -228,7 +317,7 @@ impl Tool for InfoTagArticlesTool {
                 .map_err(|e| kernel::Error::config_invalid(format!("articles parse: {e}")))?;
 
         let (system, user) = build_tagging_prompt(&articles);
-        let text = chat_completion_with_retries(llm, &system, &user, TAGGING_TEMPERATURE, 2048, 60, 3).await
+        let text = chat_completion_with_retries(llm, &system, &user, TAGGING_TEMPERATURE, 2048, 60, 3, Some(&TAGGING_SCHEMA)).await
             .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
         let results: Vec<TagResult> = parse_json_response::<Value>(&text)
@@ -332,7 +421,7 @@ impl Tool for InfoScoreArticlesTool {
                 .map_err(|e| kernel::Error::config_invalid(format!("articles parse: {e}")))?;
 
         let (system, user) = build_scoring_prompt(&articles);
-        let text = chat_completion_with_retries(llm, &system, &user, SCORING_TEMPERATURE, 4096, 60, 3).await
+        let text = chat_completion_with_retries(llm, &system, &user, SCORING_TEMPERATURE, 4096, 60, 3, Some(&SCORING_SCHEMA)).await
             .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
         let results: Vec<ScoreResult> = parse_json_response::<Value>(&text)
@@ -470,7 +559,7 @@ impl Tool for InfoSummarizeArticlesTool {
         if !to_summarize.is_empty() {
             let articles_refs: Vec<ArticleInput> = to_summarize.iter().map(|&a| a.clone()).collect();
             let (system, user) = build_summary_prompt(&articles_refs, lang);
-            let text = chat_completion_with_retries(llm, &system, &user, SUMMARIZING_TEMPERATURE, 8192, 60, 3).await
+            let text = chat_completion_with_retries(llm, &system, &user, SUMMARIZING_TEMPERATURE, 8192, 60, 3, Some(&SUMMARY_SCHEMA)).await
                 .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
             let llm_results: Vec<SummaryResult> = parse_json_response::<Value>(&text)
@@ -556,7 +645,7 @@ impl Tool for InfoGenerateHighlightsTool {
             .unwrap_or("zh");
 
         let (system, user) = build_highlights_prompt(articles_json, lang);
-        let text = chat_completion_with_retries(llm, &system, &user, HIGHLIGHTS_TEMPERATURE, 2048, 60, 3).await
+        let text = chat_completion_with_retries(llm, &system, &user, HIGHLIGHTS_TEMPERATURE, 2048, 60, 3, None).await
             .map_err(|e| kernel::Error::Unrecoverable { message: format!("LLM: {e}") })?;
 
         Ok(Value::String(text.trim().to_string()))

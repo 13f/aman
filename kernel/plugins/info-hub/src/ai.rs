@@ -160,8 +160,9 @@ pub async fn chat_completion(
     temperature: f64,
     max_tokens: u64,
     timeout_secs: u64,
+    response_format: Option<&cognitive_llm::provider::ResponseFormat>,
 ) -> Result<String, String> {
-    SimpleLlmClient::new().chat_completion(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs).await
+    SimpleLlmClient::new().chat_completion(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs, response_format).await
 }
 
 /// Chat completion with retries via the shared `SimpleLlmClient`.
@@ -173,8 +174,9 @@ pub async fn chat_completion_with_retries(
     max_tokens: u64,
     timeout_secs: u64,
     retries: u32,
+    response_format: Option<&cognitive_llm::provider::ResponseFormat>,
 ) -> Result<String, String> {
-    SimpleLlmClient::new().chat_completion_with_retries(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs, retries).await
+    SimpleLlmClient::new().chat_completion_with_retries(config, system_prompt, user_prompt, temperature, max_tokens, timeout_secs, retries, response_format).await
 }
 
 // ── Prompt Templates ────────────────────────────────────────────────

@@ -16,7 +16,8 @@ use config::MemoryLlmConfig;
 use event_bus::EventHandler;
 use kernel::event::{Event, EventType};
 use kernel::react::ChatMessage;
-use kernel::llm::{LlmChatRequest, LlmProvider};
+use cognitive_llm::simple::parse_json_response;
+use kernel::llm::{LlmChatRequest, LlmProvider, ResponseFormat};
 use kernel::memory::MemoryProvider;
 use kernel::trace::{TraceOutcome, TraceRecord};
 use kernel::AmanResult;
@@ -514,7 +515,23 @@ pub async fn session_extract_and_store_with_prompt(
         messages: vec![ChatMessage::user(conversation)],
         tools: Vec::new(),
         max_output_tokens: 1024,
-        response_format: None,
+        response_format: Some(ResponseFormat::JsonSchema {
+            name: "session_extraction".into(),
+            strict: true,
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "intent": { "type": "string" },
+                    "decisions": { "type": "array", "items": { "type": "string" } },
+                    "outputs": { "type": "array", "items": { "type": "string" } },
+                    "errors": { "type": "array", "items": { "type": "string" } },
+                    "tags": { "type": "array", "items": { "type": "string" } },
+                    "entities": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["intent", "decisions", "outputs", "errors", "tags", "entities"],
+                "additionalProperties": false
+            }),
+        }),
     };
 
     let resp = llm.chat_completion(req, None).await.map_err(|e| {
@@ -523,9 +540,9 @@ pub async fn session_extract_and_store_with_prompt(
         }
     })?;
 
-    // Parse the structured JSON from LLM response
+    // Parse the structured JSON from LLM response (robust: handles edge cases)
     let summary: serde_json::Value =
-        serde_json::from_str(&resp.content).unwrap_or_else(|_| {
+        parse_json_response(&resp.content).unwrap_or_else(|_| {
             serde_json::json!({
                 "intent": "unknown",
                 "raw": resp.content,

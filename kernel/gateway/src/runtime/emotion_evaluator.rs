@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use cognitive_llm::simple::parse_json_response;
 use event_bus::EventBus;
 use kernel::agent::AgentSystemState;
 use kernel::event::{Event, EventType};
@@ -264,10 +265,40 @@ impl EmotionEvaluator {
         let system_prompt = build_system_prompt(&self.agent_id, &self.emotion_candidates);
         let user_prompt = build_user_prompt(&context, &self.emotion_candidates);
 
-        // ── 3. Call the LLM (with retries for transient failures) ─────
+        // ── 3. Build json_schema from emotion candidates ──────────────
+        let emotion_ids: Vec<&str> = self
+            .emotion_candidates
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        let response_format = serde_json::json!({
+            "type": "json_schema",
+            "json_schema": {
+                "name": "emotion_selection",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "emotion_id": {
+                            "type": "string",
+                            "enum": emotion_ids,
+                            "description": "The selected emotion ID"
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Brief reasoning for the selection (under 60 chars)"
+                        }
+                    },
+                    "required": ["emotion_id", "reasoning"],
+                    "additionalProperties": false
+                }
+            }
+        });
+
+        // ── 4. Call the LLM (with retries for transient failures) ─────
         let mut last_err = String::new();
         for attempt in 0..=MAX_RETRIES {
-            match self.try_evaluate(&system_prompt, &user_prompt).await {
+            match self.try_evaluate(&system_prompt, &user_prompt, &response_format).await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     last_err = e;
@@ -292,15 +323,16 @@ impl EmotionEvaluator {
         &self,
         system_prompt: &str,
         user_prompt: &str,
+        response_format: &serde_json::Value,
     ) -> Result<Option<EmotionResponse>, String> {
         // ── Call the LLM ────────────────────────────────────────────────
         let raw = self
-            .call_llm(system_prompt, user_prompt)
+            .call_llm(system_prompt, user_prompt, response_format)
             .await
             .map_err(|e| format!("LLM call failed: {e}"))?;
 
-        // ── Parse & validate ────────────────────────────────────────────
-        let parsed: EmotionResponse = serde_json::from_str(&raw).map_err(|e| {
+        // ── Parse & validate (robust JSON extraction) ───────────────────
+        let parsed: EmotionResponse = parse_json_response(&raw).map_err(|e| {
             format!("emotion JSON parse error: {e} — raw: {}", truncate(&raw, 200))
         })?;
 
@@ -410,22 +442,25 @@ impl EmotionEvaluator {
         &self,
         system_prompt: &str,
         user_prompt: &str,
+        response_format: &serde_json::Value,
     ) -> Result<String, String> {
         let url = format!(
             "{}/chat/completions",
             self.llm_config.base_url.trim_end_matches('/')
         );
 
-        let body = json!({
+        let mut body = json!({
             "model": self.llm_config.model,
             "temperature": self.eval_config.temperature,
             "max_tokens": self.eval_config.max_tokens,
-            "response_format": { "type": "json_object" },
             "messages": [
                 { "role": "system", "content": system_prompt },
                 { "role": "user", "content": user_prompt },
             ],
         });
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("response_format".into(), response_format.clone());
+        }
 
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(LLM_TIMEOUT_SECS))

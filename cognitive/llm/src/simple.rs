@@ -12,6 +12,7 @@
 //! For full-featured LLM access (streaming, tools, multi-turn), use
 //! the [`LlmProvider`](crate::provider::LlmProvider) trait instead.
 
+use crate::provider::ResponseFormat;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::warn;
@@ -65,6 +66,9 @@ impl SimpleLlmClient {
     /// One-shot chat completion: send a system + user prompt and return the
     /// text response.
     ///
+    /// When `response_format` is `Some`, the request includes the appropriate
+    /// `response_format` field (`json_object` or `json_schema`).
+    ///
     /// # Errors
     ///
     /// Returns `Err(String)` on network errors, non-2xx responses, or
@@ -77,6 +81,7 @@ impl SimpleLlmClient {
         temperature: f64,
         max_tokens: u64,
         timeout_secs: u64,
+        response_format: Option<&ResponseFormat>,
     ) -> Result<String, String> {
         let url = format!(
             "{}/chat/completions",
@@ -101,6 +106,12 @@ impl SimpleLlmClient {
                 "max_completion_tokens".into(),
                 serde_json::json!(max_tokens),
             );
+        }
+
+        if let Some(fmt) = response_format {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("response_format".into(), response_format_json(fmt));
+            }
         }
 
         let client = if timeout_secs > 0 {
@@ -148,6 +159,7 @@ impl SimpleLlmClient {
         max_tokens: u64,
         timeout_secs: u64,
         retries: u32,
+        response_format: Option<&ResponseFormat>,
     ) -> Result<String, String> {
         let mut last_err = String::new();
         for attempt in 0..retries {
@@ -165,6 +177,7 @@ impl SimpleLlmClient {
                     temperature,
                     max_tokens,
                     timeout_secs,
+                    response_format,
                 )
                 .await
             {
@@ -176,6 +189,25 @@ impl SimpleLlmClient {
             }
         }
         Err(last_err)
+    }
+}
+
+// ── Response Format Helper ──────────────────────────────────────────────
+
+/// Convert a [`ResponseFormat`] to the JSON value sent in the request body.
+pub fn response_format_json(fmt: &ResponseFormat) -> Value {
+    match fmt {
+        ResponseFormat::JsonObject => serde_json::json!({"type": "json_object"}),
+        ResponseFormat::JsonSchema { name, schema, strict } => {
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": name,
+                    "strict": strict,
+                    "schema": schema,
+                }
+            })
+        }
     }
 }
 

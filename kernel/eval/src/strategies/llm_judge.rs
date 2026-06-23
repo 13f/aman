@@ -153,6 +153,7 @@ impl LlmJudgeExecutor for LlmApiJudgeExecutor {
                 self.max_tokens,
                 self.timeout_secs,
                 self.retries,
+                None, // dynamic dimension keys — can't use json_schema
             )
             .await
             .map_err(|e| kernel::Error::Unrecoverable {

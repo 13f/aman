@@ -2366,7 +2366,10 @@ impl Tool for LlmChatTool {
         let response_format = params
             .get("response_format")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_owned());
+            .and_then(|s| match s {
+                "json_object" => Some(kernel::llm::ResponseFormat::JsonObject),
+                _ => None,
+            });
 
         let reg = self.agent_registry.get().ok_or_else(|| Error::ConfigInvalid {
             message: "agent_registry not wired".to_owned(),
@@ -5521,7 +5524,7 @@ impl cognitive_llm::provider::LlmProvider for KernelLlmProviderAdapter {
                 })
                 .collect(),
             max_output_tokens: req.max_output_tokens,
-            response_format: req.response_format,
+            response_format: req.response_format.map(convert_response_format),
         };
         // Stream callback adaptation: the trait uses different StreamEvent
         // types. For the wrapper path we only need the non-streaming case,
@@ -5553,6 +5556,19 @@ impl cognitive_llm::provider::LlmProvider for KernelLlmProviderAdapter {
 }
 
 #[allow(dead_code)] // Exposed as public API for future engine migration.
+/// Convert cognitive_llm's ResponseFormat to kernel's ResponseFormat.
+/// Both enums have identical variants; this is a mechanical field-by-field copy.
+fn convert_response_format(
+    fmt: cognitive_llm::provider::ResponseFormat,
+) -> kernel::llm::ResponseFormat {
+    match fmt {
+        cognitive_llm::provider::ResponseFormat::JsonObject => kernel::llm::ResponseFormat::JsonObject,
+        cognitive_llm::provider::ResponseFormat::JsonSchema { name, schema, strict } => {
+            kernel::llm::ResponseFormat::JsonSchema { name, schema, strict }
+        }
+    }
+}
+
 fn convert_chat_message_kernel_to_cognitive(
     m: cognitive_llm::react::ChatMessage,
 ) -> kernel::react::ChatMessage {

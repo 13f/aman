@@ -15,7 +15,7 @@ use config::{IncubationConfig, MemoryLlmConfig};
 use event_bus::{try_publish, EventHandler, EventBus};
 use idle::IdleKind;
 use kernel::event::{Event, EventType};
-use kernel::llm::{LlmChatRequest, LlmProvider};
+use kernel::llm::{LlmChatRequest, LlmProvider, ResponseFormat};
 use kernel::memory::{MemoryProvider, MemoryRecord, ThinkConfig};
 use kernel::react::ChatMessage;
 use kernel::AmanResult;
@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
+use cognitive_llm::simple::parse_json_response;
 use tracing::{debug, info, warn};
 
 use super::agent_registry::AgentRegistry;
@@ -549,13 +550,34 @@ async fn extract_entities_batch(
         .map(|c| c.model.as_str())
         .unwrap_or("default");
 
+    // JSON Schema for structured output: array of arrays of strings,
+    // one inner array per content block, in order.
+    let entity_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "entities": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
+            }
+        },
+        "required": ["entities"],
+        "additionalProperties": false
+    });
+
     let req = LlmChatRequest {
         model: model.to_owned(),
         system_prompt: system_prompt.to_owned(),
         messages: vec![ChatMessage::user(numbered)],
         tools: Vec::new(),
         max_output_tokens: 2048,
-        response_format: None,
+        response_format: Some(ResponseFormat::JsonSchema {
+            name: "entity_extraction".to_owned(),
+            schema: entity_schema,
+            strict: true,
+        }),
     };
 
     let resp = match llm.chat_completion(req, None).await {
@@ -566,29 +588,38 @@ async fn extract_entities_batch(
         }
     };
 
-    // Parse JSON response
-    let parsed: serde_json::Value = match serde_json::from_str(&resp.content) {
+    // Parse JSON response (robust: handles edge cases even with structured output)
+    let parsed: serde_json::Value = match parse_json_response(&resp.content) {
         Ok(v) => v,
-        Err(_) => {
-            warn!("Incubation: LLM returned unparseable JSON, falling back to keyword search");
+        Err(e) => {
+            warn!("Incubation: LLM returned unparseable JSON, falling back to keyword search: {e}");
             return fallback_extract_entities(provider, contents).await;
         }
     };
 
-    let mut results: Vec<Vec<String>> = Vec::with_capacity(contents.len());
-    for i in 0..contents.len() {
-        let key = (i + 1).to_string();
-        let entities = parsed
-            .get(&key)
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        results.push(entities);
-    }
+    // Extract entities by position: parsed.entities[i] → Vec<String>
+    let entity_arrays = parsed
+        .get("entities")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|inner| {
+                    inner
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect::<Vec<String>>()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<Vec<String>>>()
+        })
+        .unwrap_or_default();
+
+    // Pad to match content count if LLM returned fewer arrays
+    let mut results = entity_arrays;
+    results.resize_with(contents.len(), Vec::new);
     results
 }
 

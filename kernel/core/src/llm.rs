@@ -36,6 +36,23 @@ pub enum StreamEvent {
     Error(String),
 }
 
+/// Structured output format requested from the LLM.
+#[derive(Debug, Clone)]
+pub enum ResponseFormat {
+    /// Request JSON object mode (`{ type: "json_object" }` for OpenAI).
+    JsonObject,
+    /// Request strict structured output with a JSON schema
+    /// (`{ type: "json_schema", json_schema: { ... } }` for OpenAI).
+    JsonSchema {
+        /// Schema name (must match `[a-zA-Z0-9_-]+` for OpenAI).
+        name: String,
+        /// JSON Schema value.
+        schema: serde_json::Value,
+        /// Whether to enforce strict mode (OpenAI: `strict: true`).
+        strict: bool,
+    },
+}
+
 /// Request to an LLM provider for a chat completion.
 pub struct LlmChatRequest {
     pub model: String,
@@ -44,8 +61,8 @@ pub struct LlmChatRequest {
     pub tools: Vec<ToolDescriptor>,
     pub max_output_tokens: u32,
     /// When set, the provider should request structured JSON output from the
-    /// model (e.g. `response_format: { type: "json_object" }` for OpenAI).
-    pub response_format: Option<String>,
+    /// model using the specified format.
+    pub response_format: Option<ResponseFormat>,
 }
 
 /// Response from an LLM provider after a chat completion.

@@ -252,10 +252,10 @@ ENTITY_EXTRACTION_PROMPT = """\
 You are an entity extraction system. Extract named entities \
 (people, places, organizations, concepts, technical terms, product names, \
 project names, tool names) from each content block below. \
-Return ONLY a JSON object where keys are content indices ("1", "2", etc.) \
-and values are arrays of entity strings. \
-Example: {"1": ["Neural Networks", "Yann LeCun"], "2": ["Rust", "Actix-Web"]} \
-If no entities are found in a block, return an empty array."""
+Return a JSON object with an "entities" field containing an array of arrays, \
+where each inner array corresponds to one content block in order. \
+Example: {"entities": [["Neural Networks", "Yann LeCun"], ["Rust", "Actix-Web"]]} \
+If no entities are found in a block, return an empty array for that position."""
 
 
 def build_entity_extraction_prompt() -> str:

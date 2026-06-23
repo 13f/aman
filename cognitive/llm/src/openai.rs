@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-use crate::provider::{LlmChatRequest, LlmProvider, LlmResponse, StreamEvent};
+use crate::provider::{LlmChatRequest, LlmProvider, LlmResponse, ResponseFormat, StreamEvent};
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -187,10 +187,22 @@ impl LlmOpenaiProvider {
             request_body["tools"] = json!(openai_tools);
             request_body["tool_choice"] = json!("auto");
         }
-        if let Some(ref fmt) = req.response_format
-            && fmt == "json_object"
-        {
-            request_body["response_format"] = json!({"type": "json_object"});
+        if let Some(ref fmt) = req.response_format {
+            match fmt {
+                ResponseFormat::JsonObject => {
+                    request_body["response_format"] = json!({"type": "json_object"});
+                }
+                ResponseFormat::JsonSchema { name, schema, strict } => {
+                    request_body["response_format"] = json!({
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": name,
+                            "strict": strict,
+                            "schema": schema,
+                        }
+                    });
+                }
+            }
         }
 
         let client = reqwest::Client::builder()
@@ -359,10 +371,22 @@ impl LlmOpenaiProvider {
         if !openai_tools.is_empty() {
             body["tools"] = json!(openai_tools);
         }
-        if let Some(ref fmt) = req.response_format
-            && fmt == "json_object"
-        {
-            body["response_format"] = json!({"type": "json_object"});
+        if let Some(ref fmt) = req.response_format {
+            match fmt {
+                ResponseFormat::JsonObject => {
+                    body["response_format"] = json!({"type": "json_object"});
+                }
+                ResponseFormat::JsonSchema { name, schema, strict } => {
+                    body["response_format"] = json!({
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": name,
+                            "strict": strict,
+                            "schema": schema,
+                        }
+                    });
+                }
+            }
         }
 
         let url = format!("{}/chat/completions", self.base_url);

@@ -14,6 +14,66 @@
 
 An event-driven agent framework for building safe, observable, and extensible autonomous systems.
 
+## System Dependencies
+
+All platforms require the **Rust toolchain** ([rustup](https://rustup.rs)),
+**Node.js & npm** (for frontend build steps in the gateway crate), and
+**ripgrep** (`rg`) as a runtime dependency for the built-in grep tool.
+
+Protobuf code generation uses `prost-build` (pure Rust) — **`protoc` is not
+required**.
+
+### Linux (Ubuntu/Debian)
+
+```bash
+# CLI-only build (gateway + cli)
+sudo apt-get install -y build-essential pkg-config
+
+# Full desktop build (Tauri + all crates) — adds GTK, WebKit, audio, keyring
+sudo apt-get install -y \
+  libwebkit2gtk-4.1-dev \
+  libappindicator3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf \
+  libssl-dev \
+  libdbus-1-dev \
+  libasound2-dev
+```
+
+`libwebkit2gtk-4.1-dev` pulls in GTK 3, Cairo, Pango, GLib, Soup 3,
+JavaScriptCore, and Wayland as transitive dependencies.
+
+If you only need the CLI, build with `cargo build -p gateway -p cli` to skip
+the desktop crate and avoid the Tauri/GTK dependency tree.
+
+### macOS
+
+```bash
+# Install Xcode Command Line Tools (provides cc, clang, system frameworks)
+xcode-select --install
+
+# Runtime dependency
+brew install ripgrep
+```
+
+No additional system packages are needed — WebKit, CoreAudio, Security
+(Keychain), and other frameworks are provided by the OS SDK.
+
+### Windows
+
+1. Install **Visual Studio Build Tools** or **Visual Studio 2022** with the
+   "Desktop development with C++" workload. This provides `cl.exe`, `link.exe`,
+   and the Windows SDK.
+
+2. **WebView2** is required for the Tauri desktop app. It is built into
+   Windows 11 and Windows 10 (October 2018 update or later). For older
+   Windows 10 builds, install the
+   [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).
+
+3. Install **Node.js** from [nodejs.org](https://nodejs.org) and **ripgrep**
+   via `winget install BurntSushi.ripgrep.MSVC` or `choco install ripgrep`.
+
 ## Quick Start
 
 ### Option A: Tauri Desktop App

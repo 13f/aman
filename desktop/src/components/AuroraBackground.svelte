@@ -4,17 +4,32 @@
 
   // ── Configuration ──────────────────────────────────────────────────────
 
-  /** Downsample factor — canvas renders at 1/N resolution for performance. */
-  const DOWNSAMPLE = 6;
+  /**
+   * Canvas renders at 1/N of the window size.
+   * Must be low enough that aurora bands survive the 28 px backdrop-filter
+   * blur applied by the glass layers on top.
+   */
+  const DOWNSAMPLE = 3;
 
-  /** How fast the aurora drifts (higher = faster). */
-  const DRIFT_SPEED = 0.04;
+  /** How fast the aurora drifts. */
+  const DRIFT_SPEED = 0.025;
 
-  /** Base colours (RGB, 0–255) for the three noise layers. */
+  /**
+   * Aurora layers.
+   *
+   * Peak RGB values are high because the glass layers' `backdrop-filter:
+   * blur(28px)` softens everything behind them.  `vStretch` < 1 elongates
+   * noise vertically → curtain/ribbon structure.
+   */
   const LAYERS = [
-    { r: 22, g: 28, b: 70, scale: 2.5, speed: 0.7 },   // deep navy
-    { r: 38, g: 14, b: 55, scale: 3.5, speed: 0.5 },   // dark plum
-    { r: 14, g: 20, b: 60, scale: 4.5, speed: 0.35 },  // deep indigo
+    // Green aurora curtain
+    { r: 15, g: 110, b: 25,  scale: 1.6, speed: 0.55, vStretch: 0.18 },
+    // Teal ribbon
+    { r: 8,  g: 85,  b: 80,  scale: 2.2, speed: 0.38, vStretch: 0.14 },
+    // Purple fringe
+    { r: 80,  g: 8,  b: 70,  scale: 2.8, speed: 0.26, vStretch: 0.25 },
+    // Blue ambient
+    { r: 8,  g: 35,  b: 90,  scale: 4.2, speed: 0.16, vStretch: 0.32 },
   ];
 
   // ── Canvas setup ──────────────────────────────────────────────────────
@@ -47,11 +62,10 @@
 
         for (let i = 0; i < LAYERS.length; i++) {
           const layer = LAYERS[i];
-          const n = noiseFns[i](
-            nx * layer.scale + t * layer.speed,
-            ny * layer.scale + t * layer.speed * 0.7,
-          );
-          // Map noise [-1, 1] → weight [0, 1]
+          // Vertical stretch: narrow in x, tall in y → curtains
+          const sx = nx * layer.scale / layer.vStretch + t * layer.speed;
+          const sy = ny * layer.scale * layer.vStretch + t * layer.speed * 0.5;
+          const n = noiseFns[i](sx, sy);
           const wgt = (n + 1) * 0.5;
           r += layer.r * wgt;
           g += layer.g * wgt;
@@ -139,9 +153,10 @@
   .aurora-canvas {
     position: fixed;
     inset: 0;
+    /* Render behind the glass layers (sidebar, main) so the aurora sits
+       underneath the frosted glass.  The glass layers' backdrop-filter blur
+       softens the noise into natural-looking aurora glow. */
     z-index: 0;
-    /* The canvas is already low-res; let the browser upscale with
-       bilinear filtering for a naturally soft look. */
     image-rendering: auto;
     pointer-events: none;
   }

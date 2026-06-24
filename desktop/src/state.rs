@@ -27,8 +27,7 @@ pub struct AppState {
 impl AppState {
     #[must_use]
     pub fn new() -> Self {
-        let config = config::ConfigLoader::load(None, None)
-            .map(|r| r.config)
+        let config = config::AmanConfig::from_default_path()
             .unwrap_or_default();
         Self {
             gateway_client: Arc::new(Mutex::new(None)),
@@ -36,8 +35,8 @@ impl AppState {
             // User-level: 10 messages per 60-second sliding window (§4.5)
             rate_limiter: SlidingWindowRateLimiter::new(Duration::from_secs(60), 10),
             active_agent_key: Arc::new(Mutex::new(None)),
-            locale: config.ui.locale,
-            ui_style: config.ui.style,
+            locale: config.runtime.ui.locale,
+            ui_style: config.runtime.ui.style,
         }
     }
 }

@@ -178,7 +178,7 @@ impl ReflectionRunner {
                     agent_id,
                     session_id = %session.id,
                     error = %e,
-                    "Reflection: session_extract failed"
+                    "Reflection: session_extract failed for agent {agent_id}"
                 );
             }
         }

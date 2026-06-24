@@ -232,7 +232,7 @@ impl EmotionEvaluator {
                     tracing::debug!(agent = %self.agent_id, "emotion evaluation skipped (no context)");
                 }
                 Err(e) => {
-                    tracing::warn!(agent = %self.agent_id, error = %e, "emotion evaluation failed");
+                    tracing::warn!(agent = %self.agent_id, error = %e, "emotion evaluation failed for agent {}", self.agent_id);
                 }
             }
 

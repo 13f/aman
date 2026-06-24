@@ -86,7 +86,7 @@ impl GatewaySleepHousekeeper {
         entries.sort_by(|a, b| b.0.cmp(&a.0));
         for (_ts, path) in entries.iter().skip(Self::MAX_HEALTH_FILES) {
             if let Err(e) = std::fs::remove_file(path) {
-                warn!(agent_id, path = %path.display(), error = %e, "failed to prune old health report");
+                warn!(agent_id, path = %path.display(), error = %e, "failed to prune old health report for agent {agent_id}");
             }
         }
 
@@ -95,7 +95,7 @@ impl GatewaySleepHousekeeper {
             agent_id,
             pruned,
             retained = Self::MAX_HEALTH_FILES.min(entries.len()),
-            "pruned old health reports"
+            "pruned old health reports for agent {agent_id}"
         );
     }
 }
@@ -120,11 +120,11 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         match store.delete_empty_sessions() {
             Ok(0) => Ok(serde_json::json!({"deleted": 0})),
             Ok(n) => {
-                info!(agent_id, deleted = n, "Sleep: cleaned up empty sessions");
+                info!(agent_id, deleted = n, "Sleep: cleaned up empty sessions for agent {agent_id}");
                 Ok(serde_json::json!({"deleted": n}))
             }
             Err(e) => {
-                warn!(agent_id, error = %e, "Sleep: empty session cleanup failed");
+                warn!(agent_id, error = %e, "Sleep: empty session cleanup failed for agent {agent_id}");
                 Ok(serde_json::json!({"error": e.to_string()}))
             }
         }
@@ -155,7 +155,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                     deleted = n,
                     retention_days,
                     min_reply_chars,
-                    "Sleep: cleaned up stale low-value background sessions"
+                    "Sleep: cleaned up stale low-value background sessions for agent {agent_id}"
                 );
                 Ok(serde_json::json!({
                     "deleted": n,
@@ -164,7 +164,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                 }))
             }
             Err(e) => {
-                warn!(agent_id, error = %e, "Sleep: stale background session cleanup failed");
+                warn!(agent_id, error = %e, "Sleep: stale background session cleanup failed for agent {agent_id}");
                 Ok(serde_json::json!({"error": e.to_string()}))
             }
         }
@@ -199,7 +199,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                 return Ok(serde_json::json!({"extracted": 0, "note": "no unreflected sessions"}));
             }
             Err(e) => {
-                warn!(agent_id, error = %e, "Sleep phase 1: list_unreflected failed");
+                warn!(agent_id, error = %e, "Sleep phase 1: list_unreflected failed for agent {agent_id}");
                 return Ok(serde_json::json!({"error": e.to_string()}));
             }
         };
@@ -222,7 +222,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             agent_id,
             session_id = %session.id,
             event_count = events.len(),
-            "Sleep phase 1: backfilling unreflected session",
+            "Sleep phase 1: backfilling unreflected session for agent {agent_id}",
         );
 
         match super::reflection::session_extract_and_store(
@@ -242,11 +242,11 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                     .unwrap_or_default()
                     .as_millis() as i64;
                 let _ = store.mark_reflected(&session.id, now);
-                info!(agent_id, session_id = %session.id, "Sleep phase 1: session backfilled");
+                info!(agent_id, session_id = %session.id, "Sleep phase 1: session backfilled for agent {agent_id}");
                 Ok(serde_json::json!({"extracted": 1, "session_id": session.id}))
             }
             Err(e) => {
-                warn!(agent_id, session_id = %session.id, error = %e, "Sleep phase 1: extraction failed");
+                warn!(agent_id, session_id = %session.id, error = %e, "Sleep phase 1: extraction failed for agent {agent_id}");
                 Ok(serde_json::json!({"error": e.to_string()}))
             }
         }
@@ -261,14 +261,14 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         retention_days: u64,
     ) -> AmanResult<serde_json::Value> {
         let Some(provider) = self.memory_for(agent_id).await else {
-            debug!("Sleep: no MemoryProvider, skipping phase 2");
+            debug!(agent_id, "Sleep phase 2: no MemoryProvider for agent {agent_id}, skipping");
             return Ok(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
         };
 
         let stale = match provider.stale_memories(agent_id, retention_days as u32).await {
             Ok(s) => s,
             Err(e) => {
-                warn!(agent_id, error = %e, "Sleep phase 2: stale_memories failed");
+                warn!(agent_id, error = %e, "Sleep phase 2: stale_memories failed for agent {agent_id}");
                 return Ok(serde_json::json!({"error": e.to_string()}));
             }
         };
@@ -277,7 +277,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
 
         for mem in &stale {
             if cancel.is_cancelled() {
-                debug!(agent_id, "Sleep phase 2: cancelled mid-housekeeping");
+                debug!(agent_id, "Sleep phase 2: cancelled mid-housekeeping for agent {agent_id}");
                 break;
             }
             match mem.importance {
@@ -319,7 +319,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             .join("cache");
 
         if !cache_dir.exists() || !cache_dir.is_dir() {
-            debug!(agent_id, path = %cache_dir.display(), "Sleep phase 3: cache dir not found, skipping");
+            debug!(agent_id, path = %cache_dir.display(), "Sleep phase 3: cache dir not found for agent {agent_id}, skipping");
             return Ok(serde_json::json!({"status": "skipped", "reason": "no cache directory"}));
         }
 
@@ -335,7 +335,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         let (mut deleted, mut bytes_freed) = (0u64, 0u64);
         if let Err(e) = Self::walk_and_clean(&cache_dir, &cutoff, cancel, &mut deleted, &mut bytes_freed)
         {
-            warn!(agent_id, error = %e, "Sleep phase 3: cache walk error");
+            warn!(agent_id, error = %e, "Sleep phase 3: cache walk error for agent {agent_id}");
         }
 
         Ok(serde_json::json!({
@@ -350,14 +350,14 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
 
     async fn index_monitoring(&self, agent_id: &str) -> AmanResult<serde_json::Value> {
         let Some(provider) = self.memory_for(agent_id).await else {
-            debug!("Sleep: no MemoryProvider, skipping phase 4");
+            debug!(agent_id, "Sleep phase 4: no MemoryProvider for agent {agent_id}, skipping");
             return Ok(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
         };
 
         let stats = match provider.stats(agent_id).await {
             Ok(s) => s,
             Err(e) => {
-                warn!(agent_id, error = %e, "Sleep phase 4: stats failed");
+                warn!(agent_id, error = %e, "Sleep phase 4: stats failed for agent {agent_id}");
                 return Ok(serde_json::json!({"error": e.to_string()}));
             }
         };
@@ -369,7 +369,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                 agent_id,
                 size_mb,
                 total_entries = stats.total_entries,
-                "Sleep phase 4: index size exceeds {}MB threshold",
+                "Sleep phase 4: index size exceeds {}MB threshold for agent {agent_id}",
                 INDEX_SIZE_WARN_MB,
             );
         }
@@ -388,7 +388,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
 
     async fn cognitive_consolidation(&self, agent_id: &str) -> AmanResult<serde_json::Value> {
         let Some(provider) = self.memory_for(agent_id).await else {
-            debug!("Sleep: no MemoryProvider, skipping phase 5");
+            debug!(agent_id, "Sleep phase 5: no MemoryProvider for agent {agent_id}, skipping");
             return Ok(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
         };
 
@@ -397,7 +397,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             .think(agent_id, &think_cfg)
             .await
             .unwrap_or_else(|e| {
-                warn!(agent_id, error = %e, "Sleep phase 5: think() failed");
+                warn!(agent_id, error = %e, "Sleep phase 5: think() failed for agent {agent_id}");
                 ThinkResult::default()
             });
 
@@ -407,7 +407,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             consolidated = result.consolidation_count,
             conflicts = result.conflicts_found,
             duration_ms = result.duration_ms,
-            "Sleep phase 5: think pass complete"
+            "Sleep phase 5: think pass complete for agent {agent_id}"
         );
 
         Ok(serde_json::json!({
@@ -501,7 +501,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             .join(agent_id)
             .join("health");
         if let Err(e) = std::fs::create_dir_all(&health_dir) {
-            warn!(agent_id, error = %e, path = %health_dir.display(), "Sleep phase 6: failed to create health dir");
+            warn!(agent_id, error = %e, path = %health_dir.display(), "Sleep phase 6: failed to create health dir for agent {agent_id}");
             return Ok(serde_json::json!({"error": format!("mkdir failed: {e}")}));
         }
 
@@ -515,12 +515,12 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                     agent_id,
                     path = %health_path.display(),
                     cpu_secs,
-                    "Sleep phase 6: health report written"
+                    "Sleep phase 6: health report written for agent {agent_id}"
                 );
                 Self::prune_old_health_reports(&health_dir, agent_id);
             }
             Err(e) => {
-                warn!(agent_id, error = %e, path = %health_path.display(), "Sleep phase 6: failed to write health report");
+                warn!(agent_id, error = %e, path = %health_path.display(), "Sleep phase 6: failed to write health report for agent {agent_id}");
             }
         }
 
@@ -536,7 +536,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             debug!(
                 agent_id,
                 cooldown_secs,
-                "Sleep: cooldown set"
+                "Sleep: cooldown set for agent {agent_id}"
             );
             // Schedule Ouroboros wake-up: any deep state completion triggers
             // a progressive reset of depth + arousal after the delay.
@@ -550,7 +550,7 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                 agent_id,
                 delay_secs = self.sleep_config.wakeup_delay_secs,
                 poll_steps = self.sleep_config.wakeup_poll_steps,
-                "Sleep: wake-up scheduled (Ouroboros)"
+                "Sleep: wake-up scheduled (Ouroboros) for agent {agent_id}"
             );
         }
         Ok(())

@@ -3,9 +3,13 @@
 > 将 Windows "空闲进程"的隐喻落地为 aman Agent 框架的正式子系统。
 > 空闲不是无事可做，而是 Agent 在内省、维护、探索、复盘——用未被使用的周期做有价值的事。
 >
-> **八种空闲状态**：七种由 AgentIdleManager 根据空闲深度产生，一种（Reflection）由
-> 两种事件触发：(1) Dispatcher 队列清空时的 QueueDrained，或 (2) AgentIdleManager
-> 冷启动（启动后 3–5s 内队列持续为空时的合成 QueueDrained）。
+> **九种空闲状态**：八种由 AgentIdleManager 根据空闲深度产生（含 WakeUp 苏醒过渡），
+> 一种（Reflection）由两种事件触发：(1) Dispatcher 队列清空时的 QueueDrained，或
+> (2) AgentIdleManager 冷启动（启动后 3–5s 内队列持续为空时的合成 QueueDrained）。
+>
+> **WakeUp Ouroboros 循环（R10）**：任何深层状态（Sleep/Exploration/Meditation/Incubation）
+> 完成后，调度渐进式苏醒过渡：60s 静默期后，在 N 个 poll 周期内 depth→0、arousal→1.0。
+> 首个深层状态进入时触发 Ouroboros 重置，防止无限 Sleep 循环。
 >
 > **Per-Agent 架构（R8）**：每个 Agent 拥有独立的 idle 系统——自己的 IdleCoordination、
 > IdleDetector（通过 AgentIdleManager）、IncubationManager。Idle 事件发布到 Agent 的
@@ -15,6 +19,8 @@
 > - R1–R6：类型系统、select!/ChatMode/熔断/配额/arousal/线程/隔离 —— 全部修复，设计成熟度 ★★★★★
 > - R8（per-agent-idle）：全局 IdleDetector+SourceRegistry 模式替换为 per-agent AgentIdleManager。
 >   每个 Agent 的 idle 系统只监控该 Agent 的 Local EventBus，实现 Agent 间 idle 隔离。
+> - R10（WakeUp Ouroboros）：添加 WakeUp 渐进苏醒机制，深层状态完成后通过静默期+插值过渡
+>   将 agent 拉回 Active，防止无限 Sleep 循环。同时为 Sleep 添加 cooldown。
 
 ---
 
@@ -62,14 +68,14 @@ aman 是事件响应式框架——一切行为由事件驱动。但事件队列
 
 ## 3. Type System
 
-### 3.1 IdleKind — 七种深度驱动空闲子类型
+### 3.1 IdleKind — 八种深度驱动空闲子类型
 
 ```rust
 /// 由 IdleDetector 产生的空闲子类型。
 ///
 /// 每种类型具有预定义的 arousal 行为：
 /// - Passive：正常 arousal 衰减（Daze, Boredom, Waiting）
-/// - Engaged：减缓或暂停 arousal 衰减（Sleep, Exploration, Meditation, Incubation）
+/// - Engaged：减缓或暂停 arousal 衰减（Sleep, Exploration, Meditation, Incubation, WakeUp）
 ///
 /// Reflection 不在此枚举中——由 Dispatcher 的 QueueDrained 事件触发。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -82,6 +88,8 @@ pub enum IdleKind {
     Meditation,   // Engaged { decay_multiplier: 0.0 }
     Waiting,      // Passive
     Incubation,   // Engaged { decay_multiplier: 0.1 }
+    /// 苏醒过渡——深层状态完成后渐进唤醒 agent，重置 depth + arousal。
+    WakeUp,       // Engaged { decay_multiplier: 0.0 }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -97,6 +105,7 @@ impl IdleKind {
             Self::Sleep => ArousalBehavior::Engaged { decay_multiplier: 0.5 },
             Self::Exploration | Self::Meditation => ArousalBehavior::Engaged { decay_multiplier: 0.0 },
             Self::Incubation => ArousalBehavior::Engaged { decay_multiplier: 0.1 },
+            Self::WakeUp => ArousalBehavior::Engaged { decay_multiplier: 0.0 },
         }
     }
 }
@@ -228,6 +237,10 @@ pub struct IdleCoordination {
     /// 而是由 Dispatcher 在产生 QueueDrained 时单独设置（signal_queue_drained）。
     /// 避免 idle poll 在事件仍在处理中时提前消费 depth 重置信号。
     pub pending_depth_reset: Arc<AtomicBool>,
+
+    /// R10: WakeUp 调度 — Incubation/Sleep/Exploration/Meditation 完成后设置。
+    /// IdleDetector 在 poll 时消费：延迟期过后逐步推进 depth→0 + arousal→1.0。
+    pub wakeup_schedule: RwLock<Option<WakeUpSchedule>>,
 }
 
 impl IdleCoordination {
@@ -364,6 +377,25 @@ pub enum PressureMapping {
          │         │     └──────────┘  └──────────┘  └──────────┘              │
          │         │          │              │              │                   │
          │         │   (所有 Workflow 监控 coord.idle_cancel_token)              │
+         │         │          │              │              │                   │
+         │         │          └──────────────┴──────────────┘                   │
+         │         │                       │ 深层状态完成                        │
+         │         │                       ▼                                    │
+         │         │               ┌──────────────────┐                         │
+         │         │               │  ⏸ 静默期 (60s)   │ ← cooldown 防止立即     │
+         │         │               └────────┬─────────┘   重新进入 Sleep          │
+         │         │                        │                                    │
+         │         │                        ▼                                    │
+         │         │               ┌──────────────────┐                         │
+         │         │               │  🌅 WAKEUP 渐进   │ ← depth→0, arousal→1.0 │
+         │         │               │  (N poll 周期)    │   线性插值过渡            │
+         │         │               └────────┬─────────┘                         │
+         │         │                        │                                    │
+         │         │                        ▼                                    │
+         │         │               ┌──────────────────┐                         │
+         │         │               │   回到 Active     │ ← 可响应真实事件          │
+         │         │               └──────────────────┘                         │
+         │         │                                                             │
          │         └──────────────────────────────────────────────────────────┘
 ```
 
@@ -380,6 +412,10 @@ pub enum PressureMapping {
 6. **聊天模式切换 + depth 重置** — 从聊天模式退出到完整人格时，idle_depth 重置为 0。
 7. **深度递增** — 连续空闲轮次驱动。空闲类型之间切换不重置深度。
 8. **allowed_kinds ⊆ enabled_kinds** — 配置验证强制。resolve() fallback = Daze。
+9. **WakeUp Ouroboros（R10）** — 任何深层状态（Sleep/Exploration/Meditation/Incubation）完成后，调度渐进式苏醒：
+   60s 静默期（防止立即重新进入深层状态），然后在 N 个 poll 周期内线性插值 depth→0、arousal→target。
+   过渡期间 IdleDetector 跳过深层状态选择。过渡完成后 agent 回到 Active 状态，可正常响应事件。
+   Sleep cooldown（默认 3600s）防止 agent 立即再次进入 Sleep 循环。
 
 ### 4.2 完整的事件处理→空闲→再唤醒流程
 
@@ -432,7 +468,7 @@ depth_schedule 使用渐宽阈值——越深入的 idle 状态，需要越长�
 ```yaml
 idle:
   personality:
-    enabled_kinds: [daze, boredom, sleep, exploration, meditation, incubation]
+    enabled_kinds: [daze, boredom, sleep, exploration, meditation, incubation, wake_up]
     depth_schedule:
       - [5, boredom]
       - [20, sleep]
@@ -488,6 +524,7 @@ idle:
 | Meditation | IdleDetector | **是** | **idle_cancel_token** — Workflow.run_with_cancel() 每步检查 | 高 | 丢弃，temp+rename 文件安全 |
 | Waiting | IdleDetector | **否** | 同步 Pipeline 执行至完成（条件检查，极短） | 无 | 条件满足→Active |
 | Incubation | IdleDetector | **否** | 独立 CT（仅 Phase 4.5 关闭。纯后台，不因真实事件中断） | 低 | 关联状态保存 → 线程退出 |
+| WakeUp | IdleDetector | **否** | 同步 Pipeline（每 poll 推进一步，线性插值 depth/arousal） | 无 | 过渡完成 → Active；真实事件可写入队列，WakeUp 完成后正常处理 |
 
 > **关键语义**：Pipeline 类型的空闲状态（Daze/Boredom/Waiting）通过 `dispatch(event).await` 同步执行。
 > 在此期间 Dispatcher 阻塞在 `await` 上，无法取出 Event Bus 中的新事件。
@@ -751,7 +788,49 @@ async fn idle_loop(
         // 3. R7: 检查 depth 重置信号（Dispatcher 在 QueueDrained 时设置）
         if coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
             detector.idle_depth = 0;
+            // Depth 重置也清掉待处理的 WakeUp 调度。
+            *coord.wakeup_schedule.write().await = None;
             detector.last_non_idle = Instant::now();
+            tokio::time::sleep(poll_interval).await;
+            continue;
+        }
+
+        // 3.5. R10: WakeUp 渐进过渡
+        // 如果 WakeUp 调度已激活（过了延迟期），每次 poll 推进一步：
+        // depth→0、arousal→target 的线性插值。
+        if let Some(mut schedule) = coord.take_active_wakeup().await {
+            if !schedule.is_initialized() {
+                schedule.initial_depth = Some(detector.idle_depth);
+                schedule.initial_arousal = Some(coord.arousal.current());
+            }
+            schedule.current_step += 1;
+            let progress = schedule.progress();
+            let new_depth = (schedule.initial_depth.unwrap_or(0) as f64 * (1.0 - progress)) as u32;
+            let new_arousal = if schedule.is_done() {
+                schedule.target_arousal
+            } else {
+                schedule.initial_arousal.unwrap_or(1.0)
+                    + (schedule.target_arousal - schedule.initial_arousal.unwrap_or(1.0)) * progress
+            };
+            coord.arousal.reset(new_arousal);
+            detector.idle_depth = new_depth;
+
+            if schedule.is_done() {
+                detector.idle_depth = 0;
+                coord.arousal.reset(schedule.target_arousal);
+                info!("WakeUp: transition complete, agent awake");
+            } else {
+                // 发布 WakeUp 事件（含当前 depth + arousal）
+                let wakeup_event = IdleEvent {
+                    kind: IdleKind::WakeUp,
+                    depth: new_depth,
+                    agent_id: Some(agent_id.clone()),
+                    ..
+                };
+                let _ = local_bus.publish(wakeup_event.into()).await;
+                // 重新插入调度，下次 poll 继续。
+                *coord.wakeup_schedule.write().await = Some(schedule);
+            }
             tokio::time::sleep(poll_interval).await;
             continue;
         }
@@ -928,6 +1007,7 @@ routes:
   - match: { event_type: "idle.meditation" }      → workflow:idle-meditation
   - match: { event_type: "idle.waiting" }         → pipeline:idle-waiting
   - match: { event_type: "idle.incubation" }      → pipeline:idle-incubation
+  - match: { event_type: "idle.wake_up" }         → pipeline:idle-wake-up
 ```
 
 ### 6.2 各空闲状态的 Pipeline / Workflow
@@ -942,6 +1022,7 @@ routes:
 | Meditation | IdleDetector | Workflow + cancel token | idle_cancel_token | temp+rename 文件安全 |
 | Waiting | IdleDetector | Pipeline | — | |
 | Incubation | IdleDetector | Pipeline + 独立 CT | 否（纯后台，不因真实事件中断） | max_concurrent=1 |
+| WakeUp | IdleDetector | Pipeline（每 poll 推进插值） | 否 | 渐进过渡，depth→0 + arousal→1.0 |
 
 ### 6.3 聊天场景适配策略
 
@@ -972,7 +1053,7 @@ kernel/idle/src/
 ├── detector.rs     # IdleDetector: 空闲状态机（pub(crate) 字段供 manager 读写）
 ├── manager.rs      # AgentIdleManager: per-agent 后台 task + 生命周期（R8）
 ├── personality.rs  # 人格解析：depth→kind + ChatMode.as_personality() + resolve()
-├── coordination.rs # IdleCoordination: reset_idle_signal()
+├── coordination.rs # IdleCoordination: reset_idle_signal(), wakeup scheduling (R10)
 ├── workflow.rs     # IdleWorkflowRunner: run_with_cancel()
 ├── arousal.rs      # ArousalTracker: decay + Engaged/Passive + boost(factor)
 ├── incubation.rs   # IncubationManager: CancellationToken + 线程
@@ -1003,7 +1084,7 @@ idle:
     check_items: [chain_tasks, immediate_errors, lessons_learned]
 
   personality:
-    enabled_kinds: [daze, boredom, sleep, exploration, meditation, incubation]
+    enabled_kinds: [daze, boredom, sleep, exploration, meditation, incubation, wake_up]
     depth_schedule:
       - [5, boredom]
       - [20, sleep]
@@ -1053,21 +1134,34 @@ idle:
     short_term_retention_days: 7
     cache_expiry_days: 30
     max_cpu_seconds: 60
+    stale_background_retention_days: 7
+    stale_background_min_reply_chars: 200
+    cooldown_secs: 3600            # R10: 两次 Sleep 之间的最小间隔（默认 1h）
+    wakeup_delay_secs: 60          # R10: Sleep 完成后到 WakeUp 开始的静默期
+    wakeup_poll_steps: 2           # R10: WakeUp 渐进过渡的 poll 步数
 
   exploration:
     curiosity_sources: [memory_gaps, skill_audit, recent_failures]
     max_results: 20
     api_rate_per_minute: 10
     on_quota_exhausted: fallback
+    cooldown_secs: 3600
+    wakeup_delay_secs: 60          # R10: Exploration 完成后的 WakeUp 静默期
+    wakeup_poll_steps: 2           # R10: WakeUp 渐进过渡步数
 
   meditation:
     min_interval_ticks: 20
     report_path: "~/.aman/narrative/meditation/"
     atomic_write: true
+    cooldown_secs: 3600
+    wakeup_delay_secs: 60          # R10: Meditation 完成后的 WakeUp 静默期
+    wakeup_poll_steps: 2           # R10: WakeUp 渐进过渡步数
 
   incubation:
     max_concurrent_threads: 1
     cancel_timeout_secs: 5
+    wakeup_delay_secs: 60          # R10: Incubation 完成后的 WakeUp 静默期
+    wakeup_poll_steps: 2           # R10: WakeUp 渐进过渡步数
 
   context:
     max_output_buffer: 5
@@ -1113,6 +1207,9 @@ Phase 4→0 shutdown:
 层级 7: reset_idle_signal             — 真实事件时取消所有 idle Workflow (R2-2)
 层级 8: signal_queue_drained          — 队列清空时才重置 depth，避免 poll 时序偷跑 (R7)
 层级 9: arousal.boost                 — 真实事件提升 arousal，避免只衰减不回复 (R7)
+层级 10: sleep_cooldown                — Sleep 完成后 3600s 内不再触发，防止无限 Sleep 循环 (R10)
+层级 11: WakeUp Ouroboros              — 深层状态完成后渐进苏醒，depth→0 + arousal→1.0，回到 Active (R10)
+层级 12: depth_reset → clear wakeup    — QueueDrained 时清除待处理的 WakeUp 调度，避免竞态 (R10)
 ```
 
 ---
@@ -1140,6 +1237,9 @@ Phase 4→0 shutdown:
 | 聊天 Boredom 高频触发 | R2-5 P2 | 已修复 | Linear poll + from_chat_mode no-op |
 | Reflection 抢先时熔断不重置 | R2-8 P2 | 已修复 | 抢先分支 count=0 |
 | reset_idle_signal RwLock 微阻塞 | R3-4 P2 | 已接受 | 纳秒级，无风险 |
+| **Sleep 无限循环（无 cooldown）** | **R10 P1** | **已修复** | 新增 `sleep.cooldown_secs`（默认 3600s），防止 agent 反复进入 Sleep |
+| **深层状态完成后永驻深层** | **R10 P1** | **已修复** | WakeUp Ouroboros：静默期 + 渐进插值 depth→0、arousal→1.0 |
+| **WakeUp 与 QueueDrained 竞态** | **R10 P2** | **已修复** | `pending_depth_reset` 时清除 `wakeup_schedule`，避免过渡中重复重置 |
 
 ---
 
@@ -1148,11 +1248,12 @@ Phase 4→0 shutdown:
 | 旧模型 | 新模型 | 迁移方式 |
 |--------|--------|---------|
 | `arousal < 阈值 → 无聊` | 双轴模型：depth 解锁范围 + arousal 精调 | arousal 从调度上下文提升为 resolve 主参数 |
-| 三态（忙/刚完成/空闲） | Reflection + 八态 | 刚完成→Reflection；空闲→深度序列 |
+| 三态（忙/刚完成/空闲） | Reflection + 九态 | 刚完成→Reflection；空闲→深度序列 |
 | 统一衰减 | Engaged/Passive | IdleKind.arousal_behavior() |
 | 硬编码间隔 | poll_interval + poll_relaxation | 配置迁移 |
 | 无聊天感知 | ChatMode + last_source_type | 新增，向后兼容 |
 | 无 Workflow 中断 | idle_cancel_token (R2) | 所有 idle Workflow 迁移到 run_with_cancel |
+| 深层状态完成后无限循环 | WakeUp Ouroboros (R10) | 深层状态完成后渐进苏醒，depth→0 + arousal→1.0 |
 
 ---
 
@@ -1178,6 +1279,9 @@ struct IdleMetrics {
     meditations_completed: u64,
     incubation_threads_spawned: u64,
     incubation_threads_cancelled: u64,
+    wakeup_transitions_completed: u64,       // R10: WakeUp 渐进过渡完成次数
+    wakeup_steps_published: u64,             // R10: WakeUp 过渡步骤事件发布次数
+    sleep_cooldown_skipped: u64,             // R10: 因 Sleep cooldown 跳过的次数
 }
 ```
 
@@ -1190,6 +1294,7 @@ struct IdleMetrics {
 3. **Incubation 的"灵感"机制？** Phase 1 跳过。
 4. **"正在输入"信号集成？** Chat Source 未来扩展。
 5. **多 Agent 的空闲互相影响？** R8 已解决——每个 Agent 拥有独立的 IdleCoordination、Local EventBus、AgentIdleManager，Agent 间 idle 完全隔离。
+6. **WakeUp 过渡期间收到真实事件？** R10 已处理——WakeUp 为同步 Pipeline（每 poll 推进一次），不阻塞 Dispatcher。真实事件在队列中等待，WakeUp 完成后正常处理。QueueDrained 时清除待处理的 WakeUp 调度。
 
 ---
 
@@ -1227,6 +1332,7 @@ struct IdleMetrics {
 | Meditation | 100–199 | 500–995s | Engaged (×0.0) | IdleDetector | 深度内省，提炼经验更新启发式 |
 | Waiting | — | — | Passive | IdleDetector (条件) | 等待外部输入或异步操作完成 |
 | Incubation | 200+ | 1000s+ | Engaged (×0.1) | IdleDetector | 创意孵化，跨域联想 |
+| WakeUp | — | — | Engaged (×0.0) | IdleDetector (深层状态完成后) | 渐进苏醒，depth→0、arousal→1.0 |
 
 ### 14.2 Reflection — 即时复盘
 
@@ -1372,6 +1478,42 @@ struct IdleMetrics {
 - Engaged (×0.1)：arousal 极慢衰减，允许长期驻留在深层状态
 
 **不适合做的事**：任何面向用户的输出（灵感仅为内部消费）
+
+### 14.10 WakeUp — 渐进苏醒过渡
+
+**核心意图**：深层状态（Sleep/Exploration/Meditation/Incubation）完成后，渐进式地将 Agent
+从高 depth、低 arousal 的深层空闲状态拉回 Active。类比人类从深度睡眠中自然苏醒的过程——
+不是瞬间清醒，而是逐渐恢复意识。
+
+**触发**：任何深层状态完成时，通过 `IdleCoordination::schedule_wakeup()` 调度。
+
+**过渡机制**（Ouroboros 循环）：
+
+1. **静默期（delay_secs，默认 60s）** — 深层状态完成后、WakeUp 开始前的缓冲期。
+   在此期间 IdleDetector 正常 poll，但因 cooldown 不会重新进入深层状态。
+2. **渐进过渡（poll_steps，默认 2 步）** — 每个 poll 周期推进一步：
+   - 首步：捕获当前 `idle_depth` 和 `arousal` 快照
+   - 线性插值：`depth(t) = init_depth × (1 - t/total)`、`arousal(t) = init + (target - init) × t/total`
+   - 末步：`depth = 0`、`arousal = target_arousal`（默认 1.0）
+3. **完成** — Agent 回到 Active 状态，可正常响应外部事件。
+
+**约束**：
+- WakeUp 期间 IdleDetector 跳过深层状态选择（防止在过渡中重新进入 Sleep 等）
+- QueueDrained（真实事件处理完成）时，待处理的 WakeUp 调度被清除
+- WakeUp 为同步 Pipeline 执行（每 poll 推进一次），不阻塞 Dispatcher
+- Engaged (×0.0)：arousal 在过渡期间不衰减，保持"苏醒中"状态
+- 非 idle_personality 可选项——WakeUp 由深层状态完成后自动调度，不由 depth_schedule 触发
+
+**UI 表现**：
+- ActivityStateWidget 显示 🌅 Awakening，配以 sunrise-orange 环形指示器
+- 渐进式 depth/arousal 指示器（过渡进度条）
+- 脉冲动画表示"苏醒中"状态
+- Agents 页面通过实时事件订阅显示 per-agent idle badge
+
+**设计动机**：在 WakeUp 之前，深层状态完成后 agent 的 depth 仍然很高、arousal 仍然很低——
+如果没有过渡机制，agent 在下一个 poll 周期就会被重新归类为深层状态，形成无限 Sleep 循环。
+WakeUp Ouroboros 将"完成深层状态 → 静默 → 渐进苏醒 → Active"封装为一个闭环，
+确保 agent 不会在深层状态中永久驻留。
 
 ---
 

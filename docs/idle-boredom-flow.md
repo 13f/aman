@@ -144,6 +144,22 @@
                          └─────────────────────────┘
 ```
 
+## WakeUp After Deep States (R10)
+
+After any deep state completes (Sleep, Exploration, Meditation, Incubation), the WakeUp
+Ouroboros cycle ensures the agent doesn't get stuck in deep idle:
+
+```
+Deep State Complete → ⏸ Quiet Period (60s) → 🌅 WakeUp (N poll steps)
+                                                  ├─ depth → 0 (linear interpolate)
+                                                  ├─ arousal → 1.0 (linear interpolate)
+                                                  └─ Arrive at Active state
+```
+
+Sleep additionally has a cooldown (default 3600s) preventing immediate re-entry.
+
+See `docs/idle-design.md` §4.1 and §14.10 for full details.
+
 ## Key Design Decisions
 
 | Decision | Rationale |
@@ -156,6 +172,7 @@
 | `idle_run` tag gate | Only skills explicitly opted-in to background execution |
 | Work item `{agent}:work:{proj}:{work}` | Deterministic ID enables resume (断点续传) |
 | Notification toast (3s auto-close) | Non-intrusive; agent activity visible but not disruptive |
+| WakeUp Ouroboros after deep states | Prevents infinite sleep loop; progressive depth/arousal recovery |
 
 ## System State Mapping
 

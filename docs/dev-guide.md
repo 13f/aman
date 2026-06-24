@@ -741,7 +741,7 @@ Source → poll() → Event → publish(Event) → admit_event()
 
 ### 4.7 Idle 系统与 Boredom 随机行动
 
-aman 的 Idle 系统在 Agent 无事可做时运行，沿深度逐步推进：**Daze → Boredom → Sleep → Exploration → Meditation → Incubation**。
+aman 的 Idle 系统在 Agent 无事可做时运行，沿深度逐步推进：**Daze → Boredom → Sleep → Exploration → Meditation → Incubation**。深层状态完成后通过 **WakeUp Ouroboros** 渐进苏醒。
 
 #### 深度推进
 
@@ -752,9 +752,13 @@ Depth 20  → Sleep        休眠
 Depth 50  → Exploration  探索
 Depth 100 → Meditation   冥想（知识整理）
 Depth 200 → Incubation   孵化（后台线程）
+
+深层状态完成后:
+  ⏸ 静默期 (60s) → 🌅 WakeUp (渐进苏醒: depth→0, arousal→1.0) → Active
 ```
 
 每个深度都有独立的 poll 间隔和 arousal（唤醒度）衰减策略。event bus 有任何新事件到达 → depth 重置为 0，idle 从头开始。
+Sleep 有 cooldown（默认 3600s），防止立即重新进入 Sleep 循环。
 
 #### Boredom 随机行动（tag → skill）
 

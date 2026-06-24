@@ -71,6 +71,7 @@ arousal_level = initial_value × e^(-t / half_life)
   如产出file/memory变更 → 继续，记录成果
   如发现重大异常 → 提升优先级，可通知用户
   如连续3次无产出 → 进入深度休眠（30min检查一次）
+  深层状态完成后 → WakeUp Ouroboros 渐进苏醒 → 回到 Active
 ```
 
 ---
@@ -334,6 +335,12 @@ Agent内部事件总线:
    - 空闲模式中连续M分钟无任何事件
    → 触发 bored 事件
    → bored → 扫描探索方向 → 有发现就处理，无发现进入深度休眠
+
+3.5. 深度休眠后的苏醒（WakeUp Ouroboros）
+   - Sleep/Exploration/Meditation/Incubation 完成后
+   → 60s 静默期（防止立即重新进入深层状态）
+   → 渐进苏醒过渡（N 个 poll 周期，depth→0 + arousal→1.0）
+   → 回到 Active，可正常响应事件
 
 4. 任何外部事件自动打断空闲/无聊/休眠
    → 事件 → 退出无聊 → 评估紧急度 → 处理或延后

@@ -232,7 +232,7 @@ impl EmotionEvaluator {
                     tracing::debug!(agent = %self.agent_id, "emotion evaluation skipped (no context)");
                 }
                 Err(e) => {
-                    tracing::warn!(agent = %self.agent_id, error = %e, "emotion evaluation failed for agent {}", self.agent_id);
+                    tracing::warn!(agent = %self.agent_id, error = %e, "emotion evaluation failed for agent {} — {e}", self.agent_id);
                 }
             }
 
@@ -265,34 +265,12 @@ impl EmotionEvaluator {
         let system_prompt = build_system_prompt(&self.agent_id, &self.emotion_candidates);
         let user_prompt = build_user_prompt(&context, &self.emotion_candidates);
 
-        // ── 3. Build json_schema from emotion candidates ──────────────
-        let emotion_ids: Vec<&str> = self
-            .emotion_candidates
-            .iter()
-            .map(|c| c.id.as_str())
-            .collect();
+        // ── 3. Build response_format ─────────────────────────────────
+        // Use "json_object" (widely supported: OpenAI, DeepSeek, etc.)
+        // rather than "json_schema" (OpenAI-only structured output).
+        // Schema validation is done in post-processing instead.
         let response_format = serde_json::json!({
-            "type": "json_schema",
-            "json_schema": {
-                "name": "emotion_selection",
-                "strict": true,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "emotion_id": {
-                            "type": "string",
-                            "enum": emotion_ids,
-                            "description": "The selected emotion ID"
-                        },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "Brief reasoning for the selection (under 60 chars)"
-                        }
-                    },
-                    "required": ["emotion_id", "reasoning"],
-                    "additionalProperties": false
-                }
-            }
+            "type": "json_object",
         });
 
         // ── 4. Call the LLM (with retries for transient failures) ─────

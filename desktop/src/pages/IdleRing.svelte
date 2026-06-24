@@ -22,6 +22,9 @@
     active = true,
     showLabel = true,
     showInfo = true,
+    /** One-shot effect trigger: "pulse" | "shake" | "wakeup". Plays once, then
+     *  auto-resets. Set to a different value to re-trigger the same effect. */
+    trigger = null as string | null,
   }: {
     mode?: Mode;
     outerPct?: number;
@@ -37,6 +40,7 @@
     active?: boolean;
     showLabel?: boolean;
     showInfo?: boolean;
+    trigger?: string | null;
   } = $props();
 
   const R_OUTER = 48;
@@ -54,11 +58,54 @@
 
   // Glow colour derived from the outer ring colour.
   let glowColor = $derived(ringColors.outer);
+
+  // ── Effect system ──────────────────────────────────────────────────────
+
+  let activeEffect = $state<string | null>(null);
+  let effectTimer = $state<ReturnType<typeof setTimeout> | null>(null);
+
+  // Duration of each one-shot effect in ms (must match CSS animation-duration).
+  const EFFECT_DURATION: Record<string, number> = {
+    pulse: 500,
+    shake: 350,
+    wakeup: 700,
+  };
+
+  $effect(() => {
+    const e = trigger;
+    if (e && e !== activeEffect) {
+      if (effectTimer) clearTimeout(effectTimer);
+      activeEffect = e;
+      const ms = EFFECT_DURATION[e] ?? 500;
+      effectTimer = setTimeout(() => {
+        activeEffect = null;
+        effectTimer = null;
+      }, ms);
+    }
+  });
+
+  // Continuous effect from mode (only when no one-shot is playing + runtime active).
+  let effectClass = $derived(
+    !active
+      ? null
+      : activeEffect
+        ? activeEffect
+        : mode === "idle" || mode === "wakeup"
+          ? "breathing"
+          : mode === "reflection" || mode === "processing"
+            ? "ripple"
+            : null,
+  );
 </script>
 
 <div
   class="idle-ring"
   class:dimmed={!active}
+  class:breathing={effectClass === 'breathing'}
+  class:ripple={effectClass === 'ripple'}
+  class:pulse={effectClass === 'pulse'}
+  class:shake={effectClass === 'shake'}
+  class:wakeup={effectClass === 'wakeup'}
   style="width: {size}px; height: {size}px; --glow-c: {glowColor};"
 >
   <svg viewBox="0 0 110 110" class="ring-svg" width={size} height={size}>
@@ -123,6 +170,7 @@
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
+    overflow: visible; /* allow ripple pseudo-elements to extend beyond bounds */
   }
   .idle-ring.dimmed {
     opacity: 0.35;
@@ -131,6 +179,9 @@
     display: block;
     filter: drop-shadow(0 0 4px color-mix(in srgb, var(--glow-c, #6c8cff) 10%, transparent));
     transition: filter 0.5s;
+    /* keep SVG above pseudo-element ripples so rings stay crisp */
+    position: relative;
+    z-index: 1;
   }
   .ring-center {
     position: absolute;
@@ -141,6 +192,7 @@
     user-select: none;
     cursor: default;
     line-height: 1;
+    z-index: 2;
   }
   .ring-emotion-img {
     width: 65%;
@@ -168,5 +220,114 @@
     font-size: 10px;
     font-weight: 700;
     line-height: 1.5;
+  }
+
+  /* ── Breathing (idle / wakeup) ────────────────────────────────────────
+     Subtle scale pulse — the rings stay perfectly readable, the whole
+     component just "breathes" at ~8 s per cycle. */
+
+  .idle-ring.breathing {
+    animation: breathe 8s ease-in-out infinite;
+  }
+
+  @keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50%      { transform: scale(1.025); }
+  }
+
+  /* ── Ripple (reflection / processing) ─────────────────────────────────
+     Two staggered border-only rings expand outward from just beyond the
+     outer progress ring.  Because the pseudo-elements have no background
+     fill, the inner rings and centre image are never obscured. */
+
+  .idle-ring.ripple::before,
+  .idle-ring.ripple::after {
+    content: "";
+    position: absolute;
+    inset: -20%;
+    border-radius: 50%;
+    border: 1.2px solid var(--glow-c, #6c8cff);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .idle-ring.ripple::before {
+    animation: ripple-expand 2.8s ease-out infinite;
+  }
+
+  .idle-ring.ripple::after {
+    animation: ripple-expand 2.8s ease-out 1.4s infinite;
+  }
+
+  @keyframes ripple-expand {
+    0% {
+      transform: scale(0.65);
+      opacity: 0.45;
+    }
+    100% {
+      transform: scale(1.05);
+      opacity: 0;
+    }
+  }
+
+  /* ── Pulse (task completed) ──────────────────────────────────────────
+     Brief glow intensify on the ring SVG, then settle back. */
+
+  .idle-ring.pulse .ring-svg {
+    animation: ring-pulse 0.5s ease-out;
+  }
+
+  @keyframes ring-pulse {
+    0% {
+      filter: drop-shadow(0 0 18px color-mix(in srgb, var(--glow-c, #6c8cff) 90%, transparent));
+    }
+    100% {
+      filter: drop-shadow(0 0 4px color-mix(in srgb, var(--glow-c, #6c8cff) 10%, transparent));
+    }
+  }
+
+  /* ── Shake (error) ─────────────────────────────────────────────────── */
+
+  .idle-ring.shake {
+    animation: ring-shake 0.35s ease-out;
+  }
+
+  @keyframes ring-shake {
+    0%, 100% { transform: translateX(0); }
+    12%      { transform: translateX(-5px); }
+    25%      { transform: translateX(5px); }
+    37%      { transform: translateX(-4px); }
+    50%      { transform: translateX(4px); }
+    62%      { transform: translateX(-2px); }
+    75%      { transform: translateX(2px); }
+    87%      { transform: translateX(-1px); }
+  }
+
+  /* ── Wake-up (idle → active transition) ──────────────────────────────
+     Quick "eyes opening": shrink slightly, then expand just past resting
+     size before settling. */
+
+  .idle-ring.wakeup {
+    animation: ring-wakeup 0.7s ease-out;
+  }
+
+  @keyframes ring-wakeup {
+    0%   { transform: scale(0.88); }
+    35%  { transform: scale(1.06); }
+    70%  { transform: scale(0.98); }
+    100% { transform: scale(1); }
+  }
+
+  /* ── Accessibility ─────────────────────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    .idle-ring.breathing,
+    .idle-ring.ripple::before,
+    .idle-ring.ripple::after,
+    .idle-ring.pulse .ring-svg,
+    .idle-ring.shake,
+    .idle-ring.wakeup {
+      animation: none;
+    }
   }
 </style>

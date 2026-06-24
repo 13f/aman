@@ -198,15 +198,11 @@ impl SimpleLlmClient {
 pub fn response_format_json(fmt: &ResponseFormat) -> Value {
     match fmt {
         ResponseFormat::JsonObject => serde_json::json!({"type": "json_object"}),
-        ResponseFormat::JsonSchema { name, schema, strict } => {
-            serde_json::json!({
-                "type": "json_schema",
-                "json_schema": {
-                    "name": name,
-                    "strict": strict,
-                    "schema": schema,
-                }
-            })
+        // json_object is universally supported (OpenAI, DeepSeek, etc.);
+        // json_schema is OpenAI-only. Schema enforcement happens in
+        // post-processing via parse_json_response + caller validation.
+        ResponseFormat::JsonSchema { .. } => {
+            serde_json::json!({"type": "json_object"})
         }
     }
 }

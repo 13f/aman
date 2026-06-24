@@ -42,7 +42,8 @@ pub enum ResponseFormat {
     /// Request JSON object mode (`{ type: "json_object" }` for OpenAI).
     JsonObject,
     /// Request strict structured output with a JSON schema
-    /// (`{ type: "json_schema", json_schema: { ... } }` for OpenAI).
+    /// Sent as `{ type: "json_object" }` for universal provider compatibility;
+    /// the schema is enforced via post-processing instead.
     JsonSchema {
         /// Schema name (must match `[a-zA-Z0-9_-]+` for OpenAI).
         name: String,

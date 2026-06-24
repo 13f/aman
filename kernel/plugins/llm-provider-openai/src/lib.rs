@@ -155,15 +155,9 @@ impl LlmOpenaiProvider {
                 ResponseFormat::JsonObject => {
                     request_body["response_format"] = json!({"type": "json_object"});
                 }
-                ResponseFormat::JsonSchema { name, schema, strict } => {
-                    request_body["response_format"] = json!({
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": name,
-                            "strict": strict,
-                            "schema": schema,
-                        }
-                    });
+                ResponseFormat::JsonSchema { .. } => {
+                    // Use json_object for universal provider compatibility
+                    request_body["response_format"] = json!({"type": "json_object"});
                 }
             }
         }
@@ -344,15 +338,9 @@ impl LlmOpenaiProvider {
                 ResponseFormat::JsonObject => {
                     body["response_format"] = json!({"type": "json_object"});
                 }
-                ResponseFormat::JsonSchema { name, schema, strict } => {
-                    body["response_format"] = json!({
-                        "type": "json_schema",
-                        "json_schema": {
-                            "name": name,
-                            "strict": strict,
-                            "schema": schema,
-                        }
-                    });
+                ResponseFormat::JsonSchema { .. } => {
+                    // Use json_object for universal provider compatibility
+                    body["response_format"] = json!({"type": "json_object"});
                 }
             }
         }

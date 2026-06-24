@@ -21,7 +21,7 @@ pub use types::{
     BoredomActivity, BoredomConfig, ChatMode, IdleContext, IdleEvent, IdleKind,
     IdlePersonality, PressureMapping, QueueDrained, WorkPressureConfig, ArousalBehavior,
 };
-pub use coordination::IdleCoordination;
+pub use coordination::{IdleCoordination, WakeUpSchedule};
 pub use manager::AgentIdleManager;
 pub use boredom::BoredomActor;
 pub use deferred_memory::MemoryDeferredTaskQueue;

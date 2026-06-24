@@ -12,7 +12,7 @@
 
 use async_trait::async_trait;
 use config::MemoryLlmConfig;
-use idle::{SleepHousekeeper, SleepPhaseOutput};
+use idle::{IdleKind, SleepHousekeeper, SleepPhaseOutput};
 use kernel::memory::{MemoryProvider, MemoryStats, ThinkConfig, ThinkResult};
 use kernel::AmanResult;
 use std::path::PathBuf;
@@ -36,16 +36,20 @@ pub struct GatewaySleepHousekeeper {
     agent_registry: Arc<AgentRegistry>,
     /// LLM config for Phase 1 session backfill (same model as Reflection).
     memory_llm: Option<MemoryLlmConfig>,
+    /// Sleep actor config (cooldown, wake-up timing, etc.).
+    sleep_config: idle::SleepActorConfig,
 }
 
 impl GatewaySleepHousekeeper {
     pub fn new(
         agent_registry: Arc<AgentRegistry>,
         memory_llm: Option<MemoryLlmConfig>,
+        sleep_config: idle::SleepActorConfig,
     ) -> Self {
         Self {
             agent_registry,
             memory_llm,
+            sleep_config,
         }
     }
 
@@ -522,6 +526,35 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
 
         Ok(snapshot)
     }
+
+    /// Called after all Sleep phases complete. Sets a cooldown on
+    /// `IdleKind::Sleep` so the idle detector does not immediately
+    /// produce another Sleep event.
+    async fn on_sleep_complete(&self, agent_id: &str, cooldown_secs: u64) -> AmanResult<()> {
+        if let Some(coord) = self.agent_registry.get_idle_coordination(agent_id).await {
+            coord.set_kind_cooldown(IdleKind::Sleep, cooldown_secs).await;
+            debug!(
+                agent_id,
+                cooldown_secs,
+                "Sleep: cooldown set"
+            );
+            // Schedule Ouroboros wake-up: any deep state completion triggers
+            // a progressive reset of depth + arousal after the delay.
+            coord
+                .schedule_wakeup(
+                    self.sleep_config.wakeup_delay_secs,
+                    self.sleep_config.wakeup_poll_steps,
+                )
+                .await;
+            info!(
+                agent_id,
+                delay_secs = self.sleep_config.wakeup_delay_secs,
+                poll_steps = self.sleep_config.wakeup_poll_steps,
+                "Sleep: wake-up scheduled (Ouroboros)"
+            );
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -736,7 +769,7 @@ mod tests {
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
         pollster::block_on(registry.set_memory_provider("agent-1", provider));
-        let hk = GatewaySleepHousekeeper::new(registry, None);
+        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
         let cancel = CancellationToken::new();
         let info = hk
@@ -753,7 +786,7 @@ mod tests {
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
         pollster::block_on(registry.set_memory_provider("agent-1", provider));
-        let hk = GatewaySleepHousekeeper::new(registry, None);
+        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
         let info = hk
             .index_monitoring("agent-1")
@@ -770,7 +803,7 @@ mod tests {
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
         pollster::block_on(registry.set_memory_provider("agent-1", provider));
-        let hk = GatewaySleepHousekeeper::new(registry, None);
+        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
         let info = hk
             .cognitive_consolidation("agent-1")
@@ -785,7 +818,7 @@ mod tests {
         let bus: Arc<dyn event_bus::EventBus> =
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
-        let hk = GatewaySleepHousekeeper::new(registry, None);
+        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
         let cancel = CancellationToken::new();
         let info = hk
@@ -800,7 +833,7 @@ mod tests {
         let bus: Arc<dyn event_bus::EventBus> =
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
-        let hk = GatewaySleepHousekeeper::new(registry, None);
+        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
         let cancel = CancellationToken::new();
         let info = hk
@@ -815,7 +848,7 @@ mod tests {
         let bus: Arc<dyn event_bus::EventBus> =
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
-        let hk = GatewaySleepHousekeeper::new(registry, None);
+        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
         let phase_outputs = vec![];
         let info = hk

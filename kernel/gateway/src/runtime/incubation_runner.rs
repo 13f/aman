@@ -465,6 +465,7 @@ async fn run_phases(
         }
 
     signal_cooldown(agent_id, config, registry).await;
+    signal_wakeup(agent_id, config, registry).await;
     Ok(())
 }
 
@@ -522,6 +523,26 @@ async fn signal_cooldown(
         .set_kind_cooldown(IdleKind::Incubation, config.cooldown_secs)
         .await;
     debug!(agent_id, cooldown_secs = config.cooldown_secs, "Incubation: cooldown set");
+}
+
+/// Schedule a progressive wake-up transition after Incubation completes.
+///
+/// The IdleDetector will drive the transition: after `wakeup_delay_secs`,
+/// each poll advances one step, linearly interpolating depth → 0 and
+/// arousal → 1.0 over `wakeup_poll_steps` polls.
+async fn signal_wakeup(agent_id: &str, config: &IncubationConfig, registry: &AgentRegistry) {
+    let Some(coord) = registry.get_idle_coordination(agent_id).await else {
+        return;
+    };
+    coord
+        .schedule_wakeup(config.wakeup_delay_secs, config.wakeup_poll_steps)
+        .await;
+    info!(
+        agent_id,
+        delay_secs = config.wakeup_delay_secs,
+        poll_steps = config.wakeup_poll_steps,
+        "Incubation: wake-up scheduled (Ouroboros)"
+    );
 }
 
 /// Extract named entities from a batch of content strings using the LLM.

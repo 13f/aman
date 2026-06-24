@@ -359,11 +359,10 @@ impl ExplorationRunner {
         let Some(coord) = registry.get_idle_coordination(agent_id).await else {
             return;
         };
-        let cooldown_secs = self
-            .exploration_config
-            .get()
-            .map(|c| c.cooldown_secs)
-            .unwrap_or(3600);
+        let config = self.exploration_config.get();
+        let cooldown_secs = config.map(|c| c.cooldown_secs).unwrap_or(3600);
+        let wakeup_delay = config.map(|c| c.wakeup_delay_secs).unwrap_or(60);
+        let wakeup_steps = config.map(|c| c.wakeup_poll_steps).unwrap_or(2);
         coord
             .set_kind_cooldown(IdleKind::Exploration, cooldown_secs)
             .await;
@@ -371,6 +370,13 @@ impl ExplorationRunner {
             agent_id,
             cooldown_secs,
             "Exploration: cooldown set",
+        );
+        coord.schedule_wakeup(wakeup_delay, wakeup_steps).await;
+        info!(
+            agent_id,
+            delay_secs = wakeup_delay,
+            poll_steps = wakeup_steps,
+            "Exploration: wake-up scheduled (Ouroboros)"
         );
     }
 

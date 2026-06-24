@@ -332,6 +332,15 @@ pub struct SleepConfig {
     /// and will be cleaned up.
     #[serde(default = "default_stale_background_min_reply_chars")]
     pub stale_background_min_reply_chars: usize,
+    /// Minimum seconds between Sleep cycles (default 1 hour).
+    #[serde(default = "default_sleep_cooldown_secs", alias = "cooldown")]
+    pub cooldown_secs: u64,
+    /// Seconds to wait after Sleep completes before starting wake-up.
+    #[serde(default = "default_wakeup_delay_secs")]
+    pub wakeup_delay_secs: u64,
+    /// Number of poll cycles over which the wake-up transition runs.
+    #[serde(default = "default_wakeup_poll_steps")]
+    pub wakeup_poll_steps: u32,
 }
 
 fn default_short_term_retention_days() -> u64 { 7 }
@@ -339,6 +348,7 @@ fn default_cache_expiry_days() -> u64 { 30 }
 fn default_max_cpu_seconds() -> u64 { 300 }
 fn default_stale_background_retention_days() -> u64 { 7 }
 fn default_stale_background_min_reply_chars() -> usize { 200 }
+fn default_sleep_cooldown_secs() -> u64 { 3600 }
 
 impl Default for SleepConfig {
     fn default() -> Self {
@@ -348,6 +358,9 @@ impl Default for SleepConfig {
             max_cpu_seconds: 300,
             stale_background_retention_days: 7,
             stale_background_min_reply_chars: 200,
+            cooldown_secs: 3600,
+            wakeup_delay_secs: 60,
+            wakeup_poll_steps: 2,
         }
     }
 }
@@ -362,6 +375,12 @@ pub struct ExplorationConfig {
     /// Minimum seconds between Exploration cycles (default 1 hour).
     #[serde(default = "default_exploration_cooldown_secs", alias = "cooldown")]
     pub cooldown_secs: u64,
+    /// Seconds to wait after Exploration completes before starting wake-up.
+    #[serde(default = "default_wakeup_delay_secs")]
+    pub wakeup_delay_secs: u64,
+    /// Number of poll cycles over which the wake-up transition runs.
+    #[serde(default = "default_wakeup_poll_steps")]
+    pub wakeup_poll_steps: u32,
 }
 
 fn default_api_rate_per_minute() -> u32 { 10 }
@@ -374,6 +393,8 @@ impl Default for ExplorationConfig {
             api_rate_per_minute: 10,
             on_quota_exhausted: "fallback".into(),
             cooldown_secs: 3600,
+            wakeup_delay_secs: 60,
+            wakeup_poll_steps: 2,
         }
     }
 }
@@ -397,6 +418,12 @@ pub struct IncubationConfig {
     /// Graceful shutdown timeout for incubation threads (seconds).
     #[serde(default = "default_incubation_cancel_timeout_secs")]
     pub cancel_timeout_secs: u64,
+    /// Seconds to wait after Incubation completes before starting wake-up.
+    #[serde(default = "default_wakeup_delay_secs")]
+    pub wakeup_delay_secs: u64,
+    /// Number of poll cycles over which the wake-up transition runs.
+    #[serde(default = "default_wakeup_poll_steps")]
+    pub wakeup_poll_steps: u32,
 }
 
 fn default_max_concurrent_incubation() -> u32 { 1 }
@@ -404,6 +431,8 @@ fn default_incubation_cooldown_secs() -> u64 { 10800 }
 fn default_incubation_threshold() -> f64 { 0.7 }
 fn default_high_value_threshold() -> f64 { 0.85 }
 fn default_incubation_cancel_timeout_secs() -> u64 { 5 }
+fn default_wakeup_delay_secs() -> u64 { 60 }
+fn default_wakeup_poll_steps() -> u32 { 2 }
 
 impl Default for IncubationConfig {
     fn default() -> Self {
@@ -414,6 +443,8 @@ impl Default for IncubationConfig {
             incubation_threshold: 0.7,
             high_value_threshold: 0.85,
             cancel_timeout_secs: 5,
+            wakeup_delay_secs: 60,
+            wakeup_poll_steps: 2,
         }
     }
 }
@@ -431,6 +462,12 @@ pub struct MeditationConfig {
     /// Number of recent traces to load for pattern extraction (default 20).
     #[serde(default = "default_meditation_review_depth")]
     pub review_depth: usize,
+    /// Seconds to wait after Meditation completes before starting wake-up.
+    #[serde(default = "default_wakeup_delay_secs")]
+    pub wakeup_delay_secs: u64,
+    /// Number of poll cycles over which the wake-up transition runs.
+    #[serde(default = "default_wakeup_poll_steps")]
+    pub wakeup_poll_steps: u32,
 }
 
 fn default_meditation_cooldown_secs() -> u64 { 7200 }
@@ -443,6 +480,8 @@ impl Default for MeditationConfig {
             cooldown_secs: 7200,
             min_interval_ticks: 20,
             review_depth: 20,
+            wakeup_delay_secs: 60,
+            wakeup_poll_steps: 2,
         }
     }
 }

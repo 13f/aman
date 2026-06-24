@@ -112,6 +112,12 @@ pub struct SleepActorConfig {
     pub stale_background_retention_days: u64,
     /// Minimum total characters in agent replies to keep a background session.
     pub stale_background_min_reply_chars: usize,
+    /// Seconds before another Sleep cycle can be triggered for the same agent.
+    pub sleep_cooldown_secs: u64,
+    /// Seconds to wait after Sleep completes before starting wake-up.
+    pub wakeup_delay_secs: u64,
+    /// Number of poll cycles over which the wake-up transition runs.
+    pub wakeup_poll_steps: u32,
 }
 
 impl Default for SleepActorConfig {
@@ -122,6 +128,9 @@ impl Default for SleepActorConfig {
             cache_expiry_days: 30,
             stale_background_retention_days: 7,
             stale_background_min_reply_chars: 200,
+            sleep_cooldown_secs: 3600,
+            wakeup_delay_secs: 60,
+            wakeup_poll_steps: 2,
         }
     }
 }
@@ -200,6 +209,15 @@ pub trait SleepHousekeeper: Send + Sync {
         phase_outputs: &[SleepPhaseOutput],
         cpu_secs: f64,
     ) -> AmanResult<serde_json::Value>;
+
+    /// Called after all Sleep phases complete successfully.
+    ///
+    /// Gateway implementations should set a cooldown for `IdleKind::Sleep`
+    /// so the idle detector does not immediately produce another Sleep event.
+    /// The default implementation is a no-op.
+    async fn on_sleep_complete(&self, _agent_id: &str, _cooldown_secs: u64) -> AmanResult<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +355,21 @@ impl SleepActor {
             total_cpu_secs = total_cpu,
             "SleepActor: all phases complete"
         );
+
+        // Set cooldown so the idle detector does not immediately produce
+        // another Sleep event. Gateway implementations of on_sleep_complete
+        // call IdleCoordination::set_kind_cooldown(IdleKind::Sleep, …).
+        if let Err(e) = self
+            .housekeeper
+            .on_sleep_complete(agent_id, self.config.sleep_cooldown_secs)
+            .await
+        {
+            warn!(
+                agent_id,
+                error = %e,
+                "SleepActor: failed to set sleep cooldown"
+            );
+        }
 
         Ok(())
     }

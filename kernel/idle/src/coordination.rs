@@ -8,11 +8,63 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::types::IdleKind;
+
+// ---------------------------------------------------------------------------
+// WakeUpSchedule
+// ---------------------------------------------------------------------------
+
+/// Tracks a progressive wake-up transition after Incubation completes.
+///
+/// During the delay period (from schedule time to `start_at`), the idle
+/// detector skips deep states. Once `start_at` is reached, the detector
+/// captures the current depth and arousal, then advances one step per poll
+/// cycle, linearly interpolating depth → 0 and arousal → target.
+#[derive(Debug, Clone)]
+pub struct WakeUpSchedule {
+    /// When the wake-up transition begins (schedule time + delay).
+    pub start_at: Instant,
+    /// Total poll steps for the progressive transition.
+    pub total_steps: u32,
+    /// Current step (0 = not started, incremented each poll during transition).
+    pub current_step: u32,
+    /// Depth snapshot captured when the first wake-up poll starts.
+    pub initial_depth: Option<u32>,
+    /// Arousal snapshot captured when the first wake-up poll starts.
+    pub initial_arousal: Option<f64>,
+    /// Target arousal after wake-up completes.
+    pub target_arousal: f64,
+}
+
+impl WakeUpSchedule {
+    /// Whether the transition has been initialized (first poll captured snapshots).
+    pub fn is_initialized(&self) -> bool {
+        self.initial_depth.is_some()
+    }
+
+    /// Progress through the transition (0.0 → 1.0).
+    pub fn progress(&self) -> f64 {
+        if self.total_steps == 0 {
+            return 1.0;
+        }
+        (self.current_step as f64 / self.total_steps as f64).clamp(0.0, 1.0)
+    }
+
+    /// Whether the transition is complete.
+    pub fn is_done(&self) -> bool {
+        self.current_step > self.total_steps
+    }
+
+    /// Interpolated depth at the current step.
+    pub fn current_depth(&self) -> u32 {
+        let init = self.initial_depth.unwrap_or(0);
+        (init as f64 * (1.0 - self.progress())) as u32
+    }
+}
 
 /// 跨组件共享的空闲协调状态。
 pub struct IdleCoordination {
@@ -28,6 +80,8 @@ pub struct IdleCoordination {
     pub pending_depth_reset: Arc<AtomicBool>,
     /// Per-kind cooldown expiry timestamps (per-agent, not global).
     pub kind_cooldowns: Arc<RwLock<HashMap<IdleKind, Instant>>>,
+    /// Active wake-up schedule (set by Incubation completion, consumed by IdleDetector).
+    pub wakeup_schedule: RwLock<Option<WakeUpSchedule>>,
 }
 
 impl IdleCoordination {
@@ -41,6 +95,7 @@ impl IdleCoordination {
             idle_cancel_token: Arc::new(RwLock::new(CancellationToken::new())),
             pending_depth_reset: Arc::new(AtomicBool::new(false)),
             kind_cooldowns: Arc::new(RwLock::new(HashMap::new())),
+            wakeup_schedule: RwLock::new(None),
         }
     }
 
@@ -71,6 +126,37 @@ impl IdleCoordination {
             Some(expiry) => Instant::now() < *expiry,
             None => false,
         }
+    }
+
+    /// Schedule a progressive wake-up after `delay_secs`.
+    ///
+    /// Called when Incubation completes. Depth and arousal snapshots are
+    /// captured lazily by the IdleDetector when the transition starts.
+    pub async fn schedule_wakeup(&self, delay_secs: u64, poll_steps: u32) {
+        let schedule = WakeUpSchedule {
+            start_at: Instant::now() + Duration::from_secs(delay_secs),
+            total_steps: poll_steps,
+            current_step: 0,
+            initial_depth: None,
+            initial_arousal: None,
+            target_arousal: 1.0,
+        };
+        *self.wakeup_schedule.write().await = Some(schedule);
+    }
+
+    /// Take and return the active wake-up schedule if one is in progress
+    /// (past its delay period). Returns `None` if no schedule or still waiting.
+    pub async fn take_active_wakeup(&self) -> Option<WakeUpSchedule> {
+        let mut guard = self.wakeup_schedule.write().await;
+        match &*guard {
+            Some(s) if Instant::now() >= s.start_at => guard.take(),
+            _ => None,
+        }
+    }
+
+    /// Check whether a wake-up is scheduled (including delay period).
+    pub async fn has_pending_wakeup(&self) -> bool {
+        self.wakeup_schedule.read().await.is_some()
     }
 }
 

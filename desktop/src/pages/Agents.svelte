@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
-  import { onMount } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
+  import { onMount, onDestroy } from "svelte";
   import AgentSelector from "./AgentSelector.svelte";
 
   let { onNavigate = (_page: string) => {} }: { onNavigate?: (page: string) => void } = $props();
@@ -67,6 +68,11 @@ I prefer concise and accurate responses.
   let showNewModelDropdown = $state(false);
   let isLoadingNewModels = $state(false);
   let newModelBlurTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Real-time idle state per agent (from event:processed idle events).
+  interface IdleState { kind: string; depth: number; arousal: number; }
+  let idleStates = $state<Record<string, IdleState>>({});
+  let unlisteners: (() => void)[] = [];
 
   async function fetchNewModels() {
     if (!newProvider) {
@@ -174,7 +180,41 @@ I prefer concise and accurate responses.
     }
   }
 
-  onMount(() => { loadData(); });
+  onMount(() => {
+    loadData();
+    // Listen for per-agent idle events to show idle kind on agent cards.
+    listen("event:processed", (e: any) => {
+      const p = e.payload;
+      if (p?.event_type !== "idle") return;
+      const data = p.payload ?? {};
+      const agentId: string | undefined = data.agent_id ?? data.payload?.agent_id;
+      if (!agentId) return;
+      idleStates = {
+        ...idleStates,
+        [agentId]: {
+          kind: data.kind ?? "daze",
+          depth: data.depth ?? 0,
+          arousal: data.context?.arousal_level ?? 0.5,
+        },
+      };
+    }).then(fn => { unlisteners.push(fn); });
+
+    // Clear idle state when agents transition to non-idle system state.
+    listen("agent_states:updated", (e: any) => {
+      const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
+      for (const a of list) {
+        if (a.system_state !== "idle" && idleStates[a.agent_id]) {
+          const next = { ...idleStates };
+          delete next[a.agent_id];
+          idleStates = next;
+        }
+      }
+    }).then(fn => { unlisteners.push(fn); });
+  });
+
+  onDestroy(() => {
+    for (const fn of unlisteners) fn();
+  });
 </script>
 
 <div class="page-header">
@@ -263,6 +303,7 @@ I prefer concise and accurate responses.
     variant="full"
     {agents}
     {providers}
+                    {idleStates}
     onSelect={(agent) => selectAgent(agent.key)}
     onDelete={deleteAgent}
     onSaveEdit={handleSaveEditFromSelector}

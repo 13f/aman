@@ -31,6 +31,8 @@ pub enum IdleKind {
     Meditation,
     Waiting,
     Incubation,
+    /// 苏醒过渡——Incubation 完成后渐进唤醒 agent，重置 depth + arousal。
+    WakeUp,
 }
 
 /// 控制空闲状态对 arousal 衰减的影响。
@@ -51,6 +53,7 @@ impl IdleKind {
             Self::Sleep => ArousalBehavior::Engaged { decay_multiplier: 0.5 },
             Self::Exploration | Self::Meditation => ArousalBehavior::Engaged { decay_multiplier: 0.0 },
             Self::Incubation => ArousalBehavior::Engaged { decay_multiplier: 0.1 },
+            Self::WakeUp => ArousalBehavior::Engaged { decay_multiplier: 0.0 },
         }
     }
 }
@@ -149,6 +152,7 @@ impl Default for IdlePersonality {
                 IdleKind::Exploration,
                 IdleKind::Meditation,
                 IdleKind::Incubation,
+                IdleKind::WakeUp,
             ],
             depth_schedule: vec![
                 (0, IdleKind::Daze),

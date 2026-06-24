@@ -180,6 +180,8 @@ impl AgentIdleManager {
                 // Check if depth reset is pending (queue was drained)
                 if coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
                     detector.idle_depth = 0;
+                    // Depth reset invalidates any pending wake-up schedule.
+                    *coord.wakeup_schedule.write().await = None;
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -193,6 +195,83 @@ impl AgentIdleManager {
                     && last.elapsed().as_secs_f64() < delay_secs
                 {
                     sleep(Duration::from_millis(50)).await;
+                    continue;
+                }
+
+                // ── Wake-up transition ────────────────────────────────────
+                // If a wake-up schedule is active (past its delay period),
+                // drive the progressive transition: each poll advances one
+                // step, linearly interpolating depth → 0 and arousal → 1.0.
+                if let Some(mut schedule) = coord.take_active_wakeup().await {
+                    // Lazily capture depth / arousal on the first wake-up step.
+                    if !schedule.is_initialized() {
+                        schedule.initial_depth = Some(detector.idle_depth);
+                        schedule.initial_arousal = Some(coord.arousal.current());
+                    }
+
+                    let init_depth = schedule.initial_depth.unwrap_or(0);
+                    let init_arousal = schedule.initial_arousal.unwrap_or(1.0);
+
+                    // Advance one step.
+                    schedule.current_step += 1;
+
+                    let progress = schedule.progress();
+                    let new_depth = (init_depth as f64 * (1.0 - progress)) as u32;
+                    let new_arousal = if schedule.is_done() {
+                        schedule.target_arousal
+                    } else {
+                        init_arousal
+                            + (schedule.target_arousal - init_arousal) * progress
+                    };
+
+                    // Apply interpolated arousal.
+                    coord.arousal.reset(new_arousal);
+                    detector.idle_depth = new_depth;
+                    detector.last_poll = Some(Instant::now());
+
+                    if schedule.is_done() {
+                        // Transition complete — agent is awake.
+                        detector.idle_depth = 0;
+                        coord.arousal.reset(schedule.target_arousal);
+                        info!(
+                            agent_id = %agent_id,
+                            target_arousal = schedule.target_arousal,
+                            "WakeUp: transition complete, agent awake"
+                        );
+                    } else {
+                        // Still transitioning — publish WakeUp event.
+                        let wakeup_event = IdleEvent {
+                            kind: IdleKind::WakeUp,
+                            depth: new_depth,
+                            duration_secs: delay_secs,
+                            context: Some(IdleContext {
+                                last_event_type: String::new(),
+                                last_idle_outputs: detector.last_idle_outputs.clone(),
+                                arousal_level: new_arousal,
+                            }),
+                            from_chat_mode: false,
+                            agent_id: Some(agent_id.clone()),
+                        };
+                        let event: kernel::event::Event = wakeup_event.into();
+                        try_publish(&*local_bus, event.clone()).await;
+                        if let Some(ref global) = global_bus {
+                            try_publish(&**global, event).await;
+                        }
+
+                        info!(
+                            agent_id = %agent_id,
+                            step = schedule.current_step,
+                            total_steps = schedule.total_steps,
+                            depth = new_depth,
+                            arousal = new_arousal,
+                            "WakeUp: transition step",
+                        );
+
+                        // Re-insert schedule with updated step.
+                        *coord.wakeup_schedule.write().await = Some(schedule);
+                    }
+
+                    sleep(Duration::from_secs_f64(delay_secs)).await;
                     continue;
                 }
 

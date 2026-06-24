@@ -23,7 +23,7 @@
 
   // idleSubMode only matters when the agent is idle; it distinguishes
   // quiet-idle from the reflection phase that follows queue drain.
-  type IdleSubMode = "idle" | "reflection";
+  type IdleSubMode = "idle" | "reflection" | "wakeup";
 
   // ---------------------------------------------------------------------------
   // Props
@@ -84,6 +84,7 @@
     daze: "\u{1F636}", boredom: "\u{1F612}", sleep: "\u{1F634}",
     exploration: "\u{1F50D}", meditation: "\u{1F9D8}",
     incubation: "\u{1F4A1}", waiting: "\u{23F3}",
+    wakeup: "\u{1F305}",
   };
 
   const IDLE_LABEL: Record<string, string> = {
@@ -91,6 +92,7 @@
     sleep: "Sleep", exploration: "Exploration",
     meditation: "Meditation",
     incubation: "Incubation", waiting: "Waiting",
+    wakeup: "Awakening",
   };
 
   const SS_LABEL: Record<string, string> = {
@@ -118,6 +120,7 @@
     daily_life: { outer: "#fb923c", inner: "#fdba74" },
     prize:      { outer: "#fbbf24", inner: "#f59e0b" },
     waiting:    { outer: "#f59e0b", inner: "#fbbf24" },
+    wakeup:     { outer: "#fb923c", inner: "#fbbf24" },
   };
 
   // --- derived: is the agent in an active lifecycle state? ---
@@ -145,13 +148,15 @@
   }
 
   let outerPct = $derived.by(() => {
-    if (displayState === "idle" && idleSnap) return depthPct(idleSnap.depth);
+    if ((displayState === "idle" || displayState === "wakeup") && idleSnap)
+      return depthPct(idleSnap.depth);
     if (displayState === "reflection" && reflectSnap) return reflectSnap.arousalLevel * 100;
     return 0;
   });
 
   let innerPct = $derived.by(() => {
-    if (displayState === "idle" && idleSnap) return Math.round(idleSnap.arousal * 100);
+    if ((displayState === "idle" || displayState === "wakeup") && idleSnap)
+      return Math.round(idleSnap.arousal * 100);
     if (displayState === "reflection" && reflectSnap)
       return Math.min(100, reflectSnap.reflectionConsecutiveCount * 10);
     return 0;
@@ -162,6 +167,7 @@
   let emoji = $derived.by(() => {
     if (displayState === "idle")
       return idleSnap ? (IDLE_EMOJI[idleSnap.kind] ?? "\u{1F4A4}") : "\u{1F4A4}";
+    if (displayState === "wakeup") return "\u{1F305}";
     if (displayState === "reflection") return "\u{1F9E0}";
     return STATE_EMOJI[displayState] ?? "\u{26A1}";
   });
@@ -169,18 +175,21 @@
   let label = $derived.by(() => {
     if (displayState === "idle")
       return "Idle" + (idleSnap ? "/" + IDLE_LABEL[idleSnap.kind] : "");
+    if (displayState === "wakeup") return "Idle/Awakening";
     if (displayState === "reflection") return "Idle/Reflection";
     return SS_LABEL[displayState] ?? displayState;
   });
 
   let info1 = $derived.by(() => {
     if (displayState === "idle") return `Depth: ${Math.round(outerPct)}%`;
+    if (displayState === "wakeup") return `Depth → ${Math.round(outerPct)}%`;
     if (displayState === "reflection") return `Arousal: ${Math.round(outerPct)}%`;
     return "";
   });
 
   let info2 = $derived.by(() => {
     if (displayState === "idle") return `Arousal: ${innerPct}%`;
+    if (displayState === "wakeup") return `Arousal ↑ ${innerPct}%`;
     if (displayState === "reflection")
       return `Cycle: ${reflectSnap?.reflectionConsecutiveCount ?? 0}`;
     return "";
@@ -194,6 +203,7 @@
     // LLM emotion only applies to active states — idle uses the event-driven sub-mode kind.
     if (isActive && llmEmotionId) return llmEmotionId;
     if (displayState === "idle") return idleSnap?.kind ?? "idle";
+    if (displayState === "wakeup") return "wakeup";
     if (displayState === "reflection") return "reflection";
     return displayState; // active system state key
   });
@@ -224,12 +234,13 @@
     if (!matchesAgent(data)) return;
 
     if (et === "idle") {
+      const kind: string = data.kind ?? "daze";
       idleSnap = {
-        kind: data.kind ?? "daze",
+        kind,
         depth: data.depth ?? 0,
         arousal: data.context?.arousal_level ?? 0.5,
       };
-      idleSubMode = "idle";
+      idleSubMode = kind === "wakeup" ? "wakeup" : "idle";
     } else if (et === "system.queue_drained") {
       reflectSnap = {
         lastEventType: data.lastEventType ?? "",

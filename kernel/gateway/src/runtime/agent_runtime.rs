@@ -1022,11 +1022,15 @@ impl AgentRuntimeBuilder {
             cache_expiry_days: sleep_cfg.cache_expiry_days,
             stale_background_retention_days: sleep_cfg.stale_background_retention_days,
             stale_background_min_reply_chars: sleep_cfg.stale_background_min_reply_chars,
+            sleep_cooldown_secs: sleep_cfg.cooldown_secs,
+            wakeup_delay_secs: sleep_cfg.wakeup_delay_secs,
+            wakeup_poll_steps: sleep_cfg.wakeup_poll_steps,
         };
         let memory_llm_for_incubation = memory_llm_cfg.clone();
         let sleep_housekeeper = Arc::new(super::sleep::GatewaySleepHousekeeper::new(
             Arc::clone(&agent_registry),
             memory_llm_cfg,
+            sleep_actor_config.clone(),
         ));
         let sleep_actor = idle::SleepActor::new(
             sleep_actor_config,

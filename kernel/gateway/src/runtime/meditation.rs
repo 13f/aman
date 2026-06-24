@@ -97,11 +97,10 @@ impl MeditationRunner {
         let Some(coord) = registry.get_idle_coordination(agent_id).await else {
             return;
         };
-        let cooldown_secs = self
-            .meditation_config
-            .get()
-            .map(|c| c.cooldown_secs)
-            .unwrap_or(7200);
+        let config = self.meditation_config.get();
+        let cooldown_secs = config.map(|c| c.cooldown_secs).unwrap_or(7200);
+        let wakeup_delay = config.map(|c| c.wakeup_delay_secs).unwrap_or(60);
+        let wakeup_steps = config.map(|c| c.wakeup_poll_steps).unwrap_or(2);
         coord
             .set_kind_cooldown(IdleKind::Meditation, cooldown_secs)
             .await;
@@ -109,6 +108,13 @@ impl MeditationRunner {
             agent_id,
             cooldown_secs,
             "Meditation: cooldown set",
+        );
+        coord.schedule_wakeup(wakeup_delay, wakeup_steps).await;
+        info!(
+            agent_id,
+            delay_secs = wakeup_delay,
+            poll_steps = wakeup_steps,
+            "Meditation: wake-up scheduled (Ouroboros)"
         );
     }
 

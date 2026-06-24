@@ -23,10 +23,17 @@
     model_id: string;
   }
 
+  interface IdleState {
+    kind: string;
+    depth: number;
+    arousal: number;
+  }
+
   let {
     agents = [],
     providers = [],
     variant = "compact",
+    idleStates = {} as Record<string, IdleState>,
     onSelect = (_agent: AgentEntry) => {},
     onDelete = async (_key: string) => {},
     onSaveEdit = async (_key: string, _displayName: string, _provider: string, _model: string, _soulContent: string) => {},
@@ -35,11 +42,34 @@
     agents: AgentEntry[];
     providers?: ProviderEntry[];
     variant?: "full" | "compact";
+    idleStates?: Record<string, IdleState>;
     onSelect?: (agent: AgentEntry) => void;
     onDelete?: (key: string) => Promise<void>;
     onSaveEdit?: (key: string, displayName: string, provider: string, model: string, soulContent: string) => Promise<void>;
     onNavigate?: (page: string) => void;
   } = $props();
+
+  const IDLE_EMOJI: Record<string, string> = {
+    daze: "\u{1F636}", boredom: "\u{1F612}", sleep: "\u{1F634}",
+    exploration: "\u{1F50D}", meditation: "\u{1F9D8}",
+    incubation: "\u{1F4A1}", waiting: "\u{23F3}",
+    wakeup: "\u{1F305}",
+  };
+
+  const IDLE_LABEL: Record<string, string> = {
+    daze: "Daze", boredom: "Boredom", sleep: "Sleep",
+    exploration: "Explore", meditation: "Meditate",
+    incubation: "Incubate", waiting: "Waiting",
+    wakeup: "Awakening",
+  };
+
+  function idleBadge(key: string): { emoji: string; label: string } | null {
+    const s = idleStates[key];
+    if (!s) return null;
+    const emoji = IDLE_EMOJI[s.kind] ?? "\u{1F4A4}";
+    const label = IDLE_LABEL[s.kind] ?? s.kind;
+    return { emoji, label };
+  }
 
   let showEditForm = $state<string | null>(null);
   let editDisplayName = $state("");
@@ -112,6 +142,10 @@
             <span class="badge ok">{(agent as any).key}</span>
             {#if agent.is_active}
               <span class="badge" style="background:rgba(108,140,255,0.15);color:var(--accent);">Active</span>
+            {/if}
+            {#if idleBadge(agent.key)}
+              {@const ib = idleBadge(agent.key)!}
+              <span class="badge idle-badge idle-badge-{ib.label.toLowerCase()}">{ib.emoji} {ib.label}</span>
             {/if}
           </div>
           <div class="agent-detail">
@@ -394,6 +428,24 @@
   }
   .dim { color: var(--fg-dim); }
   .empty-state { text-align: center; padding: 40px; }
+
+  /* idle kind badge */
+  .idle-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .idle-badge-awakening {
+    background: linear-gradient(135deg, rgba(251,146,60,0.18), rgba(251,191,36,0.12));
+    color: #fb923c;
+    animation: wakeup-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes wakeup-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
 
   /* ---- compact variant (Home modal) ---- */
   .agent-grid-compact {

@@ -850,12 +850,23 @@ mod tests {
         let registry = Arc::new(AgentRegistry::new(bus));
         let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
 
+        // Use a unique agent id to avoid polluting the user's ~/.aman directory.
+        let test_id = format!("test-health-report-{}", uuid::Uuid::new_v4());
+
         let phase_outputs = vec![];
         let info = hk
-            .health_report("agent-1", &phase_outputs, 1.5)
+            .health_report(&test_id, &phase_outputs, 1.5)
             .await
             .expect("health_report");
-        assert_eq!(info["agent_id"], "agent-1");
+        assert_eq!(info["agent_id"], test_id.as_str());
         assert_eq!(info["total_cpu_seconds"], 1.5);
+
+        // Clean up.
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_owned());
+        let health_dir = std::path::PathBuf::from(&home)
+            .join(".aman")
+            .join("agents")
+            .join(&test_id);
+        let _ = std::fs::remove_dir_all(&health_dir);
     }
 }

@@ -529,19 +529,48 @@ impl Default for IdleConfig {
 }
 
 
-/// UI / display configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
+/// Desktop UI visual style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiStyle {
+    /// Classic frosted-glass vibrancy (default).
+    FrostedGlass,
+    /// Frosted glass + animated aurora background.
+    Aurora,
+}
+
+impl std::fmt::Display for UiStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UiStyle::FrostedGlass => write!(f, "frosted-glass"),
+            UiStyle::Aurora => write!(f, "aurora"),
+        }
+    }
+}
+
+impl Default for UiStyle {
+    fn default() -> Self {
+        UiStyle::FrostedGlass
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct UiConfig {
     /// Display locale. Default: English (`en`).
     /// Supported values: `en`, `zhs` (简体中文).
     #[serde(default)]
     pub locale: Locale,
+    /// Desktop UI visual style. Default: `frosted-glass`.
+    /// Supported values: `frosted-glass`, `aurora`.
+    #[serde(default)]
+    pub style: UiStyle,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             locale: Locale::En,
+            style: UiStyle::default(),
         }
     }
 }

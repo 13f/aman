@@ -15,7 +15,7 @@ Phase 1 ─── 氛围感升级 ─── 打开 app 第一眼就不同
   └── 3. 深度感 / 视差玻璃层
 
 Phase 2 ─── 动效语言 ─── 让 agent 感觉 "活着"
-  ├── 4. Agent 心跳 / 呼吸 / 涟漪     🥈
+  ├── 4. Agent 心跳 / 呼吸 / 涟漪     ✅ 2026-06-24
   ├── 5. 页面转场动画
   └── 6. Agent "思考空间" 中间态
 
@@ -44,26 +44,42 @@ Phase 6 ─── 感官扩展
 
 ### 1. 动态环境光 / Aurora 背景 🥇
 
-**效果**：缓慢流动的极光渐变充满整个窗口背景，色调随 agent 认知状态变化。
+**效果**：缓慢流动的极光渐变充满整个窗口背景，营造沉浸氛围。
 
-| Agent 状态 | 色调 | 感觉 |
+**⚠️ 多 Agent 约束**：Aman 是多 agent 系统，全局 UI 不适合绑定单个 agent 的状态。改为以下方案：
+
+**方案 A：Gateway 级别聚合（推荐）**
+
+不跟单个 agent，而是跟整个 gateway 的聚合状态：
+
+| 聚合状态 | 色调 | 感觉 |
 |---|---|---|
-| idle | 深蓝紫 | 安静、等待 |
-| thinking | 金色脉冲 | 活跃思考 |
-| acting | 翠绿流动 | 正在执行 |
-| error | 暗红波纹 | 需要关注 |
-| reflecting | 柔和的粉紫 | 内省 |
+| 全部 idle / sleep | 深蓝紫，极缓慢流动 | 安静、休眠 |
+| ≥1 个 agent active | 微妙暖色调偏移 | 有生命在活动 |
+| ≥3 个 agent 同时 active | 更丰富的色彩流动 | 繁忙、热闹 |
+| 有 agent 报错 | 极 subtle 的暖色脉冲（不是红色警告） | 需要关注但不刺眼 |
+
+聚合逻辑在 desktop 端做：监听 `agent_states:updated` SSE，统计 active/error 数量，驱动颜色插值。
+
+**方案 B：完全 Agent-Agnostic（最安全）**
+
+不跟任何状态绑定，但**仍然是动态的** —— 缓慢流动的极光/光晕，像 Apple Music  lyrics 背景或 Spotify Canvas 那样，纯粹的氛围感，不求语义。色调跟随当前主题（Midnight → 蓝紫，Paper → 暖琥珀），用 simplex noise 驱动持续的、不可预测但平滑的色彩流动。打开 app 它就一直在 "呼吸"，无需任何事件驱动。
+
+**方案 C：跟随当前选中的 Agent**
+
+Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可用）决定背景色调。切换 agent 时背景平滑过渡。这样每个 agent 有自己的 "气场"，但不影响其他视图。
+
+**推荐**：先做方案 B（最简单，零风险），后续可加入方案 A 的聚合逻辑。
 
 **实现思路**：
 - 在 `App.svelte` 最底层加一个 `<canvas>` 或 SVG filter 层
-- 用 `requestAnimationFrame` 驱动 simplex noise 渐变（可以用 [simplex-noise](https://www.npmjs.com/package/simplex-noise) 包，gzip < 2KB）
-- Gateway 通过 SSE 推送 agent 状态（已有 `agent:state_changed` 或类似事件？需要确认）
-- 颜色之间用 `transition: background 2s ease` 做平滑切换
+- 用 `requestAnimationFrame` 驱动 simplex noise 渐变（[simplex-noise](https://www.npmjs.com/package/simplex-noise) 包，gzip < 2KB）
+- 颜色过渡用 `transition: background 1.5s ease`
 
 **技术选型**：
-- 方案 A：CSS `@property` + 多个 radial gradient 叠加，由 JS 更新 custom properties → GPU 加速，最轻量
+- 方案 A：CSS `@property` + 多个 radial gradient 叠加，JS 更新 custom properties → GPU 加速，最轻量
 - 方案 B：`<canvas>` 2D + simplex noise → 更灵活，适合后续加粒子
-- 推荐：先用方案 A 快速出效果，Phase 2 升级到方案 B 以支持粒子
+- 推荐：先用方案 A 快速出效果，后续升级到方案 B 以支持粒子
 
 **适用范围**：全局背景，所有页面共享。
 
@@ -125,22 +141,30 @@ Phase 6 ─── 感官扩展
 
 ## Phase 2：动效语言升级（Motion Design）
 
-### 4. Agent 心跳 / 呼吸 / 涟漪 🥈
+### 4. Agent 心跳 / 呼吸 / 涟漪 ✅ 2026-06-24
 
-**在现有的 IdleRing 组件上扩展**：
+**已实现**（commit `07d06f2`）。在 `desktop/src/pages/IdleRing.svelte` 中实现。
 
-| 动效 | 触发条件 | 视觉表现 |
-|---|---|---|
-| **呼吸** | agent idle | ring 以 4-7-8 节奏缓慢脉动 (scale 1.0 → 1.03 → 1.0) |
-| **涟漪** | agent 思考中 | ring 向外发出细微波纹，每 2-3 秒一圈 |
-| **脉冲** | 任务完成 | 一道光沿 ring 快速旋转一圈 + 短暂放大 |
-| **震动** | 错误发生 | ring 不规则抖动 200ms + 短暂变红 |
-| **唤醒** | 从 idle 切换到 active | ring 快速扩大再收缩 (类似 "睁眼") |
+**实现细节**：
 
-**实现**：
-- 在 `IdleRing.svelte` 里用 Svelte 的 `tweened` / `spring` store 做动画值
-- SVG `stroke-dasharray` + `stroke-dashoffset` 做 "光沿线旋转" 效果
-- 心跳用 CSS `animation` + `transform: scale()` + `ease-in-out`
+| 动效 | 类型 | 触发 | 实现 |
+|---|---|---|---|
+| **breathing** | continuous | `mode="idle"/"wakeup"` | CSS `@keyframes breathe` — 8s scale pulse (1.0 ↔ 1.025) |
+| **ripple** | continuous | `mode="reflection"/"processing"` | `::before` + `::after` 伪元素，border-only 无 fill，从外环外侧向外扩散 (2.8s, 两道交错) |
+| **pulse** | one-shot | `trigger="pulse"` | `.ring-svg` drop-shadow 短暂增强 (0.5s) |
+| **shake** | one-shot | `trigger="shake"` | 水平衰减抖动 (0.35s) |
+| **wakeup** | one-shot | `trigger="wakeup"` | "睁眼" scale(0.88→1.06→0.98→1.0) (0.7s) |
+
+**关键设计决策**：
+- **不遮盖双环**：涟漪伪元素 `inset: -20%` + `scale(0.65)` 起，border 始终在 SVG 外环外侧。SVG `z-index: 1`，中心 `z-index: 2`，涟漪在下层
+- **Continuous vs one-shot**：continuous 由 `mode` 驱动（idle→breathing，reflection→ripple）；one-shot 由 `trigger` prop 驱动，播放后自动清除
+- **one-shot 覆盖 continuous**：`effectClass` derived 值在 `activeEffect` 非 null 时返回 one-shot class，播放完毕后回退到 continuous
+- **`trigger` 而非 `effect` prop 名**：避免与 Svelte 5 的 `$effect` rune 冲突
+- **尊重 `prefers-reduced-motion`**：所有动画在 reduced-motion 下禁用
+- **`active={false}` 时所有动效关闭**
+- **现有调用方（ActivityStateWidget、Home）无需修改** — `mode` 已传入，continuous 效果自动生效
+
+**原设计**（供参考）：
 
 ---
 
@@ -435,3 +459,4 @@ JS 监听 `mousemove` 计算 `--tilt-x` / `--tilt-y`。
 ## Changelog
 
 - 2026-06-24：初始创意池，6 Phase 16 个方向
+- 2026-06-24：Phase 2 第 4 条（Agent 心跳/呼吸/涟漪）实现。IdleRing 新增 5 个动效（breathing/ripple continuous + pulse/shake/wakeup one-shot），纯 CSS 实现，不遮盖双环。

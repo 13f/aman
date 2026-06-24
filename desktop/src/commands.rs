@@ -2471,6 +2471,12 @@ pub async fn get_locale(state: State<'_, AppState>) -> Result<serde_json::Value,
     }))
 }
 
+/// Return the current UI visual style (`"frosted-glass"` | `"aurora"`).
+#[tauri::command]
+pub async fn get_ui_style(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.ui_style.to_string())
+}
+
 #[tauri::command]
 pub async fn has_any_provider(state: State<'_, AppState>) -> Result<bool, String> {
     let t = translator(&state);

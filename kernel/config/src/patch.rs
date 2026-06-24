@@ -52,6 +52,7 @@ replace_patch!(
     f32, f64,
     String,
     std::path::PathBuf,
+    crate::UiStyle,
 );
 
 impl<T: ConfigPatch> ConfigPatch for Option<T> {

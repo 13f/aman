@@ -18,6 +18,7 @@
   import Settings from "./pages/Settings.svelte";
   import Integration from "./pages/Integration.svelte";
   import McpServers from "./pages/McpServers.svelte";
+  import AuroraBackground from "./components/AuroraBackground.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -32,6 +33,7 @@
   let gatewayPort = $state(9999);
   let secretsMode = $state("env");
   let mcpEnabled = $state(false);
+  let uiStyle = $state<string>("frosted-glass");
   let teamPageVersion = $state(0);
   // NOT $state — postMessage updates must not trigger iframe src reload.
   // The path is read at render time (when teamPageVersion changes).
@@ -215,6 +217,13 @@
       // keep default (en)
     }
 
+    // Load UI style from backend config (ui.style).
+    try {
+      uiStyle = await invoke<string>("get_ui_style");
+    } catch {
+      // keep default (frosted-glass)
+    }
+
     // Read secrets mode to decide whether to show Integration.
     try {
       secretsMode = JSON.parse(await invoke<string>("get_secrets_mode"));
@@ -299,6 +308,10 @@
     });
   });
 </script>
+
+{#if uiStyle === "aurora"}
+  <AuroraBackground />
+{/if}
 
 <!-- Transparent drag strip at the very top of the window.
      With titleBarStyle: Overlay, WebView content fills the entire

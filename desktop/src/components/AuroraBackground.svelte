@@ -66,6 +66,10 @@
   let rafId = 0;
   const noiseFns = CALM_LAYERS.map(() => createNoise2D());
 
+  /** Per-layer accumulated phase — never jumps, only changes rate. */
+  const phase: number[] = CALM_LAYERS.map(() => 0);
+  let lastTime = 0;
+
   function lerp(a: number, b: number, t: number): number {
     return a + (b - a) * t;
   }
@@ -79,12 +83,25 @@
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Delta time in seconds
+    const dt = lastTime ? (time - lastTime) * 0.001 : 0;
+    lastTime = time;
+
     // Smooth activity toward target
     activity = lerp(activity, targetActivity, 0.02);
 
+    // Accumulate phase for each layer using the current interpolated speed.
+    // When speed changes, only the accumulation rate changes — the absolute
+    // phase never jumps, so the aurora pattern shifts smoothly.
+    for (let i = 0; i < CALM_LAYERS.length; i++) {
+      const calm = CALM_LAYERS[i];
+      const active = ACTIVE_LAYERS[i];
+      const dSpeed = lerp(calm.speed, active.speed, activity);
+      phase[i] += dSpeed * dt;
+    }
+
     const imageData = ctx.createImageData(w, h);
     const data = imageData.data;
-    const t = time * 0.001;
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -97,16 +114,15 @@
           const calm = CALM_LAYERS[i];
           const active = ACTIVE_LAYERS[i];
 
-          // Interpolate all layer parameters between calm ↔ active.
           const dr = lerp(calm.r, active.r, activity);
           const dg = lerp(calm.g, active.g, activity);
           const db = lerp(calm.b, active.b, activity);
-          const dSpeed = lerp(calm.speed, active.speed, activity);
           const dScale = lerp(calm.scale, active.scale, activity);
           const dVStretch = lerp(calm.vStretch, active.vStretch, activity);
 
-          const sx = nx * dScale / dVStretch + t * dSpeed;
-          const sy = ny * dScale * dVStretch + t * dSpeed * 0.5;
+          // Use accumulated phase — never jumps on speed change
+          const sx = nx * dScale / dVStretch + phase[i];
+          const sy = ny * dScale * dVStretch + phase[i] * 0.5;
           const n = noiseFns[i](sx, sy);
           const wgt = (n + 1) * 0.5;
           r += dr * wgt;

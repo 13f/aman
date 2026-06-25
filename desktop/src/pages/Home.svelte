@@ -134,6 +134,47 @@
     return { mode: "idle", outerPct: 0, innerPct: 0, emoji: MODE_ICON.idle, kind: "" };
   }
 
+  // ── 3D Tilt state per agent card ────────────────────────────────────────
+  interface TiltState {
+    tiltX: number;
+    tiltY: number;
+    glossX: number;
+    glossY: number;
+    hovering: boolean;
+  }
+  let tiltStates = $state<Record<string, TiltState>>({});
+
+  function getTilt(key: string): TiltState {
+    return tiltStates[key] ?? { tiltX: 0, tiltY: 0, glossX: 50, glossY: 50, hovering: false };
+  }
+
+  function handleTilt(key: string, e: MouseEvent) {
+    if (prefersReducedMotion) return;
+    const card = e.currentTarget as HTMLElement;
+    const rect = card.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const mouseX = e.clientX - centerX;
+    const mouseY = e.clientY - centerY;
+    // Map to tilt range ±10° for subtle, non-nauseating rotation
+    const tiltY = (mouseX / (rect.width / 2)) * 10;
+    const tiltX = -(mouseY / (rect.height / 2)) * 10;
+    // Gloss position as percentage of card dimensions
+    const glossX = ((e.clientX - rect.left) / rect.width) * 100;
+    const glossY = ((e.clientY - rect.top) / rect.height) * 100;
+    tiltStates = {
+      ...tiltStates,
+      [key]: { tiltX, tiltY, glossX, glossY, hovering: true },
+    };
+  }
+
+  function handleTiltLeave(key: string) {
+    tiltStates = {
+      ...tiltStates,
+      [key]: { tiltX: 0, tiltY: 0, glossX: 50, glossY: 50, hovering: false },
+    };
+  }
+
   let agents = $state<AgentEntry[]>([]);
   let codeAgents = $state<CodeAgentEntry[]>([]);
   let loading = $state(true);
@@ -143,6 +184,7 @@
   let llmEmotionIds = $state<Record<string, string>>({});
   let emotionsConfigs = $state<Record<string, EmotionsConfig | null>>({});
   let unlisteners: (() => void)[] = [];
+  let prefersReducedMotion = $state(false);
   let showAgentSelector = $state(false);
   let selectedSkillName = $state("");
   let modalError = $state("");
@@ -361,14 +403,19 @@
   );
 
   onMount(async () => {
+    prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
     try {
       agents = await invoke<AgentEntry[]>("list_agents");
       // Initialize default idle state for each agent
       const init: Record<string, AgentIdleState> = {};
+      const initTilt: Record<string, TiltState> = {};
       for (const a of agents) {
         init[a.key] = defaultIdleState();
+        initTilt[a.key] = { tiltX: 0, tiltY: 0, glossX: 50, glossY: 50, hovering: false };
       }
       idleStates = init;
+      tiltStates = initTilt;
 
       // Pre-load emotions configs (non-blocking, one per agent).
       for (const a of agents) {
@@ -442,7 +489,16 @@
         {#each agents as agent}
           {@const st = getIdleState(agent.key)}
           {@const ss = getSystemState(agent.key)}
-          <button class="agent-avatar-card" class:needs-config={!agent.provider} onclick={() => selectAgent(agent)}>
+          {@const ts = getTilt(agent.key)}
+          <button
+            class="agent-avatar-card"
+            class:needs-config={!agent.provider}
+            onclick={() => selectAgent(agent)}
+            onmouseenter={(e) => handleTilt(agent.key, e)}
+            onmousemove={(e) => handleTilt(agent.key, e)}
+            onmouseleave={() => handleTiltLeave(agent.key)}
+            style="--tilt-x: {ts.tiltX}deg; --tilt-y: {ts.tiltY}deg; --gloss-x: {ts.glossX}%; --gloss-y: {ts.glossY}%;"
+          >
             <div class="agent-avatar-wrap">
             {#if ss === "idle" || !agent.provider}
               {@const imgSrc = getEmotionImage(agent.key, st.kind || "idle")}
@@ -465,9 +521,9 @@
                 style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:165px; height:165px;"
               >
                 {#if imgSrc}
-                  <img class="state-emotion-img" src={imgSrc} alt="" />
+                  <img class="state-emotion-img avatar-pose" src={imgSrc} alt="" />
                 {:else}
-                  <span class="state-emoji">{STATE_EMOJI[ss] ?? "\u{1F4CB}"}</span>
+                  <span class="state-emoji avatar-pose">{STATE_EMOJI[ss] ?? "\u{1F4CB}"}</span>
                 {/if}
               </div>
             {/if}
@@ -684,7 +740,11 @@
     border: 1px solid color-mix(in srgb, var(--fg-dim) 10%, transparent);
     border-radius: 20px;
     cursor: pointer;
-    transition: border-color 0.25s, transform 0.2s, box-shadow 0.25s;
+    /* 3D tilt — CSS variables driven by JS mousemove. Short transition for
+       responsive mouse-follow; longer ease-out curve for leave settle-back. */
+    transform: perspective(800px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+    transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.25s, box-shadow 0.25s;
+    transform-style: preserve-3d;
     text-align: center;
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.02),
@@ -710,11 +770,35 @@
 
   .agent-avatar-card:hover {
     border-color: color-mix(in srgb, var(--fg-dim) 18%, transparent);
-    transform: translateY(-4px);
+    transform: perspective(800px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)) translateY(-4px);
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.04),
       0 24px 48px -12px rgba(0, 0, 0, 0.6),
       0 0 80px -16px rgba(91, 125, 245, 0.18);
+  }
+
+  /* ── Gloss / lighting overlay ─────────────────────────────────────────
+     A radial highlight that follows the mouse (virtual light source) when
+     the card tilts.  Pure CSS driven by --gloss-x / --gloss-y. */
+  .agent-avatar-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 20px;
+    pointer-events: none;
+    z-index: 5;
+    opacity: 0;
+    transition: opacity 0.4s;
+    background: radial-gradient(
+      circle at var(--gloss-x, 50%) var(--gloss-y, 50%),
+      rgba(255, 255, 255, 0.13) 0%,
+      rgba(255, 255, 255, 0.04) 30%,
+      transparent 60%
+    );
+  }
+
+  .agent-avatar-card:hover::after {
+    opacity: 1;
   }
 
   .agent-avatar-card.needs-config {
@@ -1241,5 +1325,53 @@
   @keyframes pulseSoft {
     0%, 100% { transform: scale(1); }
     50% { transform: scale(1.08); }
+  }
+
+  /* ── Avatar Pose Animation ──────────────────────────────────────────────
+     Subtle organic sway on emoji / emotion images inside agent cards.
+     Gives each agent a "living" feel — like a game character select screen
+     where avatars have idle animation, never perfectly static. */
+
+  .avatar-pose {
+    animation: agentPose 6s ease-in-out infinite;
+  }
+
+  /* Pierce IdleRing's scoped styles to animate its center content.
+     The parent selector (.agent-avatar-wrap) carries Home's scope hash
+     so this only targets IdleRings rendered inside Home cards. */
+  .agent-avatar-wrap :global(.ring-center),
+  .agent-avatar-wrap :global(.ring-emotion-img) {
+    animation: agentPose 6s ease-in-out infinite;
+  }
+
+  @keyframes agentPose {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    12%  { transform: translateY(-3px) rotate(0.4deg); }
+    25%  { transform: translateY(-1px) rotate(-0.3deg); }
+    37%  { transform: translateY(-3.5px) rotate(0deg); }
+    50%  { transform: translateY(1.5px) rotate(0.3deg); }
+    62%  { transform: translateY(0) rotate(-0.2deg); }
+    75%  { transform: translateY(-2px) rotate(0.2deg); }
+    87%  { transform: translateY(-0.5px) rotate(0deg); }
+  }
+
+  /* ── Accessibility ────────────────────────────────────────────────────── */
+
+  @media (prefers-reduced-motion: reduce) {
+    .agent-avatar-card {
+      transform: none;
+      transition: border-color 0.25s, box-shadow 0.25s;
+    }
+    .agent-avatar-card:hover {
+      transform: translateY(-4px);
+    }
+    .agent-avatar-card::after {
+      display: none;
+    }
+    .avatar-pose,
+    .agent-avatar-wrap :global(.ring-center),
+    .agent-avatar-wrap :global(.ring-emotion-img) {
+      animation: none;
+    }
   }
 </style>

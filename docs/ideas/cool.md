@@ -373,23 +373,38 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 ---
 
-### 14. Agent 角色卡片升级
+### 14. Agent 角色卡片升级 ✅ 2026-06-25
 
-**Home 页 agent 卡片改成类似游戏角色选择画面**：
+**已实现**（commit 待提交）。在 `Home.svelte` agent 卡片上实现 3D tilt + gloss + 姿态动画。**状态指示**跳过（卡片已有 status dot + label）。
 
-- **姿态动画**：每个 agent 有一个微动的 SVG 插画或 emoji 序列帧（不是静态头像）
-- **3D tilt**：Hover 时卡片倾斜，跟随鼠标位置（CSS `perspective` + `rotateX/Y`）
-- **光照效果**：tilt 时卡片表面的 gloss/高光跟随鼠标
-- **状态指示**：卡片上有微小的活动摘要（"最后一次活跃：3 分钟前 · 完成了 2 个任务"）
+**实现细节**：
 
-**3D tilt 实现**：
-```css
-.card {
-  transform: perspective(800px) rotateX(var(--tilt-x)) rotateY(var(--tilt-y));
-  transition: transform 0.1s ease-out;
-}
-```
-JS 监听 `mousemove` 计算 `--tilt-x` / `--tilt-y`。
+**3D Tilt**：
+- JS `mousemove` 计算鼠标相对卡片中心的偏移，映射为 ±10° 的 `rotateX`/`rotateY`
+- 通过 CSS 自定义属性 `--tilt-x` / `--tilt-y` 驱动 `transform: perspective(800px) rotateX(...) rotateY(...)`
+- 鼠标移出时 `cubic-bezier(0.23, 1, 0.32, 1)` 缓动平滑回弹（~0.6s）
+- 悬停时叠加 `translateY(-4px)` 保留原有上浮效果
+- `transform-style: preserve-3d` 确保 3D 空间正确渲染
+
+**光照效果（Gloss）**：
+- `::after` 伪元素 + `radial-gradient`：鼠标位置映射为高光中心（`--gloss-x` / `--gloss-y`）
+- 白色半透明渐变（13% → 4% → 0%），悬停时 `opacity` 淡入
+- `pointer-events: none` 不阻断点击
+
+**姿态动画（Pose）**：
+- `agentPose` 关键帧：6s 循环、8 个停顿点，不规则的 ±3.5px 上下浮动 + ±0.4° 旋转
+- 应用到 `.state-emoji` / `.state-emotion-img`（`.avatar-pose` class）
+- 通过 `:global(.ring-center)` / `:global(.ring-emotion-img)` 穿透 IdleRing 作用域
+- 父选择器 `.agent-avatar-wrap` 携带 Home 的作用域 hash，仅影响 Home 卡片
+
+**可访问性**：
+- JS 端检测 `prefers-reduced-motion`：开启时跳过所有倾斜计算
+- CSS `@media (prefers-reduced-motion: reduce)`：移除 3D 变换、光泽、姿态动画，回退为原始上浮效果
+
+**未实现**：
+- **状态指示**：跳过（卡片已有 status dot + label 展示当前状态，无需重复的活动摘要）
+
+**原设计方案**（供参考）：
 
 ---
 
@@ -472,3 +487,4 @@ JS 监听 `mousemove` 计算 `--tilt-x` / `--tilt-y`。
 - 2026-06-24：Phase 2 第 4 条（Agent 心跳/呼吸/涟漪）实现。IdleRing 新增 5 个动效（breathing/ripple continuous + pulse/shake/wakeup one-shot），纯 CSS 实现，不遮盖双环。
 - 2026-06-25：Phase 2 第 5 条（页面转场动画）实现。`App.svelte` 用 `{#key currentPage}` + `fly` transition，方向感知（前进右滑、后退左滑），250ms/200ms，尊重 `prefers-reduced-motion`。
 - 2026-06-25：Phase 1 第 2 条（粒子系统）实现。`ParticleField.svelte`，30-50 粒子，柔光漂浮，activity 驱动密度/速度/色温，带 attractor API 供消息汇聚效果。
+- 2026-06-25：Phase 5 第 14 条（Agent 角色卡片升级）实现。3D tilt（±10° 透视旋转 + 弹性回弹），光照 gloss 叠加层（radial-gradient 跟随鼠标），姿态动画（agentPose 关键帧 6s 循环渗透 IdleRing 中心内容）。跳过状态指示（卡片已有 status dot）。尊重 `prefers-reduced-motion`。

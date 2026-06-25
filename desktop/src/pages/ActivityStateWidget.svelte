@@ -150,7 +150,13 @@
   let outerPct = $derived.by(() => {
     if ((displayState === "idle" || displayState === "wakeup") && idleSnap)
       return depthPct(idleSnap.depth);
-    if (displayState === "reflection" && reflectSnap) return reflectSnap.arousalLevel * 100;
+    if (displayState === "reflection" && reflectSnap)
+      return reflectSnap.arousalLevel * 100;
+    // Active states — show half ring while agent is working/chatting/etc.
+    if (displayState === "chatting" || displayState === "working" ||
+        displayState === "studying" || displayState === "daily_life" ||
+        displayState === "prize" || displayState === "waiting")
+      return 50;
     return 0;
   });
 
@@ -159,6 +165,11 @@
       return Math.round(idleSnap.arousal * 100);
     if (displayState === "reflection" && reflectSnap)
       return Math.min(100, reflectSnap.reflectionConsecutiveCount * 10);
+    // Active states — show half ring while agent is working/chatting/etc.
+    if (displayState === "chatting" || displayState === "working" ||
+        displayState === "studying" || displayState === "daily_life" ||
+        displayState === "prize" || displayState === "waiting")
+      return 50;
     return 0;
   });
 

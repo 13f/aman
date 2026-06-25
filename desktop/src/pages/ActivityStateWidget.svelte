@@ -159,6 +159,10 @@
     return 0; // fallback — dash() clamps to 1% minimum
   });
 
+  $effect(() => {
+    console.debug("[IdleRing] state:", "systemState=", systemState, "displayState=", displayState, "idleSnap=", idleSnap?.kind ?? null, "depth=", idleSnap?.depth, "outerPct=", outerPct, "innerPct=", innerPct, "agentId=", agentId, "runtimeRunning=", runtimeRunning);
+  });
+
   // --- display ---
 
   let emoji = $derived.by(() => {
@@ -221,9 +225,8 @@
   }
 
   function onEvent(e: any) {
-    // Only track idle/reflection events when the agent is actually idle.
     if (systemState !== "idle" && systemState !== "") {
-      console.debug("[IdleRing] skip event: systemState=", systemState, "event_type=", e.payload?.event_type);
+      console.debug("[IdleRing] SKIP: systemState=", systemState, "event_type=", e.payload?.event_type);
       return;
     }
 
@@ -234,7 +237,7 @@
     if (!matchesAgent(data)) return;
 
     if (et === "idle") {
-      console.debug("[IdleRing] idle event: kind=", data.kind, "depth=", data.depth, "arousal=", data.context?.arousal_level);
+      console.debug("[IdleRing] GOT idle: kind=", data.kind, "depth=", data.depth, "arousal=", data.context?.arousal_level, "agentId=", agentId);
       const kind: string = data.kind ?? "daze";
       idleSnap = {
         kind,

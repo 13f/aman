@@ -268,21 +268,18 @@ fn flatten_yaml_value(value: &YamlValue, prefix: &str, out: &mut HashMap<String,
                 .collect();
             out.insert(prefix.to_string(), items.join(", "));
         }
-        YamlValue::String(s) => {
-            if !prefix.is_empty() {
-                out.insert(prefix.to_string(), s.clone());
-            }
+        YamlValue::String(s) if !prefix.is_empty() => {
+            out.insert(prefix.to_string(), s.clone());
         }
-        YamlValue::Bool(b) => {
-            if !prefix.is_empty() {
-                out.insert(prefix.to_string(), b.to_string());
-            }
+        YamlValue::String(_) => {}
+        YamlValue::Bool(b) if !prefix.is_empty() => {
+            out.insert(prefix.to_string(), b.to_string());
         }
-        YamlValue::Number(n) => {
-            if !prefix.is_empty() {
-                out.insert(prefix.to_string(), n.to_string());
-            }
+        YamlValue::Bool(_) => {}
+        YamlValue::Number(n) if !prefix.is_empty() => {
+            out.insert(prefix.to_string(), n.to_string());
         }
+        YamlValue::Number(_) => {}
         _ => {} // null, etc. — skip
     }
 }

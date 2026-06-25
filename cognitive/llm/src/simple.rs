@@ -73,6 +73,7 @@ impl SimpleLlmClient {
     ///
     /// Returns `Err(String)` on network errors, non-2xx responses, or
     /// unparseable response bodies.
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat_completion(
         &self,
         config: &LlmApiConfig,
@@ -108,10 +109,10 @@ impl SimpleLlmClient {
             );
         }
 
-        if let Some(fmt) = response_format {
-            if let Some(obj) = body.as_object_mut() {
-                obj.insert("response_format".into(), response_format_json(fmt));
-            }
+        if let Some(fmt) = response_format
+            && let Some(obj) = body.as_object_mut()
+        {
+            obj.insert("response_format".into(), response_format_json(fmt));
         }
 
         let client = if timeout_secs > 0 {
@@ -297,8 +298,8 @@ pub fn parse_json_response<T: serde::de::DeserializeOwned>(
             match ch {
                 '"' => in_str = true,
                 '{' | '[' => stack.push(ch),
-                '}' => { if stack.last() == Some(&'{') { stack.pop(); } }
-                ']' => { if stack.last() == Some(&'[') { stack.pop(); } }
+                '}' if stack.last() == Some(&'{') => { stack.pop(); }
+                ']' if stack.last() == Some(&'[') => { stack.pop(); }
                 _ => {}
             }
         }

@@ -2091,9 +2091,9 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
-        /// Property: empty `SubscriptionFilter` matches every event.
-        /// This is the "wildcard" semantics — `None` for each
-        /// constraint means "no restriction on this dimension."
+        // Property: empty `SubscriptionFilter` matches every event.
+        // This is the "wildcard" semantics — `None` for each
+        // constraint means "no restriction on this dimension."
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
             #[test]
@@ -2119,12 +2119,12 @@ mod tests {
             }
         }
 
-        /// Property: filter matching is monotonic in the
-        /// `Option<Vec<T>>` fields. If a filter with only the
-        /// event_type constraint matches, adding the SAME source
-        /// (a compatible additional constraint) still matches.
-        /// This pins the AND-semantics: extra constraints can
-        /// only narrow, never widen, the set of matching events.
+        // Property: filter matching is monotonic in the
+        // `Option<Vec<T>>` fields. If a filter with only the
+        // event_type constraint matches, adding the SAME source
+        // (a compatible additional constraint) still matches.
+        // This pins the AND-semantics: extra constraints can
+        // only narrow, never widen, the set of matching events.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(128))]
             #[test]

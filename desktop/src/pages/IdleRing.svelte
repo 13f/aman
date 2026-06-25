@@ -51,7 +51,7 @@
   function dash(circum: number, pct: number): number {
     // Clamp to [5, 100] so the progress rings never fully disappear
     // (stroke-dashoffset = full circumference would hide them entirely).
-    const clamped = Math.min(100, Math.max(5, pct));
+    const clamped = Math.min(100, Math.max(1, pct));
     return circum - (clamped / 100) * circum;
   }
 

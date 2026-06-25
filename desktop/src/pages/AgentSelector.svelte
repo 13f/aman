@@ -377,8 +377,8 @@
     position: absolute;
     z-index: 10;
     background: var(--bg-card);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(var(--glass-blur-far));
+    -webkit-backdrop-filter: blur(var(--glass-blur-far));
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 10px 14px;
@@ -391,8 +391,8 @@
     position: absolute;
     z-index: 10;
     background: var(--bg-card);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(var(--glass-blur-far));
+    -webkit-backdrop-filter: blur(var(--glass-blur-far));
     border: 1px solid var(--border);
     border-radius: 6px;
     max-height: 240px;
@@ -462,8 +462,8 @@
     cursor: pointer;
     text-align: center;
     background: var(--bg-card);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(var(--glass-blur-far));
+    -webkit-backdrop-filter: blur(var(--glass-blur-far));
     border: 1px solid var(--border);
     border-radius: 12px;
     width: 100%;

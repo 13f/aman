@@ -144,7 +144,7 @@
     padding: 12px 20px;
     border-radius: 12px;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
-    backdrop-filter: blur(12px);
+    backdrop-filter: blur(var(--glass-blur-far));
     min-width: 380px;
     max-width: 520px;
     animation: slideIn 0.25s ease-out;

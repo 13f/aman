@@ -1,14 +1,29 @@
 /* ── Design Tokens ───────────────────────────────────────────── */
 :root {
-  /* ── Frosted glass surface hierarchy ──
-   * High-opacity tint + strong blur. Desktop light passes through
-   * but shapes and content behind the window are not readable. */
-  --glass-blur: 28px;
-  --glass-blur-strong: 44px;
+  /* ── Frosted glass depth hierarchy ──
+   *
+   * Three parallax glass layers sit above the aurora canvas (L0):
+   *
+   *   L2 (far)  — cards, inputs, dropdowns  — blur 6px  — thin glass, close to aurora
+   *   L1 (mid)  — sidebar, main content     — blur 28px — standard frosted glass
+   *   L3 (near) — modals, toasts            — blur 56px — thick glass, close to viewer
+   *
+   * More blur = the glass feels thicker and more "in front" of the aurora.
+   * Higher opacity = stronger tint, further separating the surface from the
+   * background. Combined they create a perceptible depth parallax without movement. */
+  --glass-blur-far: 6px;
+  --glass-blur-mid: 28px;
+  --glass-blur-near: 56px;
 
-  --bg: rgba(11, 13, 19, 0.38);
+  --glass-opacity-far: 0.35;
+  --glass-opacity-mid: 0.52;
+  --glass-opacity-near: 0.78;
+
+  /* Background tints — opacity decreases toward the aurora (far layer) */
+  --bg: rgba(11, 13, 19, 0.32);
   --bg-elevated: rgba(17, 20, 28, 0.48);
-  --bg-card: rgba(22, 25, 35, 0.58);
+  --bg-card: rgba(22, 25, 35, 0.36);
+  --bg-modal: rgba(22, 25, 35, 0.78);
   --bg-hover: rgba(30, 33, 48, 0.65);
   --bg-active: rgba(38, 42, 58, 0.76);
 
@@ -77,7 +92,7 @@
   --space-3xl: 28px;
 
   /* Derived tokens */
-  --bg-input: rgba(11, 13, 19, 0.28);
+  --bg-input: rgba(11, 13, 19, 0.20);
 
   /* Global */
   font-family: var(--font-ui);
@@ -92,12 +107,13 @@
 /* ── Light glass palette (follows OS preference) ──────────────── */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: rgba(246, 246, 248, 0.42);
-    --bg-elevated: rgba(255, 255, 255, 0.52);
-    --bg-card: rgba(255, 255, 255, 0.60);
+    --bg: rgba(246, 246, 248, 0.36);
+    --bg-elevated: rgba(255, 255, 255, 0.50);
+    --bg-card: rgba(255, 255, 255, 0.42);
+    --bg-modal: rgba(255, 255, 255, 0.82);
     --bg-hover: rgba(240, 240, 243, 0.68);
     --bg-active: rgba(232, 232, 237, 0.78);
-    --bg-input: rgba(246, 246, 248, 0.30);
+    --bg-input: rgba(246, 246, 248, 0.22);
 
     --fg: #1c1c24;
     --fg-secondary: #5c5c6e;
@@ -232,8 +248,8 @@ body {
 .sidebar {
   width: 220px;
   background: var(--bg-elevated);
-  backdrop-filter: blur(var(--glass-blur-strong));
-  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  backdrop-filter: blur(var(--glass-blur-mid));
+  -webkit-backdrop-filter: blur(var(--glass-blur-mid));
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -473,8 +489,8 @@ body {
   overflow: hidden;
   position: relative;
   background: var(--bg);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur-mid));
+  -webkit-backdrop-filter: blur(var(--glass-blur-mid));
 }
 
 /* ── Page Transition Wrapper ─────────────────────────────────── */
@@ -488,8 +504,8 @@ body {
 /* ── Cards ──────────────────────────────────────────────────── */
 .card {
   background: var(--bg-card);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur-far));
+  -webkit-backdrop-filter: blur(var(--glass-blur-far));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 20px;
@@ -613,8 +629,8 @@ input[type="text"],
 input:not([type]) {
   width: 100%;
   background: var(--bg-input);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(var(--glass-blur-far));
+  -webkit-backdrop-filter: blur(var(--glass-blur-far));
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 10px 12px;
@@ -640,9 +656,9 @@ input:focus {
   position: fixed;
   bottom: 20px;
   right: 20px;
-  background: var(--bg-card);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  background: var(--bg-modal);
+  backdrop-filter: blur(var(--glass-blur-near));
+  -webkit-backdrop-filter: blur(var(--glass-blur-near));
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   padding: 12px 20px;
@@ -683,17 +699,17 @@ input:focus {
   inset: 0;
   z-index: 2000;
   background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(2px);
-  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(var(--glass-blur-near));
+  -webkit-backdrop-filter: blur(var(--glass-blur-near));
   display: flex;
   align-items: center;
   justify-content: center;
   animation: fadeIn 0.15s ease-out;
 }
 .modal-content {
-  background: var(--bg-card);
-  backdrop-filter: blur(var(--glass-blur-strong));
-  -webkit-backdrop-filter: blur(var(--glass-blur-strong));
+  background: var(--bg-modal);
+  backdrop-filter: blur(var(--glass-blur-near));
+  -webkit-backdrop-filter: blur(var(--glass-blur-near));
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   padding: var(--space-xl);
@@ -766,8 +782,8 @@ input:focus {
   box-shadow: var(--shadow-lg);
   animation: slideInRight 0.2s ease-out;
   line-height: var(--line-height-md);
-  backdrop-filter: blur(var(--glass-blur));
-  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur-near));
+  -webkit-backdrop-filter: blur(var(--glass-blur-near));
 }
 .toast-info {
   background: var(--accent-muted);

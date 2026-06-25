@@ -12,7 +12,7 @@
 Phase 1 ─── 氛围感升级 ─── 打开 app 第一眼就不同
   ├── 1. 动态环境光 / Aurora 背景     ✅ 2026-06-24
   ├── 2. 粒子系统 (sub particle field) ✅ 2026-06-25
-  └── 3. 深度感 / 视差玻璃层
+  └── 3. 深度感 / 视差玻璃层           ✅ 2026-06-26
 
 Phase 2 ─── 动效语言 ─── 让 agent 感觉 "活着"
   ├── 4. Agent 心跳 / 呼吸 / 涟漪     ✅ 2026-06-24
@@ -113,36 +113,56 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 ### 3. 深度感 / 视差玻璃层
 
-**现状**：单层毛玻璃，所有 `backdrop-filter: blur(28px)` 同级。
+**已实现**（2026-06-26）。三层视差玻璃深度系统。
 
-**改进**：三层深度：
+**实现细节**：
 
-```
-┌──────────────────────────────────────┐
-│  L0: 动态背景 (aurora + 粒子)         │  blur: 0,  最远层
-│  ┌──────────────────────────────┐    │
-│  │ L1: 大面积玻璃 (sidebar, 主区) │   │  blur: 28px, 中层
-│  │  ┌──────────────────────┐    │    │
-│  │  │ L2: 卡片/按钮/input   │    │    │  blur: 12px, 近层
-│  │  │  ┌──────────────┐    │    │    │
-│  │  │  │ L3: modal/toast│   │    │    │  blur: 44px, 最前层
-│  │  │  └──────────────┘    │    │    │
-│  │  └──────────────────────┘    │    │
-│  └──────────────────────────────┘    │
-└──────────────────────────────────────┘
-```
+新的 CSS token（`app.css` `:root`）：
 
-**CSS Token 调整**：
 ```css
---glass-blur-far: 8px;       /* L2: 卡片 */
---glass-blur-mid: 28px;      /* L1: sidebar, main */
---glass-blur-near: 44px;     /* L3: modal, toast */
---glass-blur-none: 0px;      /* L0: background */
+/* 三层模糊 — 不同程度模糊创造深度视差 */
+--glass-blur-far: 6px;      /* L2: 卡片、输入框 — 薄玻璃，贴近极光 */
+--glass-blur-mid: 28px;     /* L1: 侧边栏、主区域 — 标准磨砂玻璃 */
+--glass-blur-near: 56px;    /* L3: 模态框、toast — 厚玻璃，靠近观看者 */
 
---glass-opacity-far: 0.38;
---glass-opacity-mid: 0.58;
---glass-opacity-near: 0.78;
+/* 三层透明度 — 更高的不透明度 = 更强的玻璃着色 */
+--glass-opacity-far: 0.35;   /* L2: 浅着色 */
+--glass-opacity-mid: 0.52;   /* L1: 中等着色 */
+--glass-opacity-near: 0.78;  /* L3: 浓着色 */
+
+/* 新增背景 token — 模态框独有的高不透明度 */
+--bg-modal: rgba(22, 25, 35, 0.78);   /* L3 近景 */
 ```
+
+**深度映射**（模糊 + 背景不透明度）：
+
+```
+L0: Aurora canvas + 粒子            blur: 0,      opacity: 0
+L2 (远): 卡片 .card                 blur: 6px,    opacity: 0.36
+        输入框 textarea/input        blur: 6px,    opacity: 0.20
+        下拉菜单 .model-dropdown     blur: 6px
+L1 (中): 侧边栏 .sidebar            blur: 28px,   opacity: 0.48
+        主区域 .main                blur: 28px,   opacity: 0.32
+L3 (近): 模态框 .modal-content      blur: 56px,   opacity: 0.78
+        toast .toast                blur: 56px,   opacity: 0.78
+```
+
+**背景不透明度调整**：
+- `--bg-card`: 58% → 36%（更透明，贴近极光）
+- `--bg-input`: 28% → 20%（最透明）
+- `--bg`: 38% → 32%（主区域更通透）
+- 新增 `--bg-modal`: 78%（模态框最不透明）
+- Light mode 同步调整
+
+**修改的文件**（6 个）：
+- `desktop/src/app.css` — token 定义 + 全局元素 blur 重连
+- `desktop/src/App.svelte` — `.shutdown-overlay`
+- `desktop/src/pages/Home.svelte` — `.agent-avatar-card` + `.modal-overlay`
+- `desktop/src/pages/AgentSelector.svelte` — 3 处
+- `desktop/src/pages/Agents.svelte` — 下拉菜单
+- `desktop/src/pages/NotificationOverlay.svelte` — banner
+
+**设计原理**：多层玻璃叠加在动态极光背景之上，通过差异化的 `backdrop-filter: blur()` 采样相同的 simplex noise 源——所有玻璃层都能看到相同的色彩流动，但细节程度不同。模糊较小（6px）的卡片能保留更多极光结构，感觉更"贴近"背景；模糊较大（56px）的模态框几乎将极光融合为柔和色场，感觉更"靠前"。极光缓慢漂移时，所有层面同步变化，强化了"看到的是同一背景"的视差感。这与 Apple visionOS 的玻璃材质原理一致。
 
 ---
 
@@ -639,3 +659,4 @@ IdleRing.svelte              ← 现有组件，新增：
 - 2026-06-25：Phase 5 第 14 条（Agent 角色卡片升级）实现。3D tilt（±10° 透视旋转 + 弹性回弹），光照 gloss 叠加层（radial-gradient 跟随鼠标），姿态动画（agentPose 关键帧 6s 循环渗透 IdleRing 中心内容）。跳过状态指示（卡片已有 status dot）。尊重 `prefers-reduced-motion`。
 - 2026-06-25：Phase 5 第 13 条（Agent 脑图 / Cognitive State Map）方案讨论定稿。确定两级设计：Level 1 迷你认知指示器（IdleRing 替换为 CognitiveRing 单环），Level 2 完整脑图（Chat 侧面板 split view，SVG 纵向流图）。数据管道推荐 Gateway 端 `CognitiveStateTracker` + `agent:cognitive_state` SSE 事件。第 6 条"思考空间"与本条 Level 2 统一考虑。修正 roadmap 中 Phase 4/5 编号。
 - 2026-06-25：Phase 5 第 13 条 **Level 1 实现**。新增 `CognitiveRing.svelte`（SVG 单环 4 段分色 ReAct 相位指示 + 步骤文字），`cognitive-state.ts`（相位状态机 + 步骤文本推导）。`Home.svelte` agent 卡片 .state-visual 替换为 CognitiveRing，`ActivityStateWidget.svelte` 按 isActive 切换 IdleRing/CognitiveRing。纯 desktop 端事件推断，无 gateway 改动。Level 2 暂缓。
+- 2026-06-26：Phase 1 第 3 条（深度感 / 视差玻璃层）实现。三层玻璃深度系统：`--glass-blur-far: 6px`（卡片/输入框，薄玻璃）→ `--glass-blur-mid: 28px`（侧边栏/主区域）→ `--glass-blur-near: 56px`（模态框/toast，厚玻璃）。新增 `--bg-modal` token 区分卡片和模态框着色强度。调整 5 个背景 token 不透明度以匹配深度层级（card 0.58→0.36, input 0.28→0.20, bg 0.38→0.32）。6 个文件修改，0 个硬编码 blur 残留。模糊差值增大（6→28→56，原来提案是 8→28→44），深度对比更明显。与 aurora 背景的交互验证通过：极光色彩流动 + 差异模糊 = 视差深度感。

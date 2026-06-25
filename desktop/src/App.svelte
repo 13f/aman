@@ -490,8 +490,8 @@
     align-items: center;
     justify-content: center;
     background: rgba(11, 13, 19, 0.85);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(var(--glass-blur-far));
+    -webkit-backdrop-filter: blur(var(--glass-blur-far));
     animation: fadeIn 0.2s ease;
   }
 

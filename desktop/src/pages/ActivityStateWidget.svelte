@@ -222,7 +222,10 @@
 
   function onEvent(e: any) {
     // Only track idle/reflection events when the agent is actually idle.
-    if (systemState !== "idle" && systemState !== "") return;
+    if (systemState !== "idle" && systemState !== "") {
+      console.debug("[IdleRing] skip event: systemState=", systemState, "event_type=", e.payload?.event_type);
+      return;
+    }
 
     const p = e.payload;
     if (!p?.event_type) return;
@@ -231,6 +234,7 @@
     if (!matchesAgent(data)) return;
 
     if (et === "idle") {
+      console.debug("[IdleRing] idle event: kind=", data.kind, "depth=", data.depth, "arousal=", data.context?.arousal_level);
       const kind: string = data.kind ?? "daze";
       idleSnap = {
         kind,
@@ -254,6 +258,9 @@
       const list: Array<{ agent_id: string; system_state: string; emotion_id?: string }> = e.payload?.agents ?? [];
       for (const a of list) {
         if (!agentId || a.agent_id === agentId) {
+          if (a.system_state !== systemState) {
+            console.debug("[IdleRing] systemState:", systemState, "→", a.system_state, "agentId:", agentId);
+          }
           systemState = a.system_state;
           llmEmotionId = a.emotion_id ?? "";
           break;

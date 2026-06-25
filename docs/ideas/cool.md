@@ -16,7 +16,7 @@ Phase 1 ─── 氛围感升级 ─── 打开 app 第一眼就不同
 
 Phase 2 ─── 动效语言 ─── 让 agent 感觉 "活着"
   ├── 4. Agent 心跳 / 呼吸 / 涟漪     ✅ 2026-06-24
-  ├── 5. 页面转场动画
+  ├── 5. 页面转场动画                  ✅ 2026-06-25
   └── 6. Agent "思考空间" 中间态
 
 Phase 3 ─── 交互升级 ─── 实用 + 酷
@@ -168,16 +168,18 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 ---
 
-### 5. 页面转场动画
+### 5. 页面转场动画 ✅ 2026-06-25
 
-**现状**：页面瞬间切换，没有过渡。
+**已实现**。在 `App.svelte` 中用 `{#key currentPage}` + `fly` transition 实现。
 
-**改进**：
-- 用 Svelte 的 `{#key pageKey}` + `transition:fly` 做 slide+fade 组合
-- 方向感：深入导航（Home → Chat → Settings）向右滑入，返回向左滑出
-- 时长：200-250ms，ease-out （太快没感觉，太慢拖沓）
+**实现细节**：
+- **方向感知**：`navigateTo()` 维护 `navHistory` 栈检测前进/后退。前进（深入导航）新页面从右侧滑入（`x: 80`），后退（返回）从左侧滑入（`x: -80`）
+- **slide+fade**：使用 Svelte `fly` transition（同时处理 x 位移 + opacity），进入 250ms `cubicOut`，退出 200ms `cubicIn`
+- **布局**：`.main` 设为 `position: relative; overflow: hidden` 作为过渡容器，`.page-wrapper` 使用 `position: absolute; inset: 0; overflow-y: auto` 承载页面滚动
+- **`prefers-reduced-motion`**：检测 OS 偏好，启用时 `duration: 0` 禁用过渡
+- **iframe 页面**：team/plugin 页面的 `{#key teamPageVersion}` 内层嵌套在外层 `{#key currentPage}` 中，同页面重复导航仍能正确重建 iframe
 
-**Shared Element Transition**（进阶）：
+**Shared Element Transition**（进阶，未实现）：
 - 从 Home 页的 agent card 点击进入 Chat 时，agent 的头像环形从它在 card 上的位置 "飞" 到 chat 顶栏
 - 需要 FLIP 动画技术（First, Last, Invert, Play）
 - Svelte 的 `crossfade` 或 `flip` 动画可以直接用
@@ -460,3 +462,4 @@ JS 监听 `mousemove` 计算 `--tilt-x` / `--tilt-y`。
 
 - 2026-06-24：初始创意池，6 Phase 16 个方向
 - 2026-06-24：Phase 2 第 4 条（Agent 心跳/呼吸/涟漪）实现。IdleRing 新增 5 个动效（breathing/ripple continuous + pulse/shake/wakeup one-shot），纯 CSS 实现，不遮盖双环。
+- 2026-06-25：Phase 2 第 5 条（页面转场动画）实现。`App.svelte` 用 `{#key currentPage}` + `fly` transition，方向感知（前进右滑、后退左滑），250ms/200ms，尊重 `prefers-reduced-motion`。

@@ -1,6 +1,8 @@
 <script lang="ts">
   import "./app.css";
   import { onMount } from "svelte";
+  import { fly } from "svelte/transition";
+  import { cubicOut, cubicIn } from "svelte/easing";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -38,6 +40,11 @@
   // NOT $state — postMessage updates must not trigger iframe src reload.
   // The path is read at render time (when teamPageVersion changes).
   let teamIframePath = "/api/v1/team";
+
+  // Page transition direction: 1 = forward (slide from right), -1 = back (slide from left)
+  let navDirection = $state(1);
+  let navHistory = $state<string[]>([]);
+  let prefersReducedMotion = $state(false);
   let hasTeamPlugin = $derived(pluginPages.some(p => p.id === "team"));
   let nonTeamPluginPages = $derived(pluginPages.filter(p => p.id !== "team"));
 
@@ -141,7 +148,7 @@
       hasAgent = ha;
 
       if (!hp && (currentPage === "home" || currentPage === "dashboard")) {
-        currentPage = "providers";
+        navigateTo("providers");
       }
     } catch {
       // Config may not exist yet
@@ -168,6 +175,19 @@
   }
 
   function navigateTo(pageId: string) {
+    if (pageId === currentPage) return;
+
+    // Detect back navigation: if the target page exists in history,
+    // it's a back-navigation. Trim history to that point.
+    const historyIndex = navHistory.indexOf(pageId);
+    if (historyIndex >= 0) {
+      navDirection = -1;
+      navHistory = navHistory.slice(0, historyIndex);
+    } else {
+      navDirection = 1;
+      navHistory = [...navHistory, currentPage];
+    }
+
     currentPage = pageId;
     // Force iframe recreation when navigating to team or plugin pages.
     // WKWebView caches iframe content by URL, so returning to the
@@ -197,7 +217,7 @@
   $effect(() => {
     // Auto-navigate to Dashboard when gateway is not running
     if (!runtimeRunning) {
-      currentPage = "dashboard";
+      navigateTo("dashboard");
       return;
     }
     // Refresh active agent on every page change so the idle widget
@@ -207,6 +227,9 @@
   });
 
   onMount(async () => {
+    // Respect OS reduced-motion preference for page transitions
+    prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
     await checkOnboarding();
 
     // Load locale from backend config (ui.locale).
@@ -250,7 +273,7 @@
       const status = await invoke<{ running: boolean }>("try_connect_gateway");
       if (status.running) {
         runtimeRunning = true;
-        currentPage = "home";
+        navigateTo("home");
         await refreshPluginPages();
       }
     } catch {
@@ -379,50 +402,58 @@
 <NotificationOverlay onNavigate={(p) => navigateTo(p)} />
 
 <main class="main">
-  {#if currentPage === "home"}
-    <Home
-      onNavigate={(p) => navigateTo(p)}
-      onNavigateChatWithSkill={async (_agentKey: string, skillName: string) => {
-        navigateToChatWithPrefill(`/skill ${skillName} `);
-      }}
-    />
-  {:else if currentPage === "dashboard"}
-    <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
-  {:else if currentPage === "maintenance"}
-    <Maintenance />
-  {:else if currentPage === "workflows"}
-    <WorkflowBoard />
-  {:else if currentPage === "plugins"}
-    <PluginManager />
-  {:else if currentPage === "providers"}
-    <Providers />
-  {:else if currentPage === "integration"}
-    <Integration />
-  {:else if currentPage === "agents"}
-    <Agents onNavigate={(p) => navigateTo(p)} />
-  {:else if currentPage === "chat"}
-    <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
-  {:else if currentPage === "team"}
-    {#key teamPageVersion}
-      <iframe
-        class="plugin-iframe"
-        src={"http://127.0.0.1:" + gatewayPort + teamIframePath + "?_=" + teamPageVersion}
-        title="Team"
-      ></iframe>
-    {/key}
-  {:else if currentPage === "settings"}
-    <Settings />
-  {:else if currentPage === "mcp-servers"}
-    <McpServers />
-  {:else if currentPage.startsWith("plugin:")}
-    {#key teamPageVersion}
-      <iframe
-        class="plugin-iframe"
-        src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + currentPage.slice("plugin:".length)}
-        title={"Plugin: " + currentPage.slice("plugin:".length)}
-      ></iframe>
-    {/key}
-  {/if}
+  {#key currentPage}
+    <div
+      class="page-wrapper"
+      in:fly={prefersReducedMotion ? { x: 0, duration: 0 } : { x: 80 * navDirection, duration: 250, easing: cubicOut }}
+      out:fly={prefersReducedMotion ? { x: 0, duration: 0 } : { x: -80 * navDirection, duration: 200, easing: cubicIn }}
+    >
+      {#if currentPage === "home"}
+        <Home
+          onNavigate={(p) => navigateTo(p)}
+          onNavigateChatWithSkill={async (_agentKey: string, skillName: string) => {
+            navigateToChatWithPrefill(`/skill ${skillName} `);
+          }}
+        />
+      {:else if currentPage === "dashboard"}
+        <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
+      {:else if currentPage === "maintenance"}
+        <Maintenance />
+      {:else if currentPage === "workflows"}
+        <WorkflowBoard />
+      {:else if currentPage === "plugins"}
+        <PluginManager />
+      {:else if currentPage === "providers"}
+        <Providers />
+      {:else if currentPage === "integration"}
+        <Integration />
+      {:else if currentPage === "agents"}
+        <Agents onNavigate={(p) => navigateTo(p)} />
+      {:else if currentPage === "chat"}
+        <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
+      {:else if currentPage === "team"}
+        {#key teamPageVersion}
+          <iframe
+            class="plugin-iframe"
+            src={"http://127.0.0.1:" + gatewayPort + teamIframePath + "?_=" + teamPageVersion}
+            title="Team"
+          ></iframe>
+        {/key}
+      {:else if currentPage === "settings"}
+        <Settings />
+      {:else if currentPage === "mcp-servers"}
+        <McpServers />
+      {:else if currentPage.startsWith("plugin:")}
+        {#key teamPageVersion}
+          <iframe
+            class="plugin-iframe"
+            src={"http://127.0.0.1:" + gatewayPort + "/api/v1/" + currentPage.slice("plugin:".length)}
+            title={"Plugin: " + currentPage.slice("plugin:".length)}
+          ></iframe>
+        {/key}
+      {/if}
+    </div>
+  {/key}
 </main>
 
 {#if shuttingDown}

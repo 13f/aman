@@ -468,11 +468,20 @@ body {
 /* ── Main Content ───────────────────────────────────────────── */
 .main {
   flex: 1;
-  padding: 24px 28px;
-  overflow-y: auto;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
   background: var(--bg);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
+}
+
+/* ── Page Transition Wrapper ─────────────────────────────────── */
+.page-wrapper {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 24px 28px;
 }
 
 /* ── Cards ──────────────────────────────────────────────────── */

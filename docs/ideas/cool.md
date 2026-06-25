@@ -280,9 +280,9 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 ---
 
-## Phase 4：排版与视觉深度
+## Phase 4：排版与视觉深度 ✅ 已完成
 
-### 10. 变量字体 + 排版层级
+### 10. 变量字体 + 排版层级 ✅
 
 **替换当前系统字体栈**：
 
@@ -291,44 +291,50 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, ...;
 --font-mono: "SF Mono", "Fira Code", "Cascadia Code", ...;
 
-/* 新方案 */
---font-ui: "Inter Variable", -apple-system, ...;        /* 或 Geist */
---font-mono: "JetBrains Mono Variable", "Fira Code", ...;
+/* 新方案 ✅ */
+--font-ui: "Inter Variable", "Inter", -apple-system, ...;
+--font-mono: "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", ...;
 ```
 
 **排版改进**：
-- 标题用更窄的 tracking（`letter-spacing: -0.02em`）
-- 关键数字（metrics 面板的延迟、token 数）用 tabular numbers (`font-variant-numeric: tabular-nums`)
-- Agent 回复的正文适当增大行高（1.7 → 更好的可读性）
-- 代码块用 JetBrains Mono，连字（ligatures）开启
+- 标题用更窄的 tracking（`letter-spacing: -0.02em`）✅
+- 关键数字（metrics 面板的延迟、token 数）用 tabular numbers (`font-variant-numeric: tabular-nums`) ✅
+- Agent 回复的正文适当增大行高（1.7 → 更好的可读性）✅
+- 代码块用 JetBrains Mono，连字（ligatures）开启 ✅
 
-**字体加载**：从 Google Fonts 或自托管，`@font-face` 引入。需要确保不阻塞首屏渲染（`font-display: swap`）。
+**字体加载**：从 Google Fonts 引入 Inter Variable + JetBrains Mono Variable，`font-display: swap`。✅
+
+**实现文件**：`desktop/index.html`（preconnect + font link）、`desktop/src/app.css`（--font-ui, --font-mono, --line-height-relaxed, .tabular-nums）、`desktop/src/pages/Chat.svelte`（markdown-body line-height, heading tracking, code ligatures）
 
 ---
 
-### 11. 自定义光标
+### 11. 自定义光标 ✅
 
-- Agent "思考中"：光标变成小脉冲环
-- 正常状态：细线光标
-- 拖拽中：grab/grabbing 自定义光标
+- Agent "思考中"：光标变成小脉冲环 ✅
+- 正常状态：细线光标 ✅
+- 拖拽中：grab/grabbing 自定义光标 ✅
 
-**与现有 emotions 系统联动**：Aman 已内置 emotions 系统（未设置 emotions 图片的 agent 会回退到 emoji）。光标可以跟 agent 当前 emotion 状态联动 —— 比如 agent 处于 "excited" 情绪时光标带金色微光，"reflective" 时变柔和蓝紫。emotion 数据已经通过 SSE 推送，直接订阅即可。
+**与现有 emotions 系统联动**：Aman 已内置 emotions 系统（未设置 emotions 图片的 agent 会回退到 emoji）。光标可以跟 agent 当前 emotion 状态联动 —— 比如 agent 处于 "excited" 情绪时光标带金色微光，"reflective" 时变柔和蓝紫。emotion 数据已经通过 SSE 推送，直接订阅即可。✅
 
 小众但酷。CSS `cursor: url()` 即可。
 
+**实现文件**：`desktop/public/cursors/*.svg`（6 个光标 SVG）、`desktop/src/lib/cursor-store.ts`（光标状态管理 + emotion 映射）、`desktop/src/app.css`（body.cursor-* CSS 类）、`desktop/src/pages/Chat.svelte`（$effect 根据 isProcessing 自动切换）
+
 ---
 
-### 12. 代码块展示升级
+### 12. 代码块展示升级 ✅
 
 **现状**：`marked` 渲染，无语法高亮。
 
 **改进**：
-- 引入 Shiki 做语法高亮（类似 VS Code 的渲染质量）
-- 代码块顶部标题栏：语言标签 + 复制按钮（hover 显示）
-- Diff 视图：agent 建议的代码变更用 `+/- ` 绿色/红色背景展示
-- 代码块最大高度 + 内部滚动 + 底部渐变 fade-out
+- 引入 highlight.js 做语法高亮（更轻量，支持 13 种常用语言）✅
+- 代码块顶部标题栏：语言标签 + 复制按钮（hover 显示）✅
+- Diff 视图：agent 建议的代码变更用 `+/- ` 绿色/红色背景展示 ✅
+- 代码块最大高度（400px）+ 内部滚动 + 底部渐变 fade-out ✅
 
-**技术**：Shiki 可以在 build time 生成 CSS，不需要运行时 JS。或者用 `highlight.js`（更轻量）。
+**技术**：选用 `highlight.js`（比 Shiki 更轻量，按需注册语言）。主题使用 `github-dark`，背景覆盖为透明以适配 glass aesthetic。
+
+**实现文件**：`desktop/src/lib/markdown.ts`（renderMarkdown + postProcessCodeBlocks + diff 行高亮）、`desktop/src/pages/Chat.svelte`（事件委托 copy handler + updateCodeBlockFades + CSS）、`desktop/package.json`（highlight.js 依赖）
 
 ---
 

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <!-- Soft blue-purple cursor for "reflective" emotion -->
+  <defs>
+    <radialGradient id="purpleGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#8b7cf5" stop-opacity="0.85"/>
+      <stop offset="60%" stop-color="#7b98ff" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#7b98ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="11" cy="11" r="10" fill="url(#purpleGlow)"/>
+  <circle cx="11" cy="11" r="6" stroke="#8b7cf5" stroke-width="1.2" fill="none" opacity="0.7"/>
+  <circle cx="11" cy="11" r="2" fill="#8b7cf5" opacity="0.85"/>
+</svg>

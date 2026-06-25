@@ -47,10 +47,10 @@
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.45);
 
   /* Typography */
-  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+  --font-ui: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
              Helvetica, Arial, sans-serif;
-  --font-mono: "SF Mono", "Fira Code", "Cascadia Code",
-               "JetBrains Mono", "Consolas", monospace;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", "Fira Code",
+               "Cascadia Code", "SF Mono", "Consolas", monospace;
 
   --font-size-xs: 10px;
   --font-size-sm: 11px;
@@ -65,6 +65,7 @@
   --line-height-md: 1.4;
   --line-height-base: 1.5;
   --line-height-lg: 1.6;
+  --line-height-relaxed: 1.7;
 
   /* Spacing (4px baseline) */
   --space-xs: 4px;
@@ -517,6 +518,7 @@ body {
   color: var(--accent);
   letter-spacing: -0.02em;
   line-height: 1.2;
+  font-variant-numeric: tabular-nums;
 }
 .stat .label {
   font-size: 11px;
@@ -802,6 +804,7 @@ input:focus {
 .dim { color: var(--fg-dim); }
 .secondary { color: var(--fg-secondary); }
 .mono { font-family: var(--font-mono); }
+.tabular-nums { font-variant-numeric: tabular-nums; }
 
 .text-xs   { font-size: var(--font-size-xs); }
 .text-sm   { font-size: var(--font-size-sm); }
@@ -832,4 +835,59 @@ input:focus {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ── Custom Cursors (Phase 4 — emotion-integrated) ─────────────── */
+/*
+ * Cursor modes are applied as classes on <body> by cursor-store.ts.
+ * SVG cursor files live in public/cursors/.
+ * Fallback to standard system cursors when custom ones fail to load.
+ */
+body.cursor-normal,
+body.cursor-normal * {
+  /* Default: keep system cursor — Inter already looks great with it */;
+}
+
+body.cursor-thinking,
+body.cursor-thinking * {
+  cursor: url("/cursors/thinking.svg") 12 12, progress;
+}
+
+body.cursor-grab,
+body.cursor-grab * {
+  cursor: url("/cursors/grab.svg") 10 10, grab;
+}
+
+body.cursor-grabbing,
+body.cursor-grabbing * {
+  cursor: url("/cursors/grabbing.svg") 10 10, grabbing;
+}
+
+body.cursor-excited,
+body.cursor-excited * {
+  cursor: url("/cursors/excited.svg") 11 11, default;
+}
+
+body.cursor-reflective,
+body.cursor-reflective * {
+  cursor: url("/cursors/reflective.svg") 11 11, default;
+}
+
+/* Pulse animation for thinking cursor — applied to a follower element */
+.cursor-thinking-ring {
+  position: fixed;
+  pointer-events: none;
+  z-index: 99999;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  animation: cursorPulse 1.2s ease-in-out infinite;
+  opacity: 0.7;
+}
+
+@keyframes cursorPulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(0.8); opacity: 0.4; }
+  50% { transform: translate(-50%, -50%) scale(1.2); opacity: 0.9; }
 }

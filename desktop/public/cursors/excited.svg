@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <!-- Golden glow cursor for "excited" emotion -->
+  <defs>
+    <radialGradient id="goldGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#e5b80b" stop-opacity="0.9"/>
+      <stop offset="60%" stop-color="#e5b80b" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#e5b80b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="11" cy="11" r="10" fill="url(#goldGlow)"/>
+  <circle cx="11" cy="11" r="6" stroke="#e5b80b" stroke-width="1.2" fill="none" opacity="0.8"/>
+  <circle cx="11" cy="11" r="2" fill="#e5b80b" opacity="0.9"/>
+</svg>

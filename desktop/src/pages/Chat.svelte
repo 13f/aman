@@ -4,9 +4,8 @@
   import { onMount, onDestroy } from "svelte";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
-  import { marked } from "marked";
-
-  marked.setOptions({ gfm: true, breaks: true });
+  import { setCursorMode, resetCursor, setCursorFromEmotion } from "../lib/cursor-store";
+  import { renderMarkdown } from "../lib/markdown";
 
   let { prefillInput = "", prefillSeq = 0 }: { prefillInput?: string; prefillSeq?: number } = $props();
 
@@ -113,6 +112,15 @@
   const isProcessing = $derived(
     isLoading || messages.some(m => m.sessionId === activeSessionId && (m.status === "pending" || m.status === "streaming"))
   );
+
+  // ── Cursor integration: thinking ring when agent is processing ──
+  $effect(() => {
+    if (isProcessing) {
+      setCursorMode("thinking");
+    } else {
+      resetCursor();
+    }
+  });
 
   // Agent selector state
   let agentList = $state<Array<{ key: string; display_name: string; provider: string }>>([]);
@@ -523,6 +531,66 @@
       scrollToBottom();
     }
   });
+
+  // ── Update code block fade overlays after messages render ──────
+  function updateCodeBlockFades() {
+    requestAnimationFrame(() => {
+      if (!messageAreaEl) return;
+      const wrappers = messageAreaEl.querySelectorAll(".code-block-wrapper");
+      for (const wrapper of wrappers) {
+        const pre = wrapper.querySelector(".code-block-pre");
+        if (!pre) continue;
+        const overflowY = pre.scrollHeight > pre.clientHeight;
+        wrapper.classList.toggle("scrollable", overflowY);
+      }
+    });
+  }
+
+  // Re-check fades when messages array changes (new message added or content updated)
+  $effect(() => {
+    // Touch messages.length to establish reactivity
+    const _ = messages.length;
+    updateCodeBlockFades();
+  });
+
+  // ── Code block copy button handler (event delegation) ──────────
+  async function handleCodeCopy(e: MouseEvent) {
+    const btn = (e.target as HTMLElement).closest(".code-block-copy-btn") as HTMLElement | null;
+    if (!btn) return;
+
+    const codeId = btn.dataset.codeId;
+    if (!codeId) return;
+
+    // Find the corresponding <code> element (sibling pre in the wrapper)
+    const wrapper = btn.closest(".code-block-wrapper");
+    if (!wrapper) return;
+    const codeEl = wrapper.querySelector("code");
+    if (!codeEl) return;
+
+    const text = codeEl.textContent ?? "";
+    try {
+      await navigator.clipboard.writeText(text);
+      // Show "Copied!" feedback
+      const span = btn.querySelector("span");
+      const originalText = span?.textContent ?? "Copy";
+      if (span) span.textContent = "Copied!";
+      btn.classList.add("copied");
+      setTimeout(() => {
+        if (span) span.textContent = originalText;
+        btn.classList.remove("copied");
+      }, 2000);
+    } catch {
+      // Fallback for older browsers / non-secure contexts
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  }
 
   function showToast(type: "info" | "warn" | "error" | "success", message: string, durationMs = 5000) {
     const id = crypto.randomUUID();
@@ -1722,6 +1790,7 @@
   onDestroy(() => {
     for (const fn of unlisteners) fn();
     window.removeEventListener("keydown", handleGlobalKeydown);
+    resetCursor();
   });
 </script>
 
@@ -1918,7 +1987,8 @@
     </header>
 
     <!-- Messages -->
-    <div class="message-area" bind:this={messageAreaEl} onscroll={handleScroll}>
+    <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+    <div class="message-area" bind:this={messageAreaEl} onscroll={handleScroll} onclick={handleCodeCopy}>
       {#if activeMessages.length === 0}
         <div class="empty-state">
           <p>No messages yet. Start a conversation above.</p>
@@ -1957,7 +2027,7 @@
               >
                 {#if isAssistant}
                   <div class="markdown-body">
-                    {@html marked.parse(escapeMarkdown(msg.content))}
+                    {@html renderMarkdown(escapeMarkdown(msg.content))}
                     {#if msg.type === "assistant_streaming"}
                       <span class="cursor"></span>
                     {/if}
@@ -2889,7 +2959,7 @@
      Child selectors use :global() because the HTML is injected via
      {@html marked.parse(...)} — Svelte can't scope styles to it. */
   .markdown-body {
-    line-height: 1.6;
+    line-height: var(--line-height-relaxed, 1.7);
     word-break: break-word;
   }
   :global(.markdown-body p) { margin: 0 0 0.5em 0; }
@@ -2912,7 +2982,11 @@
     overflow-x: auto;
     margin: 0.5em 0;
   }
-  :global(.markdown-body pre code) { background: none; padding: 0; border-radius: 0; font-size: 0.85em; }
+  :global(.markdown-body pre code) {
+    background: none; padding: 0; border-radius: 0; font-size: 0.85em;
+    font-variant-ligatures: contextual;
+    font-feature-settings: "calt", "liga";
+  }
   :global(.markdown-body blockquote) {
     border-left: 3px solid var(--border-strong);
     margin: 0.5em 0;
@@ -2935,7 +3009,7 @@
   :global(.markdown-body h3),
   :global(.markdown-body h4),
   :global(.markdown-body h5),
-  :global(.markdown-body h6) { margin: 0.6em 0 0.3em 0; line-height: 1.3; }
+  :global(.markdown-body h6) { margin: 0.6em 0 0.3em 0; line-height: 1.3; letter-spacing: -0.02em; }
   :global(.markdown-body h1) { font-size: 1.35em; }
   :global(.markdown-body h2) { font-size: 1.2em; }
   :global(.markdown-body h3) { font-size: 1.1em; }
@@ -2943,4 +3017,145 @@
   :global(.markdown-body h5),
   :global(.markdown-body h6) { font-size: 1em; }
   :global(.markdown-body img) { max-width: 100%; border-radius: 4px; }
+
+  /* ── Code Block Upgrade (Phase 4) ──────────────────────────────── */
+  :global(.code-block-wrapper) {
+    position: relative;
+    margin: 0.75em 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-hover);
+    overflow: hidden;
+  }
+
+  /* Override highlight.js theme background — our wrapper handles it */
+  :global(.code-block-wrapper .hljs) {
+    background: transparent !important;
+    color: var(--fg);
+    padding: 0;
+  }
+
+  /* Header bar: language label + copy button */
+  :global(.code-block-header) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.35em 0.75em;
+    background: var(--bg-active);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    font-family: var(--font-ui);
+    user-select: none;
+  }
+
+  :global(.code-block-lang) {
+    color: var(--fg-dim);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+  }
+
+  :global(.code-block-copy-btn) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    color: var(--fg-dim);
+    font-size: 11px;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.12s, border-color 0.12s;
+  }
+
+  :global(.code-block-header:hover .code-block-copy-btn),
+  :global(.code-block-copy-btn.copied) {
+    opacity: 1;
+  }
+
+  :global(.code-block-copy-btn:hover) {
+    background: var(--bg-hover);
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+
+  :global(.code-block-copy-btn.copied) {
+    color: var(--green);
+    border-color: var(--green);
+  }
+
+  :global(.code-block-copy-btn:active) {
+    transform: scale(0.97);
+  }
+
+  /* Code block body — max height + scroll */
+  :global(.code-block-pre) {
+    margin: 0;
+    padding: 0.75em 1em;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 400px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    font-size: 0.83em;
+    line-height: 1.55;
+  }
+
+  :global(.code-block-pre code) {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+    font-family: var(--font-mono);
+    font-variant-ligatures: contextual;
+    font-feature-settings: "calt", "liga";
+  }
+
+  /* Bottom fade-out when content overflows */
+  :global(.code-block-fade) {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 32px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--bg-hover));
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+
+  :global(.code-block-wrapper.scrollable .code-block-fade) {
+    opacity: 1;
+  }
+
+  /* ── Diff view ────────────────────────────────────────────────── */
+  :global(.diff-add) {
+    display: block;
+    background: var(--green-muted);
+    color: var(--green);
+    margin: 0 -1em;
+    padding: 0 1em;
+  }
+
+  :global(.diff-remove) {
+    display: block;
+    background: var(--red-muted);
+    color: var(--red);
+    margin: 0 -1em;
+    padding: 0 1em;
+  }
+
+  :global(.diff-hunk) {
+    display: block;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 -1em;
+    padding: 0 1em;
+  }
 </style>

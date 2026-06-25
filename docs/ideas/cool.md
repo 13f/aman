@@ -10,7 +10,7 @@
 
 ```
 Phase 1 ─── 氛围感升级 ─── 打开 app 第一眼就不同
-  ├── 1. 动态环境光 / Aurora 背景     🥇
+  ├── 1. 动态环境光 / Aurora 背景     ✅ 2026-06-24
   ├── 2. 粒子系统 (sub particle field)
   └── 3. 深度感 / 视差玻璃层
 
@@ -42,9 +42,17 @@ Phase 6 ─── 感官扩展
 
 ## Phase 1：氛围感升级（Atmospheric）
 
-### 1. 动态环境光 / Aurora 背景 🥇
+### 1. 动态环境光 / Aurora 背景 ✅ 2026-06-24
 
-**效果**：缓慢流动的极光渐变充满整个窗口背景，营造沉浸氛围。
+**已实现**。在 `AuroraBackground.svelte` 中实现，通过 `ui.style = "aurora"` 配置开关。
+
+**实现细节**：
+- 方案 A + B 混合：默认 agent-agnostic 缓慢流动，同时跟随 gateway 聚合 agent 状态（active/error 数量）做色调偏移
+- `<canvas>` 2D + simplex noise 驱动极光渐变，`requestAnimationFrame` 渲染
+- `App.svelte` 中通过 `{#if uiStyle === "aurora"}` 控制渲染
+- 用 accumulated phase 防止状态切换时跳变（commit `1a18748`）
+
+**原设计方案**（供参考）：
 
 **⚠️ 多 Agent 约束**：Aman 是多 agent 系统，全局 UI 不适合绑定单个 agent 的状态。改为以下方案：
 
@@ -461,5 +469,6 @@ JS 监听 `mousemove` 计算 `--tilt-x` / `--tilt-y`。
 ## Changelog
 
 - 2026-06-24：初始创意池，6 Phase 16 个方向
+- 2026-06-24：Phase 1 第 1 条（Aurora 背景）实现。Canvas 2D + simplex noise，方案 A+B 混合，通过 `ui.style = "aurora"` 配置开关。
 - 2026-06-24：Phase 2 第 4 条（Agent 心跳/呼吸/涟漪）实现。IdleRing 新增 5 个动效（breathing/ripple continuous + pulse/shake/wakeup one-shot），纯 CSS 实现，不遮盖双环。
 - 2026-06-25：Phase 2 第 5 条（页面转场动画）实现。`App.svelte` 用 `{#key currentPage}` + `fly` transition，方向感知（前进右滑、后退左滑），250ms/200ms，尊重 `prefers-reduced-motion`。

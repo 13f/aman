@@ -25,13 +25,13 @@ Phase 3 ─── 交互升级 ─── 实用 + 酷
   └── 14. 多 Agent 圆桌视图
 
 Phase 4 ─── 排版与视觉深度
-  ├── 7. 变量字体 + 排版层级
-  ├── 8. 自定义光标
-  └── 9. 代码块展示升级 (语法高亮 + diff)
+  ├── 10. 变量字体 + 排版层级
+  ├── 11. 自定义光标
+  └── 12. 代码块展示升级 (语法高亮 + diff)
 
 Phase 5 ─── Agent 可视化 ─── 最具区分度
-  ├── 10. Agent 脑图 / Cognitive State Map
-  └── 11. Agent 角色卡片 (3D tilt + 姿态动画)
+  ├── 13. Agent 脑图 / Cognitive State Map  🟡 L1 done
+  └── 14. Agent 角色卡片 (3D tilt + 姿态动画)
 
 Phase 6 ─── 感官扩展
   ├── 15. 微妙的音效系统
@@ -205,6 +205,8 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 **数据来源**：Gateway 已有的 SSE 事件 —— `tool:dispatched`, `llm_reply_ready`, `agent:reply_stream_start` 等。在 Chat.svelte 中已经有这些事件的处理。
 
+> **与第 13 条的关系**：本条 "思考空间" 的 ReAct 步骤展示需求，已演化为第 13 条的 **Level 2 完整脑图**（Chat 侧面板）。两者共享数据管道（`agent:cognitive_state` SSE），本条侧重于 "思考中" 的临时浮层体验，第 13 条侧重于持久的图可视化。实现时统一考虑。
+
 ---
 
 ## Phase 3：交互升级（Interaction Patterns）
@@ -336,40 +338,181 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 **最具区分度的功能**。实时可视化 agent 的认知过程。
 
+**⚠️ 多 Agent 约束**：Aman 是多 agent 系统，多个 agent 可能同时在执行 ReAct loop。脑图必须是 **per-agent** 的——每个 agent 独立展示自己的认知状态。采用**两级设计**：
+
+---
+
+#### Level 1：迷你认知指示器（替换 IdleRing）
+
+**核心思路**：agent 做事时不需要显示 idle 双环——直接切换为认知环。
+
 ```
-┌──────────────────────────────────────────────────┐
-│  🧠 Claude · active · ReAct loop                 │
-│                                                  │
-│   ┌──────────┐      ┌──────────┐                │
-│   │Observation│─────→│ Thought  │                │
-│   │ "user     │      │ "I need  │                │
-│   │  asked..."│      │  to..."  │                │
-│   └──────────┘      └────┬─────┘                │
-│        ↑                 │                      │
-│        │           ┌─────▼─────┐                │
-│   ┌────┴─────┐    │ Decision   │                │
-│   │ Result   │    │ "search"   │                │
-│   │ "found   │    └─────┬─────┘                │
-│   │  3 docs" │          │                      │
-│   └──────────┘    ┌─────▼─────┐                │
-│        ↑          │ Tool Call │                │
-│        └──────────│ "search"  │                │
-│                   └───────────┘                │
-│                                                  │
-│  Memory: episodic[342]  semantic[89]             │
-│  Context: ████████░░  4.2k / 32k tokens         │
-│  Current latency: P95 420ms                      │
-└──────────────────────────────────────────────────┘
+agent idle / reflecting          agent processing
+         │                              │
+         ▼                              ▼
+   ┌───────────┐                ┌───────────┐
+   │  IdleRing │                │CognitiveRing│
+   │  双环      │   ──→ 或 ←──  │  单环       │
+   │  breathing │                │  相位弧     │
+   │  / ripple  │                │  + 步骤描述  │
+   └───────────┘                └───────────┘
 ```
 
-- 每个节点是发光小球，连线是流动光线
+两者**互斥**，不是叠加。`mode` 决定显示哪个：
+
+| mode | 显示 |
+|---|---|
+| `idle` / `wakeup` | IdleRing（breathing） |
+| `reflection` | IdleRing（ripple） |
+| `processing` | **CognitiveRing**（ReAct 相位弧） |
+
+**CognitiveRing 设计**：
+
+```
+          ╭──────────╮
+         ╱            ╲        ← 单环，四个象限分段着色
+        │              │
+        │      ●       │       ← 中心保持 agent emoji / 头像
+        │              │
+         ╲            ╱
+          ╰──────────╯
+              ↑
+        "searching docs…"      ← 环下方一行当前步骤描述
+```
+
+- 环被分为 4 段（Observing / Thinking / Acting / Result），当前相位段**亮起**、其余三段暗淡
+- 相位切换时，亮段沿环顺时针移动，带 `stroke-dashoffset` 平滑过渡（~0.6s）
+- 中心保留现有的 agent emoji / emotion image（agent 身份不变）
+- 环下方 `current_step` 文字淡入淡出切换
+
+**相位 → 环上映射**：
+
+| ReAct 相位 | 环上位置 | 色调 | 触发条件 |
+|---|---|---|---|
+| **Observing** | 0°–90°（右上弧） | 蓝 `#60A5FA` | 用户消息 / tool 结果到达 |
+| **Thinking** | 90°–180°（左上弧） | 琥珀 `#F59E0B` | LLM 开始推理 |
+| **Acting** | 180°–270°（左下弧） | 青 `#22D3EE` | tool 调用发出 |
+| **Result** | 270°–360°（右下弧） | 紫 `#A78BFA` | tool 结果返回 |
+
+> 颜色与现有设计系统的 accent 色保持一致，后续可通过 CSS 变量覆盖。
+
+**实现**（✅ 2026-06-25）：
+- `CognitiveRing.svelte` — 新组件，独立的 SVG `<circle>` + `stroke-dasharray`/`stroke-dashoffset`
+- 4 段 arc 用 4 个 `<circle>` 各画 1/4 弧（`stroke-dasharray="69.115 207.345"`），当前段 opacity 1.0，其余 0.22
+- `IdleRing.svelte` 不修改——由父组件（agent 卡片/ActivityStateWidget）根据 `isActive` 决定渲染 IdleRing 还是 CognitiveRing
+- IdleRing ↔ CognitiveRing 切换时做 crossfade（Svelte `fade` transition 300ms）
+- `current_step` 文字放在环下方，`font-size: 11px`，`opacity: 0.7`，单行截断
+- **数据管道（纯 desktop 端推断，无 gateway 改动）**：
+  - `desktop/src/lib/cognitive-state.ts` — 共享模块：`ReactPhase` 类型、`inferReactPhase()` 状态机、`inferStepText()` 步骤文本推导
+  - `Home.svelte` — `handleIdleEvent` 扩展，从现有 `event:processed` SSE 事件推断 ReAct 相位
+  - `ActivityStateWidget.svelte` — `onEvent` 重构，active 状态下切到 CognitiveRing
+- 相位自动流转：`tool:completed` → Result → 1.5s → Observing；`agent:reply_ready` → Result → Idle
+- 尊重 `prefers-reduced-motion`，禁用所有 transition 动画
+- 替换了 Home.svelte 原有的 `.state-visual` 色圈 + `STATE_ANIM`，清理了不再使用的 CSS
+
+**优势**：
+- 状态切换语义清晰：idle 是 idle 的样子，做事是做事的样子
+- 不增加 UI 复杂度——替换而非叠加
+- agents 列表页可同时看到多个 agent 各自处于哪个 ReAct 相位
+- 信息密度低，不分散注意力
+
+---
+
+#### Level 2：完整脑图（Chat 页侧面板）🔵 暂缓
+
+点击某个 agent 进入 Chat 后，在右侧 split view 中展开完整 ReAct 节点图。
+
+```
+┌──────────────────────────┬─────────────────────────────┐
+│  Chat (left)             │  🧠 Brain Map (right)       │
+│                          │                             │
+│  User: "review my PR"    │   Obs₁ ──→ Act₁ ──→ Res₁   │
+│                          │              │              │
+│  Claude: "Let me         │              ↓              │
+│  look at the diff..."    │   Obs₂ ──→ Act₂ ──→ Res₂   │
+│                          │              │              │
+│                          │              ↓              │
+│                          │   Obs₃ ──→ Final Reply      │
+│                          │                             │
+│                          │  ─────────────────────      │
+│                          │  Memory: ep[342] sem[89]    │
+│                          │  Context: 4.2k / 32k        │
+│                          │  Loop: 3 rounds             │
+└──────────────────────────┴─────────────────────────────┘
+```
+
+- 纵向时间线布局（类似 Git graph），Obs → Act → Res 循环展开
+- 每个节点是发光小球 + 类型图标 + 一行摘要
 - 当前激活节点脉动，已完成节点变暗
-- 连线流动方向表示数据流向
-- **不是静态图 —— 是实时流动的**
+- 连线是流动光线（`stroke-dasharray` + `stroke-dashoffset` animation）
+- 底部统计栏：memory 使用、context window、ReAct 轮数、P95 延迟
+- **不是静态图 —— 是实时流动的**，新节点出现时自动向下滚动
 
-**数据来源**：Gateway SSE 事件已经包含足够的信息（`tool:dispatched`, `tool:completed`, `llm_reply_ready` 等）。Chat.svelte 中已经在处理这些事件。
+**实现**：SVG + CSS animation。单个 ReAct loop 通常 < 20 步，SVG 完全够。
 
-**实现**：SVG + CSS animation，或 `<canvas>` 2D。先用 SVG 快速出原型。
+---
+
+#### 数据管道
+
+**推荐方案：Gateway 端维护 `CognitiveStateTracker`**
+
+Gateway 内部的 ReAct 引擎已经知道每个 agent 处于哪个阶段。在 gateway 端加一个轻量的状态追踪器：
+
+```rust
+// 每个 agent 一个状态机
+struct AgentCognitiveState {
+    agent_id: String,
+    react_phase: ReactPhase,       // Observing | Thinking | Acting | Idle
+    current_step: String,          // 当前步骤描述
+    loop_count: u32,               // 第几轮 ReAct
+    memory_stats: MemoryStats,     // Level 2 用
+    context_usage: f64,            // 0.0–1.0，Level 2 用
+}
+```
+
+通过新的 SSE 事件 `agent:cognitive_state` 推送给 desktop：
+
+```json
+{
+  "agent_id": "claude",
+  "react_phase": "acting",
+  "current_step": "searching docs",
+  "loop_count": 3,
+  "context_usage": 0.42
+}
+```
+
+**备选方案：Desktop 端推断**
+
+如果 gateway 改动成本高，desktop 端也可以根据现有 SSE 事件做规则推断：
+
+| 收到事件 | 推断相位 |
+|---|---|
+| `agent:reply_stream_start` | → Thinking |
+| `tool:dispatched` | → Acting |
+| `tool:completed` | → Observing |
+| `llm_reply_ready` | → Result |
+
+但 gateway 端做更可靠（有完整的 ReAct 引擎上下文，不会漏判/误判）。
+
+---
+
+#### 实施顺序
+
+1. **数据管道**：Gateway `CognitiveStateTracker` + `agent:cognitive_state` SSE 事件
+2. **Level 1**：IdleRing 相位弧 + `current_step` 描述。先上 agent 卡片（Home 页），再考虑 ActivityStateWidget
+3. **Level 2**：Chat 页右侧 `CognitiveMap.svelte` 面板（split view），含完整节点图 + 统计栏
+
+**组件结构**：
+```
+CognitiveMap.svelte          ← Level 2 主组件，订阅 SSE + 维护节点/边状态
+├── CogNode.svelte           ← 单节点（发光球 + 图标 + 摘要 + 脉冲）
+├── CogEdge.svelte           ← 连线（流动光线）
+└── CogStats.svelte          ← 底部统计栏
+
+IdleRing.svelte              ← 现有组件，新增：
+  └── ReAct 相位弧覆盖层     ← Level 1，mode="processing" 时显示
+```
 
 ---
 
@@ -488,3 +631,5 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 - 2026-06-25：Phase 2 第 5 条（页面转场动画）实现。`App.svelte` 用 `{#key currentPage}` + `fly` transition，方向感知（前进右滑、后退左滑），250ms/200ms，尊重 `prefers-reduced-motion`。
 - 2026-06-25：Phase 1 第 2 条（粒子系统）实现。`ParticleField.svelte`，30-50 粒子，柔光漂浮，activity 驱动密度/速度/色温，带 attractor API 供消息汇聚效果。
 - 2026-06-25：Phase 5 第 14 条（Agent 角色卡片升级）实现。3D tilt（±10° 透视旋转 + 弹性回弹），光照 gloss 叠加层（radial-gradient 跟随鼠标），姿态动画（agentPose 关键帧 6s 循环渗透 IdleRing 中心内容）。跳过状态指示（卡片已有 status dot）。尊重 `prefers-reduced-motion`。
+- 2026-06-25：Phase 5 第 13 条（Agent 脑图 / Cognitive State Map）方案讨论定稿。确定两级设计：Level 1 迷你认知指示器（IdleRing 替换为 CognitiveRing 单环），Level 2 完整脑图（Chat 侧面板 split view，SVG 纵向流图）。数据管道推荐 Gateway 端 `CognitiveStateTracker` + `agent:cognitive_state` SSE 事件。第 6 条"思考空间"与本条 Level 2 统一考虑。修正 roadmap 中 Phase 4/5 编号。
+- 2026-06-25：Phase 5 第 13 条 **Level 1 实现**。新增 `CognitiveRing.svelte`（SVG 单环 4 段分色 ReAct 相位指示 + 步骤文字），`cognitive-state.ts`（相位状态机 + 步骤文本推导）。`Home.svelte` agent 卡片 .state-visual 替换为 CognitiveRing，`ActivityStateWidget.svelte` 按 isActive 切换 IdleRing/CognitiveRing。纯 desktop 端事件推断，无 gateway 改动。Level 2 暂缓。

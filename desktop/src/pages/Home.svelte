@@ -2,10 +2,19 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
+  import { fade } from "svelte/transition";
   import IdleRing from "./IdleRing.svelte";
+  import CognitiveRing from "./CognitiveRing.svelte";
   import AgentSelector from "./AgentSelector.svelte";
   import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
+  import {
+    type CognitiveState,
+    inferReactPhase,
+    inferStepText,
+    isResultTransition,
+    isFinalReply,
+  } from "../lib/cognitive-state";
   import claudeIcon from "../lib/assets/code-agents/claude.svg?raw";
   import codexIcon from "../lib/assets/code-agents/codex.svg?raw";
   import opencodeIcon from "../lib/assets/code-agents/opencode.svg?raw";
@@ -101,20 +110,6 @@
     prize: "\u{1F3C6}",             // 🏆 trophy
     waiting: "\u{23F3}",            // ⏳ hourglass
   };
-  const STATE_COLOR: Record<string, string> = {
-    working: "#4ade80",
-    studying: "#a78bfa",
-    daily_life: "#fbbf24",
-    prize: "#fbbf24",
-    waiting: "#f59e0b",
-  };
-  const STATE_ANIM: Record<string, string> = {
-    working: "anim-spin-slow",
-    studying: "anim-float",
-    daily_life: "anim-pulse-soft",
-    prize: "anim-pulse-soft",
-    waiting: "anim-pulse-soft",
-  };
 
   const THRESHOLDS = [0, 5, 20, 50, 100, 200];
 
@@ -183,6 +178,21 @@
   let systemStates = $state<Record<string, string>>({});
   let llmEmotionIds = $state<Record<string, string>>({});
   let emotionsConfigs = $state<Record<string, EmotionsConfig | null>>({});
+  let cognitiveStates = $state<Record<string, CognitiveState>>({});
+  let observeTimers = $state<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+
+  function defaultCognitiveState(): CognitiveState {
+    return { phase: "idle", currentStep: "" };
+  }
+
+  function getCognitiveState(key: string): CognitiveState {
+    return cognitiveStates[key] ?? defaultCognitiveState();
+  }
+
+  function clearObserveTimer(key: string) {
+    const t = observeTimers[key];
+    if (t) { clearTimeout(t); observeTimers = { ...observeTimers, [key]: undefined }; }
+  }
   let unlisteners: (() => void)[] = [];
   let prefersReducedMotion = $state(false);
   let showAgentSelector = $state(false);
@@ -228,6 +238,12 @@
           kind,
         },
       };
+      // Reset cognitive state when agent goes idle
+      clearObserveTimer(agentId);
+      cognitiveStates = {
+        ...cognitiveStates,
+        [agentId]: defaultCognitiveState(),
+      };
     } else if (et === "agent:reply_stream_start" || et === "agent:reply_chunk" ||
                et === "agent:reply_stream_done" || et === "agent:reply_ready" ||
                et === "tool:dispatched" || et === "tool:completed" || et === "tool:failed") {
@@ -242,6 +258,34 @@
           kind: "processing",
         },
       };
+      // Cognitive state inference
+      const prev = getCognitiveState(agentId);
+      const phase = inferReactPhase(et, data, prev);
+      const currentStep = inferStepText(et, data, prev);
+      cognitiveStates = {
+        ...cognitiveStates,
+        [agentId]: { phase, currentStep },
+      };
+      // Auto-transition: result → observing after 1.5 s
+      if (isResultTransition(phase, prev.phase)) {
+        clearObserveTimer(agentId);
+        const timer = setTimeout(() => {
+          cognitiveStates = {
+            ...cognitiveStates,
+            [agentId]: { phase: "observing", currentStep: "ready" },
+          };
+          observeTimers = { ...observeTimers, [agentId]: undefined };
+        }, 1500);
+        observeTimers = { ...observeTimers, [agentId]: timer };
+      }
+      // Final reply → back to idle
+      if (isFinalReply(et, phase)) {
+        clearObserveTimer(agentId);
+        cognitiveStates = {
+          ...cognitiveStates,
+          [agentId]: defaultCognitiveState(),
+        };
+      }
     }
   }
 
@@ -455,6 +499,7 @@
 
   onDestroy(() => {
     for (const fn of unlisteners) fn();
+    for (const key of Object.keys(observeTimers)) clearObserveTimer(key);
   });
 </script>
 
@@ -502,29 +547,37 @@
             <div class="agent-avatar-wrap">
             {#if ss === "idle" || !agent.provider}
               {@const imgSrc = getEmotionImage(agent.key, st.kind || "idle")}
-              <IdleRing
-                mode={st.mode}
-                outerPct={st.outerPct}
-                innerPct={st.innerPct}
-                emoji={st.emoji}
-                imageSrc={imgSrc}
-                ringColors={COLORS[st.mode]}
-                size={165}
-                showLabel={false}
-                showInfo={false}
-                active={!!agent.provider}
-              />
+              <div transition:fade={{ duration: 300 }}>
+                <IdleRing
+                  mode={st.mode}
+                  outerPct={st.outerPct}
+                  innerPct={st.innerPct}
+                  emoji={st.emoji}
+                  imageSrc={imgSrc}
+                  ringColors={COLORS[st.mode]}
+                  size={165}
+                  showLabel={false}
+                  showInfo={false}
+                  active={!!agent.provider}
+                />
+              </div>
             {:else}
+              {@const cs = getCognitiveState(agent.key)}
               {@const imgSrc = getEmotionImage(agent.key, ss)}
-              <div
-                class="state-visual {STATE_ANIM[ss] ?? ''}"
-                style="--st-color: {STATE_COLOR[ss] ?? '#6c8cff'}; width:165px; height:165px;"
-              >
-                {#if imgSrc}
-                  <img class="state-emotion-img avatar-pose" src={imgSrc} alt="" />
-                {:else}
-                  <span class="state-emoji avatar-pose">{STATE_EMOJI[ss] ?? "\u{1F4CB}"}</span>
-                {/if}
+              {@const phaseEmoji = cs.phase === "observing" ? "\u{1F50D}" :
+                                   cs.phase === "thinking"  ? "\u{1F9E0}" :
+                                   cs.phase === "acting"    ? "\u{1F6E0}\u{FE0F}" :
+                                   cs.phase === "result"    ? "\u{2705}" :
+                                   STATE_EMOJI[ss] ?? "\u{1F4CB}"}
+              <div transition:fade={{ duration: 300 }}>
+                <CognitiveRing
+                  reactPhase={cs.phase}
+                  currentStep={cs.currentStep}
+                  emoji={phaseEmoji}
+                  imageSrc={imgSrc}
+                  size={165}
+                  active={!!agent.provider}
+                />
               </div>
             {/if}
             </div>
@@ -1304,29 +1357,6 @@
   }
 
   /* Animations for non-idle states */
-  .anim-spin-slow {
-    animation: spinSlow 4s linear infinite;
-  }
-  .anim-float {
-    animation: float 3s ease-in-out infinite;
-  }
-  .anim-pulse-soft {
-    animation: pulseSoft 2.5s ease-in-out infinite;
-  }
-
-  @keyframes spinSlow {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-  @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-4px); }
-  }
-  @keyframes pulseSoft {
-    0%, 100% { transform: scale(1); }
-    50% { transform: scale(1.08); }
-  }
-
   /* ── Avatar Pose Animation ──────────────────────────────────────────────
      Subtle organic sway on emoji / emotion images inside agent cards.
      Gives each agent a "living" feel — like a game character select screen

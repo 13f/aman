@@ -1,9 +1,18 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
+  import { fade } from "svelte/transition";
   import IdleRing from "./IdleRing.svelte";
+  import CognitiveRing from "./CognitiveRing.svelte";
   import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
+  import {
+    type CognitiveState,
+    inferReactPhase,
+    inferStepText,
+    isResultTransition,
+    isFinalReply,
+  } from "../lib/cognitive-state";
 
   // ---------------------------------------------------------------------------
   // Types
@@ -55,6 +64,10 @@
   let emotionsConfig = $state<EmotionsConfig | null>(null);
   let unlisteners: (() => void)[] = [];
 
+  // Cognitive state tracking (Level 1 CognitiveRing)
+  let cognitiveState = $state<CognitiveState>({ phase: "idle", currentStep: "" });
+  let observeTimer = $state<ReturnType<typeof setTimeout> | null>(null);
+
   $effect(() => {
     if (!runtimeRunning) {
       idleSubMode = "idle";
@@ -62,6 +75,8 @@
       reflectSnap = null;
       systemState = "";
       llmEmotionId = "";
+      cognitiveState = { phase: "idle", currentStep: "" };
+      if (observeTimer) { clearTimeout(observeTimer); observeTimer = null; }
     }
   });
 
@@ -225,18 +240,14 @@
     // Don't process events until an agent is selected.
     if (!agentId) return;
 
-    // Only track idle/reflection events when the agent is actually idle.
-    if (systemState !== "idle" && systemState !== "") return;
-
     const p = e.payload;
     const et: string | undefined = p?.event_type;
     if (!et) return;
 
-    if (et !== "idle" && et !== "system.queue_drained") return;
-
     const data = p.payload ?? {};
     if (!matchesAgent(data)) return;
 
+    // ── Idle event (always processed) ──
     if (et === "idle") {
       const kind: string = data.kind ?? "daze";
       idleSnap = {
@@ -245,7 +256,43 @@
         arousal: data.context?.arousal_level ?? 0.5,
       };
       idleSubMode = kind === "wakeup" ? "wakeup" : "idle";
-    } else if (et === "system.queue_drained") {
+      // Reset cognitive state
+      if (observeTimer) { clearTimeout(observeTimer); observeTimer = null; }
+      cognitiveState = { phase: "idle", currentStep: "" };
+      return;
+    }
+
+    // ── Processing events (cognitive state inference) ──
+    if (et === "agent:reply_stream_start" || et === "agent:reply_chunk" ||
+        et === "agent:reply_stream_done" || et === "agent:reply_ready" ||
+        et === "tool:dispatched" || et === "tool:completed" || et === "tool:failed") {
+      const prevPhase = cognitiveState.phase;
+      const phase = inferReactPhase(et, data, cognitiveState);
+      const currentStep = inferStepText(et, data, cognitiveState);
+      cognitiveState = { phase, currentStep };
+
+      // Auto-transition: result → observing after 1.5 s
+      if (isResultTransition(phase, prevPhase)) {
+        if (observeTimer) clearTimeout(observeTimer);
+        observeTimer = setTimeout(() => {
+          cognitiveState = { phase: "observing", currentStep: "ready" };
+          observeTimer = null;
+        }, 1500);
+      }
+
+      // Final reply → idle
+      if (isFinalReply(et, phase)) {
+        if (observeTimer) { clearTimeout(observeTimer); observeTimer = null; }
+        cognitiveState = { phase: "idle", currentStep: "" };
+      }
+      return;
+    }
+
+    // ── Idle/reflection events (only when agent is idle) ──
+    if (systemState !== "idle" && systemState !== "") return;
+    if (et !== "system.queue_drained") return;
+
+    if (et === "system.queue_drained") {
       reflectSnap = {
         lastEventType: data.lastEventType ?? "",
         arousalLevel: data.arousalLevel ?? 0.5,
@@ -273,6 +320,7 @@
 
   onDestroy(() => {
     for (const fn of unlisteners) fn();
+    if (observeTimer) clearTimeout(observeTimer);
   });
 </script>
 
@@ -281,6 +329,48 @@
     {#if !compact}
       <span class="aw-name" title={agentName}>{agentName}</span>
       <div class="aw-ring-wrap">
+        {#if isActive}
+          <div transition:fade={{ duration: 300 }}>
+            <CognitiveRing
+              reactPhase={cognitiveState.phase}
+              currentStep={cognitiveState.currentStep}
+              {emoji}
+              imageSrc={emotionImage}
+              size={155}
+              active={runtimeRunning}
+            />
+          </div>
+        {:else}
+          <div transition:fade={{ duration: 300 }}>
+            <IdleRing
+              mode={displayState}
+              {outerPct}
+              {innerPct}
+              {emoji}
+              imageSrc={emotionImage}
+              {ringColors}
+              size={155}
+              active={runtimeRunning}
+              showLabel={false}
+              showInfo={false}
+            />
+          </div>
+        {/if}
+      </div>
+      <span class="aw-state-label">{label}</span>
+    {:else}
+      {#if isActive}
+        <div transition:fade={{ duration: 300 }}>
+          <CognitiveRing
+            reactPhase={cognitiveState.phase}
+            currentStep={cognitiveState.currentStep}
+            {emoji}
+            imageSrc={emotionImage}
+            size={36}
+            active={runtimeRunning}
+          />
+        </div>
+      {:else}
         <IdleRing
           mode={displayState}
           {outerPct}
@@ -288,26 +378,12 @@
           {emoji}
           imageSrc={emotionImage}
           {ringColors}
-          size={155}
+          size={36}
           active={runtimeRunning}
           showLabel={false}
           showInfo={false}
         />
-      </div>
-      <span class="aw-state-label">{label}</span>
-    {:else}
-      <IdleRing
-        mode={displayState}
-        {outerPct}
-        {innerPct}
-        {emoji}
-        imageSrc={emotionImage}
-        {ringColors}
-        size={36}
-        active={runtimeRunning}
-        showLabel={false}
-        showInfo={false}
-      />
+      {/if}
     {/if}
 
     {#if !compact && !isActive && (info1 || info2)}

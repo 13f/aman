@@ -1420,7 +1420,6 @@ mod tests {
         use super::*;
         use async_trait::async_trait;
         use kernel::context::ToolContext;
-        use kernel::event::{Event, EventType};
         use kernel::pipeline::{PipelineStep, StepType};
         use kernel::retry::RetryPolicy;
         use kernel::schema::JsonSchema;
@@ -1465,11 +1464,11 @@ mod tests {
             }
         }
 
-        /// Property: `PipelineDefinition` preserves step order
-        /// and identity. For a serial pipeline constructed with N
-        /// steps, `steps[i].id` must equal the i-th input id.
-        /// Catches accidental sorting, deduplication, or
-        /// reordering in the constructor.
+        // Property: `PipelineDefinition` preserves step order
+        // and identity. For a serial pipeline constructed with N
+        // steps, `steps[i].id` must equal the i-th input id.
+        // Catches accidental sorting, deduplication, or
+        // reordering in the constructor.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(64))]
             #[test]
@@ -1501,9 +1500,9 @@ mod tests {
             }
         }
 
-        /// Property: `PipelineDefinition` preserves the
-        /// concurrency model verbatim. A Serial pipeline stays
-        /// Serial; a Limited(n) pipeline keeps its limit; etc.
+        // Property: `PipelineDefinition` preserves the
+        // concurrency model verbatim. A Serial pipeline stays
+        // Serial; a Limited(n) pipeline keeps its limit; etc.
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(64))]
             #[test]

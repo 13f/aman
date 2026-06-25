@@ -221,6 +221,13 @@
     return eventAgentId === agentId;
   }
 
+  // Log when agentId becomes set — this is the critical signal.
+  $effect(() => {
+    if (agentId) {
+      console.debug("[IdleRing] agent selected:", agentId, "systemState:", systemState);
+    }
+  });
+
   function onEvent(e: any) {
     // Don't process events until an agent is selected.
     if (!agentId) return;
@@ -235,6 +242,7 @@
     if (!matchesAgent(data)) return;
 
     if (et === "idle") {
+      console.debug("[IdleRing] idleSnap set: kind=", data.kind, "depth=", data.depth);
       const kind: string = data.kind ?? "daze";
       idleSnap = {
         kind,

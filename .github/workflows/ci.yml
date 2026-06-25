@@ -27,6 +27,18 @@ jobs:
             libssl-dev \
             libdbus-1-dev \
             libayatana-appindicator3-dev
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            shared/frontend/chat-input/package-lock.json
+            shared/frontend/agent-selector/package-lock.json
+      - name: Install frontend npm deps
+        run: |
+          npm ci --prefix shared/frontend/chat-input
+          npm ci --prefix shared/frontend/agent-selector
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -48,6 +60,18 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            shared/frontend/chat-input/package-lock.json
+            shared/frontend/agent-selector/package-lock.json
+      - name: Install frontend npm deps
+        run: |
+          npm ci --prefix shared/frontend/chat-input
+          npm ci --prefix shared/frontend/agent-selector
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - name: Rust Cache

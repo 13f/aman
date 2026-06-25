@@ -21,6 +21,7 @@
   import Integration from "./pages/Integration.svelte";
   import McpServers from "./pages/McpServers.svelte";
   import AuroraBackground from "./components/AuroraBackground.svelte";
+  import ParticleField from "./components/ParticleField.svelte";
 
   let currentPage = $state("dashboard");
   let runtimeRunning = $state(false);
@@ -334,6 +335,7 @@
 
 {#if uiStyle === "aurora"}
   <AuroraBackground />
+  <ParticleField />
 {/if}
 
 <!-- Transparent drag strip at the very top of the window.

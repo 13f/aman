@@ -11,7 +11,7 @@
 ```
 Phase 1 ─── 氛围感升级 ─── 打开 app 第一眼就不同
   ├── 1. 动态环境光 / Aurora 背景     ✅ 2026-06-24
-  ├── 2. 粒子系统 (sub particle field)
+  ├── 2. 粒子系统 (sub particle field) ✅ 2026-06-25
   └── 3. 深度感 / 视差玻璃层
 
 Phase 2 ─── 动效语言 ─── 让 agent 感觉 "活着"
@@ -93,20 +93,19 @@ Sidebar 里选中的 agent（`agentId` prop 已在 `ActivityStateWidget` 中可�
 
 ---
 
-### 2. 粒子系统（Sub Particle Field）
+### 2. 粒子系统（Sub Particle Field） ✅ 2026-06-25
 
-**效果**：极 subtle 的光点漂浮在玻璃层后面，不是花哨的 particle.js 圣诞树。
+**已实现**。在 `ParticleField.svelte` 中实现，叠加在 Aurora canvas 之上（`z-index: 1`）。
 
-- 稀疏（~30-50 个粒子在 1200x800 视口内）
-- 缓慢漂浮（每帧移动 0.2-0.5px）
-- 颜色继承 aurora 背景的 accent 色调
-- Agent 活跃时粒子密度/速度微微增加
-- 新消息到达时，粒子短暂向消息区域汇聚再散开
-
-**实现**：
-- 在 aurora canvas 上叠加粒子层
-- 粒子状态：`{ x, y, vx, vy, size, opacity, targetX?, targetY? }`
-- 引力效应：每个粒子有 `targetX/targetY`，有消息时设为目标区域，到达后清除
+**实现细节**：
+- **Canvas 2D**：独立 `<canvas>`，全分辨率渲染（不下采样），`pointer-events: none`
+- **粒子数量**：idle 时 30 个，≥3 agent active 时平滑增加到 50 个
+- **颜色**：冷白蓝（idle）→ 暖白（active），跟随 activity 插值。配合 `shadowBlur` 做柔光效果
+- **运动**：随机漂移 + 阻尼 + 速度钳制（idle 0.35px/frame, active 0.65px/frame）。边界 wrap 循环
+- **引力效果**：暴露 `attractTo(x, y)` 方法，新消息到达时可调用，40% 粒子短暂向目标区域汇聚后散开
+- **Activity 驱动**：监听 `agent_states:updated` SSE，复用 Aurora 相同的聚合逻辑
+- **`prefers-reduced-motion`**：检测 OS 偏好，启用时停止动画循环，渲染静态帧
+- **开关**：通过 `ui.style === "aurora"` 控制（与 Aurora 同生命周期）
 
 **注意事项**：必须极其 subtle。如果用户注意到了粒子，说明太多了。好的粒子设计是 "关掉才发现少了什么"。
 
@@ -472,3 +471,4 @@ JS 监听 `mousemove` 计算 `--tilt-x` / `--tilt-y`。
 - 2026-06-24：Phase 1 第 1 条（Aurora 背景）实现。Canvas 2D + simplex noise，方案 A+B 混合，通过 `ui.style = "aurora"` 配置开关。
 - 2026-06-24：Phase 2 第 4 条（Agent 心跳/呼吸/涟漪）实现。IdleRing 新增 5 个动效（breathing/ripple continuous + pulse/shake/wakeup one-shot），纯 CSS 实现，不遮盖双环。
 - 2026-06-25：Phase 2 第 5 条（页面转场动画）实现。`App.svelte` 用 `{#key currentPage}` + `fly` transition，方向感知（前进右滑、后退左滑），250ms/200ms，尊重 `prefers-reduced-motion`。
+- 2026-06-25：Phase 1 第 2 条（粒子系统）实现。`ParticleField.svelte`，30-50 粒子，柔光漂浮，activity 驱动密度/速度/色温，带 attractor API 供消息汇聚效果。

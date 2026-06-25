@@ -159,9 +159,6 @@
     return 0; // fallback — dash() clamps to 1% minimum
   });
 
-  $effect(() => {
-    console.debug("[IdleRing] state:", "systemState=", systemState, "displayState=", displayState, "idleSnap=", idleSnap?.kind ?? null, "depth=", idleSnap?.depth, "outerPct=", outerPct, "innerPct=", innerPct, "agentId=", agentId, "runtimeRunning=", runtimeRunning);
-  });
 
   // --- display ---
 
@@ -225,10 +222,11 @@
   }
 
   function onEvent(e: any) {
-    if (systemState !== "idle" && systemState !== "") {
-      console.debug("[IdleRing] SKIP: systemState=", systemState, "event_type=", e.payload?.event_type);
-      return;
-    }
+    // Don't process events until an agent is selected.
+    if (!agentId) return;
+
+    // Only track idle/reflection events when the agent is actually idle.
+    if (systemState !== "idle" && systemState !== "") return;
 
     const p = e.payload;
     if (!p?.event_type) return;
@@ -237,7 +235,6 @@
     if (!matchesAgent(data)) return;
 
     if (et === "idle") {
-      console.debug("[IdleRing] GOT idle: kind=", data.kind, "depth=", data.depth, "arousal=", data.context?.arousal_level, "agentId=", agentId);
       const kind: string = data.kind ?? "daze";
       idleSnap = {
         kind,
@@ -258,12 +255,11 @@
   onMount(async () => {
     unlisteners.push(await listen("event:processed", onEvent));
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
+      // Don't track state until an agent is selected.
+      if (!agentId) return;
       const list: Array<{ agent_id: string; system_state: string; emotion_id?: string }> = e.payload?.agents ?? [];
       for (const a of list) {
-        if (!agentId || a.agent_id === agentId) {
-          if (a.system_state !== systemState) {
-            console.debug("[IdleRing] systemState:", systemState, "→", a.system_state, "agentId:", agentId);
-          }
+        if (a.agent_id === agentId) {
           systemState = a.system_state;
           llmEmotionId = a.emotion_id ?? "";
           break;

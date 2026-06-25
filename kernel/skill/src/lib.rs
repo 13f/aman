@@ -1171,7 +1171,7 @@ impl SkillVersionManager {
             });
         }
 
-        records.sort_by(|left, right| right.created_at_ms.cmp(&left.created_at_ms));
+        records.sort_by_key(|r| std::cmp::Reverse(r.created_at_ms));
         Ok(records)
     }
 

@@ -49,7 +49,10 @@
   const C_INNER = 2 * Math.PI * R_INNER;
 
   function dash(circum: number, pct: number): number {
-    return circum - (Math.min(100, Math.max(0, pct)) / 100) * circum;
+    // Clamp to [5, 100] so the progress rings never fully disappear
+    // (stroke-dashoffset = full circumference would hide them entirely).
+    const clamped = Math.min(100, Math.max(5, pct));
+    return circum - (clamped / 100) * circum;
   }
 
   let outerDash = $derived(dash(C_OUTER, outerPct));

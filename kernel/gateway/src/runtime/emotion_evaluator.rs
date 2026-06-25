@@ -469,15 +469,39 @@ impl EmotionEvaluator {
             .as_str()
             .unwrap_or("unknown");
 
+        // Prefer `content`; fall back to `reasoning_content` (DeepSeek models
+        // can exhaust their token budget on reasoning, leaving content empty
+        // even with finish_reason=stop).
         let content = v["choices"][0]["message"]["content"]
             .as_str()
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                format!(
-                    "empty content from LLM (finish_reason={finish_reason}, body={})",
-                    truncate(&raw_body, 200)
-                )
-            })?;
+            .filter(|s| !s.is_empty());
+
+        let content = match content {
+            Some(c) => c,
+            None => {
+                // Check for reasoning_content (DeepSeek-specific field)
+                let reasoning = v["choices"][0]["message"]["reasoning_content"]
+                    .as_str()
+                    .filter(|s| !s.is_empty());
+                match reasoning {
+                    Some(rc) => {
+                        tracing::debug!(
+                            agent = %self.agent_id,
+                            finish_reason,
+                            "content empty — falling back to reasoning_content ({} chars)",
+                            rc.len()
+                        );
+                        rc
+                    }
+                    None => {
+                        return Err(format!(
+                            "empty content from LLM (finish_reason={finish_reason}, body={})",
+                            truncate(&raw_body, 200)
+                        ));
+                    }
+                }
+            }
+        };
 
         if finish_reason == "length" {
             tracing::warn!(

@@ -26,7 +26,8 @@ jobs:
             patchelf \
             libssl-dev \
             libdbus-1-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            protobuf-compiler
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -72,6 +73,8 @@ jobs:
         run: |
           npm ci --prefix shared/frontend/chat-input
           npm ci --prefix shared/frontend/agent-selector
+      - name: Install protoc (macOS)
+        run: brew install protobuf
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - name: Rust Cache

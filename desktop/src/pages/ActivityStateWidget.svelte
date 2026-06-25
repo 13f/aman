@@ -228,6 +228,8 @@
     }
   });
 
+  let eventCount = $state(0);
+
   function onEvent(e: any) {
     // Don't process events until an agent is selected.
     if (!agentId) return;
@@ -236,10 +238,22 @@
     if (systemState !== "idle" && systemState !== "") return;
 
     const p = e.payload;
-    if (!p?.event_type) return;
-    const et: string = p.event_type;
+    const et: string | undefined = p?.event_type;
+    if (!et) return;
+
+    // Log first 5 events of any type to confirm events arrive.
+    if (eventCount < 5) {
+      eventCount++;
+      console.debug("[IdleRing] event #" + eventCount + ":", et, "agent_id:", p?.payload?.agent_id);
+    }
+
+    if (et !== "idle" && et !== "system.queue_drained") return;
+
     const data = p.payload ?? {};
-    if (!matchesAgent(data)) return;
+    if (!matchesAgent(data)) {
+      console.debug("[IdleRing] agent mismatch:", et, "event.agent_id:", data.agent_id, "widget.agentId:", agentId);
+      return;
+    }
 
     if (et === "idle") {
       console.debug("[IdleRing] idleSnap set: kind=", data.kind, "depth=", data.depth);

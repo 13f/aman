@@ -266,7 +266,7 @@ fn create_ruleset(
     const LANDLOCK_SYSCALL: isize = 444;
     let fd = unsafe {
         libc::syscall(
-            LANDLOCK_SYSCALL,
+            LANDLOCK_SYSCALL as libc::c_long,
             0, // CREATE_RULESET
             attr as *const _,
             std::mem::size_of::<landlock_ruleset_attr>(),
@@ -314,7 +314,7 @@ fn add_path_rule(
     const LANDLOCK_SYSCALL: isize = 444;
     let result = unsafe {
         libc::syscall(
-            LANDLOCK_SYSCALL,
+            LANDLOCK_SYSCALL as libc::c_long,
             1, // ADD_RULE
             ruleset_fd as usize,
             1, // LANDLOCK_RULE_PATH_BENEATH
@@ -354,7 +354,7 @@ fn enforce_ruleset(ruleset_fd: i32) -> Result<(), SandboxError> {
     const LANDLOCK_SYSCALL: isize = 444;
     let result = unsafe {
         libc::syscall(
-            LANDLOCK_SYSCALL,
+            LANDLOCK_SYSCALL as libc::c_long,
             2, // RESTRICT_SELF
             ruleset_fd as usize,
             0, // flags

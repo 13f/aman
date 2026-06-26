@@ -137,6 +137,34 @@ pub fn apply_sandbox(config: &SandboxConfig) -> Result<(), SandboxError> {
     }
 }
 
+/// Safely apply sandbox restrictions to a [`std::process::Command`] via
+/// its `pre_exec` hook. This is a convenience wrapper around
+/// [`apply_sandbox`] that handles the unsafe `pre_exec` call.
+///
+/// Only effective on Linux and macOS. On Windows and unsupported platforms
+/// this is a no-op (use [`windows::WindowsSandbox`] directly for Windows).
+pub fn apply_to_command(command: &mut std::process::Command, config: &SandboxConfig) {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use std::os::unix::process::CommandExt;
+        let sb_config = config.clone();
+        // Safety: pre_exec runs after fork(), before exec(). Landlock
+        // and Seatbelt operations are async-signal-safe on their
+        // respective platforms.
+        unsafe {
+            command.pre_exec(move || {
+                apply_sandbox(&sb_config)
+                    .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
+            });
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = config;
+        let _ = command;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

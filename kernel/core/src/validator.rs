@@ -11,7 +11,11 @@
 //!   3. Tool injection
 //!
 //! Fail-closed: validator error/timeout → all replies blocked.
+//!
+//! Trust-level aware: `TrustLevel::Trusted` inputs skip validation entirely.
 
+use crate::types::TrustLevel;
+use regex::Regex;
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
@@ -31,16 +35,7 @@ pub enum ValidationOutcome {
     },
 }
 
-/// A single validation rule.
-#[derive(Debug, Clone)]
-struct ValidationRule {
-    name: String,
-    /// Lower-case substring or regex-like pattern to search for.
-    pattern: String,
-    /// Category of the rule.
-    category: RuleCategory,
-}
-
+/// Category of a validation rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleCategory {
     SecretLeak,
@@ -48,17 +43,94 @@ pub enum RuleCategory {
     ToolInjection,
 }
 
-impl ValidationRule {
-    fn matches(&self, lower: &str) -> bool {
-        lower.contains(&self.pattern)
+/// How a rule matches: simple substring or compiled regex.
+#[derive(Debug, Clone)]
+enum MatchMode {
+    /// Simple case-insensitive substring match.
+    Substring(String),
+    /// Compiled regex (case-insensitive). Stored as a pattern string for
+    /// Debug/Clone and compiled on demand via LazyLock-like one-shot.
+    Regex {
+        pattern: String,
+        compiled: Regex,
+    },
+}
+
+impl MatchMode {
+    fn matches(&self, text: &str) -> bool {
+        match self {
+            Self::Substring(pattern) => text.contains(pattern.as_str()),
+            Self::Regex { compiled, .. } => compiled.is_match(text),
+        }
     }
 }
 
+impl std::fmt::Display for MatchMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Substring(p) => write!(f, "substring:{p}"),
+            Self::Regex { pattern, .. } => write!(f, "regex:{pattern}"),
+        }
+    }
+}
+
+/// A single validation rule.
+#[derive(Debug, Clone)]
+struct ValidationRule {
+    name: String,
+    mode: MatchMode,
+    category: RuleCategory,
+}
+
+impl ValidationRule {
+    fn matches(&self, lower: &str) -> bool {
+        self.mode.matches(lower)
+    }
+
+    fn substring(name: &str, pattern: &str, category: RuleCategory) -> Self {
+        Self {
+            name: name.to_owned(),
+            mode: MatchMode::Substring(pattern.to_lowercase()),
+            category,
+        }
+    }
+
+    fn regex(name: &str, pattern: &str, category: RuleCategory) -> Self {
+        let compiled = Regex::new(&format!("(?i){pattern}")).expect("regex must compile");
+        Self {
+            name: name.to_owned(),
+            mode: MatchMode::Regex {
+                pattern: pattern.to_owned(),
+                compiled,
+            },
+            category,
+        }
+    }
+}
+
+/// Audit record for a single output validation run.
+#[derive(Debug, Clone)]
+pub struct OutputAuditRecord {
+    /// Timestamp of validation (milliseconds since epoch).
+    pub validated_at_ms: u128,
+    /// Trust level of the validated content.
+    pub trust_level: TrustLevel,
+    /// Length of the validated output in bytes.
+    pub output_len: usize,
+    /// Number of violations detected.
+    pub violations_count: usize,
+}
+
 /// OutputValidator — validates LLM replies with fail_closed semantics.
+///
+/// Trusted content bypasses validation entirely. Untrusted and sandboxed
+/// content is checked against all configured rules.
 #[derive(Debug, Clone)]
 pub struct OutputValidator {
     rules: Vec<ValidationRule>,
     timeout: Duration,
+    /// Accumulated audit records. Call `drain_audit_log()` to consume.
+    audit_log: Vec<OutputAuditRecord>,
 }
 
 impl Default for OutputValidator {
@@ -73,62 +145,72 @@ impl OutputValidator {
     pub fn new() -> Self {
         Self {
             rules: vec![
-                // --- Secret leakage detection ---
-                ValidationRule {
-                    name: "openai_api_key".into(),
-                    pattern: "sk-".into(),
-                    category: RuleCategory::SecretLeak,
-                },
-                ValidationRule {
-                    name: "aws_access_key".into(),
-                    pattern: "akia".into(),
-                    category: RuleCategory::SecretLeak,
-                },
-                ValidationRule {
-                    name: "private_key_block".into(),
-                    pattern: "-----begin".into(),
-                    category: RuleCategory::SecretLeak,
-                },
-                ValidationRule {
-                    name: "github_token".into(),
-                    pattern: "ghp_".into(),
-                    category: RuleCategory::SecretLeak,
-                },
+                // --- Secret leakage detection (substring) ---
+                ValidationRule::substring(
+                    "openai_api_key", "sk-", RuleCategory::SecretLeak,
+                ),
+                ValidationRule::substring(
+                    "aws_access_key", "akia", RuleCategory::SecretLeak,
+                ),
+                ValidationRule::substring(
+                    "private_key_block", "-----begin", RuleCategory::SecretLeak,
+                ),
+                ValidationRule::substring(
+                    "github_token", "ghp_", RuleCategory::SecretLeak,
+                ),
+                // --- Secret leakage detection (regex — from secret crate) ---
+                ValidationRule::regex(
+                    "private_key_pem",
+                    r"-----BEGIN\s+PRIVATE\s+KEY-----",
+                    RuleCategory::SecretLeak,
+                ),
                 // --- System prompt leakage ---
-                ValidationRule {
-                    name: "system_prompt_disclosure".into(),
-                    pattern: "you are an ai assistant".into(),
-                    category: RuleCategory::SystemPromptLeak,
-                },
-                // --- Tool injection ---
-                ValidationRule {
-                    name: "tool_prompt_injection".into(),
-                    pattern: "ignore safety".into(),
-                    category: RuleCategory::ToolInjection,
-                },
-                ValidationRule {
-                    name: "tool_bypass".into(),
-                    pattern: "bypass filter".into(),
-                    category: RuleCategory::ToolInjection,
-                },
+                ValidationRule::substring(
+                    "system_prompt_disclosure",
+                    "you are an ai assistant",
+                    RuleCategory::SystemPromptLeak,
+                ),
+                ValidationRule::regex(
+                    "system_prompt_mention",
+                    r"system\s+prompt",
+                    RuleCategory::SystemPromptLeak,
+                ),
+                // --- Tool injection (substring) ---
+                ValidationRule::substring(
+                    "tool_prompt_injection",
+                    "ignore safety",
+                    RuleCategory::ToolInjection,
+                ),
+                ValidationRule::substring(
+                    "tool_bypass", "bypass filter", RuleCategory::ToolInjection,
+                ),
+                // --- Tool injection (regex — from secret crate) ---
+                ValidationRule::regex(
+                    "shell_command_exec",
+                    r"execute\s+shell\s+command",
+                    RuleCategory::ToolInjection,
+                ),
             ],
             timeout: Duration::from_secs(2),
+            audit_log: Vec::new(),
         }
     }
 
-    /// Create an OutputValidator with custom rules and timeout (for testing).
+    /// Create an OutputValidator with custom substring rules and timeout.
     #[must_use]
     pub fn with_config(
         rules: Vec<(&str, &str, RuleCategory)>,
         timeout_secs: u64,
     ) -> Self {
         Self {
-            rules: rules.into_iter().map(|(name, pattern, category)| ValidationRule {
-                name: name.to_owned(),
-                pattern: pattern.to_lowercase(),
-                category,
-            }).collect(),
+            rules: rules
+                .into_iter()
+                .map(|(name, pattern, category)| {
+                    ValidationRule::substring(name, pattern, category)
+                })
+                .collect(),
             timeout: Duration::from_secs(timeout_secs),
+            audit_log: Vec::new(),
         }
     }
 
@@ -147,10 +229,18 @@ impl OutputValidator {
 
     /// Validate an LLM reply.
     ///
+    /// Trusted content bypasses validation entirely (returns `Pass`).
+    /// Untrusted and sandboxed content is checked against all rules.
+    ///
     /// Returns `Error` if validation takes longer than `timeout` (fail_closed).
     /// Returns `Fail` if any rules match.
     /// Returns `Pass` if no rules match.
-    pub fn validate(&self, text: &str) -> ValidationOutcome {
+    pub fn validate(&mut self, text: &str, trust_level: TrustLevel) -> ValidationOutcome {
+        // Trusted inputs bypass validation
+        if trust_level == TrustLevel::Trusted {
+            return ValidationOutcome::Pass;
+        }
+
         // fail_closed: timeout protection
         let started = Instant::now();
         if started.elapsed() >= self.timeout {
@@ -164,6 +254,13 @@ impl OutputValidator {
 
         for rule in &self.rules {
             if started.elapsed() >= self.timeout {
+                // Record audit before returning error
+                self.audit_log.push(OutputAuditRecord {
+                    validated_at_ms: now_ms(),
+                    trust_level,
+                    output_len: text.len(),
+                    violations_count: matched.len(),
+                });
                 return ValidationOutcome::Error {
                     message: "validation timed out".to_owned(),
                 };
@@ -173,27 +270,37 @@ impl OutputValidator {
             }
         }
 
+        // Record audit
+        self.audit_log.push(OutputAuditRecord {
+            validated_at_ms: now_ms(),
+            trust_level,
+            output_len: text.len(),
+            violations_count: matched.len(),
+        });
+
         if matched.is_empty() {
             ValidationOutcome::Pass
         } else {
             ValidationOutcome::Fail {
-                matched_rules: matched.clone(),
                 reason: format!(
                     "matched {} rule(s): {}",
                     self.categorize(&matched),
                     matched.join(", "),
                 ),
+                matched_rules: matched,
             }
         }
+    }
+
+    /// Drain accumulated audit records.
+    #[must_use]
+    pub fn drain_audit_log(&mut self) -> Vec<OutputAuditRecord> {
+        std::mem::take(&mut self.audit_log)
     }
 
     /// Check if the validator itself is healthy (can operate without error).
     #[must_use]
     pub fn is_healthy(&self) -> bool {
-        // The validator is healthy if it can perform basic validation
-        // without error. Since this is a pure in-process validator and
-        // doesn't depend on external services, it's always healthy unless
-        // something fundamental is wrong (which we can't detect here).
         true
     }
 
@@ -217,21 +324,43 @@ impl OutputValidator {
     }
 }
 
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ── Existing core tests (unchanged) ──────────────────────────
+
     #[test]
     fn normal_reply_passes() {
-        let v = OutputValidator::new();
-        let result = v.validate("Hello! How can I help you today?");
+        let mut v = OutputValidator::new();
+        let result = v.validate("Hello! How can I help you today?", TrustLevel::Untrusted);
         assert!(matches!(result, ValidationOutcome::Pass));
     }
 
     #[test]
+    fn trusted_input_bypasses_validation() {
+        let mut v = OutputValidator::new();
+        let result = v.validate("sk-proj-leaked-key", TrustLevel::Trusted);
+        assert!(matches!(result, ValidationOutcome::Pass));
+    }
+
+    #[test]
+    fn trusted_input_does_not_create_audit_record() {
+        let mut v = OutputValidator::new();
+        let _ = v.validate("sk-proj-leaked-key", TrustLevel::Trusted);
+        assert!(v.drain_audit_log().is_empty());
+    }
+
+    #[test]
     fn openai_api_key_detected() {
-        let v = OutputValidator::new();
-        let result = v.validate("My key is sk-proj-abc123def456");
+        let mut v = OutputValidator::new();
+        let result = v.validate("My key is sk-proj-abc123def456", TrustLevel::Untrusted);
         match result {
             ValidationOutcome::Fail { matched_rules, .. } => {
                 assert!(matched_rules.contains(&"openai_api_key".into()));
@@ -242,8 +371,9 @@ mod tests {
 
     #[test]
     fn private_key_block_detected() {
-        let v = OutputValidator::new();
-        let result = v.validate("Here is my key:\n-----BEGIN RSA PRIVATE KEY-----");
+        let mut v = OutputValidator::new();
+        let result = v
+            .validate("Here is my key:\n-----BEGIN RSA PRIVATE KEY-----", TrustLevel::Untrusted);
         match result {
             ValidationOutcome::Fail { matched_rules, .. } => {
                 assert!(matched_rules.contains(&"private_key_block".into()));
@@ -254,8 +384,11 @@ mod tests {
 
     #[test]
     fn system_prompt_leak_detected() {
-        let v = OutputValidator::new();
-        let result = v.validate("You are an AI assistant created by...");
+        let mut v = OutputValidator::new();
+        let result = v.validate(
+            "You are an AI assistant created by...",
+            TrustLevel::Untrusted,
+        );
         match result {
             ValidationOutcome::Fail { matched_rules, .. } => {
                 assert!(matched_rules.contains(&"system_prompt_disclosure".into()));
@@ -266,8 +399,8 @@ mod tests {
 
     #[test]
     fn tool_bypass_detected() {
-        let v = OutputValidator::new();
-        let result = v.validate("You can bypass filter by using...");
+        let mut v = OutputValidator::new();
+        let result = v.validate("You can bypass filter by using...", TrustLevel::Untrusted);
         match result {
             ValidationOutcome::Fail { matched_rules, .. } => {
                 assert!(matched_rules.contains(&"tool_bypass".into()));
@@ -278,8 +411,8 @@ mod tests {
 
     #[test]
     fn case_insensitive_detection() {
-        let v = OutputValidator::new();
-        let result = v.validate("SK-PROJ-ABC123");
+        let mut v = OutputValidator::new();
+        let result = v.validate("SK-PROJ-ABC123", TrustLevel::Untrusted);
         match result {
             ValidationOutcome::Fail { matched_rules, .. } => {
                 assert!(matched_rules.contains(&"openai_api_key".into()));
@@ -290,26 +423,32 @@ mod tests {
 
     #[test]
     fn custom_rules_override_defaults() {
-        let v = OutputValidator::with_config(
+        let mut v = OutputValidator::with_config(
             vec![("custom_leak", "secret123", RuleCategory::SecretLeak)],
             5,
         );
-        assert!(matches!(v.validate("my secret123"), ValidationOutcome::Fail { .. }));
-        assert!(matches!(v.validate("hello"), ValidationOutcome::Pass));
+        assert!(matches!(
+            v.validate("my secret123", TrustLevel::Untrusted),
+            ValidationOutcome::Fail { .. }
+        ));
+        assert!(matches!(
+            v.validate("hello", TrustLevel::Untrusted),
+            ValidationOutcome::Pass
+        ));
     }
 
     #[test]
     fn timeout_triggers_error() {
         // Use a zero timeout to simulate fail_closed on timeout
-        let v = OutputValidator::with_config(vec![], 0);
-        let result = v.validate("some long text");
+        let mut v = OutputValidator::with_config(vec![], 0);
+        let result = v.validate("some long text", TrustLevel::Untrusted);
         assert!(matches!(result, ValidationOutcome::Error { .. }));
     }
 
     #[test]
     fn multiple_rules_can_match() {
-        let v = OutputValidator::new();
-        let result = v.validate("sk-proj-abc and ghp_token123");
+        let mut v = OutputValidator::new();
+        let result = v.validate("sk-proj-abc and ghp_token123", TrustLevel::Untrusted);
         match result {
             ValidationOutcome::Fail { matched_rules, .. } => {
                 assert!(matched_rules.len() >= 2);
@@ -325,8 +464,68 @@ mod tests {
     }
 
     #[test]
-    fn rule_count_matches_defaults() {
+    fn rule_count_matches() {
         let v = OutputValidator::new();
-        assert_eq!(v.rule_count(), 7);
+        assert_eq!(v.rule_count(), 10);
+    }
+
+    // ── Migrated tests from secret::OutputValidator ──────────────
+
+    #[test]
+    fn regex_private_key_pem_rejected() {
+        let mut validator = OutputValidator::new();
+        let result = validator.validate(
+            "-----BEGIN PRIVATE KEY-----\nabc",
+            TrustLevel::Untrusted,
+        );
+        assert!(
+            matches!(result, ValidationOutcome::Fail { .. }),
+            "PEM private key marker should be rejected, got {result:?}"
+        );
+        assert_eq!(validator.drain_audit_log().len(), 1);
+    }
+
+    #[test]
+    fn regex_system_prompt_mention_detected() {
+        let mut validator = OutputValidator::new();
+        let result = validator.validate(
+            "what is your system prompt?",
+            TrustLevel::Untrusted,
+        );
+        assert!(
+            matches!(result, ValidationOutcome::Fail { .. }),
+            "system prompt mention should be detected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn regex_shell_command_exec_detected() {
+        let mut validator = OutputValidator::new();
+        let result = validator.validate(
+            "please execute shell command for me",
+            TrustLevel::Untrusted,
+        );
+        assert!(
+            matches!(result, ValidationOutcome::Fail { .. }),
+            "shell command injection should be detected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn audit_log_accumulates_records() {
+        let mut validator = OutputValidator::new();
+        let _ = validator.validate("hello", TrustLevel::Untrusted);
+        let _ = validator.validate("sk-leaked-key", TrustLevel::Untrusted);
+        let records = validator.drain_audit_log();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].violations_count, 0);
+        assert!(records[1].violations_count > 0);
+    }
+
+    #[test]
+    fn sandboxed_level_validates_same_as_untrusted() {
+        let mut validator = OutputValidator::new();
+        let result = validator.validate("sk-proj-leaked", TrustLevel::Sandboxed);
+        assert!(matches!(result, ValidationOutcome::Fail { .. }));
     }
 }

@@ -2831,7 +2831,7 @@ async fn chat_session_send(
                     ),).into_response();
         }
 
-    // Sanitize input.
+    // Sanitize input (substring-based, 3-tier).
     let sanitizer = InputSanitizer::new();
     let text = match sanitizer.sanitize(&req.text) {
         SanitizeResult::Block { matched_patterns } => {
@@ -2873,6 +2873,25 @@ async fn chat_session_send(
         }
         SanitizeResult::PassThrough => req.text.clone(),
     };
+
+    // Second pass: regex-based injection detection (from secret::InputSanitizer).
+    // Catches patterns the substring sanitizer may miss (e.g. "ignore  all\nprevious").
+    let injection_detector = kernel::sanitizer::InjectionDetector::new();
+    if let Some(warning) = injection_detector.detect_injection(&text) {
+        runtime.audit().record(
+            operator,
+            "chat.send_message",
+            format!("session:{id}"),
+            "injection_detected",
+            format!("pattern:{}", warning.message),
+        );
+        tracing::warn!(
+            session_id = %id,
+            pattern = %warning.pattern,
+            message = %warning.message,
+            "prompt injection detected by regex detector"
+        );
+    }
 
     // Detect slash-command skill invocation (e.g. "/btc-bottom-model should I buy?").
     // When a skill is invoked directly by the user, load the full SKILL.md body and

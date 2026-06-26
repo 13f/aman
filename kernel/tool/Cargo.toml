@@ -13,6 +13,7 @@ workspace = true
 async-trait.workspace = true
 base64 = "0.22"
 kernel = { path = "../core", version = "0.1.0" }
+sandbox = { path = "../sandbox", version = "0.1.0" }
 regex = "1"
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

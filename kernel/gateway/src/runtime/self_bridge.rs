@@ -8,6 +8,8 @@
 //! Python-first with transparent Rust fallback.
 
 use config::SelfConfig;
+use kernel::system_prompt_guard::SystemPromptHardener;
+use kernel::types::TrustLevel;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, warn};
@@ -269,5 +271,8 @@ pub fn build_system_prompt_fallback(
                 .to_owned(),
         );
     }
-    parts.join("\n\n")
+    let prompt = parts.join("\n\n");
+    // Harden the assembled prompt with security guardrails for untrusted
+    // user input contexts (§4.3 of security harness).
+    SystemPromptHardener::harden(&prompt, TrustLevel::Untrusted)
 }

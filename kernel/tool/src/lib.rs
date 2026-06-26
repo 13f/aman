@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod code_agent;
+pub mod permission;
 pub mod fs_tools;
 pub mod planner;
 pub mod security;
@@ -610,6 +611,19 @@ impl SubprocessSandbox {
                 });
             }
         }
+
+        // ── OS-level sandbox (Landlock/Seatbelt/JobObjects) ──────────
+        // Apply OS isolation if available. Best-effort: the path/network
+        // allowlist above provides an in-process safety net regardless.
+        let sb_config = sandbox::SandboxConfig {
+            allowed_read_dirs: self.config.allowed_paths.clone(),
+            allowed_write_dirs: self.config.allowed_paths.clone(),
+            network_allowed: self.config.network_allowed,
+            process_spawn_allowed: false,
+            max_memory_mb: self.config.max_memory_bytes / (1024 * 1024),
+        };
+        sandbox::apply_to_command(&mut process, &sb_config);
+
         let mut child = process.spawn().map_err(|error| Error::Unrecoverable {
             message: format!("failed to spawn command: {error}"),
         })?;

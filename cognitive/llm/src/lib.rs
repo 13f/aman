@@ -300,16 +300,47 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 message: e,
             })?;
 
+        // ── Output validation (security harness §8.2) ────────────────
+        // Validate LLM response for secret leaks, system prompt disclosure,
+        // and tool injection before converting to decisions.
+        let content = {
+            let mut validator = kernel::validator::OutputValidator::new();
+            match validator.validate(&response.content, kernel::types::TrustLevel::Untrusted) {
+                kernel::validator::ValidationOutcome::Pass => response.content,
+                kernel::validator::ValidationOutcome::Fail { reason, .. } => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        reason,
+                        "LLM response blocked by output validator (cognitive engine)"
+                    );
+                    "[I apologize, but I cannot provide that response \
+                     as it may contain sensitive information.]"
+                        .to_owned()
+                }
+                kernel::validator::ValidationOutcome::Error { message } => {
+                    tracing::error!(
+                        session_id = %session_id,
+                        error = %message,
+                        "output validator error (fail-closed, cognitive engine)"
+                    );
+                    return Err(CognitiveError::EngineError {
+                        engine_name: self.name().to_owned(),
+                        message: format!("output validation error: {message}"),
+                    });
+                }
+            }
+        };
+
         // Convert to decisions
         let turn = if !response.tool_calls.is_empty() {
             ReActTurn::ToolCalls {
-                content: response.content,
+                content,
                 calls: response.tool_calls,
                 reasoning_content: response.reasoning_content,
             }
         } else {
             ReActTurn::Finished {
-                content: response.content,
+                content,
                 finish_reason: response.finish_reason,
             }
         };

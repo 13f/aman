@@ -245,6 +245,9 @@ pub struct ToolExecutor {
     /// execute tools without a registered entry in the agents HashMap.
     /// Tuple: `(allowed_tools, denied_tools)`.
     anon_tool_policy: Option<(Option<Vec<String>>, Vec<String>)>,
+    /// Permission reviewer for tool sensitivity classification and
+    /// operator approval flow. Defaults to auto-approval for Low tools.
+    permission_reviewer: tool::permission::PermissionReviewer,
 }
 
 impl ToolExecutor {
@@ -262,6 +265,7 @@ impl ToolExecutor {
             tool_timeout_ms,
             interrupt_flag: None,
             anon_tool_policy: None,
+            permission_reviewer: tool::permission::PermissionReviewer::new(),
         }
     }
 
@@ -454,6 +458,54 @@ impl ToolExecutor {
                 .await;
         }
 
+        // ── Permission review (sensitivity-based gating) ──────────
+        // Runs after hardline blocks, before tool execution.
+        // For now, RequiresApproval decisions are logged and allowed
+        // (the full interactive approval path requires UI plumbing).
+        // The infrastructure is in place for future enforcement.
+        let args_hash = {
+            let args_str = serde_json::to_string(&call.args).unwrap_or_default();
+            blake3::hash(args_str.as_bytes()).to_hex()[..16].to_string()
+        };
+        let perm_decision = self.permission_reviewer.review(
+            session_id,
+            &tool_name,
+            &args_hash,
+        );
+        if let tool::permission::ReviewDecision::RequiresApproval {
+            ref tool_name,
+            sensitivity,
+            ref reason,
+        } = perm_decision
+        {
+            tracing::info!(
+                agent_id,
+                session_id,
+                tool_name,
+                ?sensitivity,
+                reason,
+                "tool permission review: approval required (auto-allowed in this version)"
+            );
+            self
+                .try_publish_to_agent_bus(
+                    agent_id,
+                    Event::new(
+                        SOURCE_AGENT_HARNESS,
+                        EventType::Custom(EVT_TOOL_SECURITY_DENIED.to_owned()),
+                        json!({
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "tool_call_id": tool_id,
+                            "tool_name": tool_name,
+                            "block_type": "permission_review",
+                            "sensitivity": format!("{sensitivity:?}"),
+                            "reason": reason,
+                        }),
+                    ),
+                )
+                .await;
+        }
+
         // ── Tool execution (or short-circuit if security blocked) ─────
         let tool = self.registry.get(&tool_name);
         let (success, output, pending_detach) = match tool {
@@ -559,6 +611,13 @@ pub struct LlmReActEngine {
     tool_timeout_ms: u64,
     /// Tool security config for path/network/command allowlist enforcement.
     security_config: Option<ToolSecurityConfig>,
+    /// Output validator — validates LLM responses for secret leaks,
+    /// system prompt disclosure, and tool injection before returning
+    /// to the user. `None` only in tests.
+    output_validator: Option<kernel::validator::OutputValidator>,
+    /// Content filter — detects PII (email, phone, credit card) and
+    /// harmful content in LLM output. Runs after output validation.
+    content_filter: kernel::content_filter::ContentFilter,
 }
 
 impl LlmReActEngine {
@@ -575,6 +634,8 @@ impl LlmReActEngine {
             bus,
             tool_timeout_ms,
             security_config,
+            output_validator: Some(kernel::validator::OutputValidator::new()),
+            content_filter: kernel::content_filter::ContentFilter::new(),
         }
     }
 
@@ -781,9 +842,93 @@ impl kernel::react::ReActEngine for LlmReActEngine {
 
         match result {
             Ok(response) => {
+                // ── Output validation (security harness §8.2) ────────────
+                // Validate LLM response for secret leaks, system prompt
+                // disclosure, and tool injection before returning to user.
+                // Fail-closed: if validation fails the response is replaced
+                // with a safe refusal message.
+                let content = if let Some(ref mut validator) =
+                    self.output_validator.clone()
+                {
+                    let outcome = validator.validate(
+                        &response.content,
+                        kernel::types::TrustLevel::Untrusted,
+                    );
+                    match outcome {
+                        kernel::validator::ValidationOutcome::Pass => {
+                            response.content
+                        }
+                        kernel::validator::ValidationOutcome::Fail {
+                            ref matched_rules,
+                            ref reason,
+                        } => {
+                            tracing::warn!(
+                                agent_id = %ctx.agent_id,
+                                session_id = %ctx.session_id,
+                                turn = ctx.turn,
+                                matched_rules = %matched_rules.join(","),
+                                reason,
+                                "LLM response blocked by output validator"
+                            );
+                            "[I apologize, but I cannot provide that response \
+                             as it may contain sensitive information.]"
+                                .to_owned()
+                        }
+                        kernel::validator::ValidationOutcome::Error {
+                            ref message,
+                        } => {
+                            tracing::error!(
+                                agent_id = %ctx.agent_id,
+                                session_id = %ctx.session_id,
+                                error = %message,
+                                "output validator error (fail-closed)"
+                            );
+                            "[I encountered a safety validation error. \
+                             Please try again.]"
+                                .to_owned()
+                        }
+                    }
+                } else {
+                    response.content
+                };
+
+                // ── Content filter (PII + harmful content) ────────────
+                // Runs after output validation. Blocks on API keys/credentials.
+                // Flags (but allows) email/phone/SSN with audit logging.
+                let content = match self.content_filter.filter(&content) {
+                    kernel::content_filter::FilterDecision::Pass => content,
+                    kernel::content_filter::FilterDecision::Flag {
+                        ref matched_rules,
+                    } => {
+                        tracing::info!(
+                            agent_id = %ctx.agent_id,
+                            session_id = %ctx.session_id,
+                            matched_rules = %matched_rules.join(","),
+                            "content filter flagged potential PII in LLM response"
+                        );
+                        content
+                    }
+                    kernel::content_filter::FilterDecision::Block {
+                        ref matched_rules,
+                        ref reason,
+                    } => {
+                        tracing::warn!(
+                            agent_id = %ctx.agent_id,
+                            session_id = %ctx.session_id,
+                            turn = ctx.turn,
+                            matched_rules = %matched_rules.join(","),
+                            reason,
+                            "LLM response blocked by content filter"
+                        );
+                        "[I apologize, but I cannot provide that response \
+                         as it may contain sensitive data.]"
+                            .to_owned()
+                    }
+                };
+
                 if response.tool_calls.is_empty() {
                     // Publish token usage estimate to local bus
-                    let estimated_tokens = (response.content.len() / 4) as u64;
+                    let estimated_tokens = (content.len() / 4) as u64;
                     self
                         .try_publish_to_agent_bus(
                             &ctx.agent_id,
@@ -802,12 +947,12 @@ impl kernel::react::ReActEngine for LlmReActEngine {
                         .await;
 
                     Ok(ReActTurn::Finished {
-                        content: response.content,
+                        content,
                         finish_reason: response.finish_reason,
                     })
                 } else {
                     Ok(ReActTurn::ToolCalls {
-                        content: response.content,
+                        content,
                         calls: response.tool_calls,
                         reasoning_content: response.reasoning_content,
                     })

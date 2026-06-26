@@ -15,6 +15,9 @@ pub use subscriber::NotificationSubscriber;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use event_bus::EventHandler;
+    use kernel::event::{Event, EventType};
+    use std::sync::Arc;
 
     #[test]
     fn store_push_list_roundtrip() {
@@ -123,6 +126,127 @@ mod tests {
         assert_eq!(store.list(false, None, 10, 0).len(), 1);
         store.push(Notification::info(Category::Llm, "second", ""));
         assert_eq!(store.list(false, None, 10, 0).len(), 1);
+    }
+
+    // ── NotificationSubscriber characterization tests ──────────
+
+    #[test]
+    fn subscriber_llm_error_creates_warning() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "test",
+            EventType::Custom("llm_error".into()),
+            serde_json::json!({"error": "rate limit exceeded"}),
+        );
+        // Call maybe_notify (private) via the EventHandler impl
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].severity, Severity::Warning);
+        assert_eq!(all[0].category, Category::Llm);
+        assert!(all[0].title.contains("LLM"));
+    }
+
+    #[test]
+    fn subscriber_injection_detected_creates_critical() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "attacker",
+            EventType::InjectionDetected,
+            serde_json::json!({}),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].severity, Severity::Critical);
+        assert_eq!(all[0].category, Category::Security);
+    }
+
+    #[test]
+    fn subscriber_workflow_error_creates_warning() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "wf",
+            EventType::WorkflowStateChanged,
+            serde_json::json!({
+                "to_state": "ERROR",
+                "workflow_name": "approval",
+                "instance_id": "inst-1",
+                "reason": "timeout"
+            }),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].category, Category::Workflow);
+        assert!(all[0].title.contains("错误"));
+    }
+
+    #[test]
+    fn subscriber_skill_reloaded_with_three_removed_creates_warning() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "skills",
+            EventType::SkillReloaded,
+            serde_json::json!({"removed": ["a", "b", "c"]}),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].category, Category::Skill);
+    }
+
+    #[test]
+    fn subscriber_skill_reloaded_with_one_removed_no_notification() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "skills",
+            EventType::SkillReloaded,
+            serde_json::json!({"removed": ["a"]}),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        assert_eq!(store.unread_count(), 0);
+    }
+
+    #[test]
+    fn subscriber_output_blocked_creates_security_warning() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "validator",
+            EventType::Custom("output_blocked".into()),
+            serde_json::json!({"reason": "secret leak detected"}),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].category, Category::Security);
+        assert!(all[0].message.contains("secret leak"));
+    }
+
+    #[test]
+    fn subscriber_normal_event_no_notification() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "src",
+            EventType::Custom("some_random_event".into()),
+            serde_json::json!({}),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        assert_eq!(store.unread_count(), 0);
     }
 
     #[test]

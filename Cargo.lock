@@ -4815,6 +4815,8 @@ dependencies = [
  "event-bus",
  "kernel",
  "serde",
+ "serde_json",
+ "tokio",
  "uuid",
 ]
 

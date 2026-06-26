@@ -130,3 +130,78 @@ fn section_token_count(section: &ContextSection) -> usize {
         | ContextSection::Conversation { token_count, .. } => *token_count,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_window_new_is_empty() {
+        let window = ContextWindow::new(128_000);
+        assert_eq!(window.section_count(), 0);
+        assert_eq!(window.total_tokens, 0);
+        assert_eq!(window.max_tokens, 128_000);
+        assert!((window.usage_percent - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn add_section_updates_totals() {
+        let mut window = ContextWindow::new(1000);
+        window.add_section(ContextSection::System {
+            content: "System prompt".into(),
+            token_count: 100,
+        });
+        assert_eq!(window.section_count(), 1);
+        assert_eq!(window.total_tokens, 100);
+        assert!((window.usage_percent - 10.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn multiple_sections_accumulate() {
+        let mut window = ContextWindow::new(1000);
+        window.add_section(ContextSection::System {
+            content: "S".into(),
+            token_count: 200,
+        });
+        window.add_section(ContextSection::Task {
+            description: "T".into(),
+            token_count: 300,
+        });
+        assert_eq!(window.section_count(), 2);
+        assert_eq!(window.total_tokens, 500);
+        assert!((window.usage_percent - 50.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zero_max_tokens_handled() {
+        let mut window = ContextWindow::new(0);
+        window.add_section(ContextSection::System {
+            content: "S".into(),
+            token_count: 100,
+        });
+        assert_eq!(window.total_tokens, 100);
+        assert!((window.usage_percent - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn section_budget_defaults() {
+        let budget = SectionBudget::default();
+        assert_eq!(budget.system_max, 8_000);
+        assert_eq!(budget.tools_max, 4_000);
+        assert_eq!(budget.task_max, 1_000);
+        assert_eq!(budget.memory_max, 3_000);
+        assert_eq!(budget.conversation_max, 80_000);
+    }
+
+    #[test]
+    fn memory_section_entry_construction() {
+        let entry = MemorySectionEntry {
+            content: "remembered fact".into(),
+            tags: vec!["important".into(), "recent".into()],
+            token_count: 42,
+        };
+        assert_eq!(entry.content, "remembered fact");
+        assert_eq!(entry.tags.len(), 2);
+        assert_eq!(entry.token_count, 42);
+    }
+}

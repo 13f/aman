@@ -239,7 +239,7 @@ impl SkillRegistry {
                 triggers: entry.skill.triggers().to_vec(),
             })
             .collect::<Vec<_>>();
-        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items.sort_by_key(|a| a.name.clone());
         items
     }
 

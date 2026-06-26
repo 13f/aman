@@ -2640,7 +2640,7 @@ async fn chat_sessions(
         }
     }
 
-    items.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+    items.sort_by_key(|b| std::cmp::Reverse(b.last_active_at));
     (StatusCode::OK, Json(json!({ "items": items }))).into_response()
 }
 

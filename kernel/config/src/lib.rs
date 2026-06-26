@@ -530,10 +530,11 @@ impl Default for IdleConfig {
 
 
 /// Desktop UI visual style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum UiStyle {
     /// Classic frosted-glass vibrancy (default).
+    #[default]
     FrostedGlass,
     /// Frosted glass + animated aurora background.
     Aurora,
@@ -545,12 +546,6 @@ impl std::fmt::Display for UiStyle {
             UiStyle::FrostedGlass => write!(f, "frosted-glass"),
             UiStyle::Aurora => write!(f, "aurora"),
         }
-    }
-}
-
-impl Default for UiStyle {
-    fn default() -> Self {
-        UiStyle::FrostedGlass
     }
 }
 

@@ -600,7 +600,7 @@ impl WorkflowEngine {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        items.sort_by(|a, b| a.id.cmp(&b.id));
+        items.sort_by_key(|a| a.id.clone());
         items
     }
 

@@ -13,6 +13,7 @@ use serde_json::json;
 ///   python3 /tmp/test_mcp_http_server.py
 #[tokio::test]
 #[ignore = "requires local HTTP MCP server on http://127.0.0.1:9020/mcp"]
+#[allow(clippy::print_stderr)] // diagnostic output for manual integration test runs
 async fn connect_to_http_mcp_server() {
     let url = "http://127.0.0.1:9020/mcp";
 

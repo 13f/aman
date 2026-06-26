@@ -75,7 +75,7 @@ impl JsonlTraceStore {
             }
         }
         // Sort descending by mtime
-        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        entries.sort_by_key(|x| std::cmp::Reverse(x.0));
         Ok(entries.into_iter().map(|(_, p)| p).collect())
     }
 

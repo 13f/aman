@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use kernel::deferred_task::{DeferredTask, DeferredTaskQueue};
 use kernel::AmanResult;
+use std::cmp::Reverse;
 use std::sync::RwLock;
 
 /// In-memory deferred task queue.
@@ -58,7 +59,7 @@ impl DeferredTaskQueue for MemoryDeferredTaskQueue {
     async fn dequeue(&self, limit: usize) -> AmanResult<Vec<DeferredTask>> {
         let mut tasks = self.tasks.write().unwrap();
         // Highest priority first
-        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        tasks.sort_by_key(|b| Reverse(b.priority));
         let count = limit.min(tasks.len());
         let result: Vec<DeferredTask> = tasks.drain(0..count).collect();
         Ok(result)
@@ -85,7 +86,7 @@ impl DeferredTaskQueue for MemoryDeferredTaskQueue {
     async fn list_pending(&self, limit: usize) -> AmanResult<Vec<DeferredTask>> {
         let tasks = self.tasks.read().unwrap();
         let mut sorted = tasks.clone();
-        sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
+        sorted.sort_by_key(|b| Reverse(b.priority));
         sorted.truncate(limit);
         Ok(sorted)
     }

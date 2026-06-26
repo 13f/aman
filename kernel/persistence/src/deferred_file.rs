@@ -94,7 +94,7 @@ impl DeferredTaskQueue for FileDeferredTaskQueue {
         let files = self.list_task_files()?;
         let mut tasks: Vec<DeferredTask> =
             files.iter().filter_map(|p| Self::read_task(p)).collect();
-        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        tasks.sort_by_key(|b| std::cmp::Reverse(b.priority));
         tasks.truncate(limit);
         // Remove dequeued files from disk
         for task in &tasks {
@@ -131,7 +131,7 @@ impl DeferredTaskQueue for FileDeferredTaskQueue {
         let files = self.list_task_files()?;
         let mut tasks: Vec<DeferredTask> =
             files.iter().filter_map(|p| Self::read_task(p)).collect();
-        tasks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        tasks.sort_by_key(|b| std::cmp::Reverse(b.priority));
         tasks.truncate(limit);
         Ok(tasks)
     }

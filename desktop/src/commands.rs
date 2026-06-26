@@ -623,7 +623,7 @@ pub async fn get_capabilities(state: State<'_, AppState>) -> Result<Vec<crate::m
             }).collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    result.sort_by(|a, b| a.capability.cmp(&b.capability));
+    result.sort_by_key(|a| a.capability.clone());
     Ok(result)
 }
 
@@ -1828,7 +1828,7 @@ pub async fn list_providers(state: State<'_, AppState>) -> Result<Vec<crate::mod
             }
         })
         .collect();
-    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    entries.sort_by_key(|a| a.key.clone());
     Ok(entries)
 }
 
@@ -2008,7 +2008,7 @@ pub async fn list_provider_models(
                 model_id: m.model_id.clone(),
             })
             .collect();
-        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models.sort_by_key(|a| a.id.clone());
         return Ok(models);
     }
 
@@ -2037,7 +2037,7 @@ pub async fn list_provider_models(
                                 model_id: m.id,
                             })
                             .collect();
-                        models.sort_by(|a, b| a.id.cmp(&b.id));
+                        models.sort_by_key(|a| a.id.clone());
                         return Ok(models);
                     }
             }
@@ -2054,7 +2054,7 @@ pub async fn list_provider_models(
             model_id: m.model_id.clone(),
         })
         .collect();
-    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.sort_by_key(|a| a.id.clone());
     Ok(models)
 }
 
@@ -2130,7 +2130,7 @@ pub async fn list_agents(
             }
         })
         .collect();
-    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    entries.sort_by_key(|a| a.key.clone());
     Ok(entries)
 }
 

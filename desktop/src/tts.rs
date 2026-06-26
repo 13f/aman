@@ -363,6 +363,7 @@ mod tests {
     /// ```
     #[test]
     #[ignore = "requires local TTS server"]
+    #[allow(clippy::print_stderr)] // diagnostic output for manual integration test runs
     fn tts_provider_resolution_and_synthesis() {
         let reader = AutoReader::from_config()
             .expect("TTS config: desktop.auto_read=true, llm.tts set");
@@ -390,6 +391,7 @@ mod tests {
     /// Integration test: LLM summarization via `llm.summary`.
     #[test]
     #[ignore = "requires LLM API (deepseek)"]
+    #[allow(clippy::print_stderr)] // diagnostic output for manual integration test runs
     fn llm_summary_integration() {
         let reader = AutoReader::from_config()
             .expect("TTS config: desktop.auto_read=true, llm.tts set");

@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn parse_agent_with_underscore() {
         // agent_id may contain underscores (e.g. "my_agent")
-        let (agent, project, work) =
+        let (agent, _project, _work) =
             parse_work_session_id("my_agent_aman_work-123").expect("should parse");
         assert_eq!(agent, "my");
         // With underscores in agent_id, the first '_' splits agent from the rest.

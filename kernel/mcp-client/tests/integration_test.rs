@@ -11,6 +11,7 @@ use serde_json::json;
 
 #[tokio::test]
 #[ignore = "requires network access to download MCP server via npx"]
+#[allow(clippy::print_stderr)] // diagnostic output for manual integration test runs
 async fn connect_to_everything_stdio() {
     let mut env = BTreeMap::new();
     // Ensure PATH is available for npx

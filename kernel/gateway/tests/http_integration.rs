@@ -9,7 +9,6 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A test harness that owns a tokio runtime, AgentRuntime, and temp dir.
 ///
@@ -58,11 +57,6 @@ impl GatewayTestHarness {
             self.server_handle = Some(handle);
         }
         self.server_handle.as_ref().unwrap()
-    }
-
-    fn base_url(&mut self) -> String {
-        let addr = self.start_server().local_addr();
-        format!("http://{addr}")
     }
 
     /// Make an HTTP GET request and return (status, body_text).

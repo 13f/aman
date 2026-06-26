@@ -83,7 +83,7 @@ impl GatewaySleepHousekeeper {
             return;
         }
 
-        entries.sort_by(|a, b| b.0.cmp(&a.0));
+        entries.sort_by_key(|x| std::cmp::Reverse(x.0));
         for (_ts, path) in entries.iter().skip(Self::MAX_HEALTH_FILES) {
             if let Err(e) = std::fs::remove_file(path) {
                 warn!(agent_id, path = %path.display(), error = %e, "failed to prune old health report for agent {agent_id}");

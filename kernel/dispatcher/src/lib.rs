@@ -577,7 +577,7 @@ mod tests {
         match_condition_from_subscription_filter, DispatchTarget, Dispatcher, FilterRule,
         MatchCondition, RouteRule, TransformRule,
     };
-    use event_bus::{EventBus, InMemoryBus, SubscriptionFilter};
+    use event_bus::{InMemoryBus, SubscriptionFilter};
     use idle::coordination::IdleCoordination;
     use idle::types::{QueueDrained, ReflectionBreaker};
     use kernel::context::ToolContext;

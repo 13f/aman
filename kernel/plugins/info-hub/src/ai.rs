@@ -166,6 +166,7 @@ pub async fn chat_completion(
 }
 
 /// Chat completion with retries via the shared `SimpleLlmClient`.
+#[allow(clippy::too_many_arguments)] // thin wrapper delegating to SimpleLlmClient
 pub async fn chat_completion_with_retries(
     config: &LlmConfig,
     system_prompt: &str,

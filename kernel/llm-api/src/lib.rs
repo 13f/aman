@@ -278,15 +278,11 @@ pub fn parse_json_response<T: serde::de::DeserializeOwned>(
             match ch {
                 '"' => in_str = true,
                 '{' | '[' => stack.push(ch),
-                '}' => {
-                    if stack.last() == Some(&'{') {
-                        stack.pop();
-                    }
+                '}' if stack.last() == Some(&'{') => {
+                    stack.pop();
                 }
-                ']' => {
-                    if stack.last() == Some(&'[') {
-                        stack.pop();
-                    }
+                ']' if stack.last() == Some(&'[') => {
+                    stack.pop();
                 }
                 _ => {}
             }

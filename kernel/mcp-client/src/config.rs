@@ -204,3 +204,187 @@ fn aman_data_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home).join(".aman")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_auto_connects() {
+        let config = McpServerConfig {
+            name: "filesystem".into(),
+            transport: "auto".into(),
+            command: Some("npx".into()),
+            args: vec!["-y".into(), "@anthropic/mcp-filesystem".into()],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        };
+        assert!(config.auto_connect);
+        assert_eq!(config.resolve_transport(), Some("stdio"));
+    }
+
+    #[test]
+    fn resolve_transport_auto_from_command() {
+        let config = McpServerConfig {
+            name: "test".into(),
+            transport: "auto".into(),
+            command: Some("npx".into()),
+            args: vec![],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        };
+        assert_eq!(config.resolve_transport(), Some("stdio"));
+    }
+
+    #[test]
+    fn resolve_transport_auto_from_url() {
+        let config = McpServerConfig {
+            name: "test".into(),
+            transport: "auto".into(),
+            command: None,
+            args: vec![],
+            url: Some("http://localhost:9020/mcp".into()),
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        };
+        assert_eq!(config.resolve_transport(), Some("streamable-http"));
+    }
+
+    #[test]
+    fn resolve_transport_stdio_wins_when_both_set() {
+        let config = McpServerConfig {
+            name: "test".into(),
+            transport: "auto".into(),
+            command: Some("npx".into()),
+            args: vec![],
+            url: Some("http://localhost:9020/mcp".into()),
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        };
+        // stdio takes precedence when both are set
+        assert_eq!(config.resolve_transport(), Some("stdio"));
+    }
+
+    #[test]
+    fn resolve_transport_explicit_overrides_auto() {
+        let config = McpServerConfig {
+            name: "test".into(),
+            transport: "streamable-http".into(),
+            command: Some("npx".into()),
+            args: vec![],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        };
+        // Explicit transport wins even when command is set
+        assert_eq!(config.resolve_transport(), Some("streamable-http"));
+    }
+
+    #[test]
+    fn resolve_transport_none_when_both_missing() {
+        let config = McpServerConfig {
+            name: "test".into(),
+            transport: "auto".into(),
+            command: None,
+            args: vec![],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        };
+        assert_eq!(config.resolve_transport(), None);
+    }
+
+    #[test]
+    fn merge_agent_overrides_global() {
+        let global = vec![McpServerConfig {
+            name: "filesystem".into(),
+            transport: "auto".into(),
+            command: Some("npx".into()),
+            args: vec!["-y".into(), "@old/mcp-fs".into()],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        }];
+        let agent = vec![McpServerConfig {
+            name: "filesystem".into(),
+            transport: "auto".into(),
+            command: Some("npx".into()),
+            args: vec!["-y".into(), "@new/mcp-fs".into()],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        }];
+        let merged = McpServersFile::merge(&global, &agent);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].args, vec!["-y", "@new/mcp-fs"]);
+    }
+
+    #[test]
+    fn merge_appends_agent_only_servers() {
+        let global = vec![McpServerConfig {
+            name: "filesystem".into(),
+            transport: "auto".into(),
+            command: Some("npx".into()),
+            args: vec![],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        }];
+        let agent = vec![McpServerConfig {
+            name: "database".into(),
+            transport: "auto".into(),
+            command: Some("uvx".into()),
+            args: vec![],
+            url: None,
+            env: BTreeMap::new(),
+            headers: BTreeMap::new(),
+            auto_connect: true,
+        }];
+        let merged = McpServersFile::merge(&global, &agent);
+        assert_eq!(merged.len(), 2);
+        let names: Vec<&str> = merged.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"filesystem"));
+        assert!(names.contains(&"database"));
+    }
+
+    #[test]
+    fn config_serde_roundtrip() {
+        let json = r#"{
+            "servers": [
+                {
+                    "name": "filesystem",
+                    "command": "npx",
+                    "args": ["-y", "@anthropic/mcp-filesystem"],
+                    "auto_connect": true
+                }
+            ]
+        }"#;
+        let file: McpServersFile = serde_json::from_str(json).expect("parse");
+        assert_eq!(file.servers.len(), 1);
+        assert_eq!(file.servers[0].name, "filesystem");
+        assert_eq!(file.servers[0].transport, "auto");
+
+        let roundtripped = serde_json::to_string_pretty(&file).expect("serialize");
+        let parsed_again: McpServersFile =
+            serde_json::from_str(&roundtripped).expect("re-parse");
+        assert_eq!(parsed_again.servers.len(), 1);
+    }
+
+    #[test]
+    fn empty_config_is_valid() {
+        let json = r#"{"servers": []}"#;
+        let file: McpServersFile = serde_json::from_str(json).expect("parse");
+        assert!(file.servers.is_empty());
+    }
+}

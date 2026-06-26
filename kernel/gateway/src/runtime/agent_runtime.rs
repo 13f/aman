@@ -5606,6 +5606,217 @@ fn convert_chat_message_kernel_to_cognitive(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reverse adapter: cognitive_llm::LlmProvider → kernel::llm::LlmProvider
+// ---------------------------------------------------------------------------
+// The adapter above wraps a kernel provider as a cognitive one. This adapter
+// does the reverse: wraps a cognitive provider (like the new Anthropic impl)
+// for use by the gateway, which still consumes kernel::llm::LlmProvider.
+
+/// Adapter that implements `kernel::llm::LlmProvider` by delegating to a
+/// `cognitive_llm::provider::LlmProvider`.
+///
+/// Enables the Anthropic provider (and future cognitive providers) to be
+/// used immediately by the gateway without waiting for the full trait
+/// unification (P1 leaf-crate extraction).
+///
+/// # Example
+///
+/// ```ignore
+/// let anthropic = LlmAnthropicProvider::new("https://api.anthropic.com/v1", "key", "claude-sonnet-4-6");
+/// let wrapped = CognitiveLlmProviderAdapter::new(Arc::new(anthropic)).into_kernel_provider();
+/// registry.set_llm_provider("my-agent", wrapped).await;
+/// ```
+#[allow(dead_code)] // Public API for future cognitive provider registration.
+pub struct CognitiveLlmProviderAdapter {
+    inner: Arc<dyn cognitive_llm::provider::LlmProvider>,
+}
+
+impl CognitiveLlmProviderAdapter {
+    /// Wrap a cognitive LLM provider for use with the gateway.
+    #[allow(dead_code)] // Used by tests and external consumers.
+    pub fn new(inner: Arc<dyn cognitive_llm::provider::LlmProvider>) -> Self {
+        Self { inner }
+    }
+
+    /// Consume the adapter and return an `Arc<dyn kernel::llm::LlmProvider>` suitable
+    /// for `AgentRegistry::set_llm_provider()`.
+    #[allow(dead_code)] // Used by tests and external consumers.
+    pub fn into_kernel_provider(self) -> Arc<dyn kernel::llm::LlmProvider> {
+        Arc::new(self)
+    }
+}
+
+#[cfg(test)]
+mod cognitive_adapter_tests {
+    use super::*;
+
+    /// Stub cognitive provider that returns a fixed response.
+    struct StubCognitiveProvider {
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl cognitive_llm::provider::LlmProvider for StubCognitiveProvider {
+        fn name(&self) -> &str {
+            "stub"
+        }
+
+        async fn chat_completion(
+            &self,
+            _req: cognitive_llm::provider::LlmChatRequest,
+            _cb: Option<Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync>>,
+        ) -> Result<cognitive_llm::provider::LlmResponse, String> {
+            Ok(cognitive_llm::provider::LlmResponse {
+                content: self.response.clone(),
+                finish_reason: "stop".to_owned(),
+                tool_calls: vec![],
+                reasoning_content: String::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_forwards_chat_completion() {
+        let stub = Arc::new(StubCognitiveProvider {
+            response: "Hello from cognitive provider".to_owned(),
+        });
+        let adapter = CognitiveLlmProviderAdapter::new(stub).into_kernel_provider();
+
+        let req = kernel::llm::LlmChatRequest {
+            model: "test".into(),
+            system_prompt: String::new(),
+            messages: vec![],
+            tools: vec![],
+            max_output_tokens: 100,
+            response_format: None,
+        };
+
+        let resp = adapter.chat_completion(req, None).await.expect("should succeed");
+        assert_eq!(resp.content, "Hello from cognitive provider");
+        assert_eq!(resp.finish_reason, "stop");
+        assert!(resp.tool_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn adapter_name_delegates() {
+        let stub = Arc::new(StubCognitiveProvider {
+            response: String::new(),
+        });
+        let adapter = CognitiveLlmProviderAdapter::new(stub);
+        assert_eq!(adapter.name(), "stub");
+    }
+}
+
+#[allow(dead_code)] // Used by CognitiveLlmProviderAdapter (via test).
+fn convert_chat_message_to_cognitive(m: &kernel::react::ChatMessage) -> cognitive_llm::react::ChatMessage {
+    cognitive_llm::react::ChatMessage {
+        role: match m.role {
+            kernel::react::ChatMessageRole::System => cognitive_llm::react::ChatMessageRole::System,
+            kernel::react::ChatMessageRole::User => cognitive_llm::react::ChatMessageRole::User,
+            kernel::react::ChatMessageRole::Assistant => cognitive_llm::react::ChatMessageRole::Assistant,
+            kernel::react::ChatMessageRole::Tool => cognitive_llm::react::ChatMessageRole::Tool,
+        },
+        content: m.content.clone(),
+        tool_call_id: m.tool_call_id.clone(),
+        tool_name: m.tool_name.clone(),
+        tool_calls: m.tool_calls.clone(),
+        reasoning_content: m.reasoning_content.clone(),
+    }
+}
+
+#[allow(dead_code)] // Used by CognitiveLlmProviderAdapter (via test).
+fn convert_response_format_to_cognitive(
+    fmt: &kernel::llm::ResponseFormat,
+) -> cognitive_llm::provider::ResponseFormat {
+    match fmt {
+        kernel::llm::ResponseFormat::JsonObject => cognitive_llm::provider::ResponseFormat::JsonObject,
+        kernel::llm::ResponseFormat::JsonSchema { name, schema, strict } => {
+            cognitive_llm::provider::ResponseFormat::JsonSchema {
+                name: name.clone(),
+                schema: schema.clone(),
+                strict: *strict,
+            }
+        }
+    }
+}
+
+#[allow(dead_code)] // Used by CognitiveLlmProviderAdapter (via test).
+fn convert_stream_event_from_cognitive(evt: cognitive_llm::provider::StreamEvent) -> kernel::llm::StreamEvent {
+    match evt {
+        cognitive_llm::provider::StreamEvent::Start => kernel::llm::StreamEvent::Start,
+        cognitive_llm::provider::StreamEvent::Chunk(s) => kernel::llm::StreamEvent::Chunk(s),
+        cognitive_llm::provider::StreamEvent::Done { finish_reason } => {
+            kernel::llm::StreamEvent::Done { finish_reason }
+        }
+        cognitive_llm::provider::StreamEvent::Error(s) => kernel::llm::StreamEvent::Error(s),
+    }
+}
+
+#[async_trait::async_trait]
+impl kernel::llm::LlmProvider for CognitiveLlmProviderAdapter {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    async fn chat_completion(
+        &self,
+        req: kernel::llm::LlmChatRequest,
+        cb: Option<Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync>>,
+    ) -> Result<kernel::llm::LlmResponse, kernel::Error> {
+        let cognitive_req = cognitive_llm::provider::LlmChatRequest {
+            model: req.model,
+            system_prompt: req.system_prompt,
+            messages: req
+                .messages
+                .iter()
+                .map(convert_chat_message_to_cognitive)
+                .collect(),
+            tools: req
+                .tools
+                .into_iter()
+                .map(|t| cognitive_llm::react::ToolDescriptor {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                })
+                .collect(),
+            max_output_tokens: req.max_output_tokens,
+            response_format: req.response_format.as_ref().map(convert_response_format_to_cognitive),
+        };
+
+        let cognitive_cb = cb.map(|f| {
+            let cb: Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync> = f;
+            Arc::new(move |evt: cognitive_llm::provider::StreamEvent| {
+                cb(convert_stream_event_from_cognitive(evt))
+            }) as Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync>
+        });
+
+        let resp = self
+            .inner
+            .chat_completion(cognitive_req, cognitive_cb)
+            .await
+            .map_err(|e| kernel::Error::Unrecoverable {
+                message: format!("cognitive LLM provider error: {e}"),
+            })?;
+
+        Ok(kernel::llm::LlmResponse {
+            content: resp.content,
+            finish_reason: resp.finish_reason,
+            tool_calls: resp
+                .tool_calls
+                .into_iter()
+                .map(|c| kernel::react::ParsedToolCall {
+                    id: c.id,
+                    tool_name: c.tool_name,
+                    args: c.args,
+                })
+                .collect(),
+            reasoning_content: resp.reasoning_content,
+        })
+    }
+}
+
 /// Register the `delegate_task` tool and return its `Arc` so the caller
 /// can wire [`GatewaySubAgentSpawner`] after the agent harness is created.
 fn install_delegate_task_tool(

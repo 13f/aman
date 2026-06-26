@@ -27,6 +27,7 @@
 pub mod anthropic;
 pub mod cognitive_react;
 pub mod delegate_task;
+pub mod local;
 pub mod embed;
 pub(crate) mod net_proxy;
 pub mod openai;

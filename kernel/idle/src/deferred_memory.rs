@@ -183,7 +183,7 @@ mod tests {
         let queue = MemoryDeferredTaskQueue::new("test");
         let ready = make_task("ready");
         let delayed = DeferredTask {
-            execute_after_ms: Some(current_time_ms() + 3600_000), // 1 hour from now
+            execute_after_ms: Some(current_time_ms() + 3_600_000), // 1 hour from now
             ..make_task("delayed")
         };
 

@@ -118,7 +118,7 @@ fn landlock_abi_version() -> u32 {
 
         let fd = unsafe {
             libc::syscall(
-                LANDLOCK_SYSCALL,
+                LANDLOCK_SYSCALL as libc::c_long,
                 0, // LANDLOCK_CMD_CREATE_RULESET = 0
                 &ruleset_attr as *const _,
                 std::mem::size_of::<landlock_ruleset_attr>(),
@@ -145,7 +145,7 @@ fn landlock_abi_version() -> u32 {
                 };
                 let fd3 = unsafe {
                     libc::syscall(
-                        LANDLOCK_SYSCALL,
+                        LANDLOCK_SYSCALL as libc::c_long,
                         0,
                         &ruleset_attr_v3 as *const _,
                         std::mem::size_of::<landlock_ruleset_attr>(),
@@ -160,7 +160,7 @@ fn landlock_abi_version() -> u32 {
                 let attr_v1_size = std::mem::size_of::<u64>() * 1; // only handled_access_fs
                 let fd1 = unsafe {
                     libc::syscall(
-                        LANDLOCK_SYSCALL,
+                        LANDLOCK_SYSCALL as libc::c_long,
                         0,
                         &access::default_handled() as *const u64 as *const std::ffi::c_void,
                         attr_v1_size,

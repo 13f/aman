@@ -270,7 +270,6 @@ impl ScriptHookRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::*;
     use kernel::hook::Hook;
     use async_trait::async_trait;
 

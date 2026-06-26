@@ -157,7 +157,7 @@ fn landlock_abi_version() -> u32 {
                     return abi::V3;
                 }
                 // Try V1
-                let attr_v1_size = std::mem::size_of::<u64>() * 1; // only handled_access_fs
+                let attr_v1_size = std::mem::size_of::<u64>(); // only handled_access_fs
                 let fd1 = unsafe {
                     libc::syscall(
                         LANDLOCK_SYSCALL as libc::c_long,

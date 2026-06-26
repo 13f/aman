@@ -220,12 +220,10 @@ fn extract_trace_metric_values(
                             0.0
                         }
                     }
-                    TrendableMetric::ToolAvgLatency => {
-                        if !m.tool_latencies.is_empty() {
-                            m.tool_latency_sum_ms / m.tool_latencies.len() as f64
-                        } else {
-                            0.0
-                        }
+                    TrendableMetric::ToolAvgLatency
+                        if !m.tool_latencies.is_empty() =>
+                    {
+                        m.tool_latency_sum_ms / m.tool_latencies.len() as f64
                     }
                     _ => 0.0,
                 };
@@ -255,12 +253,10 @@ fn extract_session_metric_values(
                 let bucket_start_ms = buckets.get(i).map(|b| b.bucket_start_ms).unwrap_or(0);
                 let value = match metric {
                     TrendableMetric::SessionCount => m.session_count as f64,
-                    TrendableMetric::SessionAvgMessages => {
-                        if m.session_count > 0 {
-                            m.total_messages as f64 / m.session_count as f64
-                        } else {
-                            0.0
-                        }
+                    TrendableMetric::SessionAvgMessages
+                        if m.session_count > 0 =>
+                    {
+                        m.total_messages as f64 / m.session_count as f64
                     }
                     _ => 0.0,
                 };

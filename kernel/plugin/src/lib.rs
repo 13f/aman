@@ -2049,6 +2049,7 @@ mod tests {
         load_calls: Arc<Mutex<usize>>,
         unload_calls: Arc<Mutex<usize>>,
         unload_delay_ms: u64,
+        hang_on_unload: bool,
         unload_log: Arc<Mutex<Vec<String>>>,
         dependency_notifications: Arc<Mutex<Vec<String>>>,
     }
@@ -2075,7 +2076,9 @@ mod tests {
         }
 
         async fn on_unload(&mut self) -> AmanResult<()> {
-            if self.unload_delay_ms > 0 {
+            if self.hang_on_unload {
+                futures::future::pending::<()>().await;
+            } else if self.unload_delay_ms > 0 {
                 Delay::new(Duration::from_millis(self.unload_delay_ms)).await;
             }
             let mut calls = self.unload_calls.lock().expect("unload_calls lock");
@@ -2216,6 +2219,7 @@ mod tests {
             deps,
             skill_name,
             0,
+            false,
             Arc::new(Mutex::new(Vec::new())),
             Arc::new(Mutex::new(Vec::new())),
         )
@@ -2227,6 +2231,7 @@ mod tests {
         deps: Vec<PluginDependency>,
         skill_name: Option<&str>,
         unload_delay_ms: u64,
+        hang_on_unload: bool,
         unload_log: Arc<Mutex<Vec<String>>>,
         dependency_notifications: Arc<Mutex<Vec<String>>>,
     ) -> PluginCandidate {
@@ -2270,6 +2275,7 @@ mod tests {
                 load_calls: Arc::new(Mutex::new(0)),
                 unload_calls: Arc::new(Mutex::new(0)),
                 unload_delay_ms,
+                hang_on_unload,
                 unload_log,
                 dependency_notifications,
             }),
@@ -2307,6 +2313,7 @@ mod tests {
             load_calls: Arc::new(Mutex::new(0)),
             unload_calls: Arc::new(Mutex::new(0)),
             unload_delay_ms: 0,
+            hang_on_unload: false,
             unload_log: Arc::new(Mutex::new(Vec::new())),
             dependency_notifications: Arc::new(Mutex::new(Vec::new())),
         });
@@ -2673,6 +2680,7 @@ config_schema:
                         vec![],
                         Some("a-skill"),
                         0,
+                        false,
                         unload_log.clone(),
                         Arc::new(Mutex::new(Vec::new())),
                     ),
@@ -2685,6 +2693,7 @@ config_schema:
                         }],
                         Some("b-skill"),
                         0,
+                        false,
                         unload_log.clone(),
                         dep_notes.clone(),
                     ),
@@ -2725,6 +2734,7 @@ config_schema:
                         vec![],
                         Some("slow-skill"),
                         50,
+                        true, // hang_on_unload — guarantees timeout in test
                         unload_log.clone(),
                         Arc::new(Mutex::new(Vec::new())),
                     )])
@@ -2805,7 +2815,8 @@ config_schema:
                     Version::new(1, 0, 0),
                     vec![],
                     Some("slow-skill"),
-                    50,
+                    0,
+                    true, // hang_on_unload — deterministic timeout
                     Arc::new(Mutex::new(Vec::new())),
                     Arc::new(Mutex::new(Vec::new())),
                 )])
@@ -3057,6 +3068,7 @@ while True:
                     vec![],
                     Some("demo-skill"),
                     0,
+                    false,
                     unload_log.clone(),
                     Arc::new(Mutex::new(Vec::new())),
                 )])

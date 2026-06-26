@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod anthropic;
+pub mod cognitive_react;
 pub mod delegate_task;
 pub mod embed;
 pub(crate) mod net_proxy;

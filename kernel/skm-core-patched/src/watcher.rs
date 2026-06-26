@@ -82,7 +82,7 @@ impl WatchEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{AccessKind, AccessMode};
+    use notify::event::AccessKind;
 
     fn make_event(kind: EventKind, path: &str) -> notify::Event {
         notify::Event {

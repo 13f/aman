@@ -218,6 +218,7 @@ mod tests {
 
     // Dummy step type for tests
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct TestStep {
         index: usize,
     }

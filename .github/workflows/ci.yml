@@ -26,6 +26,7 @@ jobs:
             libssl-dev \
             libdbus-1-dev \
             libayatana-appindicator3-dev \
+            libasound2-dev \
             protobuf-compiler
       - name: Setup Node.js
         uses: actions/setup-node@v4

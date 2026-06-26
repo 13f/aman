@@ -21,6 +21,7 @@ use std::sync::LazyLock;
 
 use crate::provider::{LlmChatRequest, LlmProvider, LlmResponse, ResponseFormat, StreamEvent};
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
+use crate::shared::{self, SseParser};
 
 const DEFAULT_MODEL: &str = "gpt-4o";
 const DEFAULT_API_BASE: &str = "https://api.openai.com/v1";
@@ -77,63 +78,6 @@ impl LlmOpenaiProvider {
                         "description": td.description,
                         "parameters": td.parameters,
                     }
-                })
-            })
-            .collect()
-    }
-
-    /// Convert accumulated OpenAI tool call deltas into ParsedToolCall vec.
-    fn parse_tool_calls(
-        tool_call_acc: HashMap<usize, Value>,
-    ) -> Vec<ParsedToolCall> {
-        tool_call_acc
-            .into_values()
-            .filter_map(|tc| {
-                let id = tc.get("id")?.as_str()?.to_owned();
-                let name = tc.get("function")?.get("name")?.as_str()?.to_owned();
-                // Accept arguments as either a JSON string (OpenAI spec) or a
-                // pre-parsed JSON object (some non-OpenAI providers / local models).
-                let args = match tc.get("function").and_then(|f| f.get("arguments")) {
-                    Some(v) if v.is_string() => {
-                        let s = v.as_str().unwrap_or("");
-                        if s.is_empty() {
-                            tracing::warn!(
-                                tool_name = %name,
-                                "tool call with empty arguments string — defaulting to empty object"
-                            );
-                        }
-                        serde_json::from_str(s)
-                            .unwrap_or_else(|e| {
-                                tracing::warn!(
-                                    tool_name = %name,
-                                    error = %e,
-                                    "failed to parse tool call arguments JSON — defaulting to empty object"
-                                );
-                                Value::Object(Default::default())
-                            })
-                    }
-                    Some(v) if v.is_object() => {
-                        // Pre-parsed JSON object — use directly.
-                        if v.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                            tracing::warn!(
-                                tool_name = %name,
-                                "tool call with empty arguments object"
-                            );
-                        }
-                        v.clone()
-                    }
-                    _ => {
-                        tracing::warn!(
-                            tool_name = %name,
-                            "tool call with missing or unexpected arguments type — defaulting to empty object"
-                        );
-                        Value::Object(Default::default())
-                    }
-                };
-                Some(ParsedToolCall {
-                    id,
-                    tool_name: name,
-                    args,
                 })
             })
             .collect()
@@ -199,10 +143,7 @@ impl LlmOpenaiProvider {
             }
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(STREAM_TIMEOUT_SECS))
-            .build()
-            .map_err(|e| format!("build client: {e}"))?;
+        let client = shared::build_streaming_client(STREAM_TIMEOUT_SECS)?;
 
         let url = format!("{}/chat/completions", self.base_url);
 
@@ -220,35 +161,24 @@ impl LlmOpenaiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("LLM API streaming error HTTP {status}: {body}"));
+            return Err(shared::api_error(status, &body));
         }
 
         let mut stream = response.bytes_stream();
         let mut full_content = String::new();
         let mut reasoning_content = String::new();
-        let mut buffer = String::new();
         let mut finish_reason = "stop".to_owned();
         let mut tool_call_acc: HashMap<usize, Value> = HashMap::new();
+        let mut sse_parser = SseParser::new();
 
         cb(StreamEvent::Start);
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| format!("stream error: {e}"))?;
-            let chunk_str = String::from_utf8_lossy(&chunk);
-            buffer.push_str(&chunk_str);
+            sse_parser.feed(&chunk);
 
-            while let Some(newline_pos) = buffer.find('\n') {
-                let line = buffer[..newline_pos].to_string();
-                buffer = buffer[newline_pos + 1..].to_string();
-
-                if !line.starts_with("data: ") {
-                    continue;
-                }
-                let data = line[6..].trim();
-                if data == "[DONE]" {
-                    break;
-                }
-                let Ok(sse) = serde_json::from_str::<Value>(data) else {
+            for data in sse_parser.drain_lines() {
+                let Ok(sse) = serde_json::from_str::<Value>(&data) else {
                     continue;
                 };
                 let Some(choices) = sse.get("choices").and_then(|c| c.as_array()) else {
@@ -295,26 +225,21 @@ impl LlmOpenaiProvider {
                             {
                                 entry["function"]["name"] = json!(name);
                             }
-                            // Arguments may arrive as a string fragment (OpenAI
-                                // spec) or as a pre-parsed JSON object (some local
-                                // models / non-OpenAI providers). String fragments
-                                // are concatenated across deltas; a JSON object
-                                // overwrites any prior value (last-write-wins).
-                                if let Some(args) = tc
-                                    .get("function")
-                                    .and_then(|f| f.get("arguments"))
-                                {
-                                    if let Some(fragment) = args.as_str() {
-                                        let current = entry["function"]["arguments"]
-                                            .as_str()
-                                            .unwrap_or("")
-                                            .to_owned();
-                                        entry["function"]["arguments"] =
-                                            json!(current + fragment);
-                                    } else if args.is_object() {
-                                        entry["function"]["arguments"] = args.clone();
-                                    }
+                            if let Some(args) = tc
+                                .get("function")
+                                .and_then(|f| f.get("arguments"))
+                            {
+                                if let Some(fragment) = args.as_str() {
+                                    let current = entry["function"]["arguments"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .to_owned();
+                                    entry["function"]["arguments"] =
+                                        json!(current + fragment);
+                                } else if args.is_object() {
+                                    entry["function"]["arguments"] = args.clone();
                                 }
+                            }
                         }
                     }
                 }
@@ -331,7 +256,14 @@ impl LlmOpenaiProvider {
             }
         }
 
-        let tool_calls = Self::parse_tool_calls(tool_call_acc);
+        let tool_calls: Vec<ParsedToolCall> = tool_call_acc
+            .into_values()
+            .filter_map(|tc| {
+                let id = tc.get("id")?.as_str()?.to_owned();
+                let name = tc.get("function")?.get("name")?.as_str()?.to_owned();
+                Some(shared::parse_tool_call(id, name, tc.get("function")?))
+            })
+            .collect();
 
         Ok(LlmResponse {
             content: full_content,
@@ -378,11 +310,7 @@ impl LlmOpenaiProvider {
         }
 
         let url = format!("{}/chat/completions", self.base_url);
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
-            .no_proxy()
-            .build()
-            .map_err(|e| format!("build client: {e}"))?;
+        let client = shared::build_http_client(REQUEST_TIMEOUT_SECS)?;
 
         let response = client
             .post(&url)
@@ -398,7 +326,7 @@ impl LlmOpenaiProvider {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            return Err(format!("LLM API error HTTP {status}: {text}"));
+            return Err(shared::api_error(status, &text));
         }
 
         let response_text = response.text().await.map_err(|e| format!("read: {e}"))?;
@@ -436,49 +364,11 @@ impl LlmOpenaiProvider {
                     .filter_map(|tc| {
                         let id = tc.get("id")?.as_str()?.to_owned();
                         let name = tc["function"]["name"].as_str()?.to_owned();
-                        // Accept arguments as either a JSON string (OpenAI spec) or a
-                        // pre-parsed JSON object (some non-OpenAI providers / local models).
-                        let args = match tc["function"].get("arguments") {
-                            Some(v) if v.is_string() => {
-                                let s = v.as_str().unwrap_or("");
-                                if s.is_empty() {
-                                    tracing::warn!(
-                                        tool_name = %name,
-                                        "non-streaming tool call with empty arguments string — defaulting to empty object"
-                                    );
-                                }
-                                serde_json::from_str(s)
-                                    .unwrap_or_else(|e| {
-                                        tracing::warn!(
-                                            tool_name = %name,
-                                            error = %e,
-                                            "non-streaming: failed to parse tool call arguments JSON — defaulting to empty object"
-                                        );
-                                        Value::Object(Default::default())
-                                    })
-                            }
-                            Some(v) if v.is_object() => {
-                                if v.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                                    tracing::warn!(
-                                        tool_name = %name,
-                                        "non-streaming tool call with empty arguments object"
-                                    );
-                                }
-                                v.clone()
-                            }
-                            _ => {
-                                tracing::warn!(
-                                    tool_name = %name,
-                                    "non-streaming tool call with missing or unexpected arguments type — defaulting to empty object"
-                                );
-                                Value::Object(Default::default())
-                            }
-                        };
-                        Some(ParsedToolCall {
+                        Some(shared::parse_tool_call(
                             id,
-                            tool_name: name,
-                            args,
-                        })
+                            name,
+                            &tc["function"],
+                        ))
                     })
                     .collect()
             })

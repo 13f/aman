@@ -32,6 +32,7 @@ pub mod openai;
 pub mod prompt;
 pub mod provider;
 pub mod react;
+pub mod shared;
 pub mod simple;
 pub mod subagent;
 

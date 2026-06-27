@@ -2838,6 +2838,7 @@ dependencies = [
  "soul",
  "source",
  "study",
+ "team",
  "tempfile",
  "test-utils",
  "tokio",

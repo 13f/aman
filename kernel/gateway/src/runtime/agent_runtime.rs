@@ -13,6 +13,7 @@ use kernel::react::ParsedToolCall;
 use memory::{MemoryConfig, YantrikdbProvider};
 use memory_store::MemoryStorePlugin;
 use info_hub::InfoHubPlugin;
+use team::TeamPlugin;
 use messaging_core;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
@@ -417,6 +418,56 @@ impl AgentRuntimeBuilder {
             plugin: Box::new(info_hub_plugin),
         };
 
+        // ── Team plugin (kanban scheduler) ──────────────────────────────────
+        // Looks for team.yaml in the default teams directory.
+        // If none exists, the plugin starts with no config and contributes no routes.
+        let teams_dir = std::path::PathBuf::from(
+            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
+        )
+        .join(".aman")
+        .join("teams");
+        // Use the first team.yaml found, if any
+        let team_config_path = std::fs::read_dir(&teams_dir)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .find(|e| e.path().join("team.yaml").exists())
+            .map(|e| e.path().join("team.yaml"));
+        let team_plugin = if let Some(ref config_path) = team_config_path {
+            tracing::info!(
+                path = %config_path.display(),
+                "found team config — enabling TeamPlugin"
+            );
+            TeamPlugin::new(config_path.clone())
+        } else {
+            tracing::debug!(
+                "no team.yaml found in {} — TeamPlugin disabled",
+                teams_dir.display()
+            );
+            TeamPlugin::new(teams_dir.join("team.yaml"))
+        };
+        let team_candidate = PluginCandidate::InProcess {
+            manifest: PluginManifest {
+                name: "team".to_owned(),
+                version: team_plugin.version().clone(),
+                depends_on: vec![],
+                lifecycle: PluginLifecycleConfig { auto_start: team_config_path.is_some() },
+                exports: PluginExports::default(),
+                config_schema: None,
+                isolation: Some(PluginIsolationMode::InProcess),
+                subprocess: None,
+                wasm_path: None,
+                capabilities: vec![],
+                ui: None,
+                runtime: None,
+                min_version: None,
+                entrypoint: None,
+                security: load_security(include_str!("../../../plugins/team/plugin.yaml")),
+            },
+            plugin: Box::new(team_plugin),
+        };
+
         // ── Hook registry (created early so SkillEventDispatcher can drive it) ─
         let hook_registry = Arc::new(hook::HookRegistry::new());
 
@@ -548,7 +599,7 @@ impl AgentRuntimeBuilder {
         llm_chat_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Plugin loading ──────────────────────────────────────────
-        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
+        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate, team_candidate];
         all_candidates.extend(self.extra_plugins);
 
         // Initialize the approval cache — generates ~/.aman/.security-key

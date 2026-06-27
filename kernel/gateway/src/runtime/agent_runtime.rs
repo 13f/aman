@@ -281,6 +281,12 @@ impl AgentRuntimeBuilder {
             tracing::warn!(error = %e, "failed to register agent_send_message tool");
         }
         agent_send_message_tool.set_bus(Arc::clone(&bus));
+        let agent_list_tool = Arc::new(AgentListTool {
+            agent_registry: OnceLock::new(),
+        });
+        if let Err(e) = tools.register(Arc::clone(&agent_list_tool) as Arc<dyn Tool>) {
+            tracing::warn!(error = %e, "failed to register agent_list tool");
+        }
         // Register delegate_task tool for anonymous sub-agent spawning.
         // Returns the Arc so we can wire GatewaySubAgentSpawner after
         // the agent harness is created.
@@ -553,6 +559,7 @@ impl AgentRuntimeBuilder {
         // Wire agent_registry into SkillViewTool for per-agent skill filtering.
         skill_view_tool.set_agent_registry(Arc::clone(&agent_registry));
         llm_chat_tool.set_agent_registry(Arc::clone(&agent_registry));
+        agent_list_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Plugin loading ──────────────────────────────────────────
         let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
@@ -2593,6 +2600,119 @@ impl Tool for AgentSendMessageTool {
             "message_id": message_id_str,
             "to_agent": to_agent
         }))
+    }
+}
+
+// ── AgentListTool ─────────────────────────────────────────────────────────
+
+/// Built-in tool that lets an LLM discover available agents and their
+/// capabilities before sending messages or delegating work.
+struct AgentListTool {
+    agent_registry: OnceLock<Arc<super::AgentRegistry>>,
+}
+
+impl AgentListTool {
+    fn set_agent_registry(&self, registry: Arc<super::AgentRegistry>) {
+        let _ = self.agent_registry.set(registry);
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for AgentListTool {
+    fn name(&self) -> &str {
+        "agent_list"
+    }
+
+    fn mode(&self) -> ToolMode {
+        ToolMode::Local
+    }
+
+    fn execution_model(&self) -> ExecutionModel {
+        ExecutionModel::Independent
+    }
+
+    fn description(&self) -> &str {
+        "List all available agents with their capabilities, status, and queue information. Use this before calling agent_send_message to discover which agents exist and what they can do."
+    }
+
+    fn parameters(&self) -> &JsonSchema {
+        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "capability_filter": {
+                        "type": "string",
+                        "description": "Optional: only return agents that have this capability tag (e.g. \"review\", \"code\")"
+                    }
+                }
+            }))
+        });
+        &PARAMS
+    }
+
+    fn returns(&self) -> &JsonSchema {
+        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agents": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "agent_id": {"type": "string"},
+                                "display_name": {"type": "string"},
+                                "status": {"type": "string"},
+                                "capabilities": {"type": "array", "items": {"type": "string"}},
+                                "queue_length": {"type": "integer"},
+                                "queue_max_size": {"type": "integer"}
+                            }
+                        }
+                    }
+                }
+            }))
+        });
+        &RETURNS
+    }
+
+    async fn execute(&self, params: serde_json::Value, _ctx: ToolContext) -> kernel::AmanResult<serde_json::Value> {
+        let registry = self.agent_registry.get().ok_or_else(|| {
+            kernel::Error::ConfigInvalid {
+                message: "AgentListTool: agent registry not wired".to_owned(),
+            }
+        })?;
+
+        let cap_filter: Option<String> = params
+            .get("capability_filter")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase());
+
+        let agents = registry.list().await;
+        let result: Vec<serde_json::Value> = agents
+            .iter()
+            .filter(|a| {
+                if let Some(ref filter) = cap_filter {
+                    a.descriptor
+                        .capabilities
+                        .iter()
+                        .any(|c| c.to_lowercase().contains(filter))
+                } else {
+                    true
+                }
+            })
+            .map(|a| {
+                serde_json::json!({
+                    "agent_id": a.descriptor.agent_id,
+                    "display_name": a.descriptor.display_name,
+                    "status": a.status,
+                    "capabilities": a.descriptor.capabilities,
+                    "queue_length": 0,  // queue_length is per WorkSystem, not snapshot here
+                    "queue_max_size": a.descriptor.queue_max_size,
+                })
+            })
+            .collect();
+
+        Ok(serde_json::json!({"agents": result}))
     }
 }
 

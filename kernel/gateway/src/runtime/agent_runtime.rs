@@ -1853,7 +1853,6 @@ impl AgentRuntimeBuilder {
         // ── Subscribe agent:message handler for agent-to-agent routing (M7) ──
         struct AgentMessageHandler {
             agent_harness: Arc<super::agent_harness::AgentHarness>,
-            soul_runtime: Option<SoulRuntime>,
             self_bridge: super::self_bridge::SelfBridge,
             bus: Arc<dyn EventBus>,
             a2a_base: PathBuf,
@@ -1925,9 +1924,12 @@ impl AgentRuntimeBuilder {
                 }
 
                 // Build system prompt with agent identity + conversation context
-                let soul_raw = self.soul_runtime.as_ref()
-                    .map(|sr| sr.current_soul().raw.clone())
-                    .unwrap_or_default();
+                // Load SOUL.md from the agent's data directory.
+                // Avoid self_bridge warnings when SoulRuntime returns empty content.
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+                let soul_path = PathBuf::from(&home)
+                    .join(".aman").join("agents").join(&msg.to_agent).join("SOUL.md");
+                let soul_raw = std::fs::read_to_string(&soul_path).unwrap_or_default();
                 let cwd = std::env::current_dir().ok().and_then(|p| p.to_str().map(String::from));
                 let base_prompt = pollster::block_on(
                     self.agent_harness.build_full_system_prompt(
@@ -2052,7 +2054,6 @@ impl AgentRuntimeBuilder {
             },
             Box::new(AgentMessageHandler {
                 agent_harness: Arc::clone(&agent_harness),
-                soul_runtime: soul_runtime.clone(),
                 self_bridge: self_bridge.clone(),
                 bus: Arc::clone(&bus),
                 a2a_base,

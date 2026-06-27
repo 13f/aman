@@ -324,8 +324,6 @@ impl CognitiveEngine for LlmCognitiveEngine {
             })?;
 
         // ── Output validation (security harness §8.2) ────────────────
-        // Validate LLM response for secret leaks, system prompt disclosure,
-        // and tool injection before converting to decisions.
         let content = {
             let mut validator = kernel::validator::OutputValidator::new();
             match validator.validate(&response.content, kernel::types::TrustLevel::Untrusted) {
@@ -351,6 +349,23 @@ impl CognitiveEngine for LlmCognitiveEngine {
                         message: format!("output validation error: {message}"),
                     });
                 }
+            }
+        };
+
+        // ── Content filter (PII + harmful content) ──────────────────
+        let content_filter = kernel::content_filter::ContentFilter::new();
+        let content = match content_filter.filter(&content) {
+            kernel::content_filter::FilterDecision::Pass => content,
+            kernel::content_filter::FilterDecision::Flag { .. } => content,
+            kernel::content_filter::FilterDecision::Block { reason, .. } => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    reason,
+                    "LLM response blocked by content filter (cognitive engine)"
+                );
+                "[I apologize, but I cannot provide that response \
+                 as it may contain sensitive data.]"
+                    .to_owned()
             }
         };
 

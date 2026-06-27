@@ -286,17 +286,23 @@ impl AgentHarness {
         }
         let reply = kernel::redactor::redact_sensitive_data(&cleaned).into_owned();
 
-        // ── Publish reply_ready event so downstream (desktop, channels) can react ──
-        let _ = self.bus.publish(Event::new(
-            SOURCE_AGENT_HARNESS,
-            EventType::Custom(EVT_AGENT_REPLY_READY.to_owned()),
-            serde_json::json!({
-                "agent_id": agent_id,
-                "session_id": session_id,
-                "reply": reply,
-                "background": background,
-            }),
-        )).await;
+        // A2A sessions are handled by AgentMessageHandler — don't persist
+        // to agent session stores or publish user-visible events.
+        let is_a2a = session_id.starts_with("a2a:");
+
+        if !is_a2a {
+            // ── Publish reply_ready event so downstream (desktop, channels) can react ──
+            let _ = self.bus.publish(Event::new(
+                SOURCE_AGENT_HARNESS,
+                EventType::Custom(EVT_AGENT_REPLY_READY.to_owned()),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "reply": reply,
+                    "background": background,
+                }),
+            )).await;
+        }
 
         // ── Persist history + cleanup ──
         self.session_history.clear(session_id);
@@ -307,12 +313,14 @@ impl AgentHarness {
         let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
         let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
         let _ = self.registry.set_activity(agent_id, "").await;
-        // Publish agent:idle to the agent's local bus
-        self.try_publish_to_agent_bus(agent_id, Event::new(
-            SOURCE_AGENT_HARNESS,
-            EventType::Custom(EVT_AGENT_IDLE.to_owned()),
-            serde_json::json!({ "agent_id": agent_id, "session_id": session_id }),
-        )).await;
+        if !is_a2a {
+            // Publish agent:idle to the agent's local bus
+            self.try_publish_to_agent_bus(agent_id, Event::new(
+                SOURCE_AGENT_HARNESS,
+                EventType::Custom(EVT_AGENT_IDLE.to_owned()),
+                serde_json::json!({ "agent_id": agent_id, "session_id": session_id }),
+            )).await;
+        }
         Ok(reply)
     }
 

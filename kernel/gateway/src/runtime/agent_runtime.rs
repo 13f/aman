@@ -22,7 +22,7 @@ use tool::ToolSecurityConfig;
 use kernel::skill::Skill;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
-use kernel::types::{BackpressureLevel, ToolMode};
+use kernel::types::{BackpressureLevel, ExecutionModel, ToolMode};
 use kernel::{AmanResult, Error};
 use persistence::{DeadLetterQueue, InMemoryDeadLetterQueue, PersistentBus, WalSync, WriteAheadLog};
 use kernel::plugin::Plugin;
@@ -274,6 +274,13 @@ impl AgentRuntimeBuilder {
         if let Err(e) = tools.register(Arc::clone(&llm_chat_tool) as Arc<dyn Tool>) {
             tracing::warn!(error = %e, "failed to register llm_chat tool");
         }
+        let agent_send_message_tool = Arc::new(AgentSendMessageTool {
+            bus: OnceLock::new(),
+        });
+        if let Err(e) = tools.register(Arc::clone(&agent_send_message_tool) as Arc<dyn Tool>) {
+            tracing::warn!(error = %e, "failed to register agent_send_message tool");
+        }
+        agent_send_message_tool.set_bus(Arc::clone(&bus));
         // Register delegate_task tool for anonymous sub-agent spawning.
         // Returns the Arc so we can wire GatewaySubAgentSpawner after
         // the agent harness is created.
@@ -2438,6 +2445,153 @@ impl Tool for LlmChatTool {
         Ok(serde_json::json!({
             "content": resp.content,
             "finish_reason": resp.finish_reason,
+        }))
+    }
+}
+
+// ── AgentSendMessageTool ──────────────────────────────────────────────────
+
+/// Built-in tool that lets an LLM send a structured message to another agent.
+///
+/// Published as `EventType::AgentMessage` on the global bus, where
+/// [`AgentMessageHandler`] picks it up and routes it to the target agent's
+/// ReAct loop.
+struct AgentSendMessageTool {
+    bus: OnceLock<Arc<dyn EventBus>>,
+}
+
+impl AgentSendMessageTool {
+    fn set_bus(&self, bus: Arc<dyn EventBus>) {
+        let _ = self.bus.set(bus);
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for AgentSendMessageTool {
+    fn name(&self) -> &str {
+        "agent_send_message"
+    }
+
+    fn mode(&self) -> ToolMode {
+        ToolMode::Local
+    }
+
+    fn execution_model(&self) -> ExecutionModel {
+        ExecutionModel::SideEffect
+    }
+
+    fn description(&self) -> &str {
+        "Send a structured message to another agent. Use this when you need help from or want to delegate work to another agent. The target agent will receive your message and respond autonomously."
+    }
+
+    fn parameters(&self) -> &JsonSchema {
+        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "required": ["from_agent", "to_agent", "content_type", "text"],
+                "properties": {
+                    "from_agent": {
+                        "type": "string",
+                        "description": "Your agent_id (the sender)"
+                    },
+                    "to_agent": {
+                        "type": "string",
+                        "description": "The agent_id of the target agent (e.g. \"reviewer\", \"coder\")"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "enum": ["task_delegation", "result_sharing", "status_query"],
+                        "description": "Type of message: task_delegation (ask agent to do work), result_sharing (share completed work), status_query (ask about progress)"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The message body — describe what you need, include relevant context, file paths, etc."
+                    },
+                    "reply_to": {
+                        "type": "string",
+                        "description": "Optional: message_id of a previous message this is replying to"
+                    }
+                }
+            }))
+        });
+        &PARAMS
+    }
+
+    fn returns(&self) -> &JsonSchema {
+        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "message_id": {"type": "string"},
+                    "to_agent": {"type": "string"}
+                }
+            }))
+        });
+        &RETURNS
+    }
+
+    async fn execute(&self, params: serde_json::Value, _ctx: ToolContext) -> kernel::AmanResult<serde_json::Value> {
+        let from_agent = params["from_agent"]
+            .as_str()
+            .ok_or_else(|| kernel::Error::ConfigInvalid {
+                message: "missing from_agent".to_owned(),
+            })?
+            .to_owned();
+        let to_agent = params["to_agent"]
+            .as_str()
+            .ok_or_else(|| kernel::Error::ConfigInvalid {
+                message: "missing to_agent".to_owned(),
+            })?
+            .to_owned();
+        let content_type_str = params["content_type"].as_str().unwrap_or("task_delegation");
+        let content_type = match content_type_str {
+            "task_delegation" => kernel::agent::AgentMessageType::TaskDelegation,
+            "result_sharing" => kernel::agent::AgentMessageType::ResultSharing,
+            "status_query" => kernel::agent::AgentMessageType::StatusQuery,
+            other => {
+                return Err(kernel::Error::ConfigInvalid {
+                    message: format!("unknown content_type: {other}"),
+                });
+            }
+        };
+        let text = params["text"].as_str().unwrap_or("").to_owned();
+        let reply_to = params["reply_to"]
+            .as_str()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        let msg = kernel::agent::AgentMessage {
+            message_id: uuid::Uuid::new_v4(),
+            from_agent,
+            to_agent: to_agent.clone(),
+            content_type,
+            payload: serde_json::json!({"text": text}),
+            reply_to,
+        };
+        let message_id_str = msg.message_id.to_string();
+        let event_payload = serde_json::to_value(&msg).map_err(|e| {
+            kernel::Error::ConfigInvalid {
+                message: format!("serialize AgentMessage: {e}"),
+            }
+        })?;
+
+        let bus = self.bus.get().ok_or_else(|| kernel::Error::ConfigInvalid {
+            message: "AgentSendMessageTool: event bus not wired".to_owned(),
+        })?;
+        bus.publish(kernel::event::Event::new(
+            "tool:agent_send_message",
+            kernel::event::EventType::AgentMessage,
+            event_payload,
+        ))
+        .await
+        .map_err(|e| kernel::Error::ConfigInvalid {
+            message: format!("publish AgentMessage: {e}"),
+        })?;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "message_id": message_id_str,
+            "to_agent": to_agent
         }))
     }
 }

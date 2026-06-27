@@ -737,6 +737,19 @@ def dispatch(project_key: str, work: dict, stage_id: str) -> Optional[Dict[str, 
                 "agent_id": target_id,
             },
         })
+
+        # Notify the target agent via structured agent message
+        work_title = work.get("title", "untitled")
+        work_desc = work.get("description", "")
+        send_request("aman.send_agent_message", {
+            "from_agent": "team-scheduler",
+            "to_agent": target_id,
+            "content_type": "task_delegation",
+            "payload": {
+                "text": f"[Work Item Assigned] #{work.get('id', '?')}: {work_title}\n\n{work_desc}\n\nStage: {stage_id}\nProject: {project_key}"
+            },
+        })
+
         return target
 
     return None

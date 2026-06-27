@@ -6,6 +6,9 @@ This project stands on the shoulders of many open-source projects and individual
 * [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 * [OpenClaw](https://github.com/openclaw/openclaw)
 
+## Agents Visualizer
+[age-of-agents](https://github.com/agentsmill/age-of-agents)
+
 ## Data
 * [ai-daily-digest](https://github.com/vigorX777/ai-daily-digest) -> [ai-digest](https://github.com/hodlagent/ai-digest)
 

@@ -203,7 +203,7 @@ Responsible for high-throughput, agent-internal events:
 
 ### Routing Logic
 
-When an agent-internal event is published, the publisher (ToolExecutor, LlmReActEngine, AgentHarness) resolves the target bus:
+When an agent-internal event is published, the publisher (ToolExecutor, LlmCognitiveEngine, AgentHarness) resolves the target bus:
 
 ```rust
 // Publish to local bus if available, fall back to global bus
@@ -243,8 +243,8 @@ agents:
 | `AgentRegistry::load_from_config()` | `kernel/gateway/src/runtime/agent_registry.rs:95-110` | Creates Local Bus for each agent at startup |
 | `AgentEntryConfig::event_bus` | `kernel/config/src/lib.rs:422` | Per-agent `PartialEventBusConfig` |
 | `ToolExecutor::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:114` | Tool events → Local Bus |
-| `LlmReActEngine::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:298` | LLM events → Local Bus |
-| `AgentHarness::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:487` | Stream/harness events → Local Bus |
+| `LlmCognitiveEngine::publish_to_agent_bus()` | `cognitive/llm/src/lib.rs` | LLM events → Local Bus |
+| `AgentHarness::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs` | Stream/harness events → Local Bus |
 
 ---
 
@@ -352,8 +352,12 @@ The following EventType variants are defined in the enum but currently have no p
 - `SkillLoaded` — defined, not published (skill loading uses `SkillReloaded` instead)
 - `SecretRotated` — defined, not yet published (reserved for future secret rotation)
 - `InjectionDetected` — defined, not yet published (reserved for future prompt injection detection)
-- `AgentMessage` — defined (M7 multi-agent coordination), not yet published (producers pending)
-- `EvaluationCompleted` — defined (eval system), not yet published (producers pending)
+
+### Recently Activated Event Types
+
+These were previously reserved but are now published in production:
+- `AgentMessage` — **now published** by the a2a (agent-to-agent) session system. See [Agent-to-Agent Events](#agent-to-agent-a2a-events) below.
+- `EvaluationCompleted` — **now published** by `EvalHook` after each successful evaluation run. See [Evaluation Events](#evaluation-events) below.
 
 ---
 
@@ -384,16 +388,17 @@ Published by the gateway daemon at lifecycle boundaries: before starting the run
 
 > `session:timeout` is reserved in the milestone plan but deferred — production currently lacks a timeout polling loop for workflow instances.
 
-### LLM & Agent Events (Published by AgentHarness)
+### LLM & Agent Events (Published by AgentHarness / LlmCognitiveEngine)
 
 | Literal Value | Bus | Purpose | Payload | Producer |
 |---|---|---|---|---|
-| `llm:call_started` | **Local** | LLM provider call initiated | `{"agent_id":"...","session_id":"...","turn":N}` | `LlmReActEngine` |
-| `llm:call_ended` | **Local** | LLM provider call completed | `{"agent_id":"...","session_id":"...","turn":N,"success":bool}` | `LlmReActEngine` |
-| `llm_error` | **Local** | LLM call error | `{"agent_id":"...","session_id":"...","turn":N,"error":"..."}` | `LlmReActEngine` / `AgentHarness` |
-| `agent:token_used` | **Local** | Token usage estimate | `{"agent_id":"...","session_id":"...","turn":N,"tokens":N}` | `LlmReActEngine` |
+| `llm:call_started` | **Local** | LLM provider call initiated | `{"agent_id":"...","session_id":"...","turn":N}` | `LlmCognitiveEngine` |
+| `llm:call_ended` | **Local** | LLM provider call completed | `{"agent_id":"...","session_id":"...","turn":N,"success":bool}` | `LlmCognitiveEngine` |
+| `llm_error` | **Local** | LLM call error | `{"agent_id":"...","session_id":"...","turn":N,"error":"..."}` | `LlmCognitiveEngine` / `AgentHarness` |
+| `agent:token_used` | **Local** | Token usage estimate | `{"agent_id":"...","session_id":"...","turn":N,"tokens":N}` | `LlmCognitiveEngine` |
 | `agent:reply_ready` | **Global** | Agent response ready | `{"agent_id":"...","session_id":"...","reply":"...","turns_processed":N}` | `AgentHarness` |
 | `agent:reply_interrupted` | **Global** | User stopped generation | `{"agent_id":"...","session_id":"..."}` | `AgentHarness` |
+| `agent:idle` | **Global** | Agent returned to idle state (post-processing cleanup) | `{"agent_id":"...","session_id":"..."}` | `AgentHarness` |
 | `agent:reply_stream_start` | **Local** | Streaming response started | `{"agent_id":"...","session_id":"...","turn":N,"extra":{}}` | `AgentHarness` (stream forwarder) |
 | `agent:reply_chunk` | **Local** | Streaming response delta | `{"agent_id":"...","session_id":"...","turn":N,"extra":{"delta":"..."}}` | `AgentHarness` (stream forwarder) |
 | `agent:reply_stream_done` | **Local** | Streaming response complete | `{"agent_id":"...","session_id":"...","turn":N,"extra":{"finish_reason":"..."}}` | `AgentHarness` (stream forwarder) |
@@ -406,10 +411,13 @@ Published by the gateway daemon at lifecycle boundaries: before starting the run
 | `agent:tool_results_fed_back` | **Local** | Tool results fed to LLM | `{"agent_id":"...","session_id":"...","turn":N,"result_count":N}` | `AgentHarness` |
 | `agent:history_compressed` | **Local** | Context window trimmed | `{"agent_id":"...","session_id":"...","turn":N,"messages_removed":N,"tokens_saved":N,"strategy":"truncate\|summarize"}` | `AgentHarness` |
 | `agent:config_warning` | **Global** | Budget config not set | `{"agent_id":"...","session_id":"...","config_key":"...","message":"..."}` | `AgentHarness` |
+| `eval:evaluation_completed` | **Global** | Evaluation run completed | `{"target_kind":"...","target_id":"...","rule_id":"...","strategy":"...","aggregate_score":...,"threshold":...,"outcome":"...","dimensions":{...},"hook_point":"..."}` | `EvalHook` |
 
-Published by AgentHarness to track the ReAct loop lifecycle. `llm:call_started`/`llm:call_ended` bracket each LLM provider invocation. Streaming events (`agent:reply_stream_*`) deliver real-time response content. Tool events (`tool:dispatched/completed/failed`) track tool execution within the loop.
+Published by `AgentHarness` and `LlmCognitiveEngine` to track the ReAct loop lifecycle. `llm:call_started`/`llm:call_ended` bracket each LLM provider invocation. Streaming events (`agent:reply_stream_*`) deliver real-time response content. Tool events (`tool:dispatched/completed/failed`) track tool execution within the loop. `agent:idle` is published after every message processing completion (or error) to signal the Idle System.
 
-**Bus routing**: Agent-internal events (LLM calls, tool execution, streaming, token tracking, ReAct internals) are published to the **Local Bus** so that one agent's internal events don't pollute another agent's event stream or trigger global backpressure. Agent lifecycle events (`agent:reply_ready`, `agent:reply_interrupted`, `agent:config_warning`) remain on the **Global Bus** for frontend visibility. When no Local Bus is configured (single-agent mode), all events fall back to the Global Bus.
+> **Historical note**: The producer was previously `LlmReActEngine` (deleted in the ReAct migration). All LLM lifecycle events are now produced by `LlmCognitiveEngine` (`cognitive/llm/`), which encapsulates the full ReAct loop internally. The `AgentHarness` layer publishes higher-level agent events and delegates processing to `LlmCognitiveEngine::process()` via `process_message_v2()`.
+
+**Bus routing**: Agent-internal events (LLM calls, tool execution, streaming, token tracking, ReAct internals) are published to the **Local Bus** so that one agent's internal events don't pollute another agent's event stream or trigger global backpressure. Agent lifecycle events (`agent:reply_ready`, `agent:reply_interrupted`, `agent:idle`, `agent:config_warning`) remain on the **Global Bus** for frontend visibility. When no Local Bus is configured (single-agent mode), all events fall back to the Global Bus.
 
 ### Message Dispatch Events
 
@@ -449,6 +457,63 @@ Published by the capability registry during startup and plugin hot-load/unload. 
 | `soul_changed` | SOUL file modified on disk | `{"name":"...", "boundaries":[...], "preferences":{...}}` | `kernel/soul/src/lib.rs:384` |
 
 Published by the SOUL hot-reload manager when the SOUL.md file changes. Contains the new soul name, boundaries, and preferences. This event is also passed through to the EventStore for audit purposes.
+
+### Evaluation Events
+
+| Literal Value | Purpose | Payload | File:Line |
+|---|---|---|---|
+| `eval:evaluation_completed` | Eval system completed an evaluation | `{"target_kind":"...","target_id":"...","rule_id":"...","strategy":"...","aggregate_score":...,"threshold":...,"outcome":"...","dimensions":{...},"hook_point":"..."}` | `kernel/eval/src/hook.rs:103-126` |
+
+Published by `EvalHook` (implements the `Hook` trait) when triggered at registered `HookPoint`s (e.g., `SkillExecuted`, `AgentReady`). Each evaluation result produces one `EvaluationCompleted` event. Results are also stored in-memory in the `EvalEngine` and accessible via the `eval_get_results` tool.
+
+**Configuration:** The `EvalHook` accepts an optional `EvalEventPublisher` callback — wired to the event bus at gateway startup via `EvalHook::with_event_publisher()`. Without a publisher, evaluation results are stored in-memory only (no events emitted).
+
+### Agent-to-Agent (A2A) Events
+
+The a2a system enables independent agent-to-agent communication sessions. When Agent A sends a message to Agent B, `AgentMessage` events flow through the Global Bus:
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `agent:message` | **Global** | Cross-agent message | `{"message_id":"...","from_agent":"...","to_agent":"...","session_id":"...","text":"...","reply_to":"..."}` | `AgentHarness::send_agent_message()` → `AgentMessageHandler` |
+
+**Key behaviors:**
+- A2A sessions use a separate session namespace (`a2a:{from_agent}:{to_agent}:{uuid}`) and don't trigger `session:started`/`session:closed` events
+- Self-published `AgentMessage` events are ignored to prevent echo loops
+- `agent:reply_ready` and `agent:idle` events are suppressed for a2a sessions (frontend-only concepts)
+- Replies carry a `reply_to` field referencing the original message UUID for chain tracking
+- SOUL.md is loaded directly from the agent data directory (`~/.aman/agents/{agent}/SOUL.md`)
+- `AgentMessageHandler` subscribes to `agent:message` on the Global Bus and spawns `process_message_v2()` for the target agent
+
+**Agent messaging tools:**
+
+| Tool | Purpose |
+|------|---------|
+| `agent_list` | Discover available agents and their capabilities |
+| `agent_send_message` | Send a message to another agent, optionally wait for reply |
+| `aman.get_agents` (JSON-RPC) | List all agents with capabilities |
+| `aman.send_agent_message` (JSON-RPC) | Send agent-to-agent message via JSON-RPC |
+
+**Architecture:**
+```
+Agent A (LLM calls agent_send_message)
+  → AgentHarness::send_agent_message()
+    → publish EventType::AgentMessage on Global Bus
+      → AgentMessageHandler::handle()
+        → resolve target agent
+        → spawn process_message_v2() on target agent's harness
+          → Agent B executes ReAct loop
+            → reply published as AgentMessage with reply_to
+              → Agent A receives reply
+```
+
+### Agent ReAct Internal Events
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `agent:idle` | **Global** | Agent returned to idle state after processing | `{"agent_id":"...","session_id":"..."}` | `AgentHarness` (post-LLM cleanup) |
+| `agent:reply_stream_error` | **Local** | Streaming reply error | `{"agent_id":"...","session_id":"...","error":"..."}` | `AgentHarness` |
+
+Published after message processing completes (or errors), signaling the Idle System that the agent is ready for idle depth tracking.
 
 ### Workflow Control Events
 

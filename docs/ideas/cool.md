@@ -31,11 +31,12 @@ Phase 4 ─── 排版与视觉深度
 
 Phase 5 ─── Agent 可视化 ─── 最具区分度
   ├── 13. Agent 脑图 / Cognitive State Map   🟡 L1 done
-  └── 14. Agent 角色卡片 (3D tilt + 姿态动画)  ✅ 2026-06-25
+  ├── 14. Agent 角色卡片 (3D tilt + 姿态动画)  ✅ 2026-06-25
+  └── 15. AoA Realm 像素殖民地视图           ✅ 2026-06-27
 
 Phase 6 ─── 感官扩展
-  ├── 15. 微妙的音效系统
-  └── 16. 多主题系统 (Terminal / Paper / Midnight)
+  ├── 16. 微妙的音效系统
+  └── 17. 多主题系统 (Terminal / Paper / Midnight)
 ```
 
 ---
@@ -279,6 +280,8 @@ L3 (近): 模态框 .modal-content      blur: 56px,   opacity: 0.78
 ---
 
 ### 9. 多 Agent "圆桌" 视图
+
+> **演化**：此概念已发展为 Phase 5 的 [AoA Realm 像素殖民地视图](#15-aoa-realm-像素殖民地视图--2026-06-27)（PixiJS 游戏引擎实现），提供了比环形排列更丰富的可视化方案。
 
 **效果**：多个 agent 环形排列，像虚拟董事会会议。
 
@@ -577,9 +580,54 @@ IdleRing.svelte              ← 现有组件，新增：
 
 ---
 
+### 15. AoA Realm 像素殖民地视图 ✅ 2026-06-27
+
+**已实现**。基于开源项目 [age-of-agents](https://github.com/agentsmill/age-of-agents) 的 PixiJS 像素艺术殖民地引擎，为 aman 提供可切换的多 Agent 可视化方式。
+
+**实现细节**：
+
+- **技术栈**：PixiJS 8 + `pixi-viewport` + `@pixi/tilemap` + Zustand
+- **配置开关**：`ui.agents_viewer = "grid"`（默认 3D tilt 卡片）| `"aoa-realm"`（像素殖民地）
+- **22 个游戏引擎文件**：`GameView`、unit 系统、A* 寻路、autotile、精灵管理
+- **双主题**：Fantasy（中世纪像素风）和 Sci-Fi（科幻殖民地风），各有独立 building/hero/terrain tile 资源
+- **8 种 Claude 模型 → Hero 映射**：Fable、Sonnet、Haiku、Opus、Oracle、Golem、Familiar、Local，每种模型对应一个独特的像素精灵角色
+- **建筑映射**：Agent 的 capabilities 自动映射为殖民地建筑（code→forge、review→library、fix→tower 等）
+- **Agent 数据桥接**：`HeroSnapshot` 接口将 Aman `AgentInstance` 数据（id、status、capabilities、model）映射到游戏引擎的 hero 实体
+- **React 兼容层**：`react-stub.ts` 提供 React peer dependency stub，确保 Svelte 环境下正常编译
+
+**文件结构**：
+
+```
+desktop/src/lib/aoa/
+├── game/          (22 files) PixiJS GameView, units, pathfinding, sprites, terrain
+├── theme/         (8 files)  fantasy/scifi themes, building/terrain defs
+├── shared/        (4 files)  HeroSnapshot, GameEvent, building/providers mappings
+├── store.ts                   Zustand store adapted for Aman agent data
+├── api.ts                     Aman → game engine data bridge
+└── i18n.ts                    1063 行国际化
+```
+
+**Assets**：1.7MB 精灵图、tileset、建筑纹理（`public/assets/fantasy/` + `public/assets/scifi/`）
+
+**前端组件**：
+- `AoaRealm.svelte` — 140 行，PixiJS Application 容器，初始化 GameView 并桥接 Aman agent 数据
+- `AgentGridView.svelte` — 361 行，从原 Home.svelte 提取的 3D tilt 卡片视图（grid 模式）
+- `agent-viewer-types.ts` — `AgentsViewer` 类型定义 + 共享逻辑
+
+**设计理念**：不同的可视化模式适合不同的心理模型：
+- **Grid 卡片**：信息密度高，适合快速扫描 agent 状态和切换
+- **AoA Realm**：游戏化、情感化，适合长时间观察多 agent 协作 —— 看到 agent 角色在殖民地中走动、建造建筑，比 status dot 更直观地感知系统活跃度
+
+**后续方向**：
+- Agent 实际活动（tool 调用、消息收发）映射为角色动画和行为
+- 建筑建造/升级动画对应 agent 学习或能力获取
+- Agent 间通信可视化为角色之间的路径连线
+
+---
+
 ## Phase 6：感官扩展
 
-### 15. 微妙的音效系统
+### 16. 微妙的音效系统
 
 | 事件 | 音效 | 描述 |
 |---|---|---|
@@ -593,7 +641,7 @@ IdleRing.svelte              ← 现有组件，新增：
 
 ---
 
-### 16. 多主题系统
+### 17. 多主题系统
 
 在当前的 Dark/Light 之上：
 
@@ -646,6 +694,7 @@ IdleRing.svelte              ← 现有组件，新增：
 - **Spotify** — 动态背景色提取
 - **vs code** — 命令面板 + 语法高亮
 - **Game UI** (Destiny, Cyberpunk 2077) — HUD 元素、扫描线、科幻感
+- **[Age of Agents](https://github.com/agentsmill/age-of-agents)** — PixiJS 像素艺术 Agent 殖民地可视化引擎，AoA Realm 的 upstream
 
 ---
 
@@ -660,3 +709,4 @@ IdleRing.svelte              ← 现有组件，新增：
 - 2026-06-25：Phase 5 第 13 条（Agent 脑图 / Cognitive State Map）方案讨论定稿。确定两级设计：Level 1 迷你认知指示器（IdleRing 替换为 CognitiveRing 单环），Level 2 完整脑图（Chat 侧面板 split view，SVG 纵向流图）。数据管道推荐 Gateway 端 `CognitiveStateTracker` + `agent:cognitive_state` SSE 事件。第 6 条"思考空间"与本条 Level 2 统一考虑。修正 roadmap 中 Phase 4/5 编号。
 - 2026-06-25：Phase 5 第 13 条 **Level 1 实现**。新增 `CognitiveRing.svelte`（SVG 单环 4 段分色 ReAct 相位指示 + 步骤文字），`cognitive-state.ts`（相位状态机 + 步骤文本推导）。`Home.svelte` agent 卡片 .state-visual 替换为 CognitiveRing，`ActivityStateWidget.svelte` 按 isActive 切换 IdleRing/CognitiveRing。纯 desktop 端事件推断，无 gateway 改动。Level 2 暂缓。
 - 2026-06-26：Phase 1 第 3 条（深度感 / 视差玻璃层）实现。三层玻璃深度系统：`--glass-blur-far: 6px`（卡片/输入框，薄玻璃）→ `--glass-blur-mid: 28px`（侧边栏/主区域）→ `--glass-blur-near: 56px`（模态框/toast，厚玻璃）。新增 `--bg-modal` token 区分卡片和模态框着色强度。调整 5 个背景 token 不透明度以匹配深度层级（card 0.58→0.36, input 0.28→0.20, bg 0.38→0.32）。6 个文件修改，0 个硬编码 blur 残留。模糊差值增大（6→28→56，原来提案是 8→28→44），深度对比更明显。与 aurora 背景的交互验证通过：极光色彩流动 + 差异模糊 = 视差深度感。
+- 2026-06-27：Phase 5 第 15 条（AoA Realm 像素殖民地视图）实现。基于 [age-of-agents](https://github.com/agentsmill/age-of-agents) 开源引擎，PixiJS 8 像素艺术 Agent 殖民地可视化。`ui.agents_viewer = "grid" | "aoa-realm"` 配置切换。22 个游戏引擎文件（GameView、unit 系统、A* 寻路、autotile、精灵管理），双主题（Fantasy/Sci-Fi），8 种 Claude 模型映射为独特像素精灵角色。Agent capabilities 映射为殖民地建筑。`AoaRealm.svelte`（140 行）桥接 Aman agent 数据到游戏引擎。原 Home.svelte 卡片视图提取为 `AgentGridView.svelte`（361 行）。183 文件变更，1.7MB 美术资源。

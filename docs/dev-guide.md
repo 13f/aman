@@ -28,7 +28,7 @@ aman 提供三层扩展机制，从简单到复杂依次为：
 
 ## 2. 内置工具参考
 
-aman 默认注册了 12 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
+aman 默认注册了 14 个内置工具，Agent 通过 ReAct 循环调用它们来完成任务。
 
 ### 2.1 文件操作工具
 
@@ -262,6 +262,87 @@ gateway/runtime/subagent_spawner.rs  GatewaySubAgentSpawner（实现）
 gateway/runtime/agent_harness.rs     spawn_anonymous()（底层原语）
 ```
 
+#### agent_list — 发现可用 Agent
+
+```json
+{}
+```
+
+返回 aman 中所有已注册 Agent 的列表，包含 id、display_name、status、capabilities 等信息。LLM 在需要协作或委派任务前先用此工具了解有哪些 Agent 可用。
+
+**返回值：**
+
+```json
+{
+  "agents": [
+    {
+      "id": "coder",
+      "display_name": "Coder",
+      "status": "idle",
+      "capabilities": ["code", "refactor", "fix"],
+      "model": "claude-sonnet-4-6"
+    }
+  ]
+}
+```
+
+#### agent_send_message — 向其他 Agent 发送消息
+
+```json
+{
+  "to_agent": "coder",
+  "text": "请审查 src/auth.rs 中的安全性",
+  "wait_for_reply": true
+}
+```
+
+向指定 Agent 发送消息，触发目标 Agent 的 ReAct 循环。底层通过 `AgentMessage` 事件在全局事件总线上路由。
+
+**参数：**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `to_agent` | **是** | 目标 Agent 的 id |
+| `text` | **是** | 消息内容（纯文本，不含 JSON） |
+| `wait_for_reply` | 否 | `true` = 等待目标 Agent 完成后返回其回复（同步），`false` = 发送后立即返回（异步，默认） |
+
+**返回值（`wait_for_reply: true`）：**
+
+```json
+{
+  "message_id": "019e4e62-bbdc-7b43-b83c-556c51ff2580",
+  "from_agent": "analyst",
+  "to_agent": "coder",
+  "reply": "审查完成：发现 2 个问题…",
+  "session_id": "a2a:analyst:coder:019e4e63-cced-8c54-c94d"
+}
+```
+
+**返回值（`wait_for_reply: false`）：**
+
+```json
+{
+  "message_id": "019e4e62-bbdc-7b43-b83c-556c51ff2580",
+  "status": "sent"
+}
+```
+
+**A2A 会话特性：**
+- A2A 会话使用独立命名空间（`a2a:{from}:{to}:{uuid}`），不影响前端会话列表
+- 回显保护：Agent 不会收到自己发送的消息
+- `agent:reply_ready` 和 `agent:idle` 事件在 A2A 会话中被抑制
+- SOUL.md 从目标 Agent 的数据目录直接加载
+- 回复通过 `reply_to` 字段形成消息链
+
+**架构层级：**
+
+```
+tool/agent_list.rs              AgentListTool（内置工具）
+tool/agent_send_message.rs      AgentSendMessageTool（内置工具）
+gateway/runtime/agent_harness.rs  send_agent_message()（发布 AgentMessage 事件）
+gateway/runtime/agent_runtime.rs  AgentMessageHandler（订阅并路由到目标 Agent）
+```
+
 ### 2.7 工具注册与扩展
 
 工具注册点在 `kernel/tool/src/lib.rs`：
@@ -390,12 +471,15 @@ Hook 脚本从 stdin 接收一个 JSON 对象，格式如下：
 | `gateway:starting` | 网关启动中 |
 | `gateway:stopping` | 网关关闭中 |
 | `agent:registered` | Agent 注册完成 |
+| `AgentMessage` | Agent 间消息传递（A2A） |
+| `EvaluationCompleted` | 评估系统完成评估（EvalHook 发布） |
 
 **Agent 本地事件** — 发布到各 Agent 的本地事件总线，放在 `~/.aman/agents/<id>/hooks/` 下的 Agent Hook 可接收：
 
 | 事件类型 | 触发时机 |
 |----------|----------|
 | `agent:busy` | Agent 开始处理 |
+| `agent:idle` | Agent 处理完毕回到空闲 |
 | `agent:reply_ready` | Agent 回复完成 |
 | `agent:reply_stream_start` | 流式回复开始 |
 | `agent:reply_stream_done` | 流式回复结束 |

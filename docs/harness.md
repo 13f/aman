@@ -63,7 +63,7 @@ Harness 本身不是一个独立的进程或组件——它是一套协调逻辑
 | 7 | **Memory 集成** | 长期记忆的存储、检索与注入到 Context | `MemoryStore` +  keyword-based 检索 + `[remember:]` 自动写入 | ✅ 已集成到 ReAct 循环 | — |
 | 8 | **流式输出** | LLM 回复的分块发布，页面逐步渲染 | `AgentHarness` ReAct 循环中 `agent:reply_stream_start/chunk/done` 事件发布 | ✅ 已实现 | — |
 | 9 | **中断与恢复** | 用户 /stop 终止当前处理，恢复前一个 IDLE 状态 | `InterruptFlag` + `active_interrupts` 注册表 + `STOP_GENERATION` 事件订阅 | ✅ 已集成到 AgentHarness | — |
-| 10 | **多 Agent 协调** | Agent 之间的事件传递、任务委托、结果共享 | config.yaml agents 列表 + `~/.aman/agents/*/` 数据隔离 | ⚠️ 设计与目录结构完成 | 无运行时 Agent 间事件路由；无 Agent 间消息传递协议 |
+| 10 | **多 Agent 协调** | Agent 之间的事件传递、任务委托、结果共享 | config.yaml agents 列表 + `~/.aman/agents/*/` 数据隔离 + `AgentMessage` 事件 + A2A 会话系统 | ✅ 已实现 | 参见下方 [A2A 会话系统](#a2a-会话系统) |
 | 11 | **Token 预算与 Context Window 管理** | 跟踪每次 LLM 调用的 Token 消耗，在超限前做历史裁剪/摘要 | `TokenBudget` + `HistoryCompressor`（truncate/summarize） | ✅ 已实现 | — |
 | 12 | **Agent 可观测性** | Agent 级别的指标：LLM 延迟、Token 消耗、Tool 调用频率、错误率 | Event 层面 TraceID + `llm:call_started/ended` + `tool:invoke/completed/failed` | ⚠️ 部分实现 | 缺少 Agent 级聚合指标（一个会话内的所有 LLM 调用和 Tool 调用需关联到同一个 Agent） |
 
@@ -753,6 +753,8 @@ impl TokenBudget {
 
 > 目标：Agent 之间可以互相传递事件和任务。
 > 验收：Agent A 可以发布事件触发 Agent B 的处理。
+>
+> **实现**: `EventType::AgentMessage` + `AgentMessageHandler` + A2A 独立会话系统 + `agent_list` / `agent_send_message` 内置工具
 
 #### ✅ T7.1 — Agent 间事件路由
 
@@ -764,7 +766,7 @@ impl TokenBudget {
 **子任务：**
 1. ✅ 新增 `EventType::AgentMessage` variant（→ `"agent:message"`）
 2. ✅ `AgentMessageHandler` 订阅 `agent:message` 事件，按 `to_agent` 路由到目标 Agent
-3. ✅ `AgentHarness::publish_agent_message()` 方法发布事件给其他 Agent
+3. ✅ `AgentHarness::send_agent_message()` 方法发布事件给其他 Agent
 
 #### ✅ T7.2 — Agent 间消息协议
 
@@ -784,6 +786,36 @@ agent:message {
 }
 ```
 
+#### A2A 会话系统
+
+在 T7.1/T7.2 的基础上，实现了完整的独立 Agent-to-Agent 会话系统：
+
+- **独立会话命名空间**：A2A 会话使用 `a2a:{from_agent}:{to_agent}:{uuid}` 格式，与前端用户会话隔离
+- **回显保护**：Agent 不会收到自己发布的 `AgentMessage` 事件
+- **事件抑制**：A2A 会话中不发布 `agent:reply_ready` 和 `agent:idle`（这两个事件面向前端，非 Agent 间协议）
+- **回复链追踪**：回复消息携带 `reply_to` 字段引用原始消息 UUID
+- **SOUL 直接加载**：从目标 Agent 的数据目录（`~/.aman/agents/{agent}/SOUL.md`）直接加载 SOUL，不依赖 SoulRuntime
+- **防无限回复循环**：仅对原始消息（`content_type = "task_delegation"`）自动回复，对回复消息不再次触发
+
+**相关工具：**
+- `agent_list` — LLM 可调用，列出所有可用 Agent 及其能力
+- `agent_send_message` — LLM 可调用，向其他 Agent 发送消息（可选同步等待回复）
+- `aman.get_agents` — JSON-RPC 端点，列出 Agent（含 capabilities 字段）
+- `aman.send_agent_message` — JSON-RPC 端点，发送 Agent 间消息
+
+**架构流程：**
+```
+Agent A (LLM calls agent_send_message)
+  → AgentHarness::send_agent_message()
+    → publish EventType::AgentMessage on Global Bus
+      → AgentMessageHandler::handle()
+        → resolve target agent
+        → spawn process_message_v2() on target harness
+          → Agent B executes full ReAct loop (LlmCognitiveEngine::process)
+            → reply published as AgentMessage with reply_to
+              → Agent A receives reply
+```
+
 ---
 
 ## 5. 实现要求
@@ -796,20 +828,58 @@ LLM Plugin（`kernel/plugins/llm-plugin/`）已被移除。AgentHarness 现在�
 - **阶段 A — 共存期**：AgentHarness 和 LLM Plugin 同时加载，共享事件总线
 - **阶段 B — 前端迁移**：Chat.svelte 迁移到 AgentHarness 事件，LLM Plugin 订阅禁用（rig-core tokio runtime 冲突）
 - **阶段 C — 移除 Plugin**：LLM Plugin 从 workspace 移除，`build_llm_config` 替换为 `get_llm_api_key_and_base_url`，`chat_validator_health` 端点删除
+- **阶段 D — 迁移到 LlmCognitiveEngine**：`AgentHarness::process_message_v2()` 委托给 `LlmCognitiveEngine::process()`，旧的 `LlmReActEngine` 已归档删除（669 行死代码移除）。ReAct 循环完全在 cognitive 层执行。
 
-### 5.1 符合 aman 设计理念
+### 5.1 Session 历史与会话恢复
+
+`AgentHarness` 提供会话历史的存取和压缩能力：
+
+```rust
+impl AgentHarness {
+    /// 获取会话的完整对话历史
+    pub fn get_session_history(&self, session_id: &str) -> Vec<ChatMessage>;
+
+    /// 检查 token 预算并在超限时压缩历史
+    /// 返回被移除的消息数（0 = 无需压缩）
+    pub fn compress_session_history(
+        &self,
+        session_id: &str,
+        model: &str,
+        max_history_tokens: usize,
+    ) -> usize;
+}
+```
+
+**工作会话恢复（断点续传）：**
+
+`resume_work_session()` 在恢复工作会话时自动执行 token 预算检查和历史压缩：
+
+```
+SessionStore::load_session_events(session_id)
+  → AgentHarness::restore_session_history(session_id, events)
+  → compress_session_history(session_id, model, max_history_tokens)
+    → 估算历史 token 数
+    → 超过阈值 → HistoryCompressor::compress_with_boundaries()
+      → 发布 agent:history_compressed 事件
+      → 返回 messages_removed
+```
+
+`max_history_tokens` 由 `CompressorConfig` 配置（`context_manager` crate），模型 context window 通过 `context_window_for_model()` 查询。
+
+### 5.2 符合 aman 设计理念
 
 - **万物皆事件**：AgentHarness 的所有关键操作（LLM 调用开始/结束、Tool 执行、循环迭代）都通过 Event Bus 发布事件，不引入新的执行模型
 - **响应即行为**：AgentHarness 本身是事件处理器——它响应 `MESSAGE_RECEIVED`、`RETRY_CMD`、`STOP_GENERATION` 等事件，不主动轮询
 - **通过 Event Bus 通信**：AgentHarness 不直接访问 LLM Provider 或 ToolRunner，而是通过已有的 ToolRunner（由 Pipeline 或直接调用调度）
 
-### 5.2 增量实现
+### 5.3 增量实现
 
 - 每一层都向后兼容：M1 只新增类型，不改现有逻辑
 - M2 完成后，现有的 LLM Plugin 逻辑可以逐步迁移到 AgentHarness
 - 迁移期间，LLM Plugin 和 AgentHarness 可以并存（通过 Dispatcher 路由配置决定谁处理 MESSAGE_RECEIVED）
+- **当前状态**：LLM Plugin 已完全移除，ReAct 循环已迁移到 `LlmCognitiveEngine`（cognitive 层）
 
-### 5.3 已有设施复用
+### 5.4 已有设施复用
 
 | 已有设施 | 在 Harness 中的用途 |
 |---------|-------------------|
@@ -824,7 +894,7 @@ LLM Plugin（`kernel/plugins/llm-plugin/`）已被移除。AgentHarness 现在�
 | State Store | Session 历史和 Memory 的持久化 |
 | Plugin System | Agent 的动态能力扩展 |
 
-### 5.4 设计约束
+### 5.5 设计约束
 
 | 约束 | 内容 |
 |------|------|
@@ -834,7 +904,7 @@ LLM Plugin（`kernel/plugins/llm-plugin/`）已被移除。AgentHarness 现在�
 | **可中断** | ReAct 循环的每次迭代可被中断，不影响其他 Agent 的会话 |
 | **可配置** | Agent 的行为（max_turns、tool_timeout、memory_enabled 等）通过 config.yaml 配置 |
 
-### 5.5 配置示例（扩展后）
+### 5.6 配置示例（扩展后）
 
 ```yaml
 agents:

@@ -475,3 +475,36 @@ Hook 配置在 `work.yaml` 中，Team 插件注册时自动注入 Team 专属 Ho
 - 工作流不需时间盒，看板调度器推送，Agent 24 小时在线执行
 - 安全围栏替代审批流程 — 只拦截真正危险的事
 - 保持 YAML+SQLite 极简内核，不引入外部依赖
+
+---
+
+## 十一、已实现的基础设施
+
+以下 aman 核心能力为 Team 插件提供了运行时基础：
+
+### A2A 会话系统（已实现）
+
+Agent-to-Agent 通信是 Team 的通信空间底层协议。A2A 系统已作为独立基础设施实现：
+
+- **AgentMessage 事件**（`EventType::AgentMessage`）— 通过全局事件总线路由 Agent 间消息
+- **独立 A2A 会话**（`a2a:{from}:{to}:{uuid}`）— 与前端用户会话隔离
+- **回复链追踪** — 通过 `reply_to` 字段形成消息链
+- **回显保护** — Agent 不会收到自己发布的消息
+- **SOUL 直接加载** — 从 `~/.aman/agents/{agent}/SOUL.md` 读取 Agent 人格
+
+### Agent 发现与消息工具
+
+LLM 可通过以下内置工具进行 Agent 间协作：
+
+| 工具 | 用途 |
+|------|------|
+| `agent_list` | 列出所有 Agent 及其 capabilities |
+| `agent_send_message` | 向其他 Agent 发送消息（支持同步/异步） |
+| `aman.get_agents` (JSON-RPC) | 外部查询 Agent 列表 |
+| `aman.send_agent_message` (JSON-RPC) | 外部发送 Agent 间消息 |
+
+### Team 插件状态
+
+Team 插件（`kernel/plugins/team/`）已作为可选内置插件注册到 gateway，提供多 Agent 看板调度器。通信空间 UI 为未来规划。
+
+参见：`docs/harness.md` M7 章节、`docs/events.md` Agent-to-Agent 事件、`docs/dev-guide.md` §2.6 工具参考。

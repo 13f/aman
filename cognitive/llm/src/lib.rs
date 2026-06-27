@@ -15,10 +15,13 @@
 //!     │
 //!     ├── Convert Observations → ChatMessages
 //!     ├── Build system prompt (PromptPipeline)
-//!     ├── Call LLM (with retry + backoff)
+//!     ├── ReAct loop:
+//!     │   ├── Token budget check + auto-continue (background)
+//!     │   ├── LLM call (retry, streaming via CognitiveListener)
 //!     │   ├── OutputValidator + ContentFilter
-//!     │   └── Publish events via event_sink
-//!     └── Convert ReActTurn → Decisions
+//!     │   └── If tool_calls: execute (parallel/serial, retry,
+//!     │       security, detach) → feed back → loop
+//!     └── Return Reply decision
 //! ```
 
 #![forbid(unsafe_code)]
@@ -47,7 +50,7 @@ use cognitive_engine::{
 use crate::openai::LlmOpenaiProvider;
 use crate::prompt::{DefaultPromptPipeline, PromptPipeline};
 use crate::provider::{LlmChatRequest, LlmProvider};
-use crate::react::{ChatMessage, ReActTurn, SoulSnapshot};
+use crate::react::{ChatMessage, SoulSnapshot};
 
 // ── LlmCognitiveEngine ─────────────────────────────────────────────────
 
@@ -410,45 +413,6 @@ impl LlmCognitiveEngine {
         results
     }
 
-    /// Convert a final ReActTurn into Decisions.
-    fn turn_to_decisions(
-        turn: ReActTurn,
-        session_id: &str,
-    ) -> Vec<Decision> {
-        match turn {
-            ReActTurn::Finished { content, .. } => {
-                vec![Decision::reply(
-                    Self::new_decision_id(),
-                    session_id,
-                    content,
-                )]
-            }
-            ReActTurn::ToolCalls { calls, .. } => {
-                let tool_requests: Vec<ToolCallRequest> = calls
-                    .into_iter()
-                    .map(|tc| ToolCallRequest {
-                        id: tc.id,
-                        tool_name: tc.tool_name,
-                        args: tc.args,
-                        detach: false,
-                    })
-                    .collect();
-                vec![Decision::call_tools(
-                    Self::new_decision_id(),
-                    session_id,
-                    tool_requests,
-                )]
-            }
-            ReActTurn::Error(e) => {
-                tracing::error!(%e, "ReAct error");
-                vec![Decision::reply(
-                    Self::new_decision_id(),
-                    session_id,
-                    format!("I encountered an error: {e}"),
-                )]
-            }
-        }
-    }
 }
 
 // ── Retry helpers (mirrors LlmReActEngine) ────────────────────────
@@ -687,7 +651,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
             let response = loop {
                 llm_attempt += 1;
                 let r = self.provider.chat_completion(request.clone(), stream_cb.clone()).await;
-                if !r.is_err() || llm_attempt >= max_retries
+                if r.is_ok() || llm_attempt >= max_retries
                     || !is_retryable_llm_error(r.as_ref().err())
                 { break r; }
                 let delay = (3_u64.pow(llm_attempt - 1)).min(120);

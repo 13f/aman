@@ -13,7 +13,7 @@ workspace = true
 tauri = { version = "2", default-features = false, features = ["macos-private-api", "devtools", "wry", "image-png"] }
 tauri-plugin-dialog = "2"
 window-vibrancy = "0.7"
-rfd = "0.16"
+rfd = { version = "0.16", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "sync", "time", "process", "net", "io-util"] }

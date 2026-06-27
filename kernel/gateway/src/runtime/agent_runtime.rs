@@ -6908,12 +6908,6 @@ mod agent_message_tests {
         }
     }
 
-    impl SharedCapturingHandler {
-        fn snapshot(&self) -> Vec<kernel::event::Event> {
-            self.0.events.lock().unwrap().clone()
-        }
-    }
-
     /// Verify the full agent message pipeline:
     /// AgentSendMessageTool::execute() → EventType::AgentMessage on bus →
     /// subscriber receives the event with correct fields.

@@ -1855,6 +1855,7 @@ impl AgentRuntimeBuilder {
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
             self_bridge: super::self_bridge::SelfBridge,
+            session_manager: Arc<super::session::SessionManager>,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for AgentMessageHandler {
@@ -1907,9 +1908,13 @@ impl AgentRuntimeBuilder {
                     msg.payload.get("text").and_then(|v| v.as_str()).unwrap_or("")
                 );
 
+                let session_id = self.session_manager
+                    .create_session("agent-message", &msg.to_agent, "persistent")
+                    .await
+                    .unwrap_or_else(|_| format!("agent:{}:{}", msg.from_agent, msg.message_id));
                 self.agent_harness.spawn_process_message(
                     msg.to_agent.clone(),
-                    format!("agent:{}:{}", msg.from_agent, msg.message_id),
+                    session_id,
                     text,
                     model,
                     soul_snapshot,
@@ -1933,6 +1938,7 @@ impl AgentRuntimeBuilder {
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
                 self_bridge: self_bridge.clone(),
+                session_manager: Arc::clone(&session_manager),
             }),
         ));
 

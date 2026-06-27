@@ -2645,6 +2645,8 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                             "status": a.status,
                             "system_state": a.system_state,
                             "activity": a.activity,
+                            "capabilities": a.descriptor.capabilities,
+                            "queue_max_size": a.descriptor.queue_max_size,
                         })
                     })
                     .collect();
@@ -6162,6 +6164,192 @@ fn get_llm_api_key_or_inline(
                 return inline.clone();
             }
     String::new()
+}
+
+// ---------------------------------------------------------------------------
+// Integration tests — agent message pipeline
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod agent_message_tests {
+    use super::*;
+    use event_bus::{EventBus, InMemoryBus, InMemoryBusConfig};
+    use kernel::tool::Tool;
+
+    /// Test helper: an EventHandler that records events into a Vec.
+    /// Uses the SharedHandler pattern from event_bus tests so the
+    /// inner Arc can be retained for assertions after subscribe.
+    struct CapturingHandler {
+        events: std::sync::Mutex<Vec<kernel::event::Event>>,
+    }
+
+    #[async_trait::async_trait]
+    impl event_bus::EventHandler for CapturingHandler {
+        async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    /// Wraps an Arc<CapturingHandler> so we can pass it to subscribe
+    /// while keeping a reference for assertions.
+    struct SharedCapturingHandler(Arc<CapturingHandler>);
+
+    #[async_trait::async_trait]
+    impl event_bus::EventHandler for SharedCapturingHandler {
+        async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+            self.0.handle(event).await
+        }
+    }
+
+    impl SharedCapturingHandler {
+        fn snapshot(&self) -> Vec<kernel::event::Event> {
+            self.0.events.lock().unwrap().clone()
+        }
+    }
+
+    /// Verify the full agent message pipeline:
+    /// AgentSendMessageTool::execute() → EventType::AgentMessage on bus →
+    /// subscriber receives the event with correct fields.
+    #[tokio::test]
+    async fn agent_send_message_tool_publishes_event() {
+        let bus: Arc<dyn EventBus> = Arc::new(InMemoryBus::new(InMemoryBusConfig::default()));
+
+        let tool = AgentSendMessageTool {
+            bus: OnceLock::new(),
+        };
+        tool.set_bus(Arc::clone(&bus));
+
+        let inner = Arc::new(CapturingHandler {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let handler = SharedCapturingHandler(Arc::clone(&inner));
+        let sub = bus
+            .subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![EventType::AgentMessage]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(handler),
+            )
+            .await
+            .expect("subscribe");
+
+        // Execute the tool
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "from_agent": "coder",
+                    "to_agent": "reviewer",
+                    "content_type": "task_delegation",
+                    "text": "Please review PR #42"
+                }),
+                ToolContext::default(),
+            )
+            .await
+            .expect("tool execute");
+
+        assert_eq!(result["ok"], true);
+        let message_id = result["message_id"].as_str().unwrap();
+        assert!(!message_id.is_empty());
+        assert_eq!(result["to_agent"], "reviewer");
+
+        // Verify the event arrived on the bus
+        let events = inner.events.lock().unwrap().clone();
+        assert_eq!(events.len(), 1, "expected 1 event, got {}", events.len());
+        let event = &events[0];
+        assert_eq!(event.event_type, EventType::AgentMessage);
+
+        // Parse the AgentMessage payload
+        let msg: kernel::agent::AgentMessage =
+            serde_json::from_value(event.payload.clone()).expect("deserialize AgentMessage");
+        assert_eq!(msg.from_agent, "coder");
+        assert_eq!(msg.to_agent, "reviewer");
+        assert_eq!(msg.content_type, kernel::agent::AgentMessageType::TaskDelegation);
+        assert_eq!(msg.payload["text"], "Please review PR #42");
+        assert_eq!(msg.message_id.to_string(), message_id);
+
+        // Cleanup
+        let _ = bus.unsubscribe(sub).await;
+    }
+
+    #[tokio::test]
+    async fn agent_send_message_supports_all_content_types() {
+        let bus: Arc<dyn EventBus> = Arc::new(InMemoryBus::new(InMemoryBusConfig::default()));
+        let tool = AgentSendMessageTool {
+            bus: OnceLock::new(),
+        };
+        tool.set_bus(Arc::clone(&bus));
+
+        for ct_str in ["task_delegation", "result_sharing", "status_query"] {
+            let result = tool
+                .execute(
+                    serde_json::json!({
+                        "from_agent": "a",
+                        "to_agent": "b",
+                        "content_type": ct_str,
+                        "text": "hello"
+                    }),
+                    ToolContext::default(),
+                )
+                .await
+                .unwrap_or_else(|e| panic!("execute {ct_str}: {e}"));
+            assert_eq!(result["ok"], true, "failed for {ct_str}");
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_send_message_supports_reply_to() {
+        let bus: Arc<dyn EventBus> = Arc::new(InMemoryBus::new(InMemoryBusConfig::default()));
+        let tool = AgentSendMessageTool {
+            bus: OnceLock::new(),
+        };
+        tool.set_bus(Arc::clone(&bus));
+
+        let reply_id = uuid::Uuid::new_v4();
+
+        let inner = Arc::new(CapturingHandler {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let handler = SharedCapturingHandler(Arc::clone(&inner));
+        let sub = bus
+            .subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![EventType::AgentMessage]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(handler),
+            )
+            .await
+            .expect("subscribe");
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "from_agent": "coder",
+                    "to_agent": "reviewer",
+                    "content_type": "result_sharing",
+                    "text": "Done with #42",
+                    "reply_to": reply_id.to_string()
+                }),
+                ToolContext::default(),
+            )
+            .await
+            .expect("execute");
+
+        assert_eq!(result["ok"], true);
+
+        let events = inner.events.lock().unwrap().clone();
+        assert_eq!(events.len(), 1);
+        let msg: kernel::agent::AgentMessage = serde_json::from_value(events[0].payload.clone()).unwrap();
+        assert_eq!(msg.reply_to, Some(reply_id));
+
+        let _ = bus.unsubscribe(sub).await;
+    }
 }
 
 

@@ -1967,10 +1967,36 @@ impl AgentRuntimeBuilder {
                 let model = agent.descriptor.model.clone();
                 let jsonl_path_clone = jsonl_path.clone();
 
+                // Only auto-reply to original messages (reply_to=None).
+                // Messages that already have reply_to set are replies
+                // themselves — the LLM must explicitly call agent_send_message
+                // to continue. This prevents infinite ping-pong loops.
+                let is_original = msg.reply_to.is_none();
+
                 tokio::spawn(async move {
                     let sid = format!("a2a:{}", session_id);
                     match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, false).await {
                         Ok(reply) => {
+                            if !is_original {
+                                // Message was a reply — process but don't auto-respond.
+                                // Write the reply to jsonl for record-keeping only.
+                                let ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis();
+                                let reply_entry = serde_json::json!({
+                                    "timestamp_ms": ts,
+                                    "from_agent": &to_agent,
+                                    "to_agent": &from_agent,
+                                    "content_type": "result_sharing",
+                                    "text": &reply,
+                                    "message_id": uuid::Uuid::new_v4().to_string(),
+                                    "reply_to": incoming_message_id.to_string(),
+                                });
+                                let _ = std::fs::OpenOptions::new().create(true).append(true).open(&jsonl_path_clone)
+                                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", serde_json::to_string(&reply_entry).unwrap_or_default()) });
+                                return;
+                            }
                             let reply_message_id = uuid::Uuid::new_v4();
                             // Write reply to jsonl
                             let ts = std::time::SystemTime::now()

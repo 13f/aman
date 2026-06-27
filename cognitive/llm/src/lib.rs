@@ -25,7 +25,6 @@
 #![forbid(unsafe_code)]
 
 pub mod anthropic;
-pub mod cognitive_react;
 pub mod delegate_task;
 pub mod local;
 pub mod embed;

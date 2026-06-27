@@ -347,7 +347,60 @@ impl LlmCognitiveEngine {
         all.extend(independent_results);
         all.extend(serial_results);
         all.sort_by_key(|(i, _)| *i);
-        all.into_iter().map(|(_, r)| r).collect()
+        let mut results: Vec<crate::react::ToolCallResult> = all.into_iter().map(|(_, r)| r).collect();
+
+        // ── Detach handling (block on background processes) ──────────
+        // Mirror of LlmReActEngine::execute_tools() lines 1108-1210
+        for result in &mut results {
+            let Some(pid) = result.pending_detach else { continue; };
+
+            // Subscribe to tool:completed events
+            let filter = event_bus::SubscriptionFilter {
+                event_types: Some(vec![kernel::event::EventType::Custom("tool:completed".into())]),
+                ..Default::default()
+            };
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            struct DetachWaiter(tokio::sync::mpsc::UnboundedSender<kernel::event::Event>);
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for DetachWaiter {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    let _ = self.0.send(event);
+                    Ok(())
+                }
+            }
+            let sub_result = bus.subscribe(filter, Box::new(DetachWaiter(tx))).await;
+
+            if let Ok(sub_id) = sub_result {
+                // Block until tool:completed with matching pid, or timeout
+                let deadline = tokio::time::Instant::now()
+                    + std::time::Duration::from_secs(timeout / 1000 + 30); // extra 30s for detach
+                loop {
+                    match tokio::time::timeout_at(deadline, rx.recv()).await {
+                        Ok(Some(event)) => {
+                            let event_pid = event.payload.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            if event_pid == pid {
+                                result.success = event.payload.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                                if let Some(output) = event.payload.get("output").and_then(|v| v.as_str()) {
+                                    result.output = output.to_owned();
+                                }
+                                result.duration_ms = event.payload.get("duration_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+                                result.pending_detach = None;
+                                break;
+                            }
+                        }
+                        _ => {
+                            // Timeout — mark as failed
+                            result.success = false;
+                            result.output = format!("detached process {pid} timed out");
+                            break;
+                        }
+                    }
+                }
+                let _ = bus.unsubscribe(sub_id).await;
+            }
+        }
+
+        results
     }
 
     /// Convert a final ReActTurn into Decisions.

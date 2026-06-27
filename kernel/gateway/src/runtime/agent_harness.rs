@@ -248,19 +248,50 @@ impl AgentHarness {
         };
         let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
         let result = engine.process(&ctx, obs).await;
-        // ── Cleanup on error: reset agent state so it doesn't stay stuck ──
+
+        // ── Error path: full state cleanup (matches old process_message) ──
         if result.is_err() {
             self.unregister_interrupt(session_id);
+            let _ = self.registry.set_active_session(agent_id, None).await;
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
             let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
-            let _ = self.registry.set_active_session(agent_id, None).await;
+            let _ = self.registry.set_activity(agent_id, "").await;
             self.session_history.clear(session_id);
         }
-        let reply = result.map_err(|e| Error::ConfigInvalid { message: format!("cognitive engine: {e}") })?
+
+        let raw_reply = result.map_err(|e| Error::ConfigInvalid { message: format!("cognitive engine: {e}") })?
             .iter().find_map(|d| match &d.kind { cognitive_engine::DecisionKind::Reply { text, is_final: true } => Some(text.clone()), _ => None }).unwrap_or_else(|| "[no reply]".into());
-        self.session_history.clear(session_id); self.session_history.extend(session_id, vec![ChatMessage::user(user_text), ChatMessage::assistant(&reply)]);
+
+        // ── Post-processing: [remember:] extraction + API key sanitization ──
+        let (cleaned, remembered) = process_remember_commands(&raw_reply);
+        for content in &remembered {
+            if let Some(provider) = self.registry.get_memory_provider(agent_id).await {
+                let _ = provider.store(agent_id, content, vec!["auto".to_owned()]);
+            }
+        }
+        let reply = kernel::redactor::redact_sensitive_data(&cleaned).into_owned();
+
+        // ── Publish reply_ready event so downstream (desktop, channels) can react ──
+        let _ = self.bus.publish(Event::new(
+            SOURCE_AGENT_HARNESS,
+            EventType::Custom("agent:reply_ready".to_owned()),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "reply": reply,
+                "background": background,
+            }),
+        )).await;
+
+        // ── Persist history + cleanup ──
+        self.session_history.clear(session_id);
+        self.session_history.extend(session_id, vec![ChatMessage::user(user_text), ChatMessage::assistant(&reply)]);
         self.unregister_interrupt(session_id);
         let _ = self.registry.set_active_session(agent_id, None).await;
+        // Reset state to Idle on success
+        let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+        let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+        let _ = self.registry.set_activity(agent_id, "").await;
         Ok(reply)
     }
 
@@ -425,12 +456,12 @@ impl AgentHarness {
                     error = %e, session_id = %session_id, agent_id = %agent_id,
                     "process_message failed"
                 );
-                // Ensure agent state is reset even if process_message_v2
-                // returned an error without cleaning up.
+                // Reset agent state on error so it doesn't stay stuck.
                 harness.unregister_interrupt(&session_id);
+                let _ = harness.registry.set_active_session(&agent_id, None).await;
                 let _ = harness.registry.set_status(&agent_id, AgentStatus::Idle).await;
                 let _ = harness.registry.set_system_state(&agent_id, AgentSystemState::Idle).await;
-                let _ = harness.registry.set_active_session(&agent_id, None).await;
+                let _ = harness.registry.set_activity(&agent_id, "").await;
                 harness.session_history.clear(&session_id);
             }
         })

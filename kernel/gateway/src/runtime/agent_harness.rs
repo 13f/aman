@@ -26,7 +26,9 @@ use tool::ToolSecurityConfig;
 
 use super::event_consts::{
     SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY,
-    EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_CONFIG_WARNING,
+    EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_IDLE,
+    EVT_AGENT_REPLY_READY, EVT_AGENT_REPLY_STREAM_ERROR,
+    EVT_AGENT_CONFIG_WARNING,
 };
 use super::AgentRegistry;
 
@@ -251,6 +253,17 @@ impl AgentHarness {
 
         // ── Error path: full state cleanup (matches old process_message) ──
         if result.is_err() {
+            let err_msg = result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+            // Publish error event so frontend knows something went wrong
+            let _ = self.bus.publish(Event::new(
+                SOURCE_AGENT_HARNESS,
+                EventType::Custom(EVT_AGENT_REPLY_STREAM_ERROR.to_owned()),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "error": err_msg,
+                }),
+            )).await;
             self.unregister_interrupt(session_id);
             let _ = self.registry.set_active_session(agent_id, None).await;
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
@@ -274,7 +287,7 @@ impl AgentHarness {
         // ── Publish reply_ready event so downstream (desktop, channels) can react ──
         let _ = self.bus.publish(Event::new(
             SOURCE_AGENT_HARNESS,
-            EventType::Custom("agent:reply_ready".to_owned()),
+            EventType::Custom(EVT_AGENT_REPLY_READY.to_owned()),
             serde_json::json!({
                 "agent_id": agent_id,
                 "session_id": session_id,
@@ -292,6 +305,12 @@ impl AgentHarness {
         let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
         let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
         let _ = self.registry.set_activity(agent_id, "").await;
+        // Publish agent:idle to the agent's local bus
+        self.try_publish_to_agent_bus(agent_id, Event::new(
+            SOURCE_AGENT_HARNESS,
+            EventType::Custom(EVT_AGENT_IDLE.to_owned()),
+            serde_json::json!({ "agent_id": agent_id, "session_id": session_id }),
+        )).await;
         Ok(reply)
     }
 

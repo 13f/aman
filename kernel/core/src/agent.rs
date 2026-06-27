@@ -41,6 +41,16 @@ pub struct AgentDescriptor {
     /// 配置中是否启用
     pub enabled: bool,
 
+    /// Skill/capability tags for work-item dispatch matching.
+    /// Only used by the Team scheduler plugin.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+
+    /// Maximum number of work items this agent can have queued.
+    /// The Team scheduler will not dispatch to agents at or above this limit.
+    #[serde(default = "default_queue_max_size")]
+    pub queue_max_size: usize,
+
     /// Model max context window in tokens (from `provider.models.\<model\>.max_context_tokens`).
     /// None = use hardcoded lookup in TokenBudget::new().
     pub max_context_tokens: Option<usize>,
@@ -48,6 +58,10 @@ pub struct AgentDescriptor {
     /// Model max output tokens per response.
     /// None = default to 4096.
     pub max_output_tokens: Option<usize>,
+}
+
+fn default_queue_max_size() -> usize {
+    5
 }
 
 /// 拟人系统状态 — 表示当前哪个拟人系统在掌控 agent。
@@ -128,6 +142,7 @@ impl AgentInstance {
 /// 这些事件由 AgentRegistry 和 AgentHarness 在关键操作点发布，
 /// 遵循 aman "万物皆事件"的设计公理。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum AgentEvent {
     Registered(AgentDescriptor),
     StatusChanged {

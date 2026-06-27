@@ -1142,9 +1142,20 @@ impl PluginLoader {
     pub fn collect_routes(&self) -> Vec<axum::Router<()>> {
         let mut routers = Vec::new();
         for loaded in self.loaded.values() {
-            if let LoadedPluginRuntime::Subprocess(bridge) = &loaded.runtime {
-                let router = bridge::build_subprocess_router(Arc::clone(bridge));
-                routers.push(router);
+            if loaded.state != PluginLifecycleState::Running {
+                continue;
+            }
+            match &loaded.runtime {
+                LoadedPluginRuntime::Subprocess(bridge) => {
+                    let router = bridge::build_subprocess_router(Arc::clone(bridge));
+                    routers.push(router);
+                }
+                LoadedPluginRuntime::InProcess(plugin) => {
+                    if let Some(router) = plugin.routes() {
+                        routers.push(router);
+                    }
+                }
+                _ => {}
             }
         }
         routers

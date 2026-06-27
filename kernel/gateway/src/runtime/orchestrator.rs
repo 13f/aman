@@ -227,6 +227,8 @@ impl Orchestrator {
             denied_tools: Vec::new(),
             allowed_skills: None,
             enabled: true,
+            capabilities: Vec::new(),
+            queue_max_size: 5,
             max_context_tokens: None,
             max_output_tokens: None,
         };

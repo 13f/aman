@@ -81,6 +81,11 @@ impl WorkSystem {
         self.engine.current_state().await
     }
 
+    /// Current number of items in the work queue.
+    pub async fn queue_length(&self) -> usize {
+        self.engine.snapshot().await.queue_len()
+    }
+
     pub async fn snapshot(&self) -> WorkContext {
         let inner = self.engine.snapshot().await;
         WorkContext {

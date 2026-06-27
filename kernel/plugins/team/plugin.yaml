@@ -1,0 +1,11 @@
+name: team
+version: "0.1.0"
+description: Multi-agent kanban scheduler — capability-based work-item dispatch with safety gates
+isolation: in_process
+lifecycle:
+  auto_start: true
+
+security:
+  requested_capabilities:
+    filesystem: true
+    events: true

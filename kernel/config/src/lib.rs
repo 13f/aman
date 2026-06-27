@@ -823,6 +823,16 @@ pub struct AgentEntryConfig {
     /// None = use defaults (max_queue_size: 1000).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_bus: Option<PartialEventBusConfig>,
+    /// Skill tags for team scheduler capability matching.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Max work queue depth; team scheduler won't dispatch beyond this.
+    #[serde(default = "default_queue_max_size")]
+    pub queue_max_size: usize,
+}
+
+fn default_queue_max_size() -> usize {
+    5
 }
 
 const fn default_enabled() -> bool {
@@ -1903,6 +1913,8 @@ runtime:
                 tools: None,
                 skills: None,
                 event_bus: None,
+                capabilities: Vec::new(),
+                queue_max_size: 5,
             },
         );
 
@@ -1929,6 +1941,8 @@ runtime:
                 tools: None,
                 skills: None,
                 event_bus: None,
+                capabilities: Vec::new(),
+                queue_max_size: 5,
             },
         );
 
@@ -1970,6 +1984,8 @@ runtime:
                 tools: None,
                 skills: None,
                 event_bus: None,
+                capabilities: Vec::new(),
+                queue_max_size: 5,
             },
         );
 

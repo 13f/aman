@@ -140,6 +140,8 @@ impl AgentRegistry {
                     denied_tools,
                     allowed_skills: entry.skills.clone(),
                     enabled: entry.enabled,
+                    capabilities: entry.capabilities.clone(),
+                    queue_max_size: entry.queue_max_size,
                     max_context_tokens: model_params.map(|m| m.max_context_tokens),
                     max_output_tokens: model_params.map(|m| m.max_output_tokens),
                 }
@@ -322,6 +324,8 @@ impl AgentRegistry {
             denied_tools,
             allowed_skills: entry.skills.clone(),
             enabled: entry.enabled,
+            capabilities: entry.capabilities.clone(),
+            queue_max_size: entry.queue_max_size,
             max_context_tokens: model_params.map(|m| m.max_context_tokens),
             max_output_tokens: model_params.map(|m| m.max_output_tokens),
         };
@@ -1195,6 +1199,8 @@ mod tests {
             denied_tools: vec![],
             allowed_skills: None,
             enabled: true,
+            capabilities: Vec::new(),
+            queue_max_size: 5,
             max_context_tokens: None,
             max_output_tokens: None,
         }

@@ -2174,6 +2174,8 @@ pub async fn create_agent(
             tools: None,
             skills: None,
             event_bus: None,
+            capabilities: Vec::new(),
+            queue_max_size: 5,
         },
     );
 

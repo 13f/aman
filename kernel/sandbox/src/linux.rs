@@ -197,6 +197,199 @@ struct landlock_path_beneath_attr {
     parent_fd: i32,
 }
 
+// ─── Seccomp-BPF ───────────────────────────────────────────────────────
+
+/// BPF instruction for seccomp filter.
+#[repr(C)]
+struct sock_filter {
+    code: u16,
+    jt: u8,
+    jf: u8,
+    k: u32,
+}
+
+/// BPF program for seccomp.
+#[repr(C)]
+struct sock_fprog {
+    len: u16,
+    filter: *const sock_filter,
+}
+
+// BPF opcodes
+const BPF_LD: u16 = 0x00;
+const BPF_JMP: u16 = 0x05;
+const BPF_RET: u16 = 0x06;
+const BPF_W: u16 = 0x00;
+const BPF_ABS: u16 = 0x20;
+const BPF_JEQ: u16 = 0x10;
+const BPF_K: u16 = 0x00;
+
+// Seccomp return values
+const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+
+// seccomp_data offsets
+const SECCOMP_DATA_ARCH: u32 = 4;
+const SECCOMP_DATA_NR: u32 = 0;
+
+// AUDIT_ARCH values
+#[cfg(target_arch = "x86_64")]
+const AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+#[cfg(target_arch = "aarch64")]
+const AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
+
+/// Build a BPF instruction: `BPF_STMT(code, k)`
+fn bpf_stmt(code: u16, k: u32) -> sock_filter {
+    sock_filter { code, jt: 0, jf: 0, k }
+}
+
+/// Build a BPF instruction: `BPF_JUMP(code, k, jt, jf)`
+fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> sock_filter {
+    sock_filter { code, jt, jf, k }
+}
+
+/// Syscalls always blocked regardless of config.
+#[cfg(target_arch = "x86_64")]
+fn always_blocked() -> &'static [i64] {
+    &[
+        57,   // fork
+        56,   // vfork
+        59,   // execve
+        322,  // execveat
+        101,  // ptrace
+        165,  // mount
+        166,  // umount2
+        161,  // chroot
+        105,  // setuid
+        106,  // setgid
+        116,  // setgroups
+        117,  // setresuid
+        119,  // setresgid
+        169,  // reboot
+        246,  // kexec_load
+        320,  // kexec_file_load
+    ]
+}
+#[cfg(target_arch = "aarch64")]
+fn always_blocked() -> &'static [i64] {
+    &[
+        220,  // clone (fork/vfork)
+        221,  // execve
+        117,  // ptrace
+        40,   // mount
+        41,   // umount2
+        51,   // chroot
+        146,  // setuid
+        144,  // setgid
+        147,  // setsid
+    ]
+}
+
+/// Syscalls blocked when `process_spawn_allowed` is false.
+#[cfg(target_arch = "x86_64")]
+fn process_spawn_blocked() -> &'static [i64] {
+    &[56, 57, 58] // clone, fork, vfork
+}
+#[cfg(target_arch = "aarch64")]
+fn process_spawn_blocked() -> &'static [i64] {
+    &[220] // clone
+}
+
+/// Syscalls blocked when `network_allowed` is false.
+#[cfg(target_arch = "x86_64")]
+fn network_blocked() -> &'static [i64] {
+    &[41, 42, 49, 50, 43, 44, 45, 46, 47, 52, 51, 53, 54]
+}
+#[cfg(target_arch = "aarch64")]
+fn network_blocked() -> &'static [i64] {
+    &[198, 203, 200, 201, 202, 206, 207, 211, 212, 205, 204, 199, 208]
+}
+
+/// Apply Seccomp-BPF system call filter.
+///
+/// Blocks dangerous syscalls based on the sandbox configuration.
+/// Designed to be called from a `pre_exec()` closure alongside Landlock.
+/// Once applied, the filter is irreversible.
+///
+/// # Safety
+/// Uses raw prctl syscalls. Must be called in the child process after fork().
+#[cfg(target_os = "linux")]
+pub fn apply_seccomp(config: &SandboxConfig) -> Result<(), SandboxError> {
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        let mut filters: Vec<sock_filter> = Vec::new();
+
+        // 1. Validate architecture
+        filters.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_ARCH));
+        filters.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH, 1, 0));
+        filters.push(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+
+        // 2. Add always-blocked syscalls
+        for &nr in always_blocked() {
+            filters.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR));
+            filters.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+            filters.push(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+        }
+
+        // 3. Block process-spawn syscalls unless allowed
+        if !config.process_spawn_allowed {
+            for &nr in process_spawn_blocked() {
+                filters.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR));
+                filters.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+                filters.push(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+            }
+        }
+
+        // 4. Block network syscalls unless allowed
+        if !config.network_allowed {
+            for &nr in network_blocked() {
+                filters.push(bpf_stmt(BPF_LD | BPF_W | BPF_ABS, SECCOMP_DATA_NR));
+                filters.push(bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, nr as u32, 0, 1));
+                filters.push(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+            }
+        }
+
+        // 5. Allow everything else
+        filters.push(bpf_stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+
+        // Apply via prctl
+        let prog = sock_fprog {
+            len: filters.len() as u16,
+            filter: filters.as_ptr(),
+        };
+
+        // PR_SET_NO_NEW_PRIVS must be set before seccomp
+        let result = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        if result != 0 {
+            return Err(SandboxError::ApplicationFailed(
+                "prctl(PR_SET_NO_NEW_PRIVS) for seccomp failed".into()
+            ));
+        }
+
+        let result = unsafe {
+            libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &prog as *const sock_fprog as usize,
+                0,
+                0,
+            )
+        };
+        if result != 0 {
+            return Err(SandboxError::ApplicationFailed(
+                "prctl(PR_SET_SECCOMP) failed — seccomp filter not applied".into()
+            ));
+        }
+
+        Ok(())
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = config;
+        Ok(())
+    }
+}
+
 /// Apply Landlock filesystem restrictions.
 ///
 /// This function is designed to be called from within a `pre_exec()` closure.

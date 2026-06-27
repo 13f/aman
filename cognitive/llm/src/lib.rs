@@ -65,6 +65,11 @@ pub struct LlmEngineConfig {
     /// Maximum LLM call retries on transient errors (default: 5).
     /// Set to 1 to disable retries.
     pub max_llm_retries: u32,
+    /// Whether this is a background (idle) run. Background runs
+    /// auto-continue after max_turns is reached, up to max_continuations.
+    pub background: bool,
+    /// Maximum auto-continuations for background runs (default: 5).
+    pub max_continuations: u32,
 }
 
 impl Default for LlmEngineConfig {
@@ -75,6 +80,8 @@ impl Default for LlmEngineConfig {
             token_limit: 128_000,
             max_output_tokens: 4096,
             max_llm_retries: 5,
+            background: false,
+            max_continuations: 5,
         }
     }
 }
@@ -598,9 +605,39 @@ impl CognitiveEngine for LlmCognitiveEngine {
         // ── ReAct loop ──────────────────────────────────────────────
         let final_content: String;
         let mut turn = 0u32;
+        let mut continuation = 0u32;
+        let mut estimated_total_tokens: usize = 0;
+        const MAX_HISTORY_TOKENS: usize = 100_000;
         loop {
+            // ── Pre-turn: max turns check + auto-continue ────────────
             if turn >= max_turns {
+                if self.config.background && continuation < self.config.max_continuations {
+                    continuation += 1;
+                    turn = 0;
+                    // Trim history if it's getting too large
+                    if estimated_total_tokens > MAX_HISTORY_TOKENS {
+                        let keep = messages.len() / 2;
+                        messages = messages[messages.len() - keep..].to_vec();
+                        estimated_total_tokens /= 2;
+                        tracing::info!(%agent_id, %session_id, continuation, "history trimmed for auto-continue");
+                    }
+                    if let Some(ref sink) = self.event_sink {
+                        sink(kernel::event::Event::new(
+                            "cognitive-engine",
+                            kernel::event::EventType::Custom("agent:auto_continue".into()),
+                            serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "continuation": continuation }),
+                        ));
+                    }
+                    continue;
+                }
                 return Err(CognitiveError::MaxDepthReached { depth: turn });
+            }
+
+            // Token budget check
+            if turn == 0 {
+                estimated_total_tokens = messages.iter()
+                    .map(|m| m.content.len() / 2) // rough estimate: ~2 chars per token
+                    .sum();
             }
 
             // Publish llm:call_started
@@ -725,6 +762,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // Tool calls — execute and feed back
+            let content_len = content.len();
             let parsed_calls = response.tool_calls;
             messages.push(ChatMessage {
                 role: crate::react::ChatMessageRole::Assistant,
@@ -742,6 +780,12 @@ impl CognitiveEngine for LlmCognitiveEngine {
             let results = self.execute_tool_calls(&parsed_calls).await;
             for r in &results {
                 messages.push(ChatMessage::tool_result(&r.id, &r.tool_name, &r.output));
+            }
+
+            // Track estimated tokens (content + tool results)
+            estimated_total_tokens += content_len / 2;
+            for r in &results {
+                estimated_total_tokens += r.output.len() / 2;
             }
 
             turn += 1;

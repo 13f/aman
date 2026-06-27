@@ -29,6 +29,7 @@ config = { path = "../config", version = "0.1.0" }
 cognitive-engine = { path = "../../cognitive/engine", version = "0.1.0" }
 # LLM-based implementation of the CognitiveEngine trait.
 cognitive-llm = { path = "../../cognitive/llm", version = "0.1.0" }
+cognitive-react = { path = "../../cognitive/react" }
 i18n = { path = "../../shared/i18n", version = "0.1.0" }
 context-manager = { path = "../context-manager", version = "0.1.0" }
 eval = { path = "../eval", version = "0.1.0" }

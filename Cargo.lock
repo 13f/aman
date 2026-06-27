@@ -2800,6 +2800,7 @@ dependencies = [
  "blake3",
  "cognitive-engine",
  "cognitive-llm",
+ "cognitive-react",
  "config",
  "context-manager",
  "crossterm",

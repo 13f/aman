@@ -9,6 +9,9 @@ use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
 use kernel::interrupt::InterruptFlag;
 use context_manager::TokenBudgetPolicy;
+use cognitive_engine::{CognitiveContext, CognitiveEngine as _, CognitiveIdentity, Observation};
+use cognitive_llm::LlmCognitiveEngine;
+use cognitive_react as _;
 use kernel::event::{Event, EventType};
 use kernel::llm::{self, LlmChatRequest, LlmProvider};
 use kernel::react::{
@@ -1318,6 +1321,80 @@ impl AgentHarness {
             stream_forwarder_capacity,
             runtime,
         }
+    }
+
+    async fn build_cognitive_engine(
+        &self, agent_id: &str, model: &str, session_id: &str, background: bool,
+    ) -> AmanResult<LlmCognitiveEngine> {
+        let kernel_provider = self.registry.get_llm_provider(agent_id).await
+            .ok_or_else(|| Error::ConfigInvalid { message: format!("no LLM provider for agent '{agent_id}'") })?;
+        // Adapt kernel::llm::LlmProvider → cognitive_llm::provider::LlmProvider
+        struct KernelProviderAdapter(Arc<dyn LlmProvider>);
+        #[async_trait::async_trait]
+        impl cognitive_llm::provider::LlmProvider for KernelProviderAdapter {
+            fn name(&self) -> &str { self.0.name() }
+            async fn chat_completion(&self, req: cognitive_llm::provider::LlmChatRequest, cb: Option<Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync>>) -> Result<cognitive_llm::provider::LlmResponse, String> {
+                let kr = kernel::llm::LlmChatRequest { model: req.model, system_prompt: req.system_prompt, messages: req.messages.into_iter().map(|m| kernel::react::ChatMessage { role: match m.role { cognitive_react::ChatMessageRole::System => kernel::react::ChatMessageRole::System, cognitive_react::ChatMessageRole::User => kernel::react::ChatMessageRole::User, cognitive_react::ChatMessageRole::Assistant => kernel::react::ChatMessageRole::Assistant, cognitive_react::ChatMessageRole::Tool => kernel::react::ChatMessageRole::Tool }, content: m.content, tool_call_id: m.tool_call_id, tool_name: m.tool_name, tool_calls: m.tool_calls, reasoning_content: m.reasoning_content }).collect(), tools: req.tools.into_iter().map(|t| kernel::react::ToolDescriptor { name: t.name, description: t.description, parameters: t.parameters }).collect(), max_output_tokens: req.max_output_tokens, response_format: req.response_format.map(|f| match f { cognitive_llm::provider::ResponseFormat::JsonObject => kernel::llm::ResponseFormat::JsonObject, cognitive_llm::provider::ResponseFormat::JsonSchema { name, schema, strict } => kernel::llm::ResponseFormat::JsonSchema { name, schema, strict } }) };
+                let kcb = cb.map(|c| { let c2 = c; Arc::new(move |e: kernel::llm::StreamEvent| c2(match e { kernel::llm::StreamEvent::Start => cognitive_llm::provider::StreamEvent::Start, kernel::llm::StreamEvent::Chunk(s) => cognitive_llm::provider::StreamEvent::Chunk(s), kernel::llm::StreamEvent::Done { finish_reason } => cognitive_llm::provider::StreamEvent::Done { finish_reason }, kernel::llm::StreamEvent::Error(s) => cognitive_llm::provider::StreamEvent::Error(s), })) as Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync> });
+                self.0.chat_completion(kr, kcb).await.map(|r| cognitive_llm::provider::LlmResponse { content: r.content, finish_reason: r.finish_reason, tool_calls: r.tool_calls.into_iter().map(|c| cognitive_react::ParsedToolCall { id: c.id, tool_name: c.tool_name, args: c.args }).collect(), reasoning_content: r.reasoning_content }).map_err(|e| e.to_string())
+            }
+        }
+        let provider: Arc<dyn cognitive_llm::provider::LlmProvider> = Arc::new(KernelProviderAdapter(kernel_provider));
+        let bus: Arc<dyn EventBus> = self.registry.get_local_bus(agent_id).await.unwrap_or_else(|| Arc::clone(&self.bus));
+        let eb = Arc::clone(&bus);
+        let sink: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(move |e| { let b = Arc::clone(&eb); tokio::spawn(async move { let _ = b.publish(e).await; }); });
+        let engine = cognitive_llm::LlmCognitiveEngine::new(provider, cognitive_llm::LlmEngineConfig {
+            model: model.into(), max_turns: self.max_react_turns, token_limit: self.budget_policy.session_token_limit(),
+            max_output_tokens: 4096, max_llm_retries: 5, background, max_continuations: 5,
+        }).with_event_sink(sink).with_tool_executor(Arc::clone(&self.tool_registry), bus, 30_000);
+        let lb: Arc<dyn EventBus> = self.registry.get_local_bus(agent_id).await.unwrap_or_else(|| Arc::clone(&self.bus));
+        let sid = session_id.to_owned(); let aid = agent_id.to_owned();
+        struct SB { bus: Arc<dyn EventBus>, aid: String, sid: String }
+        impl cognitive_engine::CognitiveListener for SB {
+            fn on_cognitive_event(&self, e: cognitive_engine::CognitiveEvent) {
+                let b = Arc::clone(&self.bus); let a = self.aid.clone(); let s = self.sid.clone();
+                tokio::spawn(async move {
+                    let (et, pl) = match e {
+                        cognitive_engine::CognitiveEvent::StreamStart { .. } => ("agent:reply_stream_start", json!({})),
+                        cognitive_engine::CognitiveEvent::TextChunk { text, .. } => ("agent:reply_chunk", json!({"delta": text})),
+                        cognitive_engine::CognitiveEvent::StreamDone { finish_reason, .. } => ("agent:reply_stream_done", json!({"finish_reason": finish_reason})),
+                        cognitive_engine::CognitiveEvent::StreamError { error, .. } => ("agent:reply_stream_error", json!({"error": error})),
+                        _ => return,
+                    };
+                    let _ = b.publish(Event::new(SOURCE_AGENT_HARNESS, EventType::Custom(et.into()), json!({"agent_id": a, "session_id": s, "extra": pl}))).await;
+                });
+            }
+        }
+        engine.subscribe(Arc::new(SB { bus: lb, aid, sid }));
+        Ok(engine)
+    }
+
+    pub async fn process_message_v2(
+        self: &Arc<Self>, agent_id: &str, session_id: &str, user_text: &str,
+        model: &str, soul_snapshot: SoulSnapshot, background: bool,
+    ) -> AmanResult<String> {
+        let inst = self.prepare_agent_session(agent_id, session_id, background).await?;
+        if let Some(c) = self.registry.get_idle_coordination(agent_id).await { c.reset_idle_signal().await; c.arousal.boost(0.3); }
+        let tools = self.build_tool_descriptors(agent_id).await;
+        let mut hist = self.session_history.get(session_id); hist.push(ChatMessage::user(user_text));
+        let _tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &hist, &tools).await;
+        let mem = self.retrieve_relevant_memories(agent_id, user_text).await;
+        let flag = Arc::new(InterruptFlag::new()); self.register_interrupt(session_id, Arc::clone(&flag));
+        let engine = self.build_cognitive_engine(agent_id, model, session_id, background).await?;
+        let ctx = CognitiveContext {
+            agent_id: agent_id.into(), session_id: session_id.into(),
+            identity: CognitiveIdentity { name: soul_snapshot.name.clone(), identity: soul_snapshot.system_prompt.clone(), boundaries: soul_snapshot.boundaries.clone(), expertise: vec![], vibe: None, raw: soul_snapshot.system_prompt.clone() },
+            capabilities: tools.iter().map(|t| cognitive_engine::Capability { name: t.name.clone(), description: t.description.clone(), parameters: t.parameters.clone(), cap_type: cognitive_engine::CapabilityType::Tool }).collect(),
+            memory_context: mem.map(|m| vec![cognitive_engine::MemoryItem { key: "retrieved".into(), content: m, importance: 0.5, timestamp: None }]).unwrap_or_default(),
+            engine_config: json!({"model": model}),
+        };
+        let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
+        let reply = engine.process(&ctx, obs).await.map_err(|e| Error::ConfigInvalid { message: format!("cognitive engine: {e}") })?
+            .iter().find_map(|d| match &d.kind { cognitive_engine::DecisionKind::Reply { text, is_final: true } => Some(text.clone()), _ => None }).unwrap_or_else(|| "[no reply]".into());
+        self.session_history.clear(session_id); self.session_history.extend(session_id, vec![ChatMessage::user(user_text), ChatMessage::assistant(&reply)]);
+        self.unregister_interrupt(session_id);
+        let _ = self.registry.set_active_session(agent_id, None).await;
+        Ok(reply)
     }
 
     /// Publish an event to the agent's local bus, falling back to the global bus.

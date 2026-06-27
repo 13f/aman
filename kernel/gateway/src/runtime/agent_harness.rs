@@ -159,11 +159,11 @@ pub struct AgentHarness {
     budget_policy: Box<dyn TokenBudgetPolicy>,
     /// Pluggable agent routing strategy.
     agent_router: Box<dyn AgentRouter>,
-    /// Compression configuration.
+    /// Compression configuration (retained for future use).
+    #[allow(dead_code)]
     compression_config: context_manager::CompressorConfig,
-    /// Capacity for the per-turn LLM stream forwarder buffer.
-    /// When full, the synchronous callback blocks the LLM stream task,
-    /// creating natural TCP backpressure to the LLM provider.
+    /// Stream forwarder capacity (retained for future use).
+    #[allow(dead_code)]
     stream_forwarder_capacity: usize,
     /// Handle to the main tokio runtime, used to spawn tasks from any thread
     /// (including non-tokio threads like the plugin bridge).

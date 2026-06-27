@@ -190,4 +190,8 @@ pub struct AgentMessage {
     pub payload: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<Uuid>,
+    /// A2A session id — if present, append to existing session jsonl;
+    /// if absent, create a new session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }

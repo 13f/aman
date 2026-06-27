@@ -286,41 +286,17 @@ impl AgentHarness {
         }
         let reply = kernel::redactor::redact_sensitive_data(&cleaned).into_owned();
 
-        // ── Agent message reply routing ──────────────────────────────────
-        // If this is an agent-to-agent message (detected by the "[Message from agent 'X']"
-        // prefix), send the reply back to the sender as a new AgentMessage instead of
-        // publishing reply_ready to the user.
-        if let Some(sender_id) = user_text
-            .strip_prefix("[Message from agent '")
-            .and_then(|rest| rest.split_once("']"))
-            .map(|(sender, _)| sender.to_owned())
-        {
-            let reply_msg = kernel::agent::AgentMessage {
-                message_id: uuid::Uuid::new_v4(),
-                from_agent: agent_id.to_owned(),
-                to_agent: sender_id,
-                content_type: kernel::agent::AgentMessageType::ResultSharing,
-                payload: serde_json::json!({"text": reply}),
-                reply_to: None,
-            };
-            let _ = self.bus.publish(Event::new(
-                SOURCE_AGENT_HARNESS,
-                EventType::AgentMessage,
-                serde_json::to_value(&reply_msg).unwrap_or_default(),
-            )).await;
-        } else {
-            // ── Normal user session: publish reply_ready ──
-            let _ = self.bus.publish(Event::new(
-                SOURCE_AGENT_HARNESS,
-                EventType::Custom(EVT_AGENT_REPLY_READY.to_owned()),
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "reply": reply,
-                    "background": background,
-                }),
-            )).await;
-        }
+        // ── Publish reply_ready event so downstream (desktop, channels) can react ──
+        let _ = self.bus.publish(Event::new(
+            SOURCE_AGENT_HARNESS,
+            EventType::Custom(EVT_AGENT_REPLY_READY.to_owned()),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "reply": reply,
+                "background": background,
+            }),
+        )).await;
 
         // ── Persist history + cleanup ──
         self.session_history.clear(session_id);
@@ -955,6 +931,7 @@ impl AgentHarness {
             content_type,
             payload,
             reply_to,
+            session_id: None,
         };
         let payload = serde_json::to_value(msg)?;
         self.bus.publish(Event::new(

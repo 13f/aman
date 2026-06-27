@@ -1855,7 +1855,8 @@ impl AgentRuntimeBuilder {
             agent_harness: Arc<super::agent_harness::AgentHarness>,
             soul_runtime: Option<SoulRuntime>,
             self_bridge: super::self_bridge::SelfBridge,
-            session_manager: Arc<super::session::SessionManager>,
+            bus: Arc<dyn EventBus>,
+            a2a_base: PathBuf,
         }
         #[async_trait::async_trait]
         impl event_bus::EventHandler for AgentMessageHandler {
@@ -1868,6 +1869,7 @@ impl AgentRuntimeBuilder {
                     }
                 };
 
+                // Resolve target agent
                 let agent = match self.agent_harness.resolve_agent(&msg.to_agent).await {
                     Some(a) => a,
                     None => {
@@ -1875,48 +1877,143 @@ impl AgentRuntimeBuilder {
                         return Ok(());
                     }
                 };
-                let model = agent.descriptor.model.clone();
 
-                // Build SoulSnapshot with the complete system prompt (soul + skills + tools + date).
-                let soul_snapshot = if let Some(ref sr) = self.soul_runtime {
-                    let soul = sr.current_soul();
-                    let cwd = std::env::current_dir().ok().and_then(|p| p.to_str().map(String::from));
-                    let prompt = pollster::block_on(
-                        self.agent_harness.build_full_system_prompt(
-                            &msg.to_agent, &soul.raw, &[], &self.self_bridge, cwd.as_deref(),
-                        ),
-                    );
-                    kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
+                // ── A2A session path ──
+                let mut ids = [msg.from_agent.as_str(), msg.to_agent.as_str()];
+                ids.sort_unstable();
+                let a2a_dir = self.a2a_base.join(format!("{}__{}", ids[0], ids[1]));
+                let _ = std::fs::create_dir_all(&a2a_dir);
+
+                // Use existing session_id or create a new one
+                let a2a_sid = msg.session_id.clone().unwrap_or_else(|| {
+                    uuid::Uuid::now_v7().to_string().chars().take(12).collect::<String>()
+                });
+                let jsonl_path = a2a_dir.join(format!("{}.jsonl", a2a_sid));
+
+                // Load conversation history
+                let history: Vec<String> = std::fs::read_to_string(&jsonl_path)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+                            let f = v["from_agent"].as_str().unwrap_or("");
+                            let t = v["text"].as_str().unwrap_or("");
+                            format!("[{}]: {t}", f)
+                        } else { String::new() }
+                    })
+                    .collect();
+
+                // Append incoming message to jsonl
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis();
+                let entry = serde_json::json!({
+                    "timestamp_ms": ts,
+                    "from_agent": msg.from_agent,
+                    "to_agent": msg.to_agent,
+                    "content_type": msg.content_type,
+                    "text": msg.payload.get("text").and_then(|v| v.as_str()).unwrap_or(""),
+                    "message_id": msg.message_id.to_string(),
+                    "reply_to": msg.reply_to.map(|u| u.to_string()),
+                });
+                if let Err(e) = std::fs::OpenOptions::new().create(true).append(true).open(&jsonl_path)
+                    .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", serde_json::to_string(&entry).unwrap_or_default()) })
+                {
+                    tracing::warn!(path=%jsonl_path.display(), error=%e, "AgentMessageHandler: failed to write jsonl");
+                }
+
+                // Build system prompt with agent identity + conversation context
+                let soul = self.soul_runtime.as_ref()
+                    .map(|sr| sr.current_soul())
+                    .unwrap_or_else(|| Arc::new(soul::Soul::default()));
+                let cwd = std::env::current_dir().ok().and_then(|p| p.to_str().map(String::from));
+                let base_prompt = pollster::block_on(
+                    self.agent_harness.build_full_system_prompt(
+                        &msg.to_agent, &soul.raw, &[], &self.self_bridge, cwd.as_deref(),
+                    ),
+                );
+                let history_block = if history.is_empty() {
+                    String::new()
                 } else {
-                    kernel::react::SoulSnapshot::new("assistant", "")
+                    format!("\n\n## Conversation with {}\n{}", msg.from_agent,
+                        history.iter().rev().take(20).rev().cloned().collect::<Vec<_>>().join("\n"))
                 };
+                let system_prompt = format!(
+                    "You are agent '{}'.{}{}",
+                    msg.to_agent,
+                    if base_prompt.is_empty() { String::new() } else { format!("\n\n{base_prompt}") },
+                    history_block,
+                );
+                let soul_snapshot = kernel::react::SoulSnapshot::new(
+                    agent.descriptor.display_name.clone(),
+                    system_prompt,
+                );
 
-                // Construct user-facing text from the agent message payload.
                 let text = format!(
                     "[Message from agent '{}']\n{}",
                     msg.from_agent,
                     msg.payload.get("text").and_then(|v| v.as_str()).unwrap_or("")
                 );
 
-                let session_id = self.session_manager
-                    .create_session("agent-message", &msg.to_agent, "persistent")
-                    .await
-                    .unwrap_or_else(|_| format!("agent:{}:{}", msg.from_agent, msg.message_id));
-                self.agent_harness.spawn_process_message(
-                    msg.to_agent.clone(),
-                    session_id,
-                    text,
-                    model,
-                    soul_snapshot,
-                    None,  // skill_name
-                    None,  // react_mode
-                    false, // background
-                    super::agent_harness::ContinuationMode::Fresh,
-                );
+                // Process inline via process_message_v2
+                let bus = Arc::clone(&self.bus);
+                let harness = Arc::clone(&self.agent_harness);
+                let to_agent = msg.to_agent.clone();
+                let from_agent = msg.from_agent.clone();
+                let session_id = a2a_sid.clone();
+                let model = agent.descriptor.model.clone();
+                let jsonl_path_clone = jsonl_path.clone();
+
+                tokio::spawn(async move {
+                    let sid = format!("a2a:{}", session_id);
+                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, false).await {
+                        Ok(reply) => {
+                            // Write reply to jsonl
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis();
+                            let reply_entry = serde_json::json!({
+                                "timestamp_ms": ts,
+                                "from_agent": &to_agent,
+                                "to_agent": &from_agent,
+                                "content_type": "result_sharing",
+                                "text": &reply,
+                                "message_id": uuid::Uuid::new_v4().to_string(),
+                            });
+                            let _ = std::fs::OpenOptions::new().create(true).append(true).open(&jsonl_path_clone)
+                                .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", serde_json::to_string(&reply_entry).unwrap_or_default()) });
+
+                            // Send reply back to sender
+                            let reply_msg = kernel::agent::AgentMessage {
+                                message_id: uuid::Uuid::new_v4(),
+                                from_agent: to_agent,
+                                to_agent: from_agent,
+                                content_type: kernel::agent::AgentMessageType::ResultSharing,
+                                payload: serde_json::json!({"text": reply}),
+                                reply_to: None,
+                                session_id: Some(session_id),
+                            };
+                            let _ = bus.publish(kernel::event::Event::new(
+                                "agent-message-handler",
+                                kernel::event::EventType::AgentMessage,
+                                serde_json::to_value(&reply_msg).unwrap_or_default(),
+                            )).await;
+                        }
+                        Err(e) => {
+                            tracing::error!(%e, "AgentMessageHandler: process_message_v2 failed");
+                        }
+                    }
+                });
 
                 Ok(())
             }
         }
+        let a2a_base = std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".aman").join("a2a"))
+            .unwrap_or_else(|_| PathBuf::from("/tmp/aman/a2a"));
         let _ = pollster::block_on(bus.subscribe(
             event_bus::SubscriptionFilter {
                 event_types: Some(vec![kernel::event::EventType::AgentMessage]),
@@ -1928,7 +2025,8 @@ impl AgentRuntimeBuilder {
                 agent_harness: Arc::clone(&agent_harness),
                 soul_runtime: soul_runtime.clone(),
                 self_bridge: self_bridge.clone(),
-                session_manager: Arc::clone(&session_manager),
+                bus: Arc::clone(&bus),
+                a2a_base,
             }),
         ));
 
@@ -2513,6 +2611,10 @@ impl Tool for AgentSendMessageTool {
                     "reply_to": {
                         "type": "string",
                         "description": "Optional: message_id of a previous message this is replying to"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional: a2a session id to continue an existing conversation. If absent, a new session is created."
                     }
                 }
             }))
@@ -2527,7 +2629,8 @@ impl Tool for AgentSendMessageTool {
                 "properties": {
                     "ok": {"type": "boolean"},
                     "message_id": {"type": "string"},
-                    "to_agent": {"type": "string"}
+                    "to_agent": {"type": "string"},
+                    "session_id": {"type": "string", "description": "Use this in subsequent messages to continue the same a2a conversation"}
                 }
             }))
         });
@@ -2562,6 +2665,7 @@ impl Tool for AgentSendMessageTool {
         let reply_to = params["reply_to"]
             .as_str()
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
+        let session_id = params["session_id"].as_str().map(|s| s.to_owned());
 
         let msg = kernel::agent::AgentMessage {
             message_id: uuid::Uuid::new_v4(),
@@ -2570,6 +2674,7 @@ impl Tool for AgentSendMessageTool {
             content_type,
             payload: serde_json::json!({"text": text}),
             reply_to,
+            session_id,
         };
         let message_id_str = msg.message_id.to_string();
         let event_payload = serde_json::to_value(&msg).map_err(|e| {
@@ -2594,7 +2699,8 @@ impl Tool for AgentSendMessageTool {
         Ok(serde_json::json!({
             "ok": true,
             "message_id": message_id_str,
-            "to_agent": to_agent
+            "to_agent": to_agent,
+            "session_id": msg.session_id.clone()
         }))
     }
 }
@@ -3010,6 +3116,10 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                     .get("reply_to")
                     .and_then(|v| v.as_str())
                     .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                let session_id = params
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_owned());
 
                 let msg = kernel::agent::AgentMessage {
                     message_id: uuid::Uuid::new_v4(),
@@ -3018,6 +3128,7 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                     content_type,
                     payload,
                     reply_to,
+                    session_id,
                 };
                 let event_payload = serde_json::to_value(&msg).map_err(|e| {
                     kernel::Error::ConfigInvalid {

@@ -1886,7 +1886,7 @@ impl AgentRuntimeBuilder {
 
                 // Use existing session_id or create a new one
                 let a2a_sid = msg.session_id.clone().unwrap_or_else(|| {
-                    uuid::Uuid::now_v7().to_string().chars().take(12).collect::<String>()
+                    uuid::Uuid::now_v7().to_string().replace('-', "")
                 });
                 let jsonl_path = a2a_dir.join(format!("{}.jsonl", a2a_sid));
 
@@ -1925,13 +1925,13 @@ impl AgentRuntimeBuilder {
                 }
 
                 // Build system prompt with agent identity + conversation context
-                let soul = self.soul_runtime.as_ref()
-                    .map(|sr| sr.current_soul())
-                    .unwrap_or_else(|| Arc::new(soul::Soul::default()));
+                let soul_raw = self.soul_runtime.as_ref()
+                    .map(|sr| sr.current_soul().raw.clone())
+                    .unwrap_or_default();
                 let cwd = std::env::current_dir().ok().and_then(|p| p.to_str().map(String::from));
                 let base_prompt = pollster::block_on(
                     self.agent_harness.build_full_system_prompt(
-                        &msg.to_agent, &soul.raw, &[], &self.self_bridge, cwd.as_deref(),
+                        &msg.to_agent, &soul_raw, &[], &self.self_bridge, cwd.as_deref(),
                     ),
                 );
                 let history_block = if history.is_empty() {
@@ -1962,6 +1962,7 @@ impl AgentRuntimeBuilder {
                 let harness = Arc::clone(&self.agent_harness);
                 let to_agent = msg.to_agent.clone();
                 let from_agent = msg.from_agent.clone();
+                let incoming_message_id = msg.message_id;
                 let session_id = a2a_sid.clone();
                 let model = agent.descriptor.model.clone();
                 let jsonl_path_clone = jsonl_path.clone();
@@ -1970,6 +1971,7 @@ impl AgentRuntimeBuilder {
                     let sid = format!("a2a:{}", session_id);
                     match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, false).await {
                         Ok(reply) => {
+                            let reply_message_id = uuid::Uuid::new_v4();
                             // Write reply to jsonl
                             let ts = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -1981,19 +1983,20 @@ impl AgentRuntimeBuilder {
                                 "to_agent": &from_agent,
                                 "content_type": "result_sharing",
                                 "text": &reply,
-                                "message_id": uuid::Uuid::new_v4().to_string(),
+                                "message_id": reply_message_id.to_string(),
+                                "reply_to": incoming_message_id.to_string(),
                             });
                             let _ = std::fs::OpenOptions::new().create(true).append(true).open(&jsonl_path_clone)
                                 .and_then(|mut f| { use std::io::Write; writeln!(f, "{}", serde_json::to_string(&reply_entry).unwrap_or_default()) });
 
                             // Send reply back to sender
                             let reply_msg = kernel::agent::AgentMessage {
-                                message_id: uuid::Uuid::new_v4(),
+                                message_id: reply_message_id,
                                 from_agent: to_agent,
                                 to_agent: from_agent,
                                 content_type: kernel::agent::AgentMessageType::ResultSharing,
                                 payload: serde_json::json!({"text": reply}),
-                                reply_to: None,
+                                reply_to: Some(incoming_message_id),
                                 session_id: Some(session_id),
                             };
                             let _ = bus.publish(kernel::event::Event::new(

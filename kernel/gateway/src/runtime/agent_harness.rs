@@ -469,11 +469,9 @@ impl AgentHarness {
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         self.runtime.spawn(async move {
-            tracing::info!(%agent_id, %session_id, "spawn_process_message: task started");
-            let result = harness
+            if let Err(e) = harness
                 .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot.clone(), skill_name.as_deref(), react_mode, background, continuation_mode)
-                .await;
-            if let Err(e) = result
+                .await
             {
                 tracing::error!(
                     error = %e, session_id = %session_id, agent_id = %agent_id,

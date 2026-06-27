@@ -155,19 +155,37 @@ impl WindowsSandbox {
         // ── Phase 1: Job Object (always created) ──────────────────────
         let job = create_job_object(config)?;
 
-        // ── Phase 2: AppContainer capabilities for network ────────────
-        let (appcontainer_sid, capabilities) = if config.network_allowed {
-            // Grant network capabilities inside the AppContainer.
-            // NOTE: When network IS allowed, the process still runs in an
-            // AppContainer for resource isolation, but gets internetClient
-            // and internetClientServer capabilities so network calls succeed.
-            (Vec::new(), vec![
-                CAPABILITY_INTERNET_CLIENT.to_vec(),
-                CAPABILITY_INTERNET_CLIENT_SERVER.to_vec(),
-            ])
+        // ── Phase 2: AppContainer for network isolation ───────────────
+        // Create an AppContainer profile. The name includes a random UUID
+        // to avoid collisions between multiple sandboxed processes.
+        let container_name = format!("aman.sandbox.{}", uuid::Uuid::now_v7());
+        let container_name_wide = str_to_wide(&container_name);
+        let display_name_wide = str_to_wide("aman Sandbox");
+
+        let mut appcontainer_sid: Vec<u8> = Vec::new();
+        let sid_created = unsafe {
+            create_appcontainer_profile(
+                container_name_wide.as_ptr(),
+                display_name_wide.as_ptr(),
+                &mut appcontainer_sid,
+            )
+        };
+
+        let capabilities = if sid_created {
+            if config.network_allowed {
+                vec![
+                    CAPABILITY_INTERNET_CLIENT.to_vec(),
+                    CAPABILITY_INTERNET_CLIENT_SERVER.to_vec(),
+                ]
+            } else {
+                // No network capabilities → connect()/send() return WSAEACCES
+                Vec::new()
+            }
         } else {
-            // No network capabilities → any network call returns WSAEACCES.
-            (Vec::new(), Vec::new())
+            // AppContainer creation failed — fall back to Job Objects only.
+            // Network isolation won't be applied, but Job Object limits work.
+            tracing::warn!("CreateAppContainerProfile failed — network isolation unavailable; using Job Objects only");
+            Vec::new()
         };
 
         Ok(Self {
@@ -377,6 +395,68 @@ fn resume_process_threads(pid: u32) -> Result<(), SandboxError> {
 }
 
 // ─── AppContainer helpers ────────────────────────────────────────────
+
+/// Create an AppContainer profile and derive its SID.
+///
+/// Uses `CreateAppContainerProfile` to register the profile with Windows
+/// and `DeriveAppContainerSidFromAppContainerName` to get the SID bytes.
+/// The returned SID can be used with `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`
+/// when launching a process via `CreateProcessW`.
+///
+/// Returns `true` if the profile was created successfully, `false` if the
+/// API is unavailable (pre-Win8) or the call failed.
+unsafe fn create_appcontainer_profile(
+    name: *const u16,
+    display_name: *const u16,
+    sid_out: &mut Vec<u8>,
+) -> bool {
+    use windows_sys::Win32::Security::{
+        CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
+        FreeSid, GetLengthSid, IsWellKnownSid,
+    };
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::SystemServices::{PROCESSOR_ARCHITECTURE_AMD64, IMAGE_FILE_MACHINE_AMD64};
+
+    // Check if the API is available (Win8+)
+    let kernel32 = GetModuleHandleW(str_to_wide("kernel32.dll").as_ptr());
+    if kernel32 == 0 {
+        return false;
+    }
+
+    // Create the AppContainer profile
+    let mut appcontainer_sid: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
+    let caps: [windows_sys::Win32::Security::SID_AND_ATTRIBUTES; 0] = [];
+    let result = CreateAppContainerProfile(
+        name,
+        display_name,
+        display_name, // description
+        caps.as_ptr(),
+        0,
+        &mut appcontainer_sid,
+    );
+
+    if result != 0 || appcontainer_sid.is_null() {
+        // Profile may already exist — try deriving the SID
+        let mut sid_ptr: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
+        let derive_result = DeriveAppContainerSidFromAppContainerName(name, &mut sid_ptr);
+        if derive_result != 0 || sid_ptr.is_null() {
+            return false;
+        }
+        let len = GetLengthSid(sid_ptr) as usize;
+        let sid_bytes = std::slice::from_raw_parts(sid_ptr as *const u8, len);
+        sid_out.clear();
+        sid_out.extend_from_slice(sid_bytes);
+        FreeSid(sid_ptr);
+        return true;
+    }
+
+    let len = GetLengthSid(appcontainer_sid) as usize;
+    let sid_bytes = std::slice::from_raw_parts(appcontainer_sid as *const u8, len);
+    sid_out.clear();
+    sid_out.extend_from_slice(sid_bytes);
+
+    true
+}
 
 /// Build a native NT path from a `PathBuf`.
 ///

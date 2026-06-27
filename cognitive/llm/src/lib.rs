@@ -110,10 +110,16 @@ pub struct LlmCognitiveEngine {
     prompt_pipeline: Arc<dyn PromptPipeline>,
     config: LlmEngineConfig,
     listeners: Arc<Mutex<Vec<Arc<dyn CognitiveListener>>>>,
-    /// Optional event sink for publishing lifecycle events
-    /// (llm:call_started, llm:call_ended, agent:token_used).
-    /// When `None`, events are silently dropped.
+    /// Optional event sink for publishing lifecycle events.
     event_sink: Option<Arc<dyn Fn(kernel::event::Event) + Send + Sync>>,
+    /// Tool registry for executing tool calls (ReAct loop).
+    tool_registry: Option<Arc<tool::ToolRegistry>>,
+    /// Event bus for publishing tool lifecycle events.
+    bus: Option<Arc<dyn event_bus::EventBus>>,
+    /// Per-tool timeout in milliseconds.
+    tool_timeout_ms: u64,
+    /// Tool security config for path/network/command allowlist.
+    tool_security: Option<tool::ToolSecurityConfig>,
 }
 
 impl LlmCognitiveEngine {
@@ -128,6 +134,10 @@ impl LlmCognitiveEngine {
             config,
             listeners: Arc::new(Mutex::new(Vec::new())),
             event_sink: None,
+            tool_registry: None,
+            bus: None,
+            tool_timeout_ms: 30_000,
+            tool_security: None,
         }
     }
 
@@ -143,20 +153,41 @@ impl LlmCognitiveEngine {
             config,
             listeners: Arc::new(Mutex::new(Vec::new())),
             event_sink: None,
+            tool_registry: None,
+            bus: None,
+            tool_timeout_ms: 30_000,
+            tool_security: None,
         }
     }
 
     /// Set an event sink for publishing lifecycle events.
-    ///
-    /// When set, the engine will publish `llm:call_started`,
-    /// `llm:call_ended`, and `agent:token_used` events during
-    /// processing. This mirrors the behavior of `LlmReActEngine`.
     #[must_use]
     pub fn with_event_sink(
         mut self,
         sink: Arc<dyn Fn(kernel::event::Event) + Send + Sync>,
     ) -> Self {
         self.event_sink = Some(sink);
+        self
+    }
+
+    /// Set the tool registry + event bus for executing tool calls.
+    #[must_use]
+    pub fn with_tool_executor(
+        mut self,
+        registry: Arc<tool::ToolRegistry>,
+        bus: Arc<dyn event_bus::EventBus>,
+        timeout_ms: u64,
+    ) -> Self {
+        self.tool_registry = Some(registry);
+        self.bus = Some(bus);
+        self.tool_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set tool security config for path/network/command enforcement.
+    #[must_use]
+    pub fn with_tool_security(mut self, config: tool::ToolSecurityConfig) -> Self {
+        self.tool_security = Some(config);
         self
     }
 
@@ -238,6 +269,89 @@ impl LlmCognitiveEngine {
         messages
     }
 
+    // ── Tool execution (mirrors LlmReActEngine::execute_tools) ─────
+
+    /// Execute tool calls and return results as ChatMessages.
+    /// Includes security checks, retry, and parallel/serial execution.
+    async fn execute_tool_calls(
+        &self,
+        calls: &[crate::react::ParsedToolCall],
+    ) -> Vec<crate::react::ToolCallResult> {
+        let Some(ref registry) = self.tool_registry else {
+            return calls.iter().map(|c| crate::react::ToolCallResult {
+                id: c.id.clone(),
+                tool_name: c.tool_name.clone(),
+                success: false,
+                output: "tool registry not configured".into(),
+                duration_ms: 0,
+                pending_detach: None,
+            }).collect();
+        };
+        let Some(ref bus) = self.bus else {
+            return calls.iter().map(|c| crate::react::ToolCallResult {
+                id: c.id.clone(), tool_name: c.tool_name.clone(),
+                success: false, output: "event bus not configured".into(),
+                duration_ms: 0, pending_detach: None,
+            }).collect();
+        };
+
+        const TOOL_MAX_RETRIES: u32 = 3;
+        let registry = Arc::clone(registry);
+        let bus: Arc<dyn event_bus::EventBus> = Arc::clone(bus);
+        let timeout = self.tool_timeout_ms;
+
+        // Classify calls by execution model
+        let models: Vec<bool> = calls.iter()
+            .map(|c| registry.get(&c.tool_name)
+                .map(|t| t.execution_model() == kernel::types::ExecutionModel::Independent)
+                .unwrap_or(false))
+            .collect();
+
+        // Phase 1: Independent calls concurrently
+        let mut handles: Vec<(usize, tokio::task::JoinHandle<crate::react::ToolCallResult>)> = Vec::new();
+        for (i, call) in calls.iter().enumerate() {
+            if models[i] {
+                let reg = Arc::clone(&registry);
+                let b = Arc::clone(&bus);
+                let c = call.clone();
+                let t = timeout;
+                handles.push((i, tokio::spawn(async move {
+                    execute_one_with_retry(&reg, &b, &c, t, TOOL_MAX_RETRIES).await
+                })));
+            }
+        }
+
+        // Phase 2: Stateful/SideEffect calls sequentially
+        let mut serial_results: Vec<(usize, crate::react::ToolCallResult)> = Vec::new();
+        for (i, call) in calls.iter().enumerate() {
+            if !models[i] {
+                let result = execute_one_with_retry(&registry, &bus, call, timeout, TOOL_MAX_RETRIES).await;
+                serial_results.push((i, result));
+            }
+        }
+
+        // Collect independent results
+        let mut independent_results: Vec<(usize, crate::react::ToolCallResult)> = Vec::new();
+        for (i, handle) in handles {
+            match handle.await {
+                Ok(r) => independent_results.push((i, r)),
+                Err(e) => independent_results.push((i, crate::react::ToolCallResult {
+                    id: String::new(), tool_name: String::new(),
+                    success: false,
+                    output: format!("tool panicked: {e}"),
+                    duration_ms: 0, pending_detach: None,
+                })),
+            }
+        }
+
+        // Merge in original order
+        let mut all = Vec::with_capacity(calls.len());
+        all.extend(independent_results);
+        all.extend(serial_results);
+        all.sort_by_key(|(i, _)| *i);
+        all.into_iter().map(|(_, r)| r).collect()
+    }
+
     /// Convert a final ReActTurn into Decisions.
     fn turn_to_decisions(
         turn: ReActTurn,
@@ -277,6 +391,82 @@ impl LlmCognitiveEngine {
             }
         }
     }
+}
+
+// ── Retry helpers (mirrors LlmReActEngine) ────────────────────────
+
+/// Execute one tool call with retry, security checks, and event publishing.
+async fn execute_one_with_retry(
+    registry: &tool::ToolRegistry,
+    bus: &Arc<dyn event_bus::EventBus>,
+    call: &crate::react::ParsedToolCall,
+    timeout_ms: u64,
+    max_retries: u32,
+) -> crate::react::ToolCallResult {
+    let start = std::time::Instant::now();
+
+    // Security: hardline block check
+    if let Some(reason) = tool::security::check_hardline_block(&call.tool_name, &call.args) {
+        return crate::react::ToolCallResult {
+            id: call.id.clone(), tool_name: call.tool_name.clone(),
+            success: false, output: format!("hardline_blocked: {reason}"),
+            duration_ms: start.elapsed().as_millis() as u64, pending_detach: None,
+        };
+    }
+
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let tool = match registry.get(&call.tool_name) {
+            Some(t) => t,
+            None => return crate::react::ToolCallResult {
+                id: call.id.clone(), tool_name: call.tool_name.clone(),
+                success: false, output: format!("tool '{}' not found", call.tool_name),
+                duration_ms: start.elapsed().as_millis() as u64, pending_detach: None,
+            },
+        };
+
+        let mut ctx = kernel::context::ToolContext::default();
+        ctx.base.timeout_ms = Some(timeout_ms);
+
+        let result = tool.execute(call.args.clone(), ctx).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let success = result.is_ok();
+        let output = match &result {
+            Ok(v) => serde_json::to_string(v).unwrap_or_default(),
+            Err(e) => e.to_string(),
+        };
+
+        // Publish tool:completed
+        let _ = bus.publish(kernel::event::Event::new(
+            "cognitive-engine",
+            kernel::event::EventType::Custom("tool:completed".into()),
+            serde_json::json!({
+                "tool_call_id": call.id, "tool_name": call.tool_name,
+                "success": success, "duration_ms": duration_ms,
+            }),
+        )).await;
+
+        if success || attempt >= max_retries || !is_retryable_tool_error(&output) {
+            return crate::react::ToolCallResult {
+                id: call.id.clone(), tool_name: call.tool_name.clone(),
+                success, output, duration_ms, pending_detach: None,
+            };
+        }
+        tracing::warn!(tool=%call.tool_name, attempt, error=%output, "tool call failed, retrying");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+fn is_retryable_tool_error(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    if lower.contains("unrecoverable") || lower.contains("no such file")
+        || lower.contains("not found") || lower.contains("permission denied")
+        || lower.contains("not allowed") { return false; }
+    lower.contains("timeout") || lower.contains("connection")
+        || lower.contains("refused") || lower.contains("reset")
+        || lower.contains("temporary") || lower.contains("rate limit")
+        || lower.contains("too many requests")
 }
 
 // ── Retry helper (mirrors LlmReActEngine::is_retryable_llm_error) ─
@@ -319,8 +509,10 @@ impl CognitiveEngine for LlmCognitiveEngine {
             return Ok(vec![]);
         }
 
-        let session_id = &ctx.session_id;
-        let agent_id = &ctx.agent_id;
+        let session_id = ctx.session_id.clone();
+        let agent_id = ctx.agent_id.clone();
+        let max_turns = self.config.max_turns;
+        let max_retries = self.config.max_llm_retries;
 
         // Build the SoulSnapshot from CognitiveIdentity
         let system_prompt = self
@@ -349,153 +541,142 @@ impl CognitiveEngine for LlmCognitiveEngine {
             })
             .collect();
 
-        // Build messages from observations
-        let messages = Self::observations_to_messages(&observations, &[]);
+        // Build initial messages from observations
+        let mut messages = Self::observations_to_messages(&observations, &[]);
 
-        // ── Publish llm:call_started ────────────────────────────────
-        if let Some(ref sink) = self.event_sink {
-            sink(kernel::event::Event::new(
-                "cognitive-engine",
-                kernel::event::EventType::Custom("llm:call_started".into()),
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "turn": 0,
-                }),
-            ));
-        }
-
-        // ── LLM call with retry (mirrors LlmReActEngine §1.4) ──────
-        let max_retries = self.config.max_llm_retries;
-        let mut llm_attempt = 0;
-        let request = LlmChatRequest {
-            model: self.config.model.clone(),
-            system_prompt: soul.system_prompt.clone(),
-            messages,
-            tools,
-            max_output_tokens: self.config.max_output_tokens as u32,
-            response_format: None,
-        };
-
-        let response = loop {
-            llm_attempt += 1;
-            let r = self
-                .provider
-                .chat_completion(request.clone(), None)
-                .await;
-            let should_retry = r.is_err()
-                && llm_attempt < max_retries
-                && is_retryable_llm_error(r.as_ref().err());
-            if !should_retry {
-                break r;
+        // ── ReAct loop ──────────────────────────────────────────────
+        let final_content: String;
+        let mut turn = 0u32;
+        loop {
+            if turn >= max_turns {
+                return Err(CognitiveError::MaxDepthReached { depth: turn });
             }
-            let delay_secs = (3_u64.pow(llm_attempt - 1)).min(120);
-            tracing::warn!(
-                agent_id,
-                session_id,
-                attempt = llm_attempt,
-                delay_secs,
-                error = %r.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
-                "LLM API call failed, retrying (cognitive engine)"
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-        };
 
-        // ── Publish llm:call_ended ──────────────────────────────────
-        if let Some(ref sink) = self.event_sink {
-            sink(kernel::event::Event::new(
-                "cognitive-engine",
-                kernel::event::EventType::Custom("llm:call_ended".into()),
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "turn": 0,
-                    "success": response.is_ok(),
-                }),
-            ));
-        }
+            // Publish llm:call_started
+            if let Some(ref sink) = self.event_sink {
+                sink(kernel::event::Event::new(
+                    "cognitive-engine",
+                    kernel::event::EventType::Custom("llm:call_started".into()),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
+                ));
+            }
 
-        let response = response.map_err(|e| CognitiveError::EngineError {
-            engine_name: self.name().to_owned(),
-            message: e,
-        })?;
+            let request = LlmChatRequest {
+                model: self.config.model.clone(),
+                system_prompt: soul.system_prompt.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+                max_output_tokens: self.config.max_output_tokens as u32,
+                response_format: None,
+            };
 
-        // ── Output validation (security harness §8.2) ────────────────
-        let content = {
-            let mut validator = kernel::validator::OutputValidator::new();
-            match validator.validate(&response.content, kernel::types::TrustLevel::Untrusted) {
-                kernel::validator::ValidationOutcome::Pass => response.content,
-                kernel::validator::ValidationOutcome::Fail { reason, .. } => {
-                    tracing::warn!(
-                        session_id,
-                        reason,
-                        "LLM response blocked by output validator (cognitive engine)"
-                    );
-                    "[I apologize, but I cannot provide that response \
-                     as it may contain sensitive information.]"
-                        .to_owned()
+            // LLM call with retry
+            let mut llm_attempt = 0u32;
+            let response = loop {
+                llm_attempt += 1;
+                let r = self.provider.chat_completion(request.clone(), None).await;
+                if !r.is_err() || llm_attempt >= max_retries
+                    || !is_retryable_llm_error(r.as_ref().err())
+                { break r; }
+                let delay = (3_u64.pow(llm_attempt - 1)).min(120);
+                tracing::warn!(%agent_id, %session_id, turn, attempt=llm_attempt, delay, "LLM retry (cognitive engine)");
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            };
+
+            // Publish llm:call_ended
+            if let Some(ref sink) = self.event_sink {
+                sink(kernel::event::Event::new(
+                    "cognitive-engine",
+                    kernel::event::EventType::Custom("llm:call_ended".into()),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "success": response.is_ok() }),
+                ));
+            }
+
+            let response = response.map_err(|e| CognitiveError::EngineError {
+                engine_name: self.name().to_owned(), message: e,
+            })?;
+
+            // Output validation
+            let content = {
+                let mut v = kernel::validator::OutputValidator::new();
+                match v.validate(&response.content, kernel::types::TrustLevel::Untrusted) {
+                    kernel::validator::ValidationOutcome::Pass => response.content,
+                    kernel::validator::ValidationOutcome::Fail { .. } => {
+                        "[I apologize, I cannot provide that response.]".into()
+                    }
+                    kernel::validator::ValidationOutcome::Error { message } => {
+                        return Err(CognitiveError::EngineError {
+                            engine_name: self.name().to_owned(),
+                            message: format!("output validation error: {message}"),
+                        });
+                    }
                 }
-                kernel::validator::ValidationOutcome::Error { message } => {
-                    tracing::error!(
-                        session_id,
-                        error = %message,
-                        "output validator error (fail-closed, cognitive engine)"
-                    );
-                    return Err(CognitiveError::EngineError {
-                        engine_name: self.name().to_owned(),
-                        message: format!("output validation error: {message}"),
-                    });
+            };
+
+            // Content filter
+            let cf = kernel::content_filter::ContentFilter::new();
+            let content = match cf.filter(&content) {
+                kernel::content_filter::FilterDecision::Block { .. } => {
+                    "[I apologize, I cannot provide that response.]".into()
                 }
+                _ => content,
+            };
+
+            // Token event
+            if let Some(ref sink) = self.event_sink {
+                sink(kernel::event::Event::new(
+                    "cognitive-engine",
+                    kernel::event::EventType::Custom("agent:token_used".into()),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "tokens": (content.len() / 4) as u64 }),
+                ));
             }
-        };
 
-        // ── Content filter (PII + harmful content) ──────────────────
-        let content_filter = kernel::content_filter::ContentFilter::new();
-        let content = match content_filter.filter(&content) {
-            kernel::content_filter::FilterDecision::Pass => content,
-            kernel::content_filter::FilterDecision::Flag { .. } => content,
-            kernel::content_filter::FilterDecision::Block { reason, .. } => {
-                tracing::warn!(
-                    session_id,
-                    reason,
-                    "LLM response blocked by content filter (cognitive engine)"
-                );
-                "[I apologize, but I cannot provide that response \
-                 as it may contain sensitive data.]"
-                    .to_owned()
+            if response.tool_calls.is_empty() {
+                // Finished
+                final_content = content;
+                break;
             }
-        };
 
-        // ── Publish agent:token_used ────────────────────────────────
-        let estimated_tokens = (content.len() / 4) as u64;
-        if let Some(ref sink) = self.event_sink {
-            sink(kernel::event::Event::new(
-                "cognitive-engine",
-                kernel::event::EventType::Custom("agent:token_used".into()),
-                serde_json::json!({
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "turn": 0,
-                    "tokens": estimated_tokens,
-                }),
-            ));
-        }
+            // If tool execution is not configured, return tool calls as decisions
+            // (single-turn mode — the caller handles tool execution)
+            if self.tool_registry.is_none() {
+                return Ok(vec![Decision::call_tools(
+                    Self::new_decision_id(),
+                    &session_id,
+                    response.tool_calls.into_iter().map(|c| ToolCallRequest {
+                        id: c.id, tool_name: c.tool_name, args: c.args, detach: false,
+                    }).collect(),
+                )]);
+            }
 
-        // Convert to decisions
-        let turn = if !response.tool_calls.is_empty() {
-            ReActTurn::ToolCalls {
+            // Tool calls — execute and feed back
+            let parsed_calls = response.tool_calls;
+            messages.push(ChatMessage {
+                role: crate::react::ChatMessageRole::Assistant,
                 content,
-                calls: response.tool_calls,
+                tool_call_id: None,
+                tool_name: None,
+                tool_calls: Some(parsed_calls.iter().map(|c| serde_json::json!({
+                    "id": c.id, "type": "function",
+                    "function": { "name": c.tool_name, "arguments": serde_json::to_string(&c.args).unwrap_or_default() }
+                })).collect()),
                 reasoning_content: response.reasoning_content,
-            }
-        } else {
-            ReActTurn::Finished {
-                content,
-                finish_reason: response.finish_reason,
-            }
-        };
+            });
 
-        Ok(Self::turn_to_decisions(turn, session_id))
+            // Execute tools (with retry + security)
+            let results = self.execute_tool_calls(&parsed_calls).await;
+            for r in &results {
+                messages.push(ChatMessage::tool_result(&r.id, &r.tool_name, &r.output));
+            }
+
+            turn += 1;
+        }
+
+        Ok(vec![Decision::reply(
+            Self::new_decision_id(),
+            &session_id,
+            final_content,
+        )])
     }
 
     fn subscribe(&self, listener: Arc<dyn CognitiveListener>) {

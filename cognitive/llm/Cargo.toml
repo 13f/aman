@@ -13,7 +13,9 @@ workspace = true
 [dependencies]
 cognitive-engine = { path = "../engine" }
 cognitive-react = { path = "../react" }
+event-bus = { path = "../../kernel/event-bus" }
 kernel = { path = "../../kernel/core" }
+tool = { path = "../../kernel/tool" }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

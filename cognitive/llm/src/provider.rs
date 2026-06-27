@@ -10,18 +10,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Streaming event emitted during a streaming LLM response.
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    /// Stream has started.
-    Start,
-    /// A text chunk was received.
-    Chunk(String),
-    /// Stream completed with a finish reason ("stop", "length", "tool_calls").
-    Done { finish_reason: String },
-    /// An error occurred during streaming.
-    Error(String),
-}
+// Re-export from the shared leaf crate.
+pub use cognitive_react::StreamEvent;
 
 /// Structured output format requested from the LLM.
 #[derive(Debug, Clone)]

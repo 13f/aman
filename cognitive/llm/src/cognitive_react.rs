@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use cognitive_engine::{CognitiveEngine, CognitiveListener, Decision, DecisionKind, Observation};
-use kernel::react::{
+use cognitive_react::{
     ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext, ReActEngine, ReActError, ReActTurn,
     StreamEvent, ToolExecutionResult,
 };
@@ -269,7 +269,7 @@ mod tests {
         CognitiveContext, CognitiveError, CognitiveEvent, CognitiveIdentity, CognitiveListener,
         Decision,
     };
-    use kernel::react::{SoulSnapshot, TokenBudget, ToolDescriptor};
+    use cognitive_react::{SoulSnapshot, TokenBudget, ToolDescriptor};
 
     /// Stub cognitive engine that returns a fixed reply.
     struct StubCognitiveEngine {

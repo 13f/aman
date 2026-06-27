@@ -13,6 +13,7 @@ workspace = true
 async-trait.workspace = true
 axum.workspace = true
 blake3.workspace = true
+cognitive-react = { path = "../../cognitive/react" }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

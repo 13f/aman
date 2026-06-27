@@ -1,21 +1,17 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
-//! ⚠️ DEPRECATED SHIM — kept only because `cognitive-llm` depends on this
-//! crate. The source of truth for LLM provider types now lives in
-//! `cognitive_llm::provider` (see `cognitive/llm/src/provider.rs`). New code
-//! should depend on `cognitive-llm` directly and use those types. The
-//! `CognitiveEngine` trait in `cognitive_engine` is the engine-agnostic
-//! abstraction the gateway should target.
+//! ⚠️ DEPRECATED SHIM — ReAct types now live in `cognitive-react`.
 //!
-//! Full migration is blocked by a workspace dependency cycle: `cognitive-llm`
-//! already imports from `kernel` for framework types (`AmanResult`, `Error`,
-//! `ToolContext`, `Tool`, `JsonSchema`, `ToolMode`), so `kernel` cannot
-//! `pub use` from `cognitive-llm`. The long-term fix is to extract the LLM
-//! *types* (`ChatMessage`, `LlmChatRequest`, `LlmResponse`, `StreamEvent`,
-//! `LlmProvider`) into a leaf crate (e.g. `cognitive-types`) with no kernel
-//! dependency, then have both `kernel` and `cognitive-llm` depend on it.
-//! Tracked as P1 / Phase 2 in docs/code-review-20260614.md.
+//! This module previously duplicated `StreamEvent` and imported `ChatMessage`
+//! / `ParsedToolCall` / `ToolDescriptor` from `crate::react`. As of the
+//! `cognitive-react` leaf-crate extraction, `StreamEvent` is also in
+//! `cognitive-react`, and `crate::react` is a re-export of it.
+//!
+//! The `LlmProvider` trait and `ResponseFormat` / `LlmChatRequest` /
+//! `LlmResponse` are kept here because they depend on `kernel::Error`
+//! (the return type of `LlmProvider::chat_completion`). Extracting those
+//! is a follow-up task (P3 leaf-crate for provider types).
 
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 use crate::Error;
@@ -23,18 +19,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Streaming event emitted during a streaming LLM response.
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    /// Stream has started.
-    Start,
-    /// A text chunk was received.
-    Chunk(String),
-    /// Stream completed with a finish reason ("stop", "length", "tool_calls").
-    Done { finish_reason: String },
-    /// An error occurred during streaming.
-    Error(String),
-}
+// Re-export from the shared leaf crate.
+pub use cognitive_react::StreamEvent;
 
 /// Structured output format requested from the LLM.
 #[derive(Debug, Clone)]

@@ -13,6 +13,7 @@ resolver = "2"
 members = [
   "cognitive/engine",
   "cognitive/llm",
+  "cognitive/react",
   "kernel/core",
   "kernel/macros",
   "kernel/event-bus",

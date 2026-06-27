@@ -205,11 +205,9 @@ impl LlmCognitiveEngine {
 
     /// Emit a cognitive event to all registered listeners.
     ///
-    /// Exposed as `pub` so that streaming integrations (and the contract
-    /// tests in `tests/cognitive_engine_contract.rs`) can drive the
-    /// listener registry directly. Production callers should treat this
-    /// as a building block for a future streaming PR — `process()` does
-    /// not yet invoke `emit` automatically.
+    /// `process()` automatically emits `StreamStart`, `TextChunk`,
+    /// `StreamDone`, and `StreamError` events when listeners are
+    /// registered and the provider supports streaming.
     pub fn emit(&self, event: CognitiveEvent) {
         if let Ok(listeners) = self.listeners.lock() {
             for listener in listeners.iter() {
@@ -570,11 +568,35 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 response_format: None,
             };
 
-            // LLM call with retry
+            // ── Streaming callback (if listeners registered) ──────────
+            let stream_cb: Option<Arc<dyn Fn(crate::provider::StreamEvent) + Send + Sync>> = {
+                let guard = self.listeners.lock().ok();
+                if guard.as_ref().is_some_and(|l| !l.is_empty()) {
+                    let listeners = Arc::clone(&self.listeners);
+                    let sid = session_id.clone();
+                    Some(Arc::new(move |evt: crate::provider::StreamEvent| {
+                        if let Ok(guard) = listeners.lock() {
+                            let ce = match evt {
+                                crate::provider::StreamEvent::Start =>
+                                    CognitiveEvent::StreamStart { session_id: sid.clone() },
+                                crate::provider::StreamEvent::Chunk(text) =>
+                                    CognitiveEvent::TextChunk { session_id: sid.clone(), text },
+                                crate::provider::StreamEvent::Done { finish_reason } =>
+                                    CognitiveEvent::StreamDone { session_id: sid.clone(), finish_reason },
+                                crate::provider::StreamEvent::Error(err) =>
+                                    CognitiveEvent::StreamError { session_id: sid.clone(), error: err },
+                            };
+                            for l in guard.iter() { l.on_cognitive_event(ce.clone()); }
+                        }
+                    }))
+                } else { None }
+            };
+
+            // LLM call with retry + streaming
             let mut llm_attempt = 0u32;
             let response = loop {
                 llm_attempt += 1;
-                let r = self.provider.chat_completion(request.clone(), None).await;
+                let r = self.provider.chat_completion(request.clone(), stream_cb.clone()).await;
                 if !r.is_err() || llm_attempt >= max_retries
                     || !is_retryable_llm_error(r.as_ref().err())
                 { break r; }

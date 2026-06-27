@@ -209,6 +209,7 @@ pub fn run() {
             commands::get_mcp_enabled,
             commands::get_locale,
             commands::get_ui_style,
+            commands::get_agents_viewer,
             commands::has_any_provider,
             commands::has_any_agent,
             commands::get_default_model,

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::gateway_client::GatewayClient;
 use crate::rate_limiter::SlidingWindowRateLimiter;
-use config::UiStyle;
+use config::{UiStyle, AgentsViewer};
 use i18n::Locale;
 
 pub struct AppState {
@@ -22,6 +22,8 @@ pub struct AppState {
     pub locale: Locale,
     /// Current UI visual style loaded from config.
     pub ui_style: UiStyle,
+    /// Current agents page viewer loaded from config.
+    pub agents_viewer: AgentsViewer,
 }
 
 impl AppState {
@@ -37,6 +39,7 @@ impl AppState {
             active_agent_key: Arc::new(Mutex::new(None)),
             locale: config.runtime.ui.locale,
             ui_style: config.runtime.ui.style,
+            agents_viewer: config.runtime.ui.agents_viewer,
         }
     }
 }

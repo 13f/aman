@@ -53,6 +53,7 @@ replace_patch!(
     String,
     std::path::PathBuf,
     crate::UiStyle,
+    crate::AgentsViewer,
 );
 
 impl<T: ConfigPatch> ConfigPatch for Option<T> {

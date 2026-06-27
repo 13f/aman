@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 231,
+        "h": 151
+      },
+      "sourceSize": {
+        "w": 231,
+        "h": 151
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 231,
+        "h": 151
+      }
+    }
+  },
+  "meta": {
+    "image": "barracks.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 231,
+      "h": 151
+    },
+    "scale": "1"
+  }
+}

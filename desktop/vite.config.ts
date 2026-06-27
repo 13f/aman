@@ -13,6 +13,9 @@ export default defineConfig({
   resolve: {
     alias: {
       "@shared/frontend": path.resolve(__dirname, "../shared/frontend"),
+      // Zustand has optional React peer; Aman uses Svelte.
+      react: path.resolve(__dirname, "src/lib/react-stub.ts"),
+      "react-dom": path.resolve(__dirname, "src/lib/react-stub.ts"),
     },
   },
   clearScreen: false,

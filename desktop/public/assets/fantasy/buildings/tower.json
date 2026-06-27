@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 81,
+        "h": 238
+      },
+      "sourceSize": {
+        "w": 81,
+        "h": 238
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 81,
+        "h": 238
+      }
+    }
+  },
+  "meta": {
+    "image": "tower.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 81,
+      "h": 238
+    },
+    "scale": "1"
+  }
+}

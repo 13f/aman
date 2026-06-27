@@ -549,6 +549,26 @@ impl std::fmt::Display for UiStyle {
     }
 }
 
+/// Agents page viewer mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentsViewer {
+    /// Default grid of avatar cards.
+    #[default]
+    Grid,
+    /// Age of Agents realm (PixiJS pixel-art colony).
+    AoaRealm,
+}
+
+impl std::fmt::Display for AgentsViewer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentsViewer::Grid => write!(f, "grid"),
+            AgentsViewer::AoaRealm => write!(f, "aoa-realm"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, macros::ConfigPatch)]
 pub struct UiConfig {
     /// Display locale. Default: English (`en`).
@@ -559,6 +579,10 @@ pub struct UiConfig {
     /// Supported values: `frosted-glass`, `aurora`.
     #[serde(default)]
     pub style: UiStyle,
+    /// Agents page viewer. Default: `grid`.
+    /// Supported values: `grid`, `aoa-realm`.
+    #[serde(default)]
+    pub agents_viewer: AgentsViewer,
 }
 
 impl Default for UiConfig {
@@ -566,6 +590,7 @@ impl Default for UiConfig {
         Self {
             locale: Locale::En,
             style: UiStyle::default(),
+            agents_viewer: AgentsViewer::default(),
         }
     }
 }

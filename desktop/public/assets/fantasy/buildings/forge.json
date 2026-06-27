@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 196,
+        "h": 171
+      },
+      "sourceSize": {
+        "w": 196,
+        "h": 171
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 196,
+        "h": 171
+      }
+    }
+  },
+  "meta": {
+    "image": "forge.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 196,
+      "h": 171
+    },
+    "scale": "1"
+  }
+}

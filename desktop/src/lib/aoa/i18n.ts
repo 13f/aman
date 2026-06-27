@@ -1,0 +1,1063 @@
+import type { HeroStateKind, BuildingId } from './shared/index';
+import type { NotifReason } from './notifications';
+import { useSettings, type Lang } from './settings';
+
+/**
+ * Lekkie i18n bez bibliotek. Domyślny język = angielski (EN), polski (PL) i
+ * włoski (IT) jako przełączniki. Dwie warstwy: UI (chrome HUD) i BUILDINGS
+ * (nazwy + opisy budynków).
+ *
+ * Ton: język LAICKI — dla bystrych, ale niekoniecznie technicznych osób.
+ * Unikamy surowego żargonu (nazw narzędzi, „tokenów", „hooków") na rzecz
+ * zwykłych słów; opis budynku tłumaczy, CO tam się dzieje, nie jakim API.
+ */
+
+export interface UiStrings {
+  fantasy: string;
+  scifi: string;
+  hooksOn: string;
+  hooksOff: string;
+  hooksTitle: string;
+  hooksInstall: string;
+  hooksUninstall: string;
+  hooksRepair: string;
+  hooksRepairShort: string;
+  tokensOut: string;
+  tokensIn: string;
+  connecting: string;
+  missions: string;
+  states: Record<HeroStateKind, string>;
+  modelUnknown: string;
+  transcriptHint: string;
+  tok: string;
+  workingNow: string;
+  sessions: string;
+  peons: string;
+  tokenUsage: string;
+  today: string;
+  week: string;
+  month: string;
+  attribution: string;
+  langLabel: string; // tekst przycisku przełącznika (pokazuje język DOCELOWY)
+  zoomIn: string;
+  zoomOut: string;
+  zoomReset: string;
+  produced: string;
+  read: string;
+  active: string;
+  currentTask: string;
+  recentActions: string;
+  now: string;
+  /** Etykiety powiadomień (powód → krótki tekst nagłówka). */
+  notif: Record<NotifReason, string>;
+  notifClose: string;
+  notifJump: string;
+  autofollow: string;
+  autofollowHint: string;
+  cities: string;
+  agents: string;
+  allCities: string;
+  language: string;
+  flipCity: string;
+  symbols: string;
+  edges: string;
+  communities: string;
+  arsenal: string;
+  skills: string;
+  connectors: string;
+  hooks: string;
+  subagents: string;
+  usedThisSession: string;
+  scanningProject: string;
+  context: string;
+  // Panel ustawień (reakcje budynków)
+  settings: string;
+  buildingReactions: string;
+  buildingReactionsHint: string;
+  addTrigger: string;
+  kindName: string;
+  kindPattern: string;
+  kindCondition: string;
+  coverage: string;
+  covCovered: string;
+  covUnassigned: string;
+  covConflicts: string;
+  assign: string;
+  socialBuildings: string;
+  jsonSynced: string;
+  jsonInvalid: string;
+  restoreDefaults: string;
+  downloadJson: string;
+  uploadJson: string;
+  addCondition: string;
+  addPattern: string;
+  toolName: string;
+  pattern: string;
+  remove: string;
+  addTriggerConfirm: string;
+  // Zakładka Modele
+  tabBuildingReactions: string;
+  tabModels: string;
+  allRandomLabel: string;
+  allRandomHint: string;
+  models: string;
+  modelsHint: string;
+  spriteAndName: string;
+  contextWindowSection: string;
+  seenModels: string;
+  usesFallback: string;
+  matchExact: string;
+  matchPattern: string;
+  matchValue: string;
+  spriteLabel: string;
+  displayNameLabel: string;
+  windowLabel: string;
+  fallbackLabel: string;
+  addRow: string;
+  defaultMark: string;
+  setDefault: string;
+  // Pending-question card & panel-control toggle
+  pqPermissionTitle: string;
+  pqPlanTitle: string;
+  pqQuestionTitle: string;
+  pqAllow: string;
+  pqAllowAlways: string;
+  pqDeny: string;
+  pqApprovePlan: string;
+  pqRejectPlan: string;
+  pqAnswerInTerminal: string;
+  pqPanelControl: string;
+  pqPanelControlOn: string;
+  pqPanelControlOff: string;
+  // Launch dialog
+  launchAgent: string;
+  launchTitle: string;
+  launchFolder: string;
+  launchPrompt: string;
+  launchModel: string;
+  launchPermissionMode: string;
+  launchStart: string;
+  launchCancel: string;
+  launchCostWarning: string;
+  launchUnavailable: string;
+  launchAuthWarning: string;
+  launchSetupGuide: string;
+  agentControls: string;
+  // Question modal & SDK card actions
+  pqSend: string;
+  pqSendPlaceholder: string;
+  pqStop: string;
+  pqRejectReason: string;
+  pqOpenQuestion: string;
+  pqClose: string;
+}
+
+const EN: UiStrings = {
+  fantasy: 'Fantasy',
+  scifi: 'Sci-Fi',
+  hooksOn: '⚡ live: on',
+  hooksOff: '⚡ live: off',
+  hooksTitle: 'Update the world the instant your sessions do something (otherwise there is a ~1s delay)',
+  hooksInstall:
+    'Turn on live updates?\n\nThe world will react the moment your Claude Code sessions do something, instead of with a ~1 second delay. This adds a small entry to your Claude Code settings file (a backup is saved first). Your existing settings are left untouched.',
+  hooksUninstall: 'Turn off live updates? (your other settings stay untouched)',
+  hooksRepair:
+    'Repair live updates?\n\nThis replaces the old direct HTTP hook with a silent local shim. Live updates still work when Age of Agents is running, but Claude Code will stop showing hook errors when it is closed.',
+  hooksRepairShort: '⚡ live: repair',
+  tokensOut: 'Total work the agents have produced',
+  tokensIn: 'Total amount the agents have read',
+  connecting: '○ connecting…',
+  missions: 'Tasks',
+  states: {
+    thinking: 'thinking',
+    working: 'working',
+    'awaiting-input': 'needs you!',
+    idle: 'waiting',
+    sleeping: 'asleep',
+    error: 'hit a snag',
+    recovering: 'recovering',
+    returning: 'heading back',
+  },
+  modelUnknown: 'unknown model',
+  transcriptHint: 'The conversation will show up here as the session does new work.',
+  tok: 'k produced',
+  workingNow: 'Here right now',
+  sessions: 'sessions',
+  peons: 'helpers',
+  tokenUsage: 'Work done here',
+  today: 'Today',
+  week: 'Last 7 days',
+  month: 'Last 30 days',
+  attribution:
+    'Estimated from each session’s activity. Work is credited to the building that matches what the agent was doing (counted in the AI’s units of text).',
+  langLabel: 'PL',
+  zoomIn: 'Zoom in',
+  zoomOut: 'Zoom out',
+  zoomReset: 'Reset view',
+  produced: 'Produced',
+  read: 'Read',
+  active: 'Active',
+  currentTask: 'Current task',
+  recentActions: 'Recent actions',
+  now: 'now',
+  notif: {
+    'needs-you': 'needs your call',
+    error: 'hit a snag',
+    'mission-done': 'task complete',
+    'new-session': 'new session',
+  },
+  notifClose: 'Close',
+  notifJump: 'click to jump',
+  autofollow: 'Follow',
+  autofollowHint: 'Camera follows this hero',
+  cities: 'Kingdom',
+  agents: 'agents',
+  allCities: 'All',
+  language: 'Language',
+  flipCity: 'Mirror city horizontally',
+  symbols: 'Symbols',
+  edges: 'Edges',
+  communities: 'Communities',
+  arsenal: 'Arsenal',
+  skills: 'Skills',
+  connectors: 'Connectors',
+  hooks: 'Hooks',
+  subagents: 'Subagents',
+  usedThisSession: 'used',
+  scanningProject: 'Scanning project…',
+  context: 'Context',
+  settings: 'Settings',
+  buildingReactions: 'Building reactions',
+  buildingReactionsHint: 'Pick which live-log tools each working building reacts to. Social buildings use session state: homes, awaiting input, completed turns, and recovery.',
+  addTrigger: 'add (, or ;)',
+  kindName: 'name',
+  kindPattern: 'pattern',
+  kindCondition: 'condition',
+  coverage: 'Coverage',
+  covCovered: 'working buildings covered',
+  covUnassigned: 'tools fall to home base',
+  covConflicts: 'conflicts',
+  assign: 'assign',
+  socialBuildings: 'Social buildings — driven by session state, no tool triggers.',
+  jsonSynced: 'JSON — kept in sync with the panel',
+  jsonInvalid: 'Invalid config — not applied',
+  restoreDefaults: 'Restore defaults',
+  downloadJson: '⬇ Download JSON',
+  uploadJson: '⬆ Upload JSON',
+  addCondition: '+ condition',
+  addPattern: '+ pattern',
+  toolName: 'tool',
+  pattern: 'regex',
+  remove: 'Remove',
+  addTriggerConfirm: 'Add trigger',
+  tabBuildingReactions: 'Building reactions',
+  tabModels: 'Models',
+  allRandomLabel: 'All random sprites',
+  allRandomHint: 'Every agent gets a random look from the whole pool. Refresh reshuffles the city.',
+  models: 'Models',
+  modelsHint: 'Tell the world how to recognize each model: which character it appears as, and how big its context window is. The 1M tag matters for the window. Edit visually or as JSON — both stay in sync.',
+  spriteAndName: 'Character & name',
+  contextWindowSection: 'Context window',
+  seenModels: 'Models in your sessions',
+  usesFallback: 'falls back to default',
+  matchExact: 'exact id',
+  matchPattern: 'contains',
+  matchValue: 'model text',
+  spriteLabel: 'character',
+  displayNameLabel: 'display name',
+  windowLabel: 'tokens',
+  fallbackLabel: 'Default (unmatched)',
+  addRow: '+ add',
+  defaultMark: 'default',
+  setDefault: 'set default',
+  // Pending-question card & panel-control toggle
+  pqPermissionTitle: 'Permission request',
+  pqPlanTitle: 'Plan ready for approval',
+  pqQuestionTitle: 'Agent question',
+  pqAllow: 'Allow',
+  pqAllowAlways: 'Always allow',
+  pqDeny: 'Deny',
+  pqApprovePlan: 'Approve',
+  pqRejectPlan: 'Reject',
+  pqAnswerInTerminal: 'Answer in the terminal',
+  pqPanelControl: 'Answer prompts in panel',
+  pqPanelControlOn: 'Panel answering: ON',
+  pqPanelControlOff: 'Panel answering: OFF',
+  // Launch dialog
+  launchAgent: 'Launch agent',
+  launchTitle: 'Launch a Claude Code agent',
+  launchFolder: 'Working folder',
+  launchPrompt: 'Prompt',
+  launchModel: 'Model (blank = account default)',
+  launchPermissionMode: 'Permission mode',
+  launchStart: 'Launch',
+  launchCancel: 'Cancel',
+  launchCostWarning: 'This runs a real Claude Code session — it uses your account and consumes tokens.',
+  launchUnavailable: 'Claude Agent SDK not installed — run npm i @anthropic-ai/claude-agent-sdk',
+  launchAuthWarning: 'No SDK auth on the server — launches will fail (401). Generate a token and restart the app from that shell:',
+  launchSetupGuide: 'Setup guide',
+  agentControls: 'Agent controls',
+  // Question modal & SDK card actions
+  pqSend: 'Send',
+  pqSendPlaceholder: 'Reply to the agent…',
+  pqStop: 'Stop agent',
+  pqRejectReason: 'Reason (optional)',
+  pqOpenQuestion: 'agent has a question — open',
+  pqClose: 'Close',
+};
+
+const PL: UiStrings = {
+  fantasy: 'Fantasy',
+  scifi: 'Sci-Fi',
+  hooksOn: '⚡ na żywo: wł',
+  hooksOff: '⚡ na żywo: wył',
+  hooksTitle: 'Aktualizuj świat w chwili, gdy Twoje sesje coś robią (inaczej jest ~1 s opóźnienia)',
+  hooksInstall:
+    'Włączyć aktualizacje na żywo?\n\nŚwiat będzie reagował w chwili, gdy Twoje sesje Claude Code coś zrobią, zamiast z ~1-sekundowym opóźnieniem. Dopisze to mały wpis do pliku ustawień Claude Code (najpierw powstaje kopia zapasowa). Twoje istniejące ustawienia pozostają nietknięte.',
+  hooksUninstall: 'Wyłączyć aktualizacje na żywo? (Twoje pozostałe ustawienia zostają nietknięte)',
+  hooksRepair:
+    'Naprawić aktualizacje na żywo?\n\nTo zastąpi stary bezpośredni hook HTTP cichym lokalnym shimem. Aktualizacje nadal działają, gdy Age of Agents jest uruchomione, ale Claude Code przestanie pokazywać błędy hooków, gdy aplikacja jest zamknięta.',
+  hooksRepairShort: '⚡ live: napraw',
+  tokensOut: 'Łączna praca wytworzona przez agentów',
+  tokensIn: 'Łączna ilość, którą agenci przeczytali',
+  connecting: '○ łączenie…',
+  missions: 'Zadania',
+  states: {
+    thinking: 'myśli',
+    working: 'pracuje',
+    'awaiting-input': 'czeka na Ciebie!',
+    idle: 'czeka',
+    sleeping: 'śpi',
+    error: 'potknięcie',
+    recovering: 'dochodzi do siebie',
+    returning: 'wraca',
+  },
+  modelUnknown: 'nieznany model',
+  transcriptHint: 'Rozmowa pojawi się tutaj, gdy sesja zacznie coś robić.',
+  tok: 'k wytworzono',
+  workingNow: 'Tutaj teraz',
+  sessions: 'sesji',
+  peons: 'pomocników',
+  tokenUsage: 'Wykonana tu praca',
+  today: 'Dziś',
+  week: 'Ostatnie 7 dni',
+  month: 'Ostatnie 30 dni',
+  attribution:
+    'Szacowane z aktywności każdej sesji. Pracę przypisujemy do budynku pasującego do tego, co agent robił (liczone w jednostkach tekstu AI).',
+  langLabel: 'EN',
+  zoomIn: 'Przybliż',
+  zoomOut: 'Oddal',
+  zoomReset: 'Wycentruj',
+  produced: 'Wytworzono',
+  read: 'Przeczytano',
+  active: 'Aktywny',
+  currentTask: 'Bieżące zadanie',
+  recentActions: 'Ostatnie akcje',
+  now: 'teraz',
+  notif: {
+    'needs-you': 'agent wzywa pomocy',
+    error: 'potknięcie',
+    'mission-done': 'zadanie wykonane',
+    'new-session': 'nowa sesja',
+  },
+  notifClose: 'Zamknij',
+  notifJump: 'kliknij, by skoczyć',
+  autofollow: 'Podążaj',
+  autofollowHint: 'Kamera podąża za bohaterem',
+  cities: 'Królestwo',
+  agents: 'agentów',
+  allCities: 'Wszystkie',
+  language: 'Język',
+  flipCity: 'Odbij miasto poziomo',
+  symbols: 'Symbole',
+  edges: 'Krawędzie',
+  communities: 'Społeczności',
+  arsenal: 'Arsenał',
+  skills: 'Skille',
+  connectors: 'Konektory',
+  hooks: 'Hooki',
+  subagents: 'Subagenci',
+  usedThisSession: 'użyto',
+  scanningProject: 'Skanuję projekt…',
+  context: 'Kontekst',
+  settings: 'Ustawienia',
+  buildingReactions: 'Reakcje budynków',
+  buildingReactionsHint: 'Wybierz, na jakie narzędzia z żywych logów reaguje każdy budynek. Budynki socjalne wynikają ze stanu sesji: dom, oczekiwanie, zakończenie i odzyskiwanie.',
+  addTrigger: 'dodaj (, lub ;)',
+  kindName: 'nazwa',
+  kindPattern: 'wzorzec',
+  kindCondition: 'warunek',
+  coverage: 'Pokrycie',
+  covCovered: 'budynków roboczych pokrytych',
+  covUnassigned: 'narzędzi spada do Twierdzy',
+  covConflicts: 'konfliktów',
+  assign: 'przypisz',
+  socialBuildings: 'Budynki socjalne — sterowane stanem sesji, bez wyzwalaczy narzędzi.',
+  jsonSynced: 'JSON — synchronizowany z panelem',
+  jsonInvalid: 'Niepoprawny config — niezastosowany',
+  restoreDefaults: 'Przywróć domyślne',
+  downloadJson: '⬇ Pobierz JSON',
+  uploadJson: '⬆ Wgraj JSON',
+  addCondition: '+ warunek',
+  addPattern: '+ wzorzec',
+  toolName: 'narzędzie',
+  pattern: 'regex',
+  remove: 'Usuń',
+  addTriggerConfirm: 'Dodaj wyzwalacz',
+  tabBuildingReactions: 'Reakcje budynków',
+  tabModels: 'Modele',
+  allRandomLabel: 'Losowe sprite\'y',
+  allRandomHint: 'Każdy agent dostaje losowy wygląd z całej puli. Odświeżenie przelosowuje miasto.',
+  models: 'Modele',
+  modelsHint: 'Powiedz światu, jak rozpoznać każdy model: jako który bohater się pokazuje i jak duże ma okno kontekstu. Tag 1M ma znaczenie dla okna. Edytuj wizualnie albo jako JSON — oba są zsynchronizowane.',
+  spriteAndName: 'Bohater i nazwa',
+  contextWindowSection: 'Okno kontekstu',
+  seenModels: 'Modele w Twoich sesjach',
+  usesFallback: 'spada na domyślne',
+  matchExact: 'dokładne id',
+  matchPattern: 'zawiera',
+  matchValue: 'tekst modelu',
+  spriteLabel: 'bohater',
+  displayNameLabel: 'nazwa',
+  windowLabel: 'tokeny',
+  fallbackLabel: 'Domyślne (niedopasowane)',
+  addRow: '+ dodaj',
+  defaultMark: 'domyślny',
+  setDefault: 'ustaw domyślny',
+  // Pending-question card & panel-control toggle
+  pqPermissionTitle: 'Prośba o uprawnienie',
+  pqPlanTitle: 'Plan do akceptacji',
+  pqQuestionTitle: 'Pytanie agenta',
+  pqAllow: 'Pozwól',
+  pqAllowAlways: 'Pozwól zawsze',
+  pqDeny: 'Odmów',
+  pqApprovePlan: 'Akceptuj',
+  pqRejectPlan: 'Odrzuć',
+  pqAnswerInTerminal: 'Odpowiedz w terminalu',
+  pqPanelControl: 'Odpowiadaj na prompty w panelu',
+  pqPanelControlOn: 'Odpowiadanie w panelu: WŁ.',
+  pqPanelControlOff: 'Odpowiadanie w panelu: WYŁ.',
+  // Launch dialog
+  launchAgent: 'Uruchom agenta',
+  launchTitle: 'Uruchom agenta Claude Code',
+  launchFolder: 'Folder roboczy',
+  launchPrompt: 'Prompt',
+  launchModel: 'Model (puste = domyślny konta)',
+  launchPermissionMode: 'Tryb uprawnień',
+  launchStart: 'Uruchom',
+  launchCancel: 'Anuluj',
+  launchCostWarning: 'To uruchamia prawdziwą sesję Claude Code — używa Twojego konta i zużywa tokeny.',
+  launchUnavailable: 'Brak Claude Agent SDK — uruchom npm i @anthropic-ai/claude-agent-sdk',
+  launchAuthWarning: 'Brak auth SDK na serwerze — launch padnie (401). Wygeneruj token i zrestartuj appkę z tego shella:',
+  launchSetupGuide: 'Instrukcja konfiguracji',
+  agentControls: 'Sterowanie agentami',
+  // Question modal & SDK card actions
+  pqSend: 'Wyślij',
+  pqSendPlaceholder: 'Odpowiedz agentowi…',
+  pqStop: 'Zatrzymaj agenta',
+  pqRejectReason: 'Powód (opcjonalnie)',
+  pqOpenQuestion: 'agent ma pytanie — otwórz',
+  pqClose: 'Zamknij',
+};
+
+const IT: UiStrings = {
+  fantasy: 'Fantasy',
+  scifi: 'Sci-Fi',
+  hooksOn: '⚡ live: on',
+  hooksOff: '⚡ live: off',
+  hooksTitle: "Aggiorna il mondo nell'istante in cui le tue sessioni fanno qualcosa (altrimenti c'è un ritardo di ~1s)",
+  hooksInstall:
+    "Attivare gli aggiornamenti in tempo reale?\n\nIl mondo reagirà nell'istante in cui le tue sessioni Claude Code faranno qualcosa, invece di avere un ritardo di ~1 secondo. Verrà aggiunta una piccola voce al file delle impostazioni di Claude Code (prima viene salvato un backup). Le tue impostazioni esistenti restano intatte.",
+  hooksUninstall: 'Disattivare gli aggiornamenti in tempo reale? (le altre impostazioni restano intatte)',
+  hooksRepair:
+    "Riparare gli aggiornamenti in tempo reale?\n\nSostituisce il vecchio hook HTTP diretto con uno shim locale silenzioso. Gli aggiornamenti funzionano ancora quando Age of Agents è aperto, ma Claude Code smette di mostrare errori degli hook quando l'app è chiusa.",
+  hooksRepairShort: '⚡ live: ripara',
+  tokensOut: 'Lavoro totale prodotto dagli agenti',
+  tokensIn: "Quantità totale che gli agenti hanno letto",
+  connecting: '○ connessione…',
+  missions: 'Missioni',
+  states: {
+    thinking: 'sta pensando',
+    working: 'al lavoro',
+    'awaiting-input': 'ti serve!',
+    idle: 'in attesa',
+    sleeping: 'addormentato',
+    error: 'ha incontrato un problema',
+    recovering: 'si riprende',
+    returning: 'sta tornando',
+  },
+  modelUnknown: 'modello sconosciuto',
+  transcriptHint: 'La conversazione apparirà qui quando la sessione inizierà a lavorare.',
+  tok: 'k prodotti',
+  workingNow: 'Qui adesso',
+  sessions: 'sessioni',
+  peons: 'aiutanti',
+  tokenUsage: 'Lavoro svolto qui',
+  today: 'Oggi',
+  week: 'Ultimi 7 giorni',
+  month: 'Ultimi 30 giorni',
+  attribution:
+    "Stimato dall'attività di ogni sessione. Il lavoro è accreditato all'edificio che corrisponde a ciò che l'agente stava facendo (contato nelle unità di testo dell'IA).",
+  langLabel: 'PL',
+  zoomIn: 'Zoom avanti',
+  zoomOut: 'Zoom indietro',
+  zoomReset: 'Reimposta vista',
+  produced: 'Prodotto',
+  read: 'Letto',
+  active: 'Attivo',
+  currentTask: 'Compito attuale',
+  recentActions: 'Azioni recenti',
+  now: 'ora',
+  notif: {
+    'needs-you': 'ha bisogno di te',
+    error: 'ha incontrato un problema',
+    'mission-done': 'missione completata',
+    'new-session': 'nuova sessione',
+  },
+  notifClose: 'Chiudi',
+  notifJump: 'clicca per saltare',
+  autofollow: 'Segui',
+  autofollowHint: 'La telecamera segue questo eroe',
+  cities: 'Regno',
+  agents: 'agenti',
+  allCities: 'Tutte',
+  language: 'Lingua',
+  flipCity: 'Ribalta la città in orizzontale',
+  symbols: 'Simboli',
+  edges: 'Archi',
+  communities: 'Comunità',
+  arsenal: 'Arsenale',
+  skills: 'Skill',
+  connectors: 'Connettori',
+  hooks: 'Hook',
+  subagents: 'Subagenti',
+  usedThisSession: 'usato',
+  scanningProject: 'Scansione progetto…',
+  context: 'Contesto',
+  settings: 'Impostazioni',
+  buildingReactions: 'Reazioni degli edifici',
+  buildingReactionsHint: 'Scegli a quali strumenti dei log dal vivo reagisce ogni edificio. Gli edifici sociali seguono lo stato: casa, attesa, completamento e recupero.',
+  addTrigger: 'aggiungi (, o ;)',
+  kindName: 'nome',
+  kindPattern: 'pattern',
+  kindCondition: 'condizione',
+  coverage: 'Copertura',
+  covCovered: 'edifici operativi coperti',
+  covUnassigned: 'strumenti finiscono al Centro',
+  covConflicts: 'conflitti',
+  assign: 'assegna',
+  socialBuildings: 'Edifici sociali — guidati dallo stato della sessione, senza trigger di strumenti.',
+  jsonSynced: 'JSON — sincronizzato con il pannello',
+  jsonInvalid: 'Config non valido — non applicato',
+  restoreDefaults: 'Ripristina predefiniti',
+  downloadJson: '⬇ Scarica JSON',
+  uploadJson: '⬆ Carica JSON',
+  addCondition: '+ condizione',
+  addPattern: '+ pattern',
+  toolName: 'strumento',
+  pattern: 'regex',
+  remove: 'Rimuovi',
+  addTriggerConfirm: 'Aggiungi trigger',
+  tabBuildingReactions: 'Reazioni degli edifici',
+  tabModels: 'Modelli',
+  allRandomLabel: 'Sprite casuali',
+  allRandomHint: 'Ogni agente riceve un aspetto casuale dall\'intero set. L\'aggiornamento rimescola la città.',
+  models: 'Modelli',
+  modelsHint: 'Indica al mondo come riconoscere ogni modello: con quale personaggio appare e quanto è grande la sua finestra di contesto. Il tag 1M conta per la finestra. Modifica visivamente o come JSON — restano sincronizzati.',
+  spriteAndName: 'Personaggio e nome',
+  contextWindowSection: 'Finestra di contesto',
+  seenModels: 'Modelli nelle tue sessioni',
+  usesFallback: 'usa il predefinito',
+  matchExact: 'id esatto',
+  matchPattern: 'contiene',
+  matchValue: 'testo del modello',
+  spriteLabel: 'personaggio',
+  displayNameLabel: 'nome',
+  windowLabel: 'token',
+  fallbackLabel: 'Predefinito (non abbinato)',
+  addRow: '+ aggiungi',
+  defaultMark: 'predefinito',
+  setDefault: 'imposta predefinito',
+  // Pending-question card & panel-control toggle
+  pqPermissionTitle: 'Richiesta di permesso',
+  pqPlanTitle: 'Piano da approvare',
+  pqQuestionTitle: 'Domanda dell’agente',
+  pqAllow: 'Consenti',
+  pqAllowAlways: 'Consenti sempre',
+  pqDeny: 'Nega',
+  pqApprovePlan: 'Approva',
+  pqRejectPlan: 'Rifiuta',
+  pqAnswerInTerminal: 'Rispondi nel terminale',
+  pqPanelControl: 'Rispondi ai prompt nel pannello',
+  pqPanelControlOn: 'Risposta nel pannello: ON',
+  pqPanelControlOff: 'Risposta nel pannello: OFF',
+  // Launch dialog
+  launchAgent: 'Avvia agente',
+  launchTitle: 'Avvia un agente Claude Code',
+  launchFolder: 'Cartella di lavoro',
+  launchPrompt: 'Prompt',
+  launchModel: 'Modello (vuoto = predefinito account)',
+  launchPermissionMode: 'Modalità permessi',
+  launchStart: 'Avvia',
+  launchCancel: 'Annulla',
+  launchCostWarning: 'Avvia una vera sessione Claude Code — usa il tuo account e consuma token.',
+  launchUnavailable: 'Claude Agent SDK non installato — esegui npm i @anthropic-ai/claude-agent-sdk',
+  launchAuthWarning: 'Nessuna auth SDK sul server — i lanci falliranno (401). Genera un token e riavvia l’app da quella shell:',
+  launchSetupGuide: 'Guida alla configurazione',
+  agentControls: 'Controlli agente',
+  // Question modal & SDK card actions
+  pqSend: 'Invia',
+  pqSendPlaceholder: "Rispondi all'agente…",
+  pqStop: 'Ferma agente',
+  pqRejectReason: 'Motivo (facoltativo)',
+  pqOpenQuestion: "l'agente ha una domanda — apri",
+  pqClose: 'Chiudi',
+};
+
+const UI: Record<Lang, UiStrings> = { en: EN, pl: PL, it: IT };
+
+/** Reaktywny hook: zwraca napisy UI dla aktualnego języka. */
+export function useUi(): UiStrings {
+  return UI[useSettings((s) => s.lang)];
+}
+
+export interface BuildingText {
+  label: string;
+  desc: string;
+}
+
+type ThemeId = 'fantasy' | 'scifi';
+
+// Opis = co budynek REPREZENTUJE, zwykłym językiem (2 zdania, bez żargonu narzędzi).
+const BUILDINGS: Record<ThemeId, Record<BuildingId, Record<Lang, BuildingText>>> = {
+  fantasy: {
+    citadel: {
+      en: {
+        label: 'Citadel',
+        desc: 'The home base. A session rests here between tasks — planning its next move and thinking things through before heading out to work.',
+      },
+      pl: {
+        label: 'Twierdza',
+        desc: 'Baza domowa. Sesja odpoczywa tu między zadaniami — planuje kolejny krok i przemyśliwa sprawy, zanim ruszy do pracy.',
+      },
+      it: {
+        label: 'Cittadella',
+        desc: 'La base. Una sessione riposa qui tra un compito e l\'altro — pianifica la prossima mossa e riflette prima di uscire a lavorare.',
+      },
+    },
+    tower: {
+      en: {
+        label: 'Mage Tower',
+        desc: 'The lookout onto the outside world. Agents come here to search the internet and read pages, gathering knowledge that isn’t in your project.',
+      },
+      pl: {
+        label: 'Wieża Maga',
+        desc: 'Punkt obserwacyjny świata zewnętrznego. Agenci przychodzą tu przeszukiwać internet i czytać strony, zbierając wiedzę, której nie ma w Twoim projekcie.',
+      },
+      it: {
+        label: 'Torre del Mago',
+        desc: 'L\'osservatorio sul mondo esterno. Gli agenti vengono qui per cercare su internet e leggere pagine, raccogliendo conoscenze che non sono nel tuo progetto.',
+      },
+    },
+    forge: {
+      en: {
+        label: 'Forge',
+        desc: 'The workshop. This is where agents actually write and rewrite code — creating new features and fixing what’s broken in your program.',
+      },
+      pl: {
+        label: 'Kuźnia',
+        desc: 'Warsztat. To tutaj agenci naprawdę piszą i przerabiają kod — tworzą nowe funkcje i naprawiają to, co nie działa w Twoim programie.',
+      },
+      it: {
+        label: 'Fucina',
+        desc: 'L\'officina. È qui che gli agenti scrivono e riscrivono davvero il codice — creando nuove funzionalità e correggendo ciò che non funziona nel tuo programma.',
+      },
+    },
+    library: {
+      en: {
+        label: 'Library',
+        desc: 'The reading room. Agents browse and search through the project’s files here to understand how everything fits together before changing anything.',
+      },
+      pl: {
+        label: 'Biblioteka',
+        desc: 'Czytelnia. Agenci przeglądają i przeszukują pliki projektu, by zrozumieć, jak wszystko się łączy, zanim cokolwiek zmienią.',
+      },
+      it: {
+        label: 'Biblioteca',
+        desc: 'La sala di lettura. Gli agenti sfogliano e cercano tra i file del progetto per capire come si incastrano i pezzi, prima di cambiare qualcosa.',
+      },
+    },
+    mine: {
+      en: {
+        label: 'Mine',
+        desc: 'The engine room. Agents run commands and tests here — building the project and checking that the work actually runs. The heavy lifting.',
+      },
+      pl: {
+        label: 'Kopalnia',
+        desc: 'Maszynownia. Agenci uruchamiają tu polecenia i testy — budują projekt i sprawdzają, czy praca naprawdę działa. Najcięższa robota.',
+      },
+      it: {
+        label: 'Miniera',
+        desc: 'La sala macchine. Gli agenti eseguono comandi e test qui — compilano il progetto e verificano che il lavoro funzioni davvero. Il lavoro pesante.',
+      },
+    },
+    barracks: {
+      en: {
+        label: 'Barracks',
+        desc: 'The staging ground. When a job is big, an agent calls in helpers here — smaller assistants that each take on a part of the task at the same time.',
+      },
+      pl: {
+        label: 'Koszary',
+        desc: 'Plac zbiórki. Gdy zadanie jest duże, agent wzywa tu pomocników — mniejszych asystentów, z których każdy bierze na siebie część pracy naraz.',
+      },
+      it: {
+        label: 'Caserma',
+        desc: 'Il punto di raduno. Quando un lavoro è grande, un agente chiama qui gli aiutanti — assistenti più piccoli che ognuno prende una parte del compito in parallelo.',
+      },
+    },
+    market: {
+      en: {
+        label: 'Market',
+        desc: 'The shipping dock. Finished work leaves from here — saving changes and publishing them so the rest of the team (or the live app) receives them.',
+      },
+      pl: {
+        label: 'Targ',
+        desc: 'Nabrzeże wysyłkowe. Stąd wychodzi gotowa praca — zapis zmian i ich publikacja, by trafiły do reszty zespołu (albo do działającej aplikacji).',
+      },
+      it: {
+        label: 'Mercato',
+        desc: 'Il molo di spedizione. Da qui parte il lavoro finito — salvataggio delle modifiche e pubblicazione, così il resto del team (o l\'app live) le riceve.',
+      },
+    },
+    guild: {
+      en: {
+        label: 'Guild',
+        desc: 'The connections hub. Agents reach out to outside tools and services here — the plug-ins and integrations that extend what they can do.',
+      },
+      pl: {
+        label: 'Gildia',
+        desc: 'Węzeł połączeń. Agenci łączą się tu z zewnętrznymi narzędziami i usługami — wtyczkami i integracjami, które poszerzają ich możliwości.',
+      },
+      it: {
+        label: 'Gilda',
+        desc: 'Il nodo delle connessioni. Gli agenti si collegano qui a strumenti e servizi esterni — plugin e integrazioni che estendono ciò che possono fare.',
+      },
+    },
+    arena: {
+      en: {
+        label: 'Arena',
+        desc: 'A gathering ground for active sessions of the same project — they line up here when many work in parallel, so the citadel square doesn’t overflow.',
+      },
+      pl: {
+        label: 'Arena',
+        desc: 'Miejsce zbiórki aktywnych sesji tego samego projektu — ustawiają się tu, gdy wiele pracuje równolegle, by plac twierdzy się nie przelewał.',
+      },
+      it: {
+        label: 'Arena',
+        desc: 'Punto di raduno per le sessioni attive dello stesso progetto — si mettono in fila qui quando molte lavorano in parallelo, così la piazza della cittadella non trabocca.',
+      },
+    },
+    tavern: {
+      en: {
+        label: 'Tavern',
+        desc: 'A quieter gathering spot for sessions that are waiting or thinking — they rest here with their own project-mates, away from the bustle of the citadel.',
+      },
+      pl: {
+        label: 'Karczma',
+        desc: 'Spokojniejsze miejsce zbiórki sesji, które czekają lub myślą — odpoczywają tu ze swoimi współtowarzyszami z projektu, z dala od zgiełku twierdzy.',
+      },
+      it: {
+        label: 'Taverna',
+        desc: 'Un punto di ritrovo più tranquillo per le sessioni che aspettano o riflettono — riposano qui con i compagni di progetto, lontano dal trambusto della cittadella.',
+      },
+    },
+    garden: {
+      en: {
+        label: 'Garden',
+        desc: 'A restful spot for sessions that just finished their work — they return here to be with other project-mates who have also wrapped up.',
+      },
+      pl: {
+        label: 'Ogród',
+        desc: 'Spokojne miejsce dla sesji, które właśnie skończyły pracę — wracają tu, by być z innymi współtowarzyszami z projektu, którzy też zakończyli.',
+      },
+      it: {
+        label: 'Giardino',
+        desc: 'Un angolo tranquillo per le sessioni che hanno appena finito il loro lavoro — tornano qui per stare con gli altri compagni di progetto che hanno concluso.',
+      },
+    },
+    bar: {
+      en: {
+        label: 'Bar',
+        desc: 'A lively social spot for sessions that want to discuss or pair up — they gather here with project-mates to share notes and brainstorm together.',
+      },
+      pl: {
+        label: 'Bar',
+        desc: 'Tętniące życiem miejsce towarzyskie dla sesji, które chcą dyskutować lub pracować w parach — zbierają się tu ze współtowarzyszami z projektu, by dzielić się notatkami i burzą mózgów.',
+      },
+      it: {
+        label: 'Bar',
+        desc: 'Un punto di ritrovo vivace per le sessioni che vogliono discutere o lavorare in coppia — si radunano qui con i compagni di progetto per condividere appunti e fare brainstorming.',
+      },
+    },
+    shrine: {
+      en: {
+        label: 'Shrine',
+        desc: 'A quiet contemplative spot for sessions deep in thought — they come here to focus alone, away from the bustle of the other gathering places.',
+      },
+      pl: {
+        label: 'Świątynia',
+        desc: 'Ciche, kontemplacyjne miejsce dla sesji pogrążonych w myślach — przychodzą tu, by skupić się w samotności, z dala od zgiełku innych punktów zbiórki.',
+      },
+      it: {
+        label: 'Santuario',
+        desc: 'Un angolo silenzioso e contemplativo per le sessioni immerse nei loro pensieri — vengono qui per concentrarsi in solitudine, lontano dal trambusto degli altri punti di ritrovo.',
+      },
+    },
+    // I seguenti 3 building esistono solo nel tema sci-fi: in fantasy
+    // il type Record<BuildingId, ...> li richiede comunque (etichette
+    // placeholder, non vengono mai mostrati).
+    holodeck: {
+      en: { label: 'Holodeck', desc: 'Sci-fi gathering point.' },
+      pl: { label: 'Holodek', desc: 'Punkt zbiórki sci-fi.' },
+      it: { label: 'Ologramma', desc: 'Punto di raccolta sci-fi.' },
+    },
+    mess: {
+      en: { label: 'Mess Hall', desc: 'Sci-fi gathering point.' },
+      pl: { label: 'Mes', desc: 'Punkt zbiórki sci-fi.' },
+      it: { label: 'Mensa', desc: 'Punto di raccolta sci-fi.' },
+    },
+    hydroponics: {
+      en: { label: 'Hydroponics', desc: 'Sci-fi gathering point.' },
+      pl: { label: 'Hydroponika', desc: 'Punkt zbiórki sci-fi.' },
+      it: { label: 'Idroponica', desc: 'Punto di raccolta sci-fi.' },
+    },
+    // Anche lounge/medbay sono solo sci-fi (bar/shrine sono nel blocco fantasy sopra).
+    lounge: {
+      en: { label: 'Lounge', desc: 'Sci-fi gathering point.' },
+      pl: { label: 'Salon', desc: 'Punkt zbiórki sci-fi.' },
+      it: { label: 'Salotto', desc: 'Punto di raccolta sci-fi.' },
+    },
+    medbay: {
+      en: { label: 'Medbay', desc: 'Sci-fi gathering point.' },
+      pl: { label: 'Ambulatorium', desc: 'Punkt zbiórki sci-fi.' },
+      it: { label: 'Infermeria', desc: 'Punto di raccolta sci-fi.' },
+    },
+  },
+  scifi: {
+    citadel: {
+      en: {
+        label: 'Command Center',
+        desc: 'The home base. A session rests here between tasks — planning its next move and thinking things through before heading out to work.',
+      },
+      pl: {
+        label: 'Centrum dowodzenia',
+        desc: 'Baza domowa. Sesja odpoczywa tu między zadaniami — planuje kolejny krok i przemyśliwa sprawy, zanim ruszy do pracy.',
+      },
+      it: {
+        label: 'Centro di Comando',
+        desc: 'La base. Una sessione riposa qui tra un compito e l\'altro — pianifica la prossima mossa e riflette prima di uscire a lavorare.',
+      },
+    },
+    tower: {
+      en: {
+        label: 'Laboratory',
+        desc: 'The lookout onto the outside world. Agents come here to search the internet and read pages, gathering knowledge that isn’t in your project.',
+      },
+      pl: {
+        label: 'Laboratorium',
+        desc: 'Punkt obserwacyjny świata zewnętrznego. Agenci przychodzą tu przeszukiwać internet i czytać strony, zbierając wiedzę, której nie ma w Twoim projekcie.',
+      },
+      it: {
+        label: 'Laboratorio',
+        desc: 'L\'osservatorio sul mondo esterno. Gli agenti vengono qui per cercare su internet e leggere pagine, raccogliendo conoscenze che non sono nel tuo progetto.',
+      },
+    },
+    forge: {
+      en: {
+        label: 'Drone Factory',
+        desc: 'The workshop. This is where agents actually write and rewrite code — creating new features and fixing what’s broken in your program.',
+      },
+      pl: {
+        label: 'Fabryka dronów',
+        desc: 'Warsztat. To tutaj agenci naprawdę piszą i przerabiają kod — tworzą nowe funkcje i naprawiają to, co nie działa w Twoim programie.',
+      },
+      it: {
+        label: 'Fabbrica di Droni',
+        desc: 'L\'officina. È qui che gli agenti scrivono e riscrivono davvero il codice — creando nuove funzionalità e correggendo ciò che non funziona nel tuo programma.',
+      },
+    },
+    library: {
+      en: {
+        label: 'Data Archive',
+        desc: 'The reading room. Agents browse and search through the project’s files here to understand how everything fits together before changing anything.',
+      },
+      pl: {
+        label: 'Archiwum danych',
+        desc: 'Czytelnia. Agenci przeglądają i przeszukują pliki projektu, by zrozumieć, jak wszystko się łączy, zanim cokolwiek zmienią.',
+      },
+      it: {
+        label: 'Archivio Dati',
+        desc: 'La sala di lettura. Gli agenti sfogliano e cercano tra i file del progetto per capire come si incastrano i pezzi, prima di cambiare qualcosa.',
+      },
+    },
+    mine: {
+      en: {
+        label: 'Refinery',
+        desc: 'The engine room. Agents run commands and tests here — building the project and checking that the work actually runs. The heavy lifting.',
+      },
+      pl: {
+        label: 'Rafineria',
+        desc: 'Maszynownia. Agenci uruchamiają tu polecenia i testy — budują projekt i sprawdzają, czy praca naprawdę działa. Najcięższa robota.',
+      },
+      it: {
+        label: 'Raffineria',
+        desc: 'La sala macchine. Gli agenti eseguono comandi e test qui — compilano il progetto e verificano che il lavoro funzioni davvero. Il lavoro pesante.',
+      },
+    },
+    barracks: {
+      en: {
+        label: 'Hangar',
+        desc: 'The staging ground. When a job is big, an agent calls in helpers here — smaller assistants that each take on a part of the task at the same time.',
+      },
+      pl: {
+        label: 'Hangar',
+        desc: 'Plac zbiórki. Gdy zadanie jest duże, agent wzywa tu pomocników — mniejszych asystentów, z których każdy bierze na siebie część pracy naraz.',
+      },
+      it: {
+        label: 'Hangar',
+        desc: 'Il punto di raduno. Quando un lavoro è grande, un agente chiama qui gli aiutanti — assistenti più piccoli che ognuno prende una parte del compito in parallelo.',
+      },
+    },
+    market: {
+      en: {
+        label: 'Spaceport',
+        desc: 'The shipping dock. Finished work leaves from here — saving changes and publishing them so the rest of the team (or the live app) receives them.',
+      },
+      pl: {
+        label: 'Port kosmiczny',
+        desc: 'Nabrzeże wysyłkowe. Stąd wychodzi gotowa praca — zapis zmian i ich publikacja, by trafiły do reszty zespołu (albo do działającej aplikacji).',
+      },
+      it: {
+        label: 'Porto Spaziale',
+        desc: 'Il molo di spedizione. Da qui parte il lavoro finito — salvataggio delle modifiche e pubblicazione, così il resto del team (o l\'app live) le riceve.',
+      },
+    },
+    guild: {
+      en: {
+        label: 'Comms Station',
+        desc: 'The connections hub. Agents reach out to outside tools and services here — the plug-ins and integrations that extend what they can do.',
+      },
+      pl: {
+        label: 'Stacja łączności',
+        desc: 'Węzeł połączeń. Agenci łączą się tu z zewnętrznymi narzędziami i usługami — wtyczkami i integracjami, które poszerzają ich możliwości.',
+      },
+      it: {
+        label: 'Stazione di Comunicazione',
+        desc: 'Il nodo delle connessioni. Gli agenti si collegano qui a strumenti e servizi esterni — plugin e integrazioni che estendono ciò che possono fare.',
+      },
+    },
+    holodeck: {
+      en: {
+        label: 'Holodeck',
+        desc: 'A gathering ground for active sessions of the same project — they line up here when many work in parallel, so the command center doesn’t overflow.',
+      },
+      pl: {
+        label: 'Holodek',
+        desc: 'Miejsce zbiórki aktywnych sesji tego samego projektu — ustawiają się tu, gdy wiele pracuje równolegle, by plac centrum dowodzenia się nie przelewał.',
+      },
+      it: {
+        label: 'Ologramma',
+        desc: 'Punto di raduno per le sessioni attive dello stesso progetto — si mettono in fila qui quando molte lavorano in parallelo, così la piazza del centro comando non trabocca.',
+      },
+    },
+    mess: {
+      en: {
+        label: 'Mess Hall',
+        desc: 'A quieter gathering spot for sessions that are waiting or thinking — they rest here with their own project-mates, away from the bustle of the command center.',
+      },
+      pl: {
+        label: 'Mes',
+        desc: 'Spokojniejsze miejsce zbiórki sesji, które czekają lub myślą — odpoczywają tu ze swoimi współtowarzyszami z projektu, z dala od zgiełku centrum dowodzenia.',
+      },
+      it: {
+        label: 'Mensa',
+        desc: 'Un punto di ritrovo più tranquillo per le sessioni che aspettano o riflettono — riposano qui con i compagni di progetto, lontano dal trambusto del centro comando.',
+      },
+    },
+    hydroponics: {
+      en: {
+        label: 'Hydroponics',
+        desc: 'A restful spot for sessions that just finished their work — they return here to be with other project-mates who have also wrapped up.',
+      },
+      pl: {
+        label: 'Hydroponika',
+        desc: 'Spokojne miejsce dla sesji, które właśnie skończyły pracę — wracają tu, by być z innymi współtowarzyszami z projektu, którzy też zakończyli.',
+      },
+      it: {
+        label: 'Idroponica',
+        desc: 'Un angolo tranquillo per le sessioni che hanno appena finito il loro lavoro — tornano qui per stare con gli altri compagni di progetto che hanno concluso.',
+      },
+    },
+    lounge: {
+      en: {
+        label: 'Lounge',
+        desc: 'A social space for sessions that want to discuss or pair up — they gather here with project-mates to share notes and brainstorm together.',
+      },
+      pl: {
+        label: 'Salon',
+        desc: 'Przestrzeń towarzyska dla sesji, które chcą dyskutować lub pracować w parach — zbierają się tu ze współtowarzyszami z projektu, by dzielić się notatkami i burzą mózgów.',
+      },
+      it: {
+        label: 'Salotto',
+        desc: 'Uno spazio sociale per le sessioni che vogliono discutere o lavorare in coppia — si radunano qui con i compagni di progetto per condividere appunti e fare brainstorming.',
+      },
+    },
+    medbay: {
+      en: {
+        label: 'Medbay',
+        desc: 'A recovery bay for sessions that hit an error or are stuck — they rest here with project-mates until they’re ready to try again.',
+      },
+      pl: {
+        label: 'Ambulatorium',
+        desc: 'Strefa regeneracji dla sesji, które napotkały błąd lub utknęły — odpoczywają tu ze współtowarzyszami z projektu, aż będą gotowe, by spróbować ponownie.',
+      },
+      it: {
+        label: 'Infermeria',
+        desc: 'Un\'area di recupero per le sessioni che hanno incontrato un errore o sono bloccate — riposano qui con i compagni di progetto finché non sono pronte a riprovare.',
+      },
+    },
+    // Questi 3 building esistono solo nel tema fantasy: in sci-fi il type
+    // Record<BuildingId, ...> li richiede comunque (placeholder, mai mostrati).
+    arena: {
+      en: { label: 'Arena', desc: 'Fantasy gathering point.' },
+      pl: { label: 'Arena', desc: 'Punkt zbiórki fantasy.' },
+      it: { label: 'Arena', desc: 'Punto di raccolta fantasy.' },
+    },
+    tavern: {
+      en: { label: 'Tavern', desc: 'Fantasy gathering point.' },
+      pl: { label: 'Karczma', desc: 'Punkt zbiórki fantasy.' },
+      it: { label: 'Taverna', desc: 'Punto di raccolta fantasy.' },
+    },
+    garden: {
+      en: { label: 'Garden', desc: 'Fantasy gathering point.' },
+      pl: { label: 'Ogród', desc: 'Punkt zbiórki fantasy.' },
+      it: { label: 'Giardino', desc: 'Punto di raccolta fantasy.' },
+    },
+    bar: {
+      en: { label: 'Bar', desc: 'Fantasy gathering point.' },
+      pl: { label: 'Bar', desc: 'Punkt zbiórki fantasy.' },
+      it: { label: 'Bar', desc: 'Punto di raccolta fantasy.' },
+    },
+    shrine: {
+      en: { label: 'Shrine', desc: 'Fantasy gathering point.' },
+      pl: { label: 'Świątynia', desc: 'Punkt zbiórki fantasy.' },
+      it: { label: 'Santuario', desc: 'Punto di raccolta fantasy.' },
+    },
+  },
+};
+
+/** Nazwa + opis budynku dla motywu i języka (z fallbackiem na EN/id). */
+export function buildingText(themeId: string, id: BuildingId, lang: Lang): BuildingText {
+  const theme = BUILDINGS[themeId as ThemeId] ?? BUILDINGS.fantasy;
+  return theme[id]?.[lang] ?? theme[id]?.en ?? { label: id, desc: '' };
+}

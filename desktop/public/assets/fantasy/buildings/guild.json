@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 204,
+        "h": 179
+      },
+      "sourceSize": {
+        "w": 204,
+        "h": 179
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 204,
+        "h": 179
+      }
+    }
+  },
+  "meta": {
+    "image": "guild.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 204,
+      "h": 179
+    },
+    "scale": "1"
+  }
+}

@@ -2,10 +2,11 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
-  import { fade } from "svelte/transition";
-  import IdleRing from "./IdleRing.svelte";
-  import CognitiveRing from "./CognitiveRing.svelte";
   import AgentSelector from "./AgentSelector.svelte";
+  import AgentGridView from "./AgentGridView.svelte";
+  import AoaRealm from "./AoaRealm.svelte";
+  import type { AgentEntry, AgentIdleState, TiltState } from "./agent-viewer-types";
+  import { COLORS, IDLE_EMOJI, MODE_ICON, STATE_EMOJI, SYSTEM_STATE_LABEL, SYSTEM_STATE_CLASS } from "./agent-viewer-types";
   import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
   import {
@@ -39,15 +40,6 @@
     onNavigateChatWithSkill?: (agentKey: string, skillName: string) => Promise<void>;
   } = $props();
 
-  interface AgentEntry {
-    key: string;
-    display_name: string;
-    provider: string;
-    model: string;
-    soul_summary: string;
-    session_count: number;
-    is_active: boolean;
-  }
 
   interface CodeAgentEntry {
     key: string;
@@ -75,42 +67,6 @@
     database: "\u{1F5C4}\u{FE0F}", shield: "\u{1F6E1}\u{FE0F}",
   };
 
-  type Mode = "idle" | "reflection" | "processing";
-
-  interface AgentIdleState {
-    mode: Mode;
-    outerPct: number;
-    innerPct: number;
-    emoji: string;
-    /** Idle sub-mode kind (daze/sleep/…) or system-state key (working/…). */
-    kind: string;
-  }
-
-  const COLORS: Record<Mode, { outer: string; inner: string }> = {
-    idle:       { outer: "#6c8cff", inner: "#f59e0b" },
-    reflection: { outer: "#a78bfa", inner: "#f472b6" },
-    processing: { outer: "#4ade80", inner: "#22d3ee" },
-  };
-
-  const IDLE_EMOJI: Record<string, string> = {
-    daze: "\u{1F636}", boredom: "\u{1F612}", sleep: "\u{1F634}",
-    exploration: "\u{1F50D}", meditation: "\u{1F9D8}",
-    incubation: "\u{1F4A1}", waiting: "\u{23F3}",
-  };
-
-  const MODE_ICON: Record<Mode, string> = {
-    idle: "\u{1F4A4}", reflection: "\u{1F9E0}", processing: "\u{26A1}",
-  };
-
-  // System state visuals (used when NOT idle)
-  const STATE_EMOJI: Record<string, string> = {
-    working: "\u{1F6E0}\u{FE0F}",   // 🛠️ hammer & wrench
-    studying: "\u{1F4DA}",          // 📚 books
-    daily_life: "\u{1F3E0}",        // 🏠 house
-    prize: "\u{1F3C6}",             // 🏆 trophy
-    waiting: "\u{23F3}",            // ⏳ hourglass
-  };
-
   const THRESHOLDS = [0, 5, 20, 50, 100, 200];
 
   function depthPct(depth: number): number {
@@ -129,51 +85,10 @@
     return { mode: "idle", outerPct: 0, innerPct: 0, emoji: MODE_ICON.idle, kind: "" };
   }
 
-  // ── 3D Tilt state per agent card ────────────────────────────────────────
-  interface TiltState {
-    tiltX: number;
-    tiltY: number;
-    glossX: number;
-    glossY: number;
-    hovering: boolean;
-  }
-  let tiltStates = $state<Record<string, TiltState>>({});
-
-  function getTilt(key: string): TiltState {
-    return tiltStates[key] ?? { tiltX: 0, tiltY: 0, glossX: 50, glossY: 50, hovering: false };
-  }
-
-  function handleTilt(key: string, e: MouseEvent) {
-    if (prefersReducedMotion) return;
-    const card = e.currentTarget as HTMLElement;
-    const rect = card.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    const mouseX = e.clientX - centerX;
-    const mouseY = e.clientY - centerY;
-    // Map to tilt range ±10° for subtle, non-nauseating rotation
-    const tiltY = (mouseX / (rect.width / 2)) * 10;
-    const tiltX = -(mouseY / (rect.height / 2)) * 10;
-    // Gloss position as percentage of card dimensions
-    const glossX = ((e.clientX - rect.left) / rect.width) * 100;
-    const glossY = ((e.clientY - rect.top) / rect.height) * 100;
-    tiltStates = {
-      ...tiltStates,
-      [key]: { tiltX, tiltY, glossX, glossY, hovering: true },
-    };
-  }
-
-  function handleTiltLeave(key: string) {
-    tiltStates = {
-      ...tiltStates,
-      [key]: { tiltX: 0, tiltY: 0, glossX: 50, glossY: 50, hovering: false },
-    };
-  }
-
   let agents = $state<AgentEntry[]>([]);
   let codeAgents = $state<CodeAgentEntry[]>([]);
   let loading = $state(true);
-  let activeTab = $state<"agents" | "finance">("agents");
+  let activeTab = $state<"agents" | "code" | "finance">("agents");
   let idleStates = $state<Record<string, AgentIdleState>>({});
   let systemStates = $state<Record<string, string>>({});
   let llmEmotionIds = $state<Record<string, string>>({});
@@ -313,26 +228,6 @@
     return "";
   }
 
-  const SYSTEM_STATE_LABEL: Record<string, string> = {
-    idle: "Idle",
-    working: "Working",
-    chatting: "Chatting",
-    studying: "Studying",
-    daily_life: "Daily Life",
-    prize: "Prize",
-    waiting: "Waiting",
-  };
-
-  const SYSTEM_STATE_CLASS: Record<string, string> = {
-    idle: "ss-idle",
-    working: "ss-working",
-    chatting: "ss-chatting",
-    studying: "ss-studying",
-    daily_life: "ss-dailylife",
-    prize: "ss-prize",
-    waiting: "ss-waiting",
-  };
-
   async function selectAgent(agent: AgentEntry) {
     if (!agent.provider) {
       onNavigate("agents");
@@ -446,20 +341,26 @@
       : llmSkills
   );
 
+  let agentsViewer = $state<string>("grid");
+
   onMount(async () => {
     prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    // Load agents_viewer config from backend
+    try {
+      agentsViewer = await invoke<string>("get_agents_viewer");
+    } catch {
+      agentsViewer = "grid";
+    }
 
     try {
       agents = await invoke<AgentEntry[]>("list_agents");
       // Initialize default idle state for each agent
       const init: Record<string, AgentIdleState> = {};
-      const initTilt: Record<string, TiltState> = {};
       for (const a of agents) {
         init[a.key] = defaultIdleState();
-        initTilt[a.key] = { tiltX: 0, tiltY: 0, glossX: 50, glossY: 50, hovering: false };
       }
       idleStates = init;
-      tiltStates = initTilt;
 
       // Pre-load emotions configs (non-blocking, one per agent).
       for (const a of agents) {
@@ -513,6 +414,13 @@
   </button>
   <button
     class="home-tab"
+    class:active={activeTab === "code"}
+    onclick={() => (activeTab = "code")}
+  >
+    Code
+  </button>
+  <button
+    class="home-tab"
     class:active={activeTab === "finance"}
     onclick={() => (activeTab = "finance")}
   >
@@ -529,102 +437,57 @@
         <p>No agents yet.</p>
         <p class="dim" style="margin-top:8px;">Go to Services → Agents to create your first agent.</p>
       </div>
+    {:else if agentsViewer === "aoa-realm"}
+      <AoaRealm
+        {agents}
+        {idleStates}
+        {systemStates}
+        onSelect={selectAgent}
+      />
     {:else}
-      <div class="agent-grid">
-        {#each agents as agent}
-          {@const st = getIdleState(agent.key)}
-          {@const ss = getSystemState(agent.key)}
-          {@const ts = getTilt(agent.key)}
+      <AgentGridView
+        {agents}
+        {idleStates}
+        {systemStates}
+        {emotionsConfigs}
+        {cognitiveStates}
+        {prefersReducedMotion}
+        onSelect={selectAgent}
+      />
+    {/if}
+  </div>
+{:else if activeTab === "code"}
+  <div class="home-section">
+    {#if codeAgents.length === 0}
+      <div class="card" style="text-align:center;padding:40px;">
+        <p>No code agents configured.</p>
+        <p class="dim" style="margin-top:8px;">Add code agents in the config file to see them here.</p>
+      </div>
+    {:else}
+      <p class="terminal-hint" style="margin-bottom:16px;display:flex;align-items:center;gap:6px;font-size:12px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+        Opens a new terminal window
+      </p>
+      <div class="code-agent-grid">
+        {#each codeAgents as ca}
           <button
-            class="agent-avatar-card"
-            class:needs-config={!agent.provider}
-            onclick={() => selectAgent(agent)}
-            onmouseenter={(e) => handleTilt(agent.key, e)}
-            onmousemove={(e) => handleTilt(agent.key, e)}
-            onmouseleave={() => handleTiltLeave(agent.key)}
-            style="--tilt-x: {ts.tiltX}deg; --tilt-y: {ts.tiltY}deg; --gloss-x: {ts.glossX}%; --gloss-y: {ts.glossY}%;"
+            class="code-agent-card"
+            class:unavailable={!ca.available}
+            onclick={() => launchCodeAgent(ca)}
           >
-            <div class="agent-avatar-wrap">
-            {#if ss === "idle" || !agent.provider}
-              {@const imgSrc = getEmotionImage(agent.key, st.kind || "idle")}
-              <div transition:fade={{ duration: 300 }}>
-                <IdleRing
-                  mode={st.mode}
-                  outerPct={st.outerPct}
-                  innerPct={st.innerPct}
-                  emoji={st.emoji}
-                  imageSrc={imgSrc}
-                  ringColors={COLORS[st.mode]}
-                  size={165}
-                  showLabel={false}
-                  showInfo={false}
-                  active={!!agent.provider}
-                />
-              </div>
+            <div class="code-agent-icon">{@html CODE_AGENT_ICONS[ca.key] || ""}</div>
+            <span class="agent-avatar-name">{ca.display_name}</span>
+            {#if ca.available}
+              <span class="badge ok" style="margin-top:2px;font-size:10px;">available</span>
             {:else}
-              {@const cs = getCognitiveState(agent.key)}
-              {@const imgSrc = getEmotionImage(agent.key, ss)}
-              {@const phaseEmoji = cs.phase === "observing" ? "\u{1F50D}" :
-                                   cs.phase === "thinking"  ? "\u{1F9E0}" :
-                                   cs.phase === "acting"    ? "\u{1F6E0}\u{FE0F}" :
-                                   cs.phase === "result"    ? "\u{2705}" :
-                                   STATE_EMOJI[ss] ?? "\u{1F4CB}"}
-              <div transition:fade={{ duration: 300 }}>
-                <CognitiveRing
-                  reactPhase={cs.phase}
-                  currentStep={cs.currentStep}
-                  emoji={phaseEmoji}
-                  imageSrc={imgSrc}
-                  size={165}
-                  active={!!agent.provider}
-                />
-              </div>
+              <span class="badge dim" style="margin-top:2px;font-size:10px;">not found</span>
             {/if}
-            </div>
-            <div class="agent-card-info">
-              <span class="agent-avatar-name">{agent.display_name}</span>
-              {#if !agent.provider}
-                <span class="badge warn" style="font-size:10px;">needs config</span>
-              {:else}
-                <span class="agent-status-row {SYSTEM_STATE_CLASS[ss] ?? 'ss-idle'}">
-                  <span class="agent-status-dot"></span>
-                  {SYSTEM_STATE_LABEL[ss] ?? ss}
-                </span>
-              {/if}
-            </div>
           </button>
         {/each}
       </div>
-
-      {#if codeAgents.length > 0}
-        <hr class="section-divider" />
-        <h3 class="section-label">
-          Code Agents
-          <span class="terminal-hint" title="Opens a new terminal window for these code agents">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="4 17 10 11 4 5"></polyline>
-              <line x1="12" y1="19" x2="20" y2="19"></line>
-            </svg>
-          </span>
-        </h3>
-        <div class="code-agent-grid">
-          {#each codeAgents as ca}
-            <button
-              class="code-agent-card"
-              class:unavailable={!ca.available}
-              onclick={() => launchCodeAgent(ca)}
-            >
-              <div class="code-agent-icon">{@html CODE_AGENT_ICONS[ca.key] || ""}</div>
-              <span class="agent-avatar-name">{ca.display_name}</span>
-              {#if ca.available}
-                <span class="badge ok" style="margin-top:2px;font-size:10px;">available</span>
-              {:else}
-                <span class="badge dim" style="margin-top:2px;font-size:10px;">not found</span>
-              {/if}
-            </button>
-          {/each}
-        </div>
-      {/if}
     {/if}
   </div>
 {:else}
@@ -760,193 +623,6 @@
 
   .home-section {
     /* spacer */
-  }
-
-  .agent-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-    gap: 18px;
-    padding-top: 80px;
-  }
-
-  .agent-avatar-wrap {
-    margin-top: -75px;
-    filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.5));
-    transition: transform 0.25s ease, filter 0.25s;
-  }
-
-  .agent-avatar-card:hover .agent-avatar-wrap {
-    transform: scale(1.04);
-    filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.6));
-  }
-
-  .agent-avatar-card {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0;
-    padding: 0 10px 20px;
-    background: color-mix(in srgb, var(--bg-card) 78%, transparent);
-    backdrop-filter: blur(var(--glass-blur-far));
-    -webkit-backdrop-filter: blur(var(--glass-blur-far));
-    border: 1px solid color-mix(in srgb, var(--fg-dim) 10%, transparent);
-    border-radius: 20px;
-    cursor: pointer;
-    /* 3D tilt — CSS variables driven by JS mousemove. Short transition for
-       responsive mouse-follow; longer ease-out curve for leave settle-back. */
-    transform: perspective(800px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
-    transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1), border-color 0.25s, box-shadow 0.25s;
-    transform-style: preserve-3d;
-    text-align: center;
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.02),
-      0 20px 40px -12px rgba(0, 0, 0, 0.5),
-      0 0 60px -20px rgba(91, 125, 245, 0.08);
-  }
-
-  /* Subtle top accent glow line */
-  .agent-avatar-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 12px; right: 12px;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 15%, transparent), transparent);
-    border-radius: 1px;
-    transition: opacity 0.25s;
-    opacity: 0.5;
-  }
-  .agent-avatar-card:hover::before {
-    opacity: 1;
-    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 30%, transparent), transparent);
-  }
-
-  .agent-avatar-card:hover {
-    border-color: color-mix(in srgb, var(--fg-dim) 18%, transparent);
-    transform: perspective(800px) rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)) translateY(-4px);
-    box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.04),
-      0 24px 48px -12px rgba(0, 0, 0, 0.6),
-      0 0 80px -16px rgba(91, 125, 245, 0.18);
-  }
-
-  /* ── Gloss / lighting overlay ─────────────────────────────────────────
-     A radial highlight that follows the mouse (virtual light source) when
-     the card tilts.  Pure CSS driven by --gloss-x / --gloss-y. */
-  .agent-avatar-card::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    border-radius: 20px;
-    pointer-events: none;
-    z-index: 5;
-    opacity: 0;
-    transition: opacity 0.4s;
-    background: radial-gradient(
-      circle at var(--gloss-x, 50%) var(--gloss-y, 50%),
-      rgba(255, 255, 255, 0.13) 0%,
-      rgba(255, 255, 255, 0.04) 30%,
-      transparent 60%
-    );
-  }
-
-  .agent-avatar-card:hover::after {
-    opacity: 1;
-  }
-
-  .agent-avatar-card.needs-config {
-    opacity: 0.45;
-    cursor: pointer;
-  }
-
-  .agent-avatar-card.needs-config:hover {
-    opacity: 0.65;
-    border-color: color-mix(in srgb, var(--yellow) 25%, transparent);
-  }
-
-  .agent-card-info {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    margin-top: 12px;
-  }
-
-  .agent-avatar-name {
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--fg);
-    line-height: 1.3;
-    word-break: break-word;
-    letter-spacing: 0.01em;
-  }
-
-  /* Status row — dot + label */
-  .agent-status-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    transition: color 0.3s;
-    line-height: 1;
-  }
-  .agent-status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    transition: background 0.3s, box-shadow 0.3s;
-  }
-
-  /* Status colours — shared between dot and label */
-  .ss-idle .agent-status-dot,
-  .ss-idle { color: var(--accent); }
-  .ss-idle .agent-status-dot { background: var(--accent); }
-
-  .ss-working .agent-status-dot,
-  .ss-working { color: var(--green); }
-  .ss-working .agent-status-dot {
-    background: var(--green);
-    box-shadow: 0 0 8px color-mix(in srgb, var(--green) 60%, transparent);
-    animation: statusPulse 2s ease-in-out infinite;
-  }
-
-  .ss-studying .agent-status-dot,
-  .ss-studying { color: #b39dfc; }
-  .ss-studying .agent-status-dot {
-    background: #b39dfc;
-    box-shadow: 0 0 8px rgba(167, 139, 250, 0.5);
-    animation: statusPulse 3s ease-in-out infinite;
-  }
-
-  .ss-dailylife .agent-status-dot,
-  .ss-dailylife { color: var(--yellow); }
-  .ss-dailylife .agent-status-dot {
-    background: var(--yellow);
-    box-shadow: 0 0 8px color-mix(in srgb, var(--yellow) 50%, transparent);
-    animation: statusPulse 3.5s ease-in-out infinite;
-  }
-
-  .ss-waiting .agent-status-dot,
-  .ss-waiting { color: #f59e0b; }
-  .ss-waiting .agent-status-dot {
-    background: #f59e0b;
-    box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
-    animation: statusPulse 2.5s ease-in-out infinite;
-  }
-
-  .ss-chatting .agent-status-dot,
-  .ss-chatting { color: #38dff0; }
-  .ss-chatting .agent-status-dot {
-    background: #38dff0;
-    box-shadow: 0 0 8px rgba(34, 211, 238, 0.5);
-    animation: statusPulse 1.5s ease-in-out infinite;
-  }
-
-  @keyframes statusPulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.55; transform: scale(1.35); }
   }
 
   /* Finance cards */
@@ -1117,30 +793,6 @@
   }
 
   /* Code agents section */
-  .section-divider {
-    margin: 28px 0 20px;
-    border: none;
-    border-top: 1px solid var(--border);
-  }
-
-  .section-label {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--fg-dim);
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .terminal-hint {
-    display: inline-flex;
-    align-items: center;
-    color: var(--fg-dim);
-    cursor: help;
-  }
-
   .code-agent-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -1387,21 +1039,4 @@
 
   /* ── Accessibility ────────────────────────────────────────────────────── */
 
-  @media (prefers-reduced-motion: reduce) {
-    .agent-avatar-card {
-      transform: none;
-      transition: border-color 0.25s, box-shadow 0.25s;
-    }
-    .agent-avatar-card:hover {
-      transform: translateY(-4px);
-    }
-    .agent-avatar-card::after {
-      display: none;
-    }
-    .avatar-pose,
-    .agent-avatar-wrap :global(.ring-center),
-    .agent-avatar-wrap :global(.ring-emotion-img) {
-      animation: none;
-    }
-  }
 </style>

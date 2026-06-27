@@ -2479,6 +2479,12 @@ pub async fn get_ui_style(state: State<'_, AppState>) -> Result<String, String> 
     Ok(state.ui_style.to_string())
 }
 
+/// Return the current agents page viewer mode (`"grid"` | `"aoa-realm"`).
+#[tauri::command]
+pub async fn get_agents_viewer(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.agents_viewer.to_string())
+}
+
 #[tauri::command]
 pub async fn has_any_provider(state: State<'_, AppState>) -> Result<bool, String> {
     let t = translator(&state);

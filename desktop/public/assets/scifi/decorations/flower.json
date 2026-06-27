@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 27
+      },
+      "sourceSize": {
+        "w": 32,
+        "h": 27
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 32,
+        "h": 27
+      }
+    }
+  },
+  "meta": {
+    "image": "flower.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 32,
+      "h": 27
+    },
+    "scale": "1"
+  }
+}

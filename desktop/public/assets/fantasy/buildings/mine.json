@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 252,
+        "h": 191
+      },
+      "sourceSize": {
+        "w": 252,
+        "h": 191
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 252,
+        "h": 191
+      }
+    }
+  },
+  "meta": {
+    "image": "mine.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 252,
+      "h": 191
+    },
+    "scale": "1"
+  }
+}

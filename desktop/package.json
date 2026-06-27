@@ -16,8 +16,12 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
+    "@pixi/tilemap": "^5.0.2",
     "highlight.js": "^11.11.1",
     "marked": "^18.0.4",
-    "simplex-noise": "^4.0.3"
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "^8.19.0",
+    "simplex-noise": "^4.0.3",
+    "zustand": "^5.0.14"
   }
 }

@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 136,
+        "h": 243
+      },
+      "sourceSize": {
+        "w": 136,
+        "h": 243
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 136,
+        "h": 243
+      }
+    }
+  },
+  "meta": {
+    "image": "citadel.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 136,
+      "h": 243
+    },
+    "scale": "1"
+  }
+}

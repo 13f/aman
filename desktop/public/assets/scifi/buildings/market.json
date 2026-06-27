@@ -1,0 +1,31 @@
+{
+  "frames": {
+    "main": {
+      "frame": {
+        "x": 0,
+        "y": 0,
+        "w": 64,
+        "h": 63
+      },
+      "sourceSize": {
+        "w": 64,
+        "h": 63
+      },
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 64,
+        "h": 63
+      }
+    }
+  },
+  "meta": {
+    "image": "market.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 64,
+      "h": 63
+    },
+    "scale": "1"
+  }
+}

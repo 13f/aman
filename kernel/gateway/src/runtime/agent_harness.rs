@@ -249,7 +249,9 @@ impl AgentHarness {
             engine_config: json!({"model": model}),
         };
         let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
+        tracing::info!(%agent_id, %session_id, "process_message_v2: calling engine.process()");
         let result = engine.process(&ctx, obs).await;
+        tracing::info!(%agent_id, %session_id, success = result.is_ok(), "process_message_v2: engine.process() completed");
 
         // ── Error path: full state cleanup (matches old process_message) ──
         if result.is_err() {
@@ -467,9 +469,11 @@ impl AgentHarness {
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         self.runtime.spawn(async move {
-            if let Err(e) = harness
+            tracing::info!(%agent_id, %session_id, "spawn_process_message: task started");
+            let result = harness
                 .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot.clone(), skill_name.as_deref(), react_mode, background, continuation_mode)
-                .await
+                .await;
+            if let Err(e) = result
             {
                 tracing::error!(
                     error = %e, session_id = %session_id, agent_id = %agent_id,

@@ -1860,6 +1860,13 @@ impl AgentRuntimeBuilder {
         #[async_trait::async_trait]
         impl event_bus::EventHandler for AgentMessageHandler {
             async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                // Ignore events published by this handler itself — these are
+                // reply AgentMessages bouncing back. Only process original
+                // messages from tools, plugins, or other agents.
+                if event.source.as_str() == "agent-message-handler" {
+                    return Ok(());
+                }
+
                 let msg: kernel::agent::AgentMessage = match serde_json::from_value(event.payload) {
                     Ok(m) => m,
                     Err(e) => {

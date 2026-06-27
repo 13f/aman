@@ -59,9 +59,10 @@ aman/
 │   ├── gateway/         ← agent gateway daemon (binary: aman)
 │   ├── plugins/         ← messaging, memory-store, info-hub
 │   └── ...
-├── cognitive/           ← cognitive engine abstraction (NEW)
+├── cognitive/           ← cognitive engine abstraction
 │   ├── engine/          ← CognitiveEngine trait (engine-agnostic)
-│   └── llm/             ← LlmCognitiveEngine (LLM-based implementation)
+│   ├── llm/             ← LlmCognitiveEngine + providers (OpenAI, Anthropic, Local)
+│   └── react/           ← Shared ReAct types (ChatMessage, ReActTurn, etc.) — zero kernel deps
 ├── desktop/             ← Tauri v2 desktop app
 └── docs/                ← design docs, architecture diagrams
 ```
@@ -95,14 +96,20 @@ Workspace with ~40 crates:
 | `cli` | `kernel/cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
 | `sdk` | `kernel/sdk` | Pub re-export crate for external devs |
 | `skm-core-patched` | `kernel/skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
-| `sandbox` | `kernel/sandbox` | OS-level sandbox: Landlock (Linux), Seatbelt (macOS), Job Objects + AppContainer (Windows) |
+| `sandbox` | `kernel/sandbox` | OS-level sandbox: Landlock + Seccomp-BPF (Linux), Seatbelt (macOS), Job Objects + AppContainer network isolation (Windows) |
 
 ### Cognitive Engine Crates (`cognitive/`)
 
 | Crate | Path | Purpose |
 |---|---|---|
 | `cognitive-engine` | `cognitive/engine` | **CognitiveEngine trait** — engine-agnostic abstraction: Observation → Decision. No LLM dependencies. |
-| `cognitive-llm` | `cognitive/llm` | **LlmCognitiveEngine** — LLM-based implementation. Consolidates: LlmProvider trait, ReAct engine, OpenAI provider, prompt pipeline, token budgeting, context management, simple HTTP client. Implements `CognitiveEngine`. |
+| `cognitive-llm` | `cognitive/llm` | **LlmCognitiveEngine** — Full ReAct loop (LLM retry, tool execution, streaming, token tracking). Providers: `LlmOpenaiProvider`, `LlmAnthropicProvider`, `LlmLocalProvider`. Shared SSE/HTTP utilities in `shared.rs`. |
+| `cognitive-react` | `cognitive/react` | **Shared ReAct types** — ChatMessage, ReActTurn, TokenBudget, etc. Zero kernel dependencies (leaf crate). Both `kernel` and `cognitive-llm` depend on it. |
+
+`LlmCognitiveEngine::process()` is the primary code path. The gateway delegates
+via `AgentHarness::process_message()` → `process_message_v2()`.
+Old `LlmReActEngine` (in gateway) has been removed. See
+`docs/react-migration-checklist.md` for the full migration history.
 
 ### Agent Lifestyle Crates
 
@@ -192,25 +199,44 @@ live under `predefined/skills/startup/`.
 
 ## Cognitive Engine Architecture
 
-The `CognitiveEngine` trait decouples the agent gateway from any specific model type:
+The `CognitiveEngine` trait decouples the agent gateway from any specific model type.
+`LlmCognitiveEngine::process()` runs a complete ReAct loop internally:
 
-```rust
-// cognitive/engine/src/lib.rs
-pub trait CognitiveEngine: Send + Sync {
-    fn name(&self) -> &str;
-    async fn process(&self, ctx: &CognitiveContext, observations: Vec<Observation>)
-        -> Result<Vec<Decision>, CognitiveError>;
-    fn subscribe(&self, listener: Arc<dyn CognitiveListener>);
-    fn unsubscribe(&self, listener: &Arc<dyn CognitiveListener>);
-    async fn reset_session(&self, session_id: &str) -> Result<(), CognitiveError>;
-}
+```
+Gateway(AgentHarness)
+  → process_message() → process_message_v2()
+    → LlmCognitiveEngine::process(observations)
+      ├── LLM call (retry 5×, exponential backoff)
+      ├── OutputValidator + ContentFilter
+      ├── If tool_calls: execute (parallel/serial, retry 3×, security)
+      └── Loop until Finished or max_turns → return Decision::Reply
 ```
 
-- **`Observation`** — input from the event bus (user message, tool result, timer, system event…)
-- **`Decision`** — output action (reply text, call tool, delegate, wait…)
-- **`CognitiveContext`** — agent identity, capabilities, memory (engine-agnostic)
-- **`LlmCognitiveEngine`** (`cognitive/llm/`) — current implementation: ReAct loop + OpenAI API
-- Future engines (world model, hybrid) implement the same trait
+### LLM Provider Configuration
+
+Set `llm.api_type` in config to choose the backend:
+
+| `api_type` | Provider | Notes |
+|---|---|---|
+| `openai` (default) | `LlmOpenaiProvider` | OpenAI-compatible API |
+| `anthropic` | `LlmAnthropicProvider` | Claude models via `/v1/messages` |
+| `local` | `LlmLocalProvider` | Ollama/llama.cpp/vLLM (default `http://localhost:11434/v1`) |
+
+The provider is resolved in `build_provider()` (`agent_runtime.rs`) and adapted
+via `wrap_cognitive_provider()` to bridge `kernel::LlmProvider` ↔ `cognitive_llm::LlmProvider`.
+
+### Security (all layers now active)
+
+| Layer | Status |
+|---|---|
+| OutputValidator (secret leak, prompt leak, tool injection) | ✅ Wired in `LlmCognitiveEngine::process()` |
+| ContentFilter (PII, API keys, credit cards) | ✅ Wired in `LlmCognitiveEngine::process()` |
+| InputSanitizer + InjectionDetector | ✅ Wired in HTTP handler |
+| SystemPromptHardener | ✅ Wired in `self_bridge.rs` |
+| Hardline tool blocks (exec/file/db) | ✅ In `ToolExecutor` + `LlmCognitiveEngine` |
+| PermissionReviewer (tool sensitivity) | ✅ In `ToolExecutor` |
+| OS Sandbox (Landlock + Seccomp / Seatbelt / JobObjects+AppContainer) | ✅ In `SubprocessSandbox` + `apply_to_command()` |
+| Capability-based access (ApprovalCache) | ✅ In plugin loader |
 
 ## Analytics Architecture
 

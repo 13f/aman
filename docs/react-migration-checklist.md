@@ -1,5 +1,12 @@
 # ReAct 迁移清单：LlmReActEngine → LlmCognitiveEngine::process()
 
+> **状态：✅ 完成 (2026-06-27)**
+> 
+> 所有核心 ReAct 逻辑已迁移到 `LlmCognitiveEngine::process()`。
+> Gateway `agent_harness.rs` 从 3793 行缩减到 1308 行 (-65%)。
+> `LlmReActEngine` 已归档删除。旧死代码已清理。
+> Release build zero warnings. 全部 105 gateway 测试通过。
+
 > 审计日期: 2026-06-27
 > 源文件: `kernel/gateway/src/runtime/agent_harness.rs`
 

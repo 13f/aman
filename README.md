@@ -7,12 +7,15 @@
 
 > ⚠️ **This project has no Meme / Token / Coin. Beware of scams.**
 
-> ⚠️ **WORK IN PROGRESS — USE AT YOUR OWN RISK**
+> ⚠️ **ALPHA SOFTWARE — USE AT YOUR OWN RISK**
 >
-> - Data structures, storage formats, and policies are **not yet finalized** and may change without notice.
-> - Critical harness features — **input/output sanitization, permission review, content filtering, and audit logging** — are **not yet implemented**. The agent may execute arbitrary actions without guardrails.
+> Data structures and storage formats may change. See `SECURITY_HARNESS.md` for the
+> full security architecture (input/output sanitization, content filtering, OS
+> sandbox, and audit logging are all implemented and active).
 
-An event-driven agent framework for building safe, observable, and extensible autonomous systems.
+An event-driven agent framework for building safe, observable, and extensible
+autonomous systems. Supports OpenAI, Anthropic (Claude), and local models
+(Ollama/llama.cpp/vLLM) via a unified LLM provider interface.
 
 ## System Dependencies
 

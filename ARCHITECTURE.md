@@ -16,7 +16,8 @@ aman is an event-driven agent framework composed of ~40 Rust crates organized in
 ├──────────────────────────────────────────────────────────┤
 │                  Cognitive Engine Layer                   │
 │   CognitiveEngine (trait)     LlmCognitiveEngine (impl)  │
-│   Observation → Decision      ReAct Loop + OpenAI API    │
+│   Observation → Decision      Full ReAct loop + 3 providers │
+│   cognitive-react (shared)    OpenAI / Anthropic / Local │
 ├──────────────────────────────────────────────────────────┤
 │                  Agent Lifestyle Layer                    │
 │   Lifecycle    Idle (boredom)    Daily-Life    Work      │

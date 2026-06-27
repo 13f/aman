@@ -141,12 +141,11 @@ pub struct SandboxConfig {
 
 | 平台 | 沙箱机制 | 状态 |
 |------|---------|------|
-| Linux (x86_64, aarch64, kernel 5.13+) | Landlock | ✅ 完整 |
-| Linux (kernel < 5.13) | 无 | ⚠️ 无沙箱，日志警告 |
+| Linux (x86_64, aarch64, kernel 5.13+) | Landlock + **Seccomp-BPF** | ✅ 双重防护 |
+| Linux (kernel < 5.13) | 仅 Seccomp-BPF | ⚠️ 无文件沙箱，日志警告 |
 | macOS | Seatbelt (sandbox-exec) | ✅ 最佳努力 |
-| Windows (Win8+) | Job Objects + AppContainer | ✅ Phase 1: 资源限制; Phase 2: 网络隔离(预留) |
+| Windows (Win8+) | Job Objects + **AppContainer 网络隔离** | ✅ 完整 |
 | 其他平台 | 无 | ⚠️ 无沙箱，日志警告 |
-| 其他 | 无 | ⚠️ 无沙箱，日志警告 |
 
 ---
 
@@ -457,8 +456,29 @@ Plugin "xxx" requests capabilities but no approval cache configured
 
 1. **gVisor/Firecracker 集成**: 对高风险插件使用微虚拟机级隔离
 2. **Landlock 网络规则**: 当 kernel 6.7+ 普及后，添加 `LANDLOCK_ACCESS_NET_BIND_TCP` 等网络限制
-3. **Windows AppContainer 网络隔离**: 集成 `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES`，通过 `internetClient` capability 控制网络访问
-4. **Windows AppContainer 文件隔离 (Phase 3)**: 通过目录 ACL 动态授权 `allowed_read_dirs` / `allowed_write_dirs`
-5. **Plugin Catalog**: 集中管理的已审核插件目录，预审批已知插件的能力
-6. **Hook 脚本沙箱**: 将 `ScriptHook` (`kernel/hook/src/lib.rs`) 也纳入沙箱保护
-7. **Seccomp-BPF**: 对子进程插件添加系统调用过滤
+3. **Windows AppContainer 文件隔离 (Phase 3)**: 通过目录 ACL 动态授权 `allowed_read_dirs` / `allowed_write_dirs`
+4. **Plugin Catalog**: 集中管理的已审核插件目录，预审批已知插件的能力
+5. **Hook 脚本沙箱**: 将 `ScriptHook` (`kernel/hook/src/lib.rs`) 也纳入沙箱保护
+
+## 已完成的增强 (2026-06-27)
+
+1. ✅ **Seccomp-BPF** — Linux 系统调用过滤已实现 (`kernel/sandbox/src/linux.rs`):
+   - 始终阻止: fork, execve, ptrace, mount, setuid, reboot, kexec 等 16+ 危险 syscall
+   - 条件阻止: 网络 syscall (14 个), 进程生成 (3 个), 根据 `SandboxConfig` 控制
+   - 架构校验: 非 x86_64/aarch64 直接 kill
+   - 与 Landlock 并行应用，双重防护
+
+2. ✅ **Windows AppContainer 网络隔离** — 已实现 (`kernel/sandbox/src/windows.rs`):
+   - `CreateAppContainerProfile` 创建独立沙箱
+   - `network_allowed=false` → 无 `internetClient` capability → `connect()`/`send()` 返回 `WSAEACCES`
+   - API 不可用时降级为纯 Job Objects (兼容 Win7)
+
+3. ✅ **ContentFilter** — PII/敏感数据检测 (`kernel/core/src/content_filter.rs`):
+   - API key (OpenAI, GitHub, AWS), JWT, email, phone, SSN, credit card (Luhn)
+   - FilterDecision: Pass / Flag (log+allow) / Block
+   - 已接入 `LlmCognitiveEngine::process()` 和 gateway `LlmReActEngine`
+
+4. ✅ **OutputValidator** — LLM 输出验证已接入所有执行路径
+5. ✅ **SystemPromptHardener** — 系统提示加固已接入 prompt 组装
+6. ✅ **InjectionDetector** — regex 注入检测已接入 HTTP handler
+7. ✅ **PermissionReviewer** — 工具敏感度分级 + 审批缓存已接入 ToolExecutor

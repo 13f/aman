@@ -15,9 +15,10 @@ use cognitive_react as _;
 use kernel::event::{Event, EventType};
 use kernel::llm::LlmProvider;
 use kernel::react::{
-    ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext,
+    self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext,
     SoulSnapshot, ToolDescriptor,
 };
+use kernel::types::SourceId;
 use kernel::router::AgentRouter;
 use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
@@ -27,8 +28,9 @@ use tool::ToolRegistry;
 use tool::ToolSecurityConfig;
 
 use super::event_consts::{
-    SOURCE_AGENT_HARNESS, EVT_AGENT_DIRECT_ACT_STARTED,
-    EVT_AGENT_CONFIG_WARNING, EVT_LLM_ERROR,
+    SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY, EVT_AGENT_IDLE,
+    EVT_AGENT_GOT_TOOL_CALLS, EVT_AGENT_TOOL_RESULTS_FED_BACK,
+    EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_CONFIG_WARNING, EVT_LLM_ERROR,
     EVT_TOOL_COMPLETED, EVT_TOOL_DISPATCHED, EVT_TOOL_SECURITY_DENIED,
 };
 use super::AgentRegistry;
@@ -644,7 +646,7 @@ impl AgentHarness {
         agent_router: Box<dyn AgentRouter>,
         compression_config: context_manager::CompressorConfig,
         _tool_timeout_ms: u64,
-        _stream_forwarder_capacity: usize,
+        stream_forwarder_capacity: usize,
         _security_config: Option<ToolSecurityConfig>,
         runtime: tokio::runtime::Handle,
     ) -> Self {

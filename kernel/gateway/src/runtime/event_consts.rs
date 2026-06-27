@@ -1,6 +1,8 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+#![allow(dead_code)] // ReAct migration: many constants retained for reference
+
 //! Centralized event-type and source string constants used across the
 //! agent runtime.
 //!

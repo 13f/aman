@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, RwLock};
 
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
@@ -15,23 +14,19 @@ use cognitive_react as _;
 use kernel::event::{Event, EventType};
 use kernel::llm::LlmProvider;
 use kernel::react::{
-    self, ChatMessage, ChatMessageRole, ParsedToolCall, ReActContext,
+    ChatMessage, ChatMessageRole,
     SoulSnapshot, ToolDescriptor,
 };
-use kernel::types::SourceId;
 use kernel::router::AgentRouter;
 use kernel::session_history::SessionHistoryStore;
 use kernel::{AmanResult, Error};
 use serde_json::json;
-use tool::security;
 use tool::ToolRegistry;
 use tool::ToolSecurityConfig;
 
 use super::event_consts::{
-    SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY, EVT_AGENT_IDLE,
-    EVT_AGENT_GOT_TOOL_CALLS, EVT_AGENT_TOOL_RESULTS_FED_BACK,
-    EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_CONFIG_WARNING, EVT_LLM_ERROR,
-    EVT_TOOL_COMPLETED, EVT_TOOL_DISPATCHED, EVT_TOOL_SECURITY_DENIED,
+    SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY,
+    EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_CONFIG_WARNING,
 };
 use super::AgentRegistry;
 
@@ -134,474 +129,14 @@ impl AnonymousAgentHandle {
 /// child process exits. This struct subscribes to that event on the agent's
 /// local bus and provides a `wait()` method that blocks until the event
 /// arrives or the caller is interrupted.
-struct DetachCapture {
-    result: Arc<Mutex<Option<Event>>>,
-    notify: Arc<tokio::sync::Notify>,
-}
-
-impl DetachCapture {
-    fn new() -> Self {
-        Self {
-            result: Arc::new(Mutex::new(None)),
-            notify: Arc::new(tokio::sync::Notify::new()),
-        }
-    }
-
-    /// Wait for the completion event, polling the interrupt flag every 200 ms.
-    async fn wait(&self, interrupt_flag: Option<&InterruptFlag>, _pid: u32) -> Option<Event> {
-        loop {
-            // Check interrupt first
-            if let Some(flag) = interrupt_flag
-                && flag.is_interrupted()
-            {
-                return None;
-            }
-
-            // Check if result has arrived
-            {
-                let mut guard = self
-                    .result
-                    .lock()
-                    .expect("DetachCapture lock poisoned");
-                if let Some(event) = guard.take() {
-                    return Some(event);
-                }
-            }
-
-            // Wait with timeout so we can poll the interrupt flag
-            tokio::select! {
-                _ = self.notify.notified() => {
-                    // Woken — loop back to check result
-                    continue;
-                }
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                    // Timeout — loop back to check interrupt
-                    continue;
-                }
-            }
-        }
-    }
-}
 
 /// Event handler that captures a `tool:completed` event in a `DetachCapture`.
 ///
 /// Uses `Arc` for the shared state because `EventHandler` requires `'static`.
-struct DetachEventHandler {
-    result: Arc<Mutex<Option<Event>>>,
-    notify: Arc<tokio::sync::Notify>,
-}
-
-impl DetachEventHandler {
-    fn new(capture: &DetachCapture) -> Self {
-        Self {
-            result: Arc::clone(&capture.result),
-            notify: Arc::clone(&capture.notify),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl event_bus::EventHandler for DetachEventHandler {
-    async fn handle(&self, event: Event) -> kernel::AmanResult<()> {
-        let mut guard = self.result.lock().expect("DetachEventHandler lock poisoned");
-        *guard = Some(event);
-        self.notify.notify_one();
-        Ok(())
-    }
-}
-
-/// Kill a process by PID. SIGTERM first, then SIGKILL if it doesn't exit.
-fn kill_process(pid: u32) {
-    let pid_str = pid.to_string();
-    // SIGTERM
-    let _ = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(&pid_str)
-        .status();
-    // Brief wait, then SIGKILL
-    std::thread::sleep(Duration::from_millis(500));
-    let _ = std::process::Command::new("kill")
-        .arg("-KILL")
-        .arg(&pid_str)
-        .status();
-}
 
 // ── ToolExecutor ──────────────────────────────────────────────────────────
 
 /// Wraps tool execution with permission checks and event publishing.
-pub struct ToolExecutor {
-    registry: Arc<ToolRegistry>,
-    agent_registry: Arc<AgentRegistry>,
-    bus: Arc<dyn EventBus>,
-    /// Optional path/network/command allowlist config for the ReAct path.
-    security_config: Option<ToolSecurityConfig>,
-    /// Per-tool timeout (ms), sourced from `runtime.tool_timeout_sec` config.
-    tool_timeout_ms: u64,
-    /// Optional interrupt flag for interrupting detached process execution.
-    interrupt_flag: Option<Arc<InterruptFlag>>,
-    /// Anonymous agent tool policy override.
-    ///
-    /// When set, `execute_for_agent` uses these lists directly instead of
-    /// calling `AgentRegistry::tool_allowed()`. This lets anonymous agents
-    /// execute tools without a registered entry in the agents HashMap.
-    /// Tuple: `(allowed_tools, denied_tools)`.
-    anon_tool_policy: Option<(Option<Vec<String>>, Vec<String>)>,
-    /// Permission reviewer for tool sensitivity classification and
-    /// operator approval flow. Defaults to auto-approval for Low tools.
-    permission_reviewer: tool::permission::PermissionReviewer,
-}
-
-impl ToolExecutor {
-    pub fn new(
-        registry: Arc<ToolRegistry>,
-        agent_registry: Arc<AgentRegistry>,
-        bus: Arc<dyn EventBus>,
-        tool_timeout_ms: u64,
-    ) -> Self {
-        Self {
-            registry,
-            agent_registry,
-            bus,
-            security_config: None,
-            tool_timeout_ms,
-            interrupt_flag: None,
-            anon_tool_policy: None,
-            permission_reviewer: tool::permission::PermissionReviewer::new(),
-        }
-    }
-
-    /// Set a security config for path/network/command allowlist checks.
-    #[must_use]
-    pub fn with_security_config(mut self, config: ToolSecurityConfig) -> Self {
-        self.security_config = Some(config);
-        self
-    }
-
-    /// Set an interrupt flag for cancelling long-running tool operations.
-    #[must_use]
-    pub fn with_interrupt_flag(mut self, flag: Arc<InterruptFlag>) -> Self {
-        self.interrupt_flag = Some(flag);
-        self
-    }
-
-    /// Set an inline tool permission policy for anonymous agents.
-    ///
-    /// When set, `execute_for_agent` checks these lists directly instead
-    /// of calling `AgentRegistry::tool_allowed()`. This lets anonymous
-    /// (non-registered) agents execute tools.
-    #[must_use]
-    pub fn with_tool_policy_override(
-        mut self,
-        allowed: Option<Vec<String>>,
-        denied: Vec<String>,
-    ) -> Self {
-        self.anon_tool_policy = Some((allowed, denied));
-        self
-    }
-
-    /// Execute a tool call for a specific agent, checking permissions first.
-    ///
-    /// Returns a structured result — permission denials are returned as
-    /// failed results so the LLM can adapt, rather than aborting the loop.
-    pub async fn execute_for_agent(
-        &self,
-        call: &ParsedToolCall,
-        agent_id: &str,
-        session_id: &str,
-    ) -> react::ToolCallResult {
-        let tool_name = &call.tool_name;
-
-        // Permission check: is this agent allowed to use this tool?
-        let allowed = if let Some((ref allowed_list, ref denied_list)) = self.anon_tool_policy {
-            // Anonymous agent: use inline policy
-            if denied_list.iter().any(|d| d == tool_name) {
-                false
-            } else {
-                match allowed_list {
-                    Some(list) => list.iter().any(|a| a == tool_name || a == "*"),
-                    None => true,
-                }
-            }
-        } else {
-            self.agent_registry
-                .tool_allowed(agent_id, tool_name)
-                .await
-        };
-
-        if !allowed {
-            return react::ToolCallResult {
-                id: call.id.clone(),
-                tool_name: tool_name.clone(),
-                success: false,
-                output: format!(
-                    "permission_denied: agent '{agent_id}' is not allowed to use tool '{tool_name}'"
-                ),
-                duration_ms: 0,
-                pending_detach: None,
-            };
-        }
-
-        self.execute(call, agent_id, session_id).await
-    }
-
-    /// Publish an event to the agent's local bus, falling back to the global bus
-    /// if the agent has no dedicated local bus.
-    async fn publish_to_agent_bus(
-        &self,
-        agent_id: &str,
-        event: Event,
-    ) -> AmanResult<()> {
-        match self.agent_registry.get_local_bus(agent_id).await {
-            Some(local_bus) => local_bus.publish(event).await,
-            None => self.bus.publish(event).await,
-        }
-    }
-
-    /// Like [`Self::publish_to_agent_bus`] but logs the error via
-    /// `tracing::warn!` and returns `()` instead of `AmanResult<()>`.
-    ///
-    /// Use this at the call sites that previously had
-    /// `let _ = self.publish_to_agent_bus(...).await;` — the
-    /// doc's "silent data-loss" smell is that an event-bus
-    /// publish failure (queue full, serialization, etc.) was
-    /// happening without any operator-visible signal. The warn
-    /// surfaces the failure in the diagnostic log without changing
-    /// the call-site type signature.
-    async fn try_publish_to_agent_bus(&self, agent_id: &str, event: Event) {
-        if let Err(e) = self.publish_to_agent_bus(agent_id, event).await {
-            tracing::warn!(
-                agent_id,
-                error = %e,
-                "publish_to_agent_bus failed; event dropped"
-            );
-        }
-    }
-
-    /// Execute a tool call, publishing lifecycle events.
-    pub async fn execute(
-        &self,
-        call: &ParsedToolCall,
-        agent_id: &str,
-        session_id: &str,
-    ) -> react::ToolCallResult {
-        let start = Instant::now();
-        let tool_id = call.id.clone();
-        let tool_name = call.tool_name.clone();
-
-        // Publish tool:dispatched to local bus
-        self
-            .try_publish_to_agent_bus(
-                agent_id,
-                Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(EVT_TOOL_DISPATCHED.to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                        "tool_call_id": tool_id,
-                        "tool_name": tool_name,
-                        "args": call.args,
-                    }),
-                ),
-            )
-
-            .await;
-
-        // ── Security checks ──────────────────────────────────────────
-        let hardline_blocked: Option<&str> =
-            security::check_hardline_block(&tool_name, &call.args);
-
-        let config_blocked: Option<String> = self.security_config.as_ref().and_then(|config| {
-            tool::check_tool_security(config, &call.args)
-                .err()
-                .map(|e| e.to_string())
-        });
-
-        // Publish security denied events to local bus.
-        if let Some(reason) = hardline_blocked {
-            self
-                .try_publish_to_agent_bus(
-                    agent_id,
-                    Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_TOOL_SECURITY_DENIED.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "tool_call_id": tool_id,
-                            "tool_name": tool_name,
-                            "block_type": "hardline",
-                            "reason": reason,
-                        }),
-                    ),
-                )
-
-                .await;
-        }
-        if let Some(ref reason) = config_blocked {
-            self
-                .try_publish_to_agent_bus(
-                    agent_id,
-                    Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_TOOL_SECURITY_DENIED.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "tool_call_id": tool_id,
-                            "tool_name": tool_name,
-                            "block_type": "path_denied",
-                            "reason": reason,
-                        }),
-                    ),
-                )
-
-                .await;
-        }
-
-        // ── Permission review (sensitivity-based gating) ──────────
-        // Runs after hardline blocks, before tool execution.
-        // For now, RequiresApproval decisions are logged and allowed
-        // (the full interactive approval path requires UI plumbing).
-        // The infrastructure is in place for future enforcement.
-        let args_hash = {
-            let args_str = serde_json::to_string(&call.args).unwrap_or_default();
-            blake3::hash(args_str.as_bytes()).to_hex()[..16].to_string()
-        };
-        let perm_decision = self.permission_reviewer.review(
-            session_id,
-            &tool_name,
-            &args_hash,
-        );
-        if let tool::permission::ReviewDecision::RequiresApproval {
-            ref tool_name,
-            sensitivity,
-            ref reason,
-        } = perm_decision
-        {
-            tracing::info!(
-                agent_id,
-                session_id,
-                tool_name,
-                ?sensitivity,
-                reason,
-                "tool permission review: approval required (auto-allowed in this version)"
-            );
-            self
-                .try_publish_to_agent_bus(
-                    agent_id,
-                    Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_TOOL_SECURITY_DENIED.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "tool_call_id": tool_id,
-                            "tool_name": tool_name,
-                            "block_type": "permission_review",
-                            "sensitivity": format!("{sensitivity:?}"),
-                            "reason": reason,
-                        }),
-                    ),
-                )
-                .await;
-        }
-
-        // ── Tool execution (or short-circuit if security blocked) ─────
-        let tool = self.registry.get(&tool_name);
-        let (success, output, pending_detach) = match tool {
-            Some(t) => {
-                if let Some(reason) = hardline_blocked {
-                    (false, format!("hardline_blocked: {reason}"), None)
-                } else if let Some(ref reason) = config_blocked {
-                    (false, format!("security_denied: {reason}"), None)
-                } else {
-                    // Reset consecutive read tracking when a non-read tool runs.
-                    if tool_name != "read" {
-                        tool::fs_tools::reset_read_tracker();
-                    }
-
-                    let mut ctx = kernel::context::ToolContext::default();
-                    ctx.base.timeout_ms = Some(self.tool_timeout_ms);
-                    // Wire the agent's local bus so tools can publish
-                    // progress/completion events (e.g. exec in detach mode).
-                    // The actual subscription for detach completion happens
-                    // in execute_tools() below.
-                    let monitor_bus: Arc<dyn EventBus> = self
-                        .agent_registry
-                        .get_local_bus(agent_id)
-                        .await
-                        .unwrap_or_else(|| Arc::clone(&self.bus));
-                    ctx.base.event_bus =
-                        Some(Arc::new(event_bus::BusEventPublisher::new(
-                            Arc::clone(&monitor_bus),
-                        )));
-                    ctx.base
-                        .extensions
-                        .insert("agent_id".to_owned(), serde_json::json!(agent_id));
-                    match t.execute(call.args.clone(), ctx).await {
-                        Ok(value) => {
-                            // Detect detach results — the exec tool returns
-                            // {ok, pid, detached:true} immediately when
-                            // spawning a background process. Mark as pending
-                            // so the caller (execute_tools) waits for the
-                            // real completion event before feeding to the LLM.
-                            let pending_detach = value
-                                .get("detached")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false)
-                                .then(|| {
-                                    value
-                                        .get("pid")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0) as u32
-                                });
-                            (true, value.to_string(), pending_detach)
-                        }
-                        Err(e) => (false, format!("tool error: {e}"), None),
-                    }
-                }
-            }
-            None => (false, format!("tool not found: {tool_name}"), None),
-        };
-
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        let event_type = if success {
-            EVT_TOOL_COMPLETED
-        } else {
-            "tool:failed"
-        };
-        self
-            .try_publish_to_agent_bus(
-                agent_id,
-                Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(event_type.to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                        "tool_call_id": tool_id,
-                        "tool_name": tool_name,
-                        "success": success,
-                        "duration_ms": duration_ms,
-                        "output": output,
-                    }),
-                ),
-            )
-
-            .await;
-
-        react::ToolCallResult {
-            id: tool_id,
-            tool_name,
-            success,
-            output,
-            duration_ms,
-            pending_detach,
-        }
-    }
-}
 
 /// Concrete ReAct engine that calls an LLM provider.
 
@@ -1049,51 +584,6 @@ impl AgentHarness {
     /// Build tool descriptors for an anonymous agent, filtering by the
     /// descriptor's inline allow/deny lists instead of calling
     /// `AgentRegistry::tool_allowed()`.
-    async fn build_tool_descriptors_anon(
-        &self,
-        descriptor: &kernel::agent::AgentDescriptor,
-    ) -> Vec<ToolDescriptor> {
-        let names = self.tool_registry.list_tools();
-        let mut descriptors = Vec::new();
-
-        for name in names {
-            // Skip LLM provider tools (internal)
-            if name.starts_with("llm_") || name.starts_with("llm_provider_") {
-                continue;
-            }
-
-            // Check allow/deny from the inline descriptor (not registry)
-            let allowed = if descriptor
-                .denied_tools
-                .iter()
-                .any(|d| d == &name)
-            {
-                false
-            } else {
-                match &descriptor.allowed_tools {
-                    Some(allow_list) => {
-                        allow_list.iter().any(|a| a == &name || a == "*")
-                    }
-                    None => true,
-                }
-            };
-
-            if !allowed {
-                continue;
-            }
-
-            if let Some(tool) = self.tool_registry.get(&name) {
-                descriptors.push(ToolDescriptor {
-                    name: tool.name().to_owned(),
-                    description: tool.description().to_owned(),
-                    parameters: serde_json::to_value(tool.parameters())
-                        .unwrap_or_default(),
-                });
-            }
-        }
-
-        descriptors
-    }
 
     // ── process_message helpers ──────────────────────────────────────
     //
@@ -1312,89 +802,11 @@ impl AgentHarness {
     /// tool results.  Calls the LLM to produce a human-readable summary.
     /// Wait for a detached process to complete, returning the
     /// `tool:completed` event (or `None` if interrupted).
-    async fn wait_for_detach(
-        &self,
-        agent_id: &str,
-        pid: u32,
-        interrupt_flag: &InterruptFlag,
-    ) -> Option<Event> {
-        let monitor_bus: Arc<dyn EventBus> = self
-            .registry
-            .get_local_bus(agent_id)
-            .await
-            .unwrap_or_else(|| Arc::clone(&self.bus));
-
-        let capture = Arc::new(DetachCapture::new());
-        let sub_filter = event_bus::SubscriptionFilter {
-            event_types: Some(vec![EventType::Custom(EVT_TOOL_COMPLETED.to_owned())]),
-            sources: Some(vec![SourceId::from("tool:detached")]),
-            ..Default::default()
-        };
-        let sub_id = match monitor_bus
-            .subscribe(sub_filter, Box::new(DetachEventHandler::new(&capture)))
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(
-                    %pid,
-                    error = %e,
-                    "wait_for_detach: failed to subscribe"
-                );
-                return None;
-            }
-        };
-
-        let result = capture.wait(Some(interrupt_flag), pid).await;
-        monitor_bus.unsubscribe(sub_id).await;
-        result
-    }
 
     /// Replace the tool result for `tool_call_id` in the conversation history
     /// with the final output (after process exit).
-    fn replace_tool_result(
-        &self,
-        mut history: Vec<ChatMessage>,
-        tool_call_id: &str,
-        final_output: &str,
-    ) -> Vec<ChatMessage> {
-        for msg in &mut history {
-            if msg.tool_call_id.as_deref() == Some(tool_call_id)
-                && msg.role == ChatMessageRole::Tool
-            {
-                msg.content = final_output.to_owned();
-                break;
-            }
-        }
-        history
-    }
 
     /// Publish final reply and set agent to idle.
-    async fn cleanup_session(&self, agent_id: &str, session_id: &str) {
-        self.unregister_interrupt(session_id);
-        if let Err(e) = self.registry.set_active_session(agent_id, None).await {
-            tracing::warn!(agent_id = %agent_id, session_id = %session_id, error = %e, "cleanup: failed to reset active session");
-        }
-        if let Err(e) = self.registry.set_status(agent_id, AgentStatus::Idle).await {
-            tracing::warn!(agent_id = %agent_id, session_id = %session_id, error = %e, "cleanup: failed to set idle status");
-        }
-        self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
-        self.registry.set_activity(agent_id, "").await;
-        self
-            .try_publish_to_agent_bus(
-                agent_id,
-                Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(EVT_AGENT_IDLE.to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": session_id,
-                    }),
-                ),
-            )
-
-            .await;
-    }
 
     /// Continuation for `direct_act` after a detached process completes.
     ///
@@ -1413,64 +825,10 @@ impl AgentHarness {
     /// the logic is identical.
 
     /// Publish agent:got_tool_calls event.
-    async fn publish_tool_calls_event(&self, ctx: &ReActContext, calls: &[ParsedToolCall]) {
-        self
-            .try_publish_to_agent_bus(
-                &ctx.agent_id,
-                Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(EVT_AGENT_GOT_TOOL_CALLS.to_owned()),
-                    json!({
-                        "agent_id": ctx.agent_id,
-                        "session_id": ctx.session_id,
-                        "turn": ctx.turn,
-                        "tool_calls": calls.iter().map(|c| json!({"name": c.tool_name, "id": c.id})).collect::<Vec<_>>(),
-                    }),
-                ),
-            )
-
-            .await;
-    }
 
     /// Publish agent:tool_results_fed_back event.
-    async fn publish_tool_results_event(&self, ctx: &ReActContext, result_count: usize) {
-        self
-            .try_publish_to_agent_bus(
-                &ctx.agent_id,
-                Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(EVT_AGENT_TOOL_RESULTS_FED_BACK.to_owned()),
-                    json!({
-                        "agent_id": ctx.agent_id,
-                        "session_id": ctx.session_id,
-                        "turn": ctx.turn,
-                        "result_count": result_count,
-                    }),
-                ),
-            )
-
-            .await;
-    }
 
     /// Publish llm_error event.
-    async fn publish_llm_error(&self, ctx: &ReActContext, error: &str) {
-        self
-            .try_publish_to_agent_bus(
-                &ctx.agent_id,
-                Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(EVT_LLM_ERROR.to_owned()),
-                    json!({
-                        "agent_id": ctx.agent_id,
-                        "session_id": ctx.session_id,
-                        "turn": ctx.turn,
-                        "error": error,
-                    }),
-                ),
-            )
-
-            .await;
-    }
 
 
     /// Build tool descriptors from the tool registry for the given agent.
@@ -1823,50 +1181,6 @@ fn process_remember_commands(text: &str) -> (String, Vec<String>) {
 /// LLMs trained on code and API documentation may hallucinate patterns like
 /// `"apiKey": "sk-..."` or `Authorization: Bearer sk-...` when their context
 /// includes tool schemas or skill docs referencing API-based services.
-fn sanitize_api_keys(text: &str) -> String {
-    // Match common API key patterns: "apiKey": "sk-...", "api_key": "sk-...",
-    // "Authorization: Bearer sk-...", etc.
-    // Use simple scanning to avoid pulling in a regex crate.
-    let lower = text.to_lowercase();
-    let mut result = text.to_owned();
-
-    // Find sk- patterns and check if preceded by api key context
-    let mut search_start = 0;
-    while let Some(pos) = lower[search_start..].find("sk-") {
-        let abs_pos = search_start + pos;
-        // Look backward up to 40 chars for API key context keywords
-        let ctx_start = abs_pos.saturating_sub(40);
-        let ctx = &lower[ctx_start..abs_pos];
-        let is_api_context = ctx.contains("apikey")
-            || ctx.contains("api_key")
-            || ctx.contains("api-key")
-            || ctx.contains("bearer")
-            || ctx.contains("authorization");
-
-        if is_api_context {
-            // Find the end of the key (alphanumeric + hyphens + underscores)
-            let key_start = abs_pos;
-            let mut key_end = key_start;
-            for ch in text[key_start..].chars() {
-                if ch.is_alphanumeric() || ch == '-' || ch == '_' {
-                    key_end += ch.len_utf8();
-                } else {
-                    break;
-                }
-            }
-            if key_end - key_start >= 20 {
-                // It's long enough to be a real key — redact it
-                result.replace_range(key_start..key_end, "[REDACTED]");
-                // Adjust lower to match (simplification: just break after first redaction)
-                break;
-            }
-        }
-
-        search_start = abs_pos + 3; // skip past "sk-"
-    }
-
-    result
-}
 
 #[cfg(test)]
 mod tests {

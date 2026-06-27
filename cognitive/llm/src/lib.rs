@@ -78,9 +78,30 @@ impl Default for LlmEngineConfig {
 
 /// An LLM-based cognitive engine.
 ///
-/// Wraps an `LlmProvider`, a `PromptPipeline`, and a ReAct loop to
-/// implement the `CognitiveEngine` trait. This is the "brain" that
-/// powers aman agents today.
+/// ## Target architecture
+///
+/// ```text
+/// Gateway → CognitiveEngine::process(observations) → decisions
+///              ↑
+///         LlmCognitiveEngine (ReAct loop strategy)
+///              ├── LlmProvider::chat_completion()
+///              ├── ToolExecutor::execute_tools()
+///              └── TokenBudget tracking
+/// ```
+///
+/// ## Current state
+///
+/// Currently implements a **single-turn** call to the LLM provider.
+/// The full ReAct loop (multi-turn think-act-observe) is implemented
+/// externally in `LlmReActEngine` (kernel/gateway). The plan is to
+/// absorb the ReAct loop into this engine's `process()` method, so
+/// the gateway only calls `CognitiveEngine::process()` and receives
+/// the final result after all internal tool-use iterations complete.
+///
+/// When the ReAct loop is internalized:
+/// - `LlmReActEngine` can be retired
+/// - `CognitiveReActEngine` (deleted in fd52423) is no longer needed
+/// - The gateway is fully decoupled from the ReAct implementation
 pub struct LlmCognitiveEngine {
     provider: Arc<dyn LlmProvider>,
     prompt_pipeline: Arc<dyn PromptPipeline>,

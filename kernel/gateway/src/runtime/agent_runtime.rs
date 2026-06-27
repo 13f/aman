@@ -6,7 +6,10 @@ use event_bus::{try_publish, DiscardHook, EventBus, InMemoryBus, InMemoryBusConf
 use kernel::context::ToolContext;
 use kernel::event::{Event, EventType};
 use kernel::hook::Hook;
-use kernel::llm::LlmProvider;
+use cognitive_llm;
+use cognitive_react;
+use kernel::llm::{LlmChatRequest, LlmProvider, LlmResponse};
+use kernel::react::ParsedToolCall;
 use memory::{MemoryConfig, YantrikdbProvider};
 use memory_store::MemoryStorePlugin;
 use info_hub::InfoHubPlugin;
@@ -5469,6 +5472,11 @@ fn create_per_agent_llm_provider(
 }
 
 /// Build the appropriate LlmProvider based on api_type.
+///
+/// Supported types:
+/// - `"openai"` → OpenAI-compatible API (also used for DeepSeek, etc.)
+/// - `"anthropic"` → Anthropic Messages API (Claude models)
+/// - `"local"` → Local OpenAI-compatible endpoint (Ollama, llama.cpp, vLLM)
 fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: &str) -> Arc<dyn LlmProvider> {
     match api_type {
         "openai" => {
@@ -5477,8 +5485,22 @@ fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: 
                 base_url.to_owned(),
             ))
         }
+        "anthropic" => {
+            let cognitive: Arc<dyn cognitive_llm::provider::LlmProvider> = Arc::new(
+                cognitive_llm::anthropic::LlmAnthropicProvider::new(
+                    base_url, api_key, "claude-sonnet-4-6",
+                ),
+            );
+            wrap_cognitive_provider(cognitive)
+        }
+        "local" => {
+            let cognitive: Arc<dyn cognitive_llm::provider::LlmProvider> = Arc::new(
+                cognitive_llm::local::LlmLocalProvider::new(base_url),
+            );
+            wrap_cognitive_provider(cognitive)
+        }
         other => {
-            tracing::error!(
+            tracing::warn!(
                 api_type = %other,
                 "unsupported LLM provider type, falling back to openai"
             );
@@ -5488,6 +5510,32 @@ fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: 
             ))
         }
     }
+}
+
+/// Wrap a `cognitive_llm::provider::LlmProvider` as a `kernel::llm::LlmProvider`.
+fn wrap_cognitive_provider(
+    inner: Arc<dyn cognitive_llm::provider::LlmProvider>,
+) -> Arc<dyn LlmProvider> {
+    struct Adapter(Arc<dyn cognitive_llm::provider::LlmProvider>);
+    #[async_trait::async_trait]
+    impl LlmProvider for Adapter {
+        fn name(&self) -> &str { self.0.name() }
+        async fn chat_completion(&self, req: LlmChatRequest, cb: Option<Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync>>) -> Result<LlmResponse, kernel::Error> {
+            let cr = cognitive_llm::provider::LlmChatRequest {
+                model: req.model, system_prompt: req.system_prompt,
+                messages: req.messages.iter().map(|m| cognitive_react::ChatMessage {
+                    role: match m.role { kernel::react::ChatMessageRole::System => cognitive_react::ChatMessageRole::System, kernel::react::ChatMessageRole::User => cognitive_react::ChatMessageRole::User, kernel::react::ChatMessageRole::Assistant => cognitive_react::ChatMessageRole::Assistant, kernel::react::ChatMessageRole::Tool => cognitive_react::ChatMessageRole::Tool },
+                    content: m.content.clone(), tool_call_id: m.tool_call_id.clone(), tool_name: m.tool_name.clone(), tool_calls: m.tool_calls.clone(), reasoning_content: m.reasoning_content.clone(),
+                }).collect(),
+                tools: req.tools.iter().map(|t| cognitive_react::ToolDescriptor { name: t.name.clone(), description: t.description.clone(), parameters: t.parameters.clone() }).collect(),
+                max_output_tokens: req.max_output_tokens,
+                response_format: req.response_format.as_ref().map(|f| match f { kernel::llm::ResponseFormat::JsonObject => cognitive_llm::provider::ResponseFormat::JsonObject, kernel::llm::ResponseFormat::JsonSchema { name, schema, strict } => cognitive_llm::provider::ResponseFormat::JsonSchema { name: name.clone(), schema: schema.clone(), strict: *strict } }),
+            };
+            let ccb = cb.map(|c| { let c = c; Arc::new(move |e| c(match e { cognitive_llm::provider::StreamEvent::Start => kernel::llm::StreamEvent::Start, cognitive_llm::provider::StreamEvent::Chunk(s) => kernel::llm::StreamEvent::Chunk(s), cognitive_llm::provider::StreamEvent::Done { finish_reason } => kernel::llm::StreamEvent::Done { finish_reason }, cognitive_llm::provider::StreamEvent::Error(s) => kernel::llm::StreamEvent::Error(s), })) as Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync> });
+            self.0.chat_completion(cr, ccb).await.map(|r| LlmResponse { content: r.content, finish_reason: r.finish_reason, tool_calls: r.tool_calls.into_iter().map(|c| ParsedToolCall { id: c.id, tool_name: c.tool_name, args: c.args }).collect(), reasoning_content: r.reasoning_content }).map_err(|e| kernel::Error::Unrecoverable { message: e })
+        }
+    }
+    Arc::new(Adapter(inner))
 }
 
 /// Adapter that implements `cognitive_llm::provider::LlmProvider` by

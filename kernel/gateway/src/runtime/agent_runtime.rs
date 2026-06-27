@@ -759,9 +759,16 @@ impl AgentRuntimeBuilder {
 
                 // Register eval hook
                 if eval_cfg.auto_evaluate {
-                    let eval_hook = eval::hook::EvalHook::new(Arc::clone(&engine));
+                    let hook_bus = Arc::clone(&bus);
+                    let eval_hook = eval::hook::EvalHook::new(Arc::clone(&engine))
+                        .with_event_publisher(Box::new(move |event| {
+                            let bus = Arc::clone(&hook_bus);
+                            tokio::spawn(async move {
+                                event_bus::try_publish(&*bus, event).await;
+                            });
+                        }));
                     let _ = hook_registry.register(std::sync::Arc::new(eval_hook));
-                    tracing::info!("eval hook registered for automatic evaluation");
+                    tracing::info!("eval hook registered for automatic evaluation (with event publishing)");
                 }
 
                 tracing::info!("eval engine initialized");
@@ -4147,6 +4154,225 @@ impl AgentRuntime {
                 );
                 Ok(())
             }
+            "slack" => {
+                let (bot_token, app_token) = if secrets_mode.prefer_env() {
+                    let token = std::env::var("AMAN_BOT_SLACK_TOKEN")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| Error::NotFound {
+                            name: "env var AMAN_BOT_SLACK_TOKEN".into(),
+                        })?;
+                    let app_token = std::env::var("AMAN_BOT_SLACK_APP_TOKEN")
+                        .ok()
+                        .unwrap_or_default();
+                    (token, app_token)
+                } else {
+                    use secret::{KeychainBackend, SecretBackend};
+                    let backend = KeychainBackend;
+                    let token_key = format!("aman.bot.slack.{instance}.token");
+                    let app_token_key = format!("aman.bot.slack.{instance}.app_token");
+                    let token = backend
+                        .get(&token_key)?
+                        .ok_or_else(|| Error::NotFound {
+                            name: format!("keychain key {token_key}"),
+                        })?;
+                    if token.is_empty() {
+                        return Err(Error::config_invalid("slack bot token is empty"));
+                    }
+                    let app_token = backend
+                        .get(&app_token_key)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    (token, app_token)
+                };
+
+                let source_id = if instance == "default" {
+                    "chat:slack:default".to_owned()
+                } else {
+                    format!("chat:slack:{instance}")
+                };
+
+                self.sources.shutdown(&source_id).await.ok();
+                self.sources.unregister(&source_id).await.ok();
+
+                let sender = Arc::new(messaging_slack::sender::SlackSender::new(&bot_token));
+                self.channel_registry.register(source_id.clone(), sender);
+
+                let source = messaging_slack::source::SlackSource::new(
+                    source_id.clone(),
+                    &bot_token,
+                    &app_token,
+                )
+                .with_registries(
+                    Arc::clone(&self.sticky_router),
+                    Arc::clone(&self.chat_session_store),
+                );
+
+                self.sources
+                    .register(
+                        Box::new(source),
+                        source::SourceMode::Push,
+                        source::TrustLevel::Untrusted,
+                    )
+                    .await?;
+
+                self.sources.start(&source_id).await?;
+
+                tracing::info!(
+                    source_id = %source_id,
+                    instance = %instance,
+                    "hot-reloaded slack IM channel source"
+                );
+                Ok(())
+            }
+            "discord" => {
+                let bot_token = if secrets_mode.prefer_env() {
+                    std::env::var("AMAN_BOT_DISCORD_TOKEN")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| Error::NotFound {
+                            name: "env var AMAN_BOT_DISCORD_TOKEN".into(),
+                        })?
+                } else {
+                    use secret::{KeychainBackend, SecretBackend};
+                    let backend = KeychainBackend;
+                    let token_key = format!("aman.bot.discord.{instance}.token");
+                    let token = backend
+                        .get(&token_key)?
+                        .ok_or_else(|| Error::NotFound {
+                            name: format!("keychain key {token_key}"),
+                        })?;
+                    if token.is_empty() {
+                        return Err(Error::config_invalid("discord bot token is empty"));
+                    }
+                    token
+                };
+
+                let source_id = if instance == "default" {
+                    "chat:discord:default".to_owned()
+                } else {
+                    format!("chat:discord:{instance}")
+                };
+
+                self.sources.shutdown(&source_id).await.ok();
+                self.sources.unregister(&source_id).await.ok();
+
+                let sender = Arc::new(messaging_discord::sender::DiscordSender::new(&bot_token));
+                self.channel_registry.register(source_id.clone(), sender);
+
+                let source = messaging_discord::source::DiscordSource::new(
+                    source_id.clone(),
+                    &bot_token,
+                )
+                .with_registries(
+                    Arc::clone(&self.sticky_router),
+                    Arc::clone(&self.chat_session_store),
+                );
+
+                self.sources
+                    .register(
+                        Box::new(source),
+                        source::SourceMode::Push,
+                        source::TrustLevel::Untrusted,
+                    )
+                    .await?;
+
+                self.sources.start(&source_id).await?;
+
+                tracing::info!(
+                    source_id = %source_id,
+                    instance = %instance,
+                    "hot-reloaded discord IM channel source"
+                );
+                Ok(())
+            }
+            "matrix" => {
+                let (homeserver_url, username, password) = if secrets_mode.prefer_env() {
+                    let url = std::env::var("AMAN_BOT_MATRIX_HOMESERVER_URL")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| Error::NotFound {
+                            name: "env var AMAN_BOT_MATRIX_HOMESERVER_URL".into(),
+                        })?;
+                    let username = std::env::var("AMAN_BOT_MATRIX_USERNAME")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .ok_or_else(|| Error::NotFound {
+                            name: "env var AMAN_BOT_MATRIX_USERNAME".into(),
+                        })?;
+                    let password = std::env::var("AMAN_BOT_MATRIX_PASSWORD")
+                        .ok()
+                        .unwrap_or_default();
+                    (url, username, password)
+                } else {
+                    use secret::{KeychainBackend, SecretBackend};
+                    let backend = KeychainBackend;
+                    let url_key = format!("aman.bot.matrix.{instance}.homeserver_url");
+                    let username_key = format!("aman.bot.matrix.{instance}.username");
+                    let password_key = format!("aman.bot.matrix.{instance}.password");
+                    let url = backend
+                        .get(&url_key)?
+                        .ok_or_else(|| Error::NotFound {
+                            name: format!("keychain key {url_key}"),
+                        })?;
+                    if url.is_empty() {
+                        return Err(Error::config_invalid("matrix homeserver url is empty"));
+                    }
+                    let username = backend
+                        .get(&username_key)?
+                        .ok_or_else(|| Error::NotFound {
+                            name: format!("keychain key {username_key}"),
+                        })?;
+                    let password = backend
+                        .get(&password_key)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    (url, username, password)
+                };
+
+                let source_id = format!("chat:matrix:{username}");
+
+                self.sources.shutdown(&source_id).await.ok();
+                self.sources.unregister(&source_id).await.ok();
+
+                let sender = Arc::new(messaging_matrix::sender::MatrixSender::new(
+                    &homeserver_url,
+                    &password,
+                ));
+                self.channel_registry.register(source_id.clone(), sender);
+
+                let source = messaging_matrix::source::MatrixSource::new(
+                    source_id.clone(),
+                    &homeserver_url,
+                    &username,
+                    &password,
+                    "aman-agent",
+                )
+                .with_registries(
+                    Arc::clone(&self.sticky_router),
+                    Arc::clone(&self.chat_session_store),
+                );
+
+                self.sources
+                    .register(
+                        Box::new(source),
+                        source::SourceMode::Push,
+                        source::TrustLevel::Untrusted,
+                    )
+                    .await?;
+
+                self.sources.start(&source_id).await?;
+
+                tracing::info!(
+                    source_id = %source_id,
+                    instance = %instance,
+                    homeserver = %homeserver_url,
+                    "hot-reloaded matrix IM channel source"
+                );
+                Ok(())
+            }
             _ => Err(Error::NotFound {
                 name: format!("unsupported platform for hot-reload: {platform}"),
             }),
@@ -5786,7 +6012,223 @@ fn start_im_channel_sources(
         ));
     }
 
-    // TODO: Slack, Discord, Matrix — same pattern when their crates are wired.
+    // ── Slack ─────────────────────────────────────────────────
+    // Env var naming: AMAN_BOT_SLACK_TOKEN, AMAN_BOT_SLACK_APP_TOKEN
+    let slack_instances = if secrets_mode.prefer_env() {
+        let mut found = vec![];
+        { let inst = &"default";
+            let token_var = "AMAN_BOT_SLACK_TOKEN";
+            if std::env::var(token_var).ok().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
+        }
+        found
+    } else {
+        use secret::{KeychainBackend, SecretBackend};
+        let backend = KeychainBackend;
+        let mut found = vec![];
+        { let inst = &"default";
+            let token_key = format!("aman.bot.slack.{inst}.token");
+            if backend.get(&token_key).ok().flatten().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
+        }
+        found
+    };
+
+    for instance in slack_instances {
+        let (bot_token, app_token) = if secrets_mode.prefer_env() {
+            let token = std::env::var("AMAN_BOT_SLACK_TOKEN").ok().filter(|s| !s.is_empty()).unwrap_or_default();
+            let app_token = std::env::var("AMAN_BOT_SLACK_APP_TOKEN").ok().unwrap_or_default();
+            (token, app_token)
+        } else {
+            use secret::{KeychainBackend, SecretBackend};
+            let backend = KeychainBackend;
+            let token_key = format!("aman.bot.slack.{instance}.token");
+            let app_token_key = format!("aman.bot.slack.{instance}.app_token");
+            let token = backend.get(&token_key).ok().flatten().unwrap_or_default();
+            let app_token = backend.get(&app_token_key).ok().flatten().unwrap_or_default();
+            (token, app_token)
+        };
+
+        if bot_token.is_empty() {
+            continue;
+        }
+
+        let source_id = if instance == "default" {
+            "chat:slack:default".to_owned()
+        } else {
+            format!("chat:slack:{instance}")
+        };
+
+        tracing::info!(
+            source_id = %source_id,
+            instance = %instance,
+            mode = ?secrets_mode,
+            "starting slack IM channel source"
+        );
+
+        let sender = Arc::new(messaging_slack::sender::SlackSender::new(&bot_token));
+        channel_registry.register(source_id.clone(), sender);
+
+        let source = messaging_slack::source::SlackSource::new(
+            source_id.clone(),
+            &bot_token,
+            &app_token,
+        )
+        .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
+
+        let _ = pollster::block_on(sources.register(
+            Box::new(source),
+            source::SourceMode::Push,
+            source::TrustLevel::Untrusted,
+        ));
+    }
+
+    // ── Discord ─────────────────────────────────────────────────
+    // Env var naming: AMAN_BOT_DISCORD_TOKEN
+    let discord_instances = if secrets_mode.prefer_env() {
+        let mut found = vec![];
+        { let inst = &"default";
+            let token_var = "AMAN_BOT_DISCORD_TOKEN";
+            if std::env::var(token_var).ok().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
+        }
+        found
+    } else {
+        use secret::{KeychainBackend, SecretBackend};
+        let backend = KeychainBackend;
+        let mut found = vec![];
+        { let inst = &"default";
+            let token_key = format!("aman.bot.discord.{inst}.token");
+            if backend.get(&token_key).ok().flatten().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
+        }
+        found
+    };
+
+    for instance in discord_instances {
+        let bot_token = if secrets_mode.prefer_env() {
+            std::env::var("AMAN_BOT_DISCORD_TOKEN").ok().filter(|s| !s.is_empty()).unwrap_or_default()
+        } else {
+            use secret::{KeychainBackend, SecretBackend};
+            let backend = KeychainBackend;
+            let token_key = format!("aman.bot.discord.{instance}.token");
+            backend.get(&token_key).ok().flatten().unwrap_or_default()
+        };
+
+        if bot_token.is_empty() {
+            continue;
+        }
+
+        let source_id = if instance == "default" {
+            "chat:discord:default".to_owned()
+        } else {
+            format!("chat:discord:{instance}")
+        };
+
+        tracing::info!(
+            source_id = %source_id,
+            instance = %instance,
+            mode = ?secrets_mode,
+            "starting discord IM channel source"
+        );
+
+        let sender = Arc::new(messaging_discord::sender::DiscordSender::new(&bot_token));
+        channel_registry.register(source_id.clone(), sender);
+
+        let source = messaging_discord::source::DiscordSource::new(
+            source_id.clone(),
+            &bot_token,
+        )
+        .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
+
+        let _ = pollster::block_on(sources.register(
+            Box::new(source),
+            source::SourceMode::Push,
+            source::TrustLevel::Untrusted,
+        ));
+    }
+
+    // ── Matrix ─────────────────────────────────────────────────
+    // Env var naming: AMAN_BOT_MATRIX_HOMESERVER_URL, AMAN_BOT_MATRIX_USERNAME, AMAN_BOT_MATRIX_PASSWORD
+    let matrix_instances = if secrets_mode.prefer_env() {
+        let mut found = vec![];
+        { let inst = &"default";
+            let url_var = "AMAN_BOT_MATRIX_HOMESERVER_URL";
+            if std::env::var(url_var).ok().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
+        }
+        found
+    } else {
+        use secret::{KeychainBackend, SecretBackend};
+        let backend = KeychainBackend;
+        let mut found = vec![];
+        { let inst = &"default";
+            let url_key = format!("aman.bot.matrix.{inst}.homeserver_url");
+            if backend.get(&url_key).ok().flatten().filter(|s| !s.is_empty()).is_some() {
+                found.push(inst.to_string());
+            }
+        }
+        found
+    };
+
+    for instance in matrix_instances {
+        let (homeserver_url, username, password) = if secrets_mode.prefer_env() {
+            let url = std::env::var("AMAN_BOT_MATRIX_HOMESERVER_URL").ok().filter(|s| !s.is_empty()).unwrap_or_default();
+            let username = std::env::var("AMAN_BOT_MATRIX_USERNAME").ok().filter(|s| !s.is_empty()).unwrap_or_default();
+            let password = std::env::var("AMAN_BOT_MATRIX_PASSWORD").ok().unwrap_or_default();
+            (url, username, password)
+        } else {
+            use secret::{KeychainBackend, SecretBackend};
+            let backend = KeychainBackend;
+            let url_key = format!("aman.bot.matrix.{instance}.homeserver_url");
+            let username_key = format!("aman.bot.matrix.{instance}.username");
+            let password_key = format!("aman.bot.matrix.{instance}.password");
+            let url = backend.get(&url_key).ok().flatten().unwrap_or_default();
+            let username = backend.get(&username_key).ok().flatten().unwrap_or_default();
+            let password = backend.get(&password_key).ok().flatten().unwrap_or_default();
+            (url, username, password)
+        };
+
+        if homeserver_url.is_empty() || username.is_empty() {
+            continue;
+        }
+
+        let source_id = format!("chat:matrix:{username}");
+
+        tracing::info!(
+            source_id = %source_id,
+            instance = %instance,
+            homeserver = %homeserver_url,
+            mode = ?secrets_mode,
+            "starting matrix IM channel source"
+        );
+
+        let sender = Arc::new(messaging_matrix::sender::MatrixSender::new(
+            &homeserver_url,
+            &password,
+        ));
+        channel_registry.register(source_id.clone(), sender);
+
+        let source = messaging_matrix::source::MatrixSource::new(
+            source_id.clone(),
+            &homeserver_url,
+            &username,
+            &password,
+            "aman-agent",
+        )
+        .with_registries(Arc::clone(sticky_router), Arc::clone(chat_session_store));
+
+        let _ = pollster::block_on(sources.register(
+            Box::new(source),
+            source::SourceMode::Push,
+            source::TrustLevel::Untrusted,
+        ));
+    }
 }
 
 

@@ -340,20 +340,21 @@ mod tests {
 
     #[tokio::test]
     async fn reconfigure_changes_expression_and_resets_next_run() {
+        // Use a 5-field expression that normalizes to "sec 0, field 2=*"
+        // and a fixed-minute expression so next_run_at can never coincide.
         let mut source =
-            CronSource::new("cron:reconfig", "*/5 * * * *").expect("create source");
+            CronSource::new("cron:reconfig", "5 * * * *").expect("create source");
         source.init(context()).await.expect("init");
         let first = source.next_run_rfc3339().expect("next run after init");
 
         source
-            .reconfigure(serde_json::json!({ "expression": "*/10 * * * *" }))
+            .reconfigure(serde_json::json!({ "expression": "10 * * * *" }))
             .await
             .expect("reconfigure");
         let second = source.next_run_rfc3339().expect("next run after reconfigure");
-        assert_eq!(source.expression, "*/10 * * * *");
-        // The new schedule may land on the same minute boundary, but the
-        // recomputed next_run_at must differ from the old one at the 10-min
-        // granularity.
+        assert_eq!(source.expression, "10 * * * *");
+        // `5 * * * *` fires at xx:05 each hour, `10 * * * *` at xx:10.
+        // The two times can never be equal regardless of wall-clock.
         assert!(
             first != second,
             "reconfigure should recalculate next run"

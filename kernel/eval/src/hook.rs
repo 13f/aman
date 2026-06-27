@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kernel::context::HookContext;
+use kernel::event::{Event, EventType};
 use kernel::hook::{Hook, HookPoint};
 use kernel::AmanResult;
 use tokio::sync::RwLock;
@@ -14,25 +15,49 @@ use tokio::sync::RwLock;
 use crate::engine::EvalEngine;
 use crate::target::EvalTarget;
 
+/// Callback for publishing evaluation events to the event bus.
+///
+/// The gateway wires this to [`EventBus::try_publish`] (or similar) so that
+/// evaluation results flow into the standard event pipeline.
+pub type EvalEventPublisher = Box<dyn Fn(Event) + Send + Sync>;
+
 /// A hook that automatically evaluates agent outputs when lifecycle events fire.
 ///
 /// Register this on the runtime's hook registry with the desired hook points.
 /// When triggered, it constructs an `EvalTarget` from the hook context, runs
-/// all matching rules through the engine, and publishes evaluation results.
+/// all matching rules through the engine, publishes evaluation results, and
+/// emits [`EventType::EvaluationCompleted`] events to the event bus.
 pub struct EvalHook {
     engine: Arc<RwLock<EvalEngine>>,
     /// Whether this hook is currently active.
     enabled: bool,
+    /// Optional event publisher — if set, `EvaluationCompleted` events are
+    /// published after each successful evaluation run.
+    event_publisher: Option<EvalEventPublisher>,
 }
 
 impl EvalHook {
     /// Create a new eval hook attached to the given engine.
+    ///
+    /// Use [`Self::with_event_publisher`] to enable event publishing.
     #[must_use]
     pub fn new(engine: Arc<RwLock<EvalEngine>>) -> Self {
         Self {
             engine,
             enabled: true,
+            event_publisher: None,
         }
+    }
+
+    /// Set the event publisher callback.
+    ///
+    /// When set, each evaluation run will publish an
+    /// [`EventType::EvaluationCompleted`] event carrying the evaluation
+    /// results as JSON payload.
+    #[must_use]
+    pub fn with_event_publisher(mut self, publisher: EvalEventPublisher) -> Self {
+        self.event_publisher = Some(publisher);
+        self
     }
 
     /// Enable or disable this hook at runtime.
@@ -78,13 +103,33 @@ impl Hook for EvalHook {
         // Store results in the engine
         if !results.is_empty() {
             let mut engine = self.engine.write().await;
-            for score in results {
-                engine.store_result(score);
+            for score in &results {
+                engine.store_result(score.clone());
             }
         }
 
-        // TODO: In Phase 4, publish EvaluationCompleted events to the event bus.
-        // For now, results are stored in-memory and accessible via eval_get_results tool.
+        // Phase 4: publish EvaluationCompleted events to the event bus.
+        if let Some(publisher) = &self.event_publisher {
+            for score in &results {
+                let payload = serde_json::json!({
+                    "target_kind": target.kind(),
+                    "target_id": target.id(),
+                    "rule_id": score.rule_id,
+                    "strategy": score.strategy,
+                    "aggregate_score": score.aggregate_score,
+                    "threshold": score.threshold,
+                    "outcome": score.outcome,
+                    "dimensions": score.dimensions,
+                    "hook_point": format!("{:?}", point),
+                });
+                let event = Event::new(
+                    "eval:hook",
+                    EventType::EvaluationCompleted,
+                    payload,
+                );
+                publisher(event);
+            }
+        }
 
         Ok(())
     }

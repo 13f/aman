@@ -11,7 +11,6 @@
 //! (e.g. `minmax_aman_work-1780551635570`)
 
 use kernel::AmanResult;
-use context_manager::{HistoryCompressor, CompressionStrategy};
 
 /// Build a deterministic session ID for a work item.
 ///
@@ -97,11 +96,15 @@ pub fn is_plugin_work_session(session_id: &str) -> bool {
 ///
 /// This is called before `process_message` when a work item session is
 /// being re-opened ("断点续传").
+///
+/// When `max_history_tokens > 0`, the restored history is checked against
+/// the token budget; messages are compressed if the estimated token count
+/// exceeds the threshold. Pass `0` to skip compression (restore only).
 pub async fn resume_work_session(
     agent_harness: &crate::runtime::agent_harness::AgentHarness,
     session_store: &super::session_store::SessionStore,
     session_id: &str,
-    _max_history_tokens: usize,
+    max_history_tokens: usize,
 ) -> AmanResult<()> {
     let events = session_store.load_session_events(session_id);
     if events.is_empty() {
@@ -112,12 +115,22 @@ pub async fn resume_work_session(
     // in-memory SessionHistoryStore so process_message picks it up.
     agent_harness.restore_session_history(session_id, &events);
 
-    // TODO: Token budget check + compression.
-    // For now, restore the full history. A future iteration should:
-    // 1. Estimate token count of restored history
-    // 2. Compare against max_history_tokens (or model context window)
-    // 3. Apply HistoryCompressor if over threshold
-    let _compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
+    // Token budget check + compression.
+    if max_history_tokens > 0 {
+        let removed = agent_harness.compress_session_history(
+            session_id,
+            "default",
+            max_history_tokens,
+        );
+        if removed > 0 {
+            tracing::info!(
+                session_id = %session_id,
+                messages_removed = removed,
+                max_history_tokens = max_history_tokens,
+                "compressed work session history on resume"
+            );
+        }
+    }
 
     Ok(())
 }

@@ -7,7 +7,9 @@ use std::sync::{Arc, RwLock};
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
 use kernel::interrupt::InterruptFlag;
-use context_manager::TokenBudgetPolicy;
+use context_manager::{
+    CompressionStrategy, HistoryCompressor, TokenBudget, TokenBudgetPolicy,
+};
 use cognitive_engine::{CognitiveContext, CognitiveEngine as _, CognitiveIdentity, Observation};
 use cognitive_llm::LlmCognitiveEngine;
 use cognitive_react as _;
@@ -436,6 +438,61 @@ impl AgentHarness {
                 }
             }
         }
+    }
+
+    /// Get a copy of the current conversation history for a session.
+    pub fn get_session_history(&self, session_id: &str) -> Vec<ChatMessage> {
+        self.session_history.get(session_id)
+    }
+
+    /// Check token budget and compress history if over the threshold.
+    ///
+    /// Returns the number of messages removed (0 if no compression was needed).
+    /// Uses the configured [`CompressorConfig`] and estimates tokens via the
+    /// [`TokenBudget`] heuristic.
+    pub fn compress_session_history(
+        &self,
+        session_id: &str,
+        model: &str,
+        max_history_tokens: usize,
+    ) -> usize {
+        let mut history = self.session_history.get(session_id);
+        if history.is_empty() {
+            return 0;
+        }
+
+        let context_window = if max_history_tokens > 0 {
+            max_history_tokens
+        } else {
+            context_manager::context_window_for_model(model)
+        };
+
+        // Reserve 20% for output + system prompt overhead
+        let prompt_budget = (context_window as f64 * 0.80) as usize;
+
+        let estimated_tokens: usize = history
+            .iter()
+            .map(|m| TokenBudget::estimate_tokens(&m.content))
+            .sum();
+
+        if estimated_tokens <= prompt_budget {
+            return 0; // Under budget, no compression needed
+        }
+
+        let mut budget = TokenBudget::with_window(model, context_window, 0);
+        budget.set_history_tokens(estimated_tokens);
+
+        let compressor = HistoryCompressor::new(CompressionStrategy::Truncate);
+        let config = self.compression_config.clone();
+        let result = compressor.compress_with_boundaries(&mut history, &mut budget, &config);
+
+        if result.messages_removed > 0 {
+            // Replace history with compressed version
+            self.session_history.clear(session_id);
+            self.session_history.extend(session_id, history);
+        }
+
+        result.messages_removed
     }
 
     /// Resolve the first enabled agent from the registry.

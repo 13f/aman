@@ -248,7 +248,8 @@ async fn process_with_empty_observations_returns_empty_decisions() {
 #[tokio::test]
 async fn process_wraps_provider_error_as_engine_error() {
     let stub = Arc::new(StubLlmProvider::new(vec![Err("upstream timeout".to_owned())]));
-    let engine = LlmCognitiveEngine::new(stub.clone(), LlmEngineConfig::default());
+    let config = LlmEngineConfig { max_llm_retries: 1, ..LlmEngineConfig::default() };
+    let engine = LlmCognitiveEngine::new(stub.clone(), config);
 
     let result = engine
         .process(&make_context("s2"), vec![make_user_message("s2", "hi")])

@@ -32,6 +32,7 @@ pub enum ResponseFormat {
 }
 
 /// Request to an LLM provider for a chat completion.
+#[derive(Clone)]
 pub struct LlmChatRequest {
     pub model: String,
     pub system_prompt: String,

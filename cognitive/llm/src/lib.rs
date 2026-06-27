@@ -15,10 +15,9 @@
 //!     │
 //!     ├── Convert Observations → ChatMessages
 //!     ├── Build system prompt (PromptPipeline)
-//!     ├── Run ReAct loop (LlmReActEngine)
-//!     │   ├── LlmProvider::chat_completion()
-//!     │   ├── Execute tools
-//!     │   └── Track token budget
+//!     ├── Call LLM (with retry + backoff)
+//!     │   ├── OutputValidator + ContentFilter
+//!     │   └── Publish events via event_sink
 //!     └── Convert ReActTurn → Decisions
 //! ```
 
@@ -63,6 +62,9 @@ pub struct LlmEngineConfig {
     pub token_limit: u64,
     /// Maximum output tokens per LLM call.
     pub max_output_tokens: u64,
+    /// Maximum LLM call retries on transient errors (default: 5).
+    /// Set to 1 to disable retries.
+    pub max_llm_retries: u32,
 }
 
 impl Default for LlmEngineConfig {
@@ -72,6 +74,7 @@ impl Default for LlmEngineConfig {
             max_turns: 64,
             token_limit: 128_000,
             max_output_tokens: 4096,
+            max_llm_retries: 5,
         }
     }
 }
@@ -107,6 +110,10 @@ pub struct LlmCognitiveEngine {
     prompt_pipeline: Arc<dyn PromptPipeline>,
     config: LlmEngineConfig,
     listeners: Arc<Mutex<Vec<Arc<dyn CognitiveListener>>>>,
+    /// Optional event sink for publishing lifecycle events
+    /// (llm:call_started, llm:call_ended, agent:token_used).
+    /// When `None`, events are silently dropped.
+    event_sink: Option<Arc<dyn Fn(kernel::event::Event) + Send + Sync>>,
 }
 
 impl LlmCognitiveEngine {
@@ -120,6 +127,7 @@ impl LlmCognitiveEngine {
             prompt_pipeline: Arc::new(DefaultPromptPipeline),
             config,
             listeners: Arc::new(Mutex::new(Vec::new())),
+            event_sink: None,
         }
     }
 
@@ -134,7 +142,22 @@ impl LlmCognitiveEngine {
             prompt_pipeline,
             config,
             listeners: Arc::new(Mutex::new(Vec::new())),
+            event_sink: None,
         }
+    }
+
+    /// Set an event sink for publishing lifecycle events.
+    ///
+    /// When set, the engine will publish `llm:call_started`,
+    /// `llm:call_ended`, and `agent:token_used` events during
+    /// processing. This mirrors the behavior of `LlmReActEngine`.
+    #[must_use]
+    pub fn with_event_sink(
+        mut self,
+        sink: Arc<dyn Fn(kernel::event::Event) + Send + Sync>,
+    ) -> Self {
+        self.event_sink = Some(sink);
+        self
     }
 
     /// Convenience: create with an OpenAI-compatible provider.
@@ -256,6 +279,31 @@ impl LlmCognitiveEngine {
     }
 }
 
+// ── Retry helper (mirrors LlmReActEngine::is_retryable_llm_error) ─
+
+/// Check if an LLM error is transient (worth retrying) vs permanent.
+fn is_retryable_llm_error(err: Option<&String>) -> bool {
+    let Some(e) = err else { return false };
+    let msg = e.to_lowercase();
+    // Permanent errors — don't retry
+    if msg.contains("400") || msg.contains("bad request") { return false; }
+    if msg.contains("401") || msg.contains("403") { return false; }
+    if msg.contains("402") || msg.contains("payment required")
+        || msg.contains("insufficient_quota") || msg.contains("billing")
+    { return false; }
+    // Transient — retry
+    msg.contains("error sending request")
+        || msg.contains("timeout")
+        || msg.contains("connection")
+        || msg.contains("429")
+        || msg.contains("500") || msg.contains("502") || msg.contains("503") || msg.contains("504")
+        || msg.contains("error decoding response body")
+        || msg.contains("error decoding chunk")
+        || msg.contains("stream closed")
+        || msg.contains("connection closed")
+        || msg.contains("unexpected eof")
+}
+
 #[async_trait]
 impl CognitiveEngine for LlmCognitiveEngine {
     fn name(&self) -> &str {
@@ -272,6 +320,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
         }
 
         let session_id = &ctx.session_id;
+        let agent_id = &ctx.agent_id;
 
         // Build the SoulSnapshot from CognitiveIdentity
         let system_prompt = self
@@ -303,7 +352,22 @@ impl CognitiveEngine for LlmCognitiveEngine {
         // Build messages from observations
         let messages = Self::observations_to_messages(&observations, &[]);
 
-        // Build the LLM request
+        // ── Publish llm:call_started ────────────────────────────────
+        if let Some(ref sink) = self.event_sink {
+            sink(kernel::event::Event::new(
+                "cognitive-engine",
+                kernel::event::EventType::Custom("llm:call_started".into()),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "turn": 0,
+                }),
+            ));
+        }
+
+        // ── LLM call with retry (mirrors LlmReActEngine §1.4) ──────
+        let max_retries = self.config.max_llm_retries;
+        let mut llm_attempt = 0;
         let request = LlmChatRequest {
             model: self.config.model.clone(),
             system_prompt: soul.system_prompt.clone(),
@@ -313,15 +377,48 @@ impl CognitiveEngine for LlmCognitiveEngine {
             response_format: None,
         };
 
-        // Call the LLM provider
-        let response = self
-            .provider
-            .chat_completion(request, None)
-            .await
-            .map_err(|e| CognitiveError::EngineError {
-                engine_name: self.name().to_owned(),
-                message: e,
-            })?;
+        let response = loop {
+            llm_attempt += 1;
+            let r = self
+                .provider
+                .chat_completion(request.clone(), None)
+                .await;
+            let should_retry = r.is_err()
+                && llm_attempt < max_retries
+                && is_retryable_llm_error(r.as_ref().err());
+            if !should_retry {
+                break r;
+            }
+            let delay_secs = (3_u64.pow(llm_attempt - 1)).min(120);
+            tracing::warn!(
+                agent_id,
+                session_id,
+                attempt = llm_attempt,
+                delay_secs,
+                error = %r.as_ref().err().map(|e| e.to_string()).unwrap_or_default(),
+                "LLM API call failed, retrying (cognitive engine)"
+            );
+            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+        };
+
+        // ── Publish llm:call_ended ──────────────────────────────────
+        if let Some(ref sink) = self.event_sink {
+            sink(kernel::event::Event::new(
+                "cognitive-engine",
+                kernel::event::EventType::Custom("llm:call_ended".into()),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "turn": 0,
+                    "success": response.is_ok(),
+                }),
+            ));
+        }
+
+        let response = response.map_err(|e| CognitiveError::EngineError {
+            engine_name: self.name().to_owned(),
+            message: e,
+        })?;
 
         // ── Output validation (security harness §8.2) ────────────────
         let content = {
@@ -330,7 +427,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 kernel::validator::ValidationOutcome::Pass => response.content,
                 kernel::validator::ValidationOutcome::Fail { reason, .. } => {
                     tracing::warn!(
-                        session_id = %session_id,
+                        session_id,
                         reason,
                         "LLM response blocked by output validator (cognitive engine)"
                     );
@@ -340,7 +437,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 }
                 kernel::validator::ValidationOutcome::Error { message } => {
                     tracing::error!(
-                        session_id = %session_id,
+                        session_id,
                         error = %message,
                         "output validator error (fail-closed, cognitive engine)"
                     );
@@ -359,7 +456,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
             kernel::content_filter::FilterDecision::Flag { .. } => content,
             kernel::content_filter::FilterDecision::Block { reason, .. } => {
                 tracing::warn!(
-                    session_id = %session_id,
+                    session_id,
                     reason,
                     "LLM response blocked by content filter (cognitive engine)"
                 );
@@ -368,6 +465,21 @@ impl CognitiveEngine for LlmCognitiveEngine {
                     .to_owned()
             }
         };
+
+        // ── Publish agent:token_used ────────────────────────────────
+        let estimated_tokens = (content.len() / 4) as u64;
+        if let Some(ref sink) = self.event_sink {
+            sink(kernel::event::Event::new(
+                "cognitive-engine",
+                kernel::event::EventType::Custom("agent:token_used".into()),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "turn": 0,
+                    "tokens": estimated_tokens,
+                }),
+            ));
+        }
 
         // Convert to decisions
         let turn = if !response.tool_calls.is_empty() {

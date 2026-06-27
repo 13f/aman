@@ -13,7 +13,6 @@ use kernel::react::ParsedToolCall;
 use memory::{MemoryConfig, YantrikdbProvider};
 use memory_store::MemoryStorePlugin;
 use info_hub::InfoHubPlugin;
-use team::TeamPlugin;
 use messaging_core;
 use kernel::session_history::InMemorySessionHistory;
 use kernel::schema::JsonSchema;
@@ -418,56 +417,6 @@ impl AgentRuntimeBuilder {
             plugin: Box::new(info_hub_plugin),
         };
 
-        // ── Team plugin (kanban scheduler) ──────────────────────────────────
-        // Looks for team.yaml in the default teams directory.
-        // If none exists, the plugin starts with no config and contributes no routes.
-        let teams_dir = std::path::PathBuf::from(
-            std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
-        )
-        .join(".aman")
-        .join("teams");
-        // Use the first team.yaml found, if any
-        let team_config_path = std::fs::read_dir(&teams_dir)
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .find(|e| e.path().join("team.yaml").exists())
-            .map(|e| e.path().join("team.yaml"));
-        let team_plugin = if let Some(ref config_path) = team_config_path {
-            tracing::info!(
-                path = %config_path.display(),
-                "found team config — enabling TeamPlugin"
-            );
-            TeamPlugin::new(config_path.clone())
-        } else {
-            tracing::debug!(
-                "no team.yaml found in {} — TeamPlugin disabled",
-                teams_dir.display()
-            );
-            TeamPlugin::new(teams_dir.join("team.yaml"))
-        };
-        let team_candidate = PluginCandidate::InProcess {
-            manifest: PluginManifest {
-                name: "team".to_owned(),
-                version: team_plugin.version().clone(),
-                depends_on: vec![],
-                lifecycle: PluginLifecycleConfig { auto_start: team_config_path.is_some() },
-                exports: PluginExports::default(),
-                config_schema: None,
-                isolation: Some(PluginIsolationMode::InProcess),
-                subprocess: None,
-                wasm_path: None,
-                capabilities: vec![],
-                ui: None,
-                runtime: None,
-                min_version: None,
-                entrypoint: None,
-                security: load_security(include_str!("../../../plugins/team/plugin.yaml")),
-            },
-            plugin: Box::new(team_plugin),
-        };
-
         // ── Hook registry (created early so SkillEventDispatcher can drive it) ─
         let hook_registry = Arc::new(hook::HookRegistry::new());
 
@@ -599,7 +548,7 @@ impl AgentRuntimeBuilder {
         llm_chat_tool.set_agent_registry(Arc::clone(&agent_registry));
 
         // ── Plugin loading ──────────────────────────────────────────
-        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate, team_candidate];
+        let mut all_candidates = vec![memory_store_candidate, info_hub_candidate];
         all_candidates.extend(self.extra_plugins);
 
         // Initialize the approval cache — generates ~/.aman/.security-key
@@ -2751,6 +2700,72 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
                 }
 
                 Ok(serde_json::json!({"ok": true}))
+            }
+            "aman.send_agent_message" => {
+                let from_agent = params
+                    .get("from_agent")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "missing from_agent".to_owned(),
+                    })?
+                    .to_owned();
+                let to_agent = params
+                    .get("to_agent")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| kernel::Error::ConfigInvalid {
+                        message: "missing to_agent".to_owned(),
+                    })?
+                    .to_owned();
+                let content_type_str = params
+                    .get("content_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("task_delegation");
+                let content_type = match content_type_str {
+                    "task_delegation" => kernel::agent::AgentMessageType::TaskDelegation,
+                    "result_sharing" => kernel::agent::AgentMessageType::ResultSharing,
+                    "status_query" => kernel::agent::AgentMessageType::StatusQuery,
+                    other => {
+                        return Err(kernel::Error::ConfigInvalid {
+                            message: format!("unknown content_type: {other}"),
+                        });
+                    }
+                };
+                let payload = params
+                    .get("payload")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let reply_to = params
+                    .get("reply_to")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+                let msg = kernel::agent::AgentMessage {
+                    message_id: uuid::Uuid::new_v4(),
+                    from_agent,
+                    to_agent,
+                    content_type,
+                    payload,
+                    reply_to,
+                };
+                let event_payload = serde_json::to_value(&msg).map_err(|e| {
+                    kernel::Error::ConfigInvalid {
+                        message: format!("serialize AgentMessage: {e}"),
+                    }
+                })?;
+                self.bus
+                    .publish(kernel::event::Event::new(
+                        "gateway:send_agent_message",
+                        kernel::event::EventType::AgentMessage,
+                        event_payload,
+                    ))
+                    .await
+                    .map_err(|e| kernel::Error::ConfigInvalid {
+                        message: format!("publish AgentMessage: {e}"),
+                    })?;
+                Ok(serde_json::json!({
+                    "ok": true,
+                    "message_id": msg.message_id.to_string()
+                }))
             }
             "aman.subscribe_events" => {
                 let events: Vec<String> = params

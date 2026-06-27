@@ -35,6 +35,7 @@ pub const EVT_AGENT_BUSY: &str = "agent:busy";
 /// Agent finished processing and is idle.
 pub const EVT_AGENT_IDLE: &str = "agent:idle";
 /// The ReAct loop exceeded the maximum turn count.
+#[allow(dead_code)]
 pub const EVT_AGENT_MAX_TURNS_REACHED: &str = "agent:max_turns_reached";
 /// The ReAct loop saw tool calls on this turn (gate for next iteration).
 pub const EVT_AGENT_GOT_TOOL_CALLS: &str = "agent:got_tool_calls";

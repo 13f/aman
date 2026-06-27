@@ -29,7 +29,7 @@ use tool::ToolSecurityConfig;
 
 use super::event_consts::{
     SOURCE_AGENT_HARNESS, EVT_AGENT_AWAITING_DETACH, EVT_AGENT_BUSY, EVT_AGENT_IDLE,
-    EVT_AGENT_MAX_TURNS_REACHED, EVT_AGENT_REPLY_READY, EVT_AGENT_REPLY_STREAM_ERROR,
+    EVT_AGENT_REPLY_READY, EVT_AGENT_REPLY_STREAM_ERROR,
     EVT_AGENT_TOKEN_USED, EVT_AGENT_TOOL_RESULTS_FED_BACK, EVT_AGENT_GOT_TOOL_CALLS,
     EVT_AGENT_AUTO_CONTINUE, EVT_AGENT_AUTO_CONTINUE_STOPPED, EVT_AGENT_DIRECT_ACT_STARTED,
     EVT_AGENT_HISTORY_COMPRESSED, EVT_AGENT_REPLY_INTERRUPTED, EVT_AGENT_CONFIG_WARNING,
@@ -53,6 +53,7 @@ impl AgentRouter for FirstEnabledAgentRouter {
 
 /// Outcome of the ReAct loop.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum ReactOutcome {
     /// Normal completion with the final reply text.
     Finished(String),
@@ -1673,363 +1674,16 @@ impl AgentHarness {
         background: bool,
         continuation_mode: ContinuationMode,
     ) -> AmanResult<String> {
-        // 1 + 2. Look up the agent, flip status to Busy, and announce on the bus.
-        let instance = self
-            .prepare_agent_session(agent_id, session_id, background)
-            .await?;
-
-        // Cancel any running idle workflows for this agent and boost arousal
-        if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {
-            coord.reset_idle_signal().await;
-            coord.arousal.boost(0.3);
-        }
-
-        // 3. Build tool descriptors from registered tools
-        let available_tools = self.build_tool_descriptors(agent_id).await;
-
-        // 4. Build conversation history.
-        //
-        // Three paths (see ContinuationMode docs for details):
-        //   Fresh    — load existing history, append user message.
-        //   Continue — compress session history into a structured summary;
-        //              do NOT dump raw tool outputs to the LLM.
-        //   Replay   — full history was already reconstructed by
-        //              `restore_session_history`; use it as-is.
-        let mut history = self.session_history.get(session_id);
-
-        // Auto-detect continuation: if the last assistant message is a
-        // max-turns-reached marker, the user is clicking "继续".
-        let effective_mode = if continuation_mode == ContinuationMode::Continue
-            || history.last().is_some_and(|m| {
-                m.role == ChatMessageRole::Assistant
-                    && m.content.starts_with("[max ")
-                    && m.content.contains("turns reached")
-            })
-        {
-            ContinuationMode::Continue
-        } else {
-            continuation_mode
-        };
-
-        // For work-item sessions, if in-memory history is empty (e.g. after
-        // gateway restart), restore from the persisted JSONL so the agent
-        // can resume ("断点续传") instead of starting from scratch.
-        // This is the **replay** path — full-history reconstruction.
-        if history.is_empty()
-            && super::session::work_session::parse_work_session_id(session_id).is_some()
-            && let Some(store) = self.registry.get_session_store(agent_id).await {
-                let _ = super::session::work_session::resume_work_session(
-                    self, &store, session_id, 0,
-                ).await;
-                // Reload after restore
-                history = self.session_history.get(session_id);
-            }
-
-        match effective_mode {
-            ContinuationMode::Continue => {
-                // ── Continue path ──
-                // Compress the raw session history into a structured summary
-                // so the LLM gets a concise context instead of a dump of every
-                // previous tool output.
-                tracing::info!(
-                    session_id = %session_id,
-                    agent_id = %agent_id,
-                    history_messages = history.len(),
-                    "continuation: compressing session history into summary"
-                );
-                let mut summary = build_continuation_context(&history);
-                // Append the new user message after the summary.
-                summary.push(ChatMessage::user(user_text));
-                history = summary;
-            }
-            ContinuationMode::Fresh | ContinuationMode::Replay => {
-                // ── Fresh / Replay path ──
-                // Normal message: append to existing history.
-                // Replay: history was already faithfully reconstructed
-                // by `restore_session_history` — use it as-is.
-                history.push(ChatMessage::user(user_text));
-            }
-        }
-
-        // 5. Initialize model-aware token budget (M4).
-        // Estimate history tokens immediately so the budget reflects the full
-        // session history before the first react_loop iteration. Without this,
-        // needs_trim() returns false on the first pass regardless of history
-        // size, and the full context is sent to the LLM unfiltered.
-        // Values must come from config, never silently defaulted.
-        let mut token_budget = self
-            .init_token_budget(
-                agent_id,
-                session_id,
-                model,
-                &instance,
-                &soul_snapshot,
-                &history,
-                &available_tools,
-            )
-            .await;
-
-        // 6. Retrieve memories relevant to user input (M5 T5.1).
-        let memory_context = self.retrieve_relevant_memories(agent_id, user_text).await;
-
-        // 7. Create ReAct context with the config-correct max_output_tokens
-        let max_output_tokens = token_budget.max_output_tokens as u64;
-        let mut ctx = ReActContext::new(
-            agent_id.to_owned(),
-            session_id.to_owned(),
-            soul_snapshot.clone(),
-            history,
-            available_tools,
-            model,
-            self.max_react_turns,
-            self.budget_policy.session_token_limit(),
-            max_output_tokens,
-        );
-        ctx.memory_context = memory_context;
-
-        // M6: Register interrupt flag for this session
-        let interrupt_flag = Arc::new(InterruptFlag::new());
-        self.register_interrupt(session_id, Arc::clone(&interrupt_flag));
-        // Also attach to ReActContext so tool executors can cancel
-        // long-running detached processes on /stop.
-        ctx.interrupt_flag = Some(Arc::clone(&interrupt_flag));
-
-        // 8. Execute — route to DirectAct or ReAct loop based on skill mode
-        let result = if react_mode == Some(skill::ReactMode::Direct) {
-            self
-                .try_publish_to_agent_bus(
-                    agent_id,
-                    Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_AGENT_DIRECT_ACT_STARTED.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "skill_name": skill_name,
-                        }),
-                    ),
-                )
-
-                .await;
-            self.direct_act(&mut ctx, &mut token_budget, Some(&interrupt_flag))
-                .await
-        } else {
-            self.react_loop(&mut ctx, &mut token_budget, Some(&interrupt_flag), background)
-                .await
-        };
-
-        // ── Handle AwaitingDetach (non-blocking detach path) ──────────
-        // Must be checked BEFORE saving history / unregistering interrupt,
-        // because the continuation task needs both to survive the async gap.
-        if let Ok(ReactOutcome::AwaitingDetach {
-            session_id: ref detach_sid,
-            pid,
-            tool_call_id: ref tcid,
-        }) = result
-        {
-            // Save Turn 1 history for cross-turn continuity
-            self.session_history.clear(session_id);
-            self.session_history.extend(session_id, ctx.history.clone());
-
-            // Publish agent:awaiting_detach to GLOBAL bus for SSE → frontend
-            let _ = self
-                .bus
-                .publish(Event::new(
-                    SOURCE_AGENT_HARNESS,
-                    EventType::Custom(EVT_AGENT_AWAITING_DETACH.to_owned()),
-                    json!({
-                        "agent_id": agent_id,
-                        "session_id": detach_sid,
-                        "pid": pid,
-                        "tool_call_id": tcid,
-                        "skill_name": skill_name,
-                        "background": background,
-                    }),
-                ))
-                .await;
-
-            // Spawn continuation — runs Turn 2 after detach completes
-            let harness = Arc::clone(self);
-            let cont_aid = agent_id.to_owned();
-            let cont_sid = detach_sid.clone();
-            let cont_tcid = tcid.clone();
-            let cont_soul = soul_snapshot.clone();
-            let cont_tools = ctx.agent_tools.clone();
-            let cont_model = model.to_owned();
-            let cont_max_out = ctx.token_budget.max_output_tokens;
-            let cont_hist = ctx.history.clone();
-            let cont_turn = ctx.turn;
-            let cont_flag = Arc::clone(&interrupt_flag);
-            let cont_bg = background;
-            let cont_sn = skill_name.map(String::from);
-
-            tokio::spawn(async move {
-                harness
-                    .run_direct_act_continuation(
-                        cont_aid,
-                        cont_sid,
-                        pid,
-                        cont_tcid,
-                        cont_soul,
-                        cont_tools,
-                        cont_model,
-                        cont_max_out,
-                        cont_hist,
-                        cont_turn,
-                        cont_flag,
-                        cont_bg,
-                        cont_sn,
-                    )
-                    .await;
-            });
-
-            // Don't go idle — the continuation task handles cleanup.
-            // Keep status as Busy so the idle detector doesn't kick in
-            // while the detached process is still running. system_state
-            // shows Waiting so the UI can reflect the detach-pending state.
-            if let Err(e) = self.registry.set_active_session(agent_id, None).await {
-                tracing::warn!(agent_id = %agent_id, error = %e, "failed to reset active session on detach");
-            }
-            self.registry.set_system_state(agent_id, AgentSystemState::Waiting).await;
-            // Reset the idle signal so the boredom timer doesn't fire
-            // during the detach wait (which can last several minutes).
-            if let Some(coord) = self.registry.get_idle_coordination(agent_id).await {
-                coord.reset_idle_signal().await;
-            }
-            return Ok(String::new());
-        }
-
-        // Save conversation history for cross-turn continuity.
-        self.session_history.clear(session_id);
-        self.session_history.extend(session_id, ctx.history.clone());
-
-        // M6: Unregister interrupt flag
-        self.unregister_interrupt(session_id);
-
-        // 9. Handle outcome — Finished, Interrupted, MaxTurnsReached, or Error
-        let mut max_turns_reached = false;
-        let (raw_reply, event_type): (String, &str) = match result {
-            Ok(ReactOutcome::Finished(reply)) => (reply, EVT_AGENT_REPLY_READY),
-            Ok(ReactOutcome::Interrupted(reply)) => (reply, EVT_AGENT_REPLY_INTERRUPTED),
-            Ok(ReactOutcome::MaxTurnsReached { turns }) => {
-                max_turns_reached = true;
-                let msg = format!(
-                    "[max {} turns reached — session saved, send /continue to resume]",
-                    turns
-                );
-                (msg, EVT_AGENT_REPLY_READY)
-            }
-            Err(e) => {
-                // Publish fallback error event so the frontend doesn't hang
-                let _ = self
-                    .bus
-                    .publish(Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_AGENT_REPLY_STREAM_ERROR.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "error": e.to_string(),
-                        }),
-                    ))
-                    .await;
-                // Still go to Idle on error — reset both status and system_state
-                // so the agent doesn't get stuck in Chatting/Working.
-                if let Err(e) = self.registry.set_active_session(agent_id, None).await {
-                    tracing::warn!(agent_id = %agent_id, error = %e, "failed to reset active session on error");
-                }
-                if let Err(e) = self.registry.set_status(agent_id, AgentStatus::Idle).await {
-                    tracing::warn!(agent_id = %agent_id, error = %e, "failed to set idle status on error");
-                }
-                self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
-                self.registry.set_activity(agent_id, "").await;
-                return Err(e);
-            }
-            _ => {
-                // AwaitingDetach is handled above — this arm is unreachable
-                // but required for exhaustiveness.
-                unreachable!("AwaitingDetach handled before this point");
-            }
-        };
-
-        // 10. Auto-write memories from [remember: ...] patterns (M5 T5.2)
-        let (final_reply, remembered) = process_remember_commands(&raw_reply);
-        for content in &remembered {
-            if let Some(provider) = self.registry.get_memory_provider(agent_id).await {
-                provider.store(agent_id, content, vec!["auto".to_owned()]);
-            }
-        }
-
-        // Sanitize API key patterns from output before publishing.
-        // LLMs may hallucinate apiKey patterns when exposed to tool schemas
-        // or skill documentation that references API-based services.
-        let final_reply = sanitize_api_keys(&final_reply);
-
-        // 11. Publish reply event
-        let mut reply_payload = json!({
-            "agent_id": agent_id,
-            "session_id": session_id,
-            "reply": final_reply,
-            "turns_processed": ctx.turn,
-            "background": background,
-        });
-        if let Some(sn) = skill_name {
-            reply_payload["skill_name"] = json!(sn);
-        }
-        let _ = self
-            .bus
-            .publish(Event::new(
+        // 8. Delegate to cognitive engine
+        if skill_name.is_some() {
+            self.try_publish_to_agent_bus(agent_id, Event::new(
                 SOURCE_AGENT_HARNESS,
-                EventType::Custom(event_type.to_owned()),
-                reply_payload,
-            ))
-            .await;
-
-        // 12. Update status to Idle (skip for MaxTurnsReached — keep session alive)
-        if max_turns_reached {
-            // Session stays active; agent stays Busy; user can /continue.
-            // Publish a distinct event so the UI can show "turn limit reached".
-            self
-                .try_publish_to_agent_bus(
-                    agent_id,
-                    Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_AGENT_MAX_TURNS_REACHED.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                        }),
-                    ),
-                )
-
-                .await;
-        } else {
-            self.registry
-                .set_active_session(agent_id, None)
-                .await?;
-            self.registry
-                .set_status(agent_id, AgentStatus::Idle)
-                .await?;
-            self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
-
-            // Publish agent:idle event to the agent's local bus
-            self
-                .try_publish_to_agent_bus(
-                    agent_id,
-                    Event::new(
-                        SOURCE_AGENT_HARNESS,
-                        EventType::Custom(EVT_AGENT_IDLE.to_owned()),
-                        json!({
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                        }),
-                    ),
-                )
-
-                .await;
+                EventType::Custom(EVT_AGENT_DIRECT_ACT_STARTED.to_owned()),
+                json!({"agent_id": agent_id, "session_id": session_id, "skill_name": skill_name}),
+            )).await;
         }
-
-        Ok(final_reply)
+        let _ = (&react_mode, &continuation_mode); // consumed by process_message_v2
+        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, background).await
     }
 
     /// Process a message through the ReAct loop for an anonymous agent.
@@ -2426,6 +2080,7 @@ impl AgentHarness {
     /// When a tool spawns a detached process, Turn 1 returns immediately with
     /// `AwaitingDetach`; a continuation task runs Turn 2 after the process exits.
     /// No multi-turn exploration, no compression, no token budget tracking.
+    #[allow(dead_code)]
     async fn direct_act(
         &self,
         ctx: &mut ReActContext,
@@ -2627,6 +2282,7 @@ impl AgentHarness {
     /// Waits for the process, updates the tool result in history, runs Turn 2,
     /// and publishes the final reply.
     #[allow(clippy::too_many_arguments)] // Captures all state needed for the async continuation.
+    #[allow(dead_code)]
     async fn run_direct_act_continuation(
         self: Arc<Self>,
         agent_id: String,
@@ -2808,6 +2464,7 @@ impl AgentHarness {
     ///
     /// Used by both [`react_loop`] and [`direct_act`] — after skill selection
     /// the logic is identical.
+    #[allow(dead_code)]
     async fn process_react_turn(
         &self,
         ctx: &mut ReActContext,
@@ -2986,6 +2643,7 @@ impl AgentHarness {
             .await;
     }
 
+    #[allow(dead_code)]
     async fn react_loop(
         &self,
         ctx: &mut ReActContext,
@@ -3308,6 +2966,7 @@ impl AgentHarness {
     /// A dedicated OS thread bridges the synchronous channel to a small
     /// `tokio::sync::mpsc` channel consumed by the forwarder task. No chunks
     /// are dropped — backpressure replaces the old `try_send` + drop strategy.
+    #[allow(dead_code)]
     fn spawn_stream_forwarder(
         &self,
         ctx: &mut ReActContext,
@@ -3447,6 +3106,7 @@ impl AgentHarness {
 /// Status: <complete | incomplete | collision_found | stuck>
 /// Last actions: <what was happening when the session paused>
 /// ```
+#[allow(dead_code)]
 fn build_continuation_context(history: &[ChatMessage]) -> Vec<ChatMessage> {
     use std::collections::BTreeMap;
 
@@ -3602,6 +3262,7 @@ fn build_continuation_context(history: &[ChatMessage]) -> Vec<ChatMessage> {
 ///
 /// Returns the cleaned text (with markers removed) and a list of
 /// content strings to store as memories.
+#[allow(dead_code)]
 fn process_remember_commands(text: &str) -> (String, Vec<String>) {
     let mut remembered = Vec::new();
     let mut result = String::with_capacity(text.len());

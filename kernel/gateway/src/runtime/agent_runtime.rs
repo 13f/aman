@@ -1878,28 +1878,18 @@ impl AgentRuntimeBuilder {
                 let model = agent.descriptor.model.clone();
 
                 // Build SoulSnapshot with the complete system prompt (soul + skills + tools + date).
-                let soul_snapshot = self.soul_runtime.as_ref()
-                    .map(|sr| {
-                        let soul = sr.current_soul();
-                        let skills_json = serde_json::json!([]);
-                        let tools_json = serde_json::json!([]);
-                        let prompt = self.self_bridge
-                            .build_full_system_prompt(
-                                &soul.raw, &skills_json, &tools_json, None,
-                                &super::self_bridge::SystemPromptContext {
-                                    claude_md_content: None,
-                                    cwd: std::env::current_dir().ok().as_ref().and_then(|p| p.to_str()),
-                                    platform: "cli", model: None, provider: None,
-                                },
-                            )
-                            .unwrap_or_else(|| {
-                                self.self_bridge
-                                    .build_soul_prompt(&soul.raw)
-                                    .unwrap_or_else(|| soul.raw.clone())
-                            });
-                        kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
-                    })
-                    .unwrap_or_else(|| kernel::react::SoulSnapshot::new("assistant", ""));
+                let soul_snapshot = if let Some(ref sr) = self.soul_runtime {
+                    let soul = sr.current_soul();
+                    let cwd = std::env::current_dir().ok().and_then(|p| p.to_str().map(String::from));
+                    let prompt = pollster::block_on(
+                        self.agent_harness.build_full_system_prompt(
+                            &msg.to_agent, &soul.raw, &[], &self.self_bridge, cwd.as_deref(),
+                        ),
+                    );
+                    kernel::react::SoulSnapshot::new(soul.name.clone(), prompt)
+                } else {
+                    kernel::react::SoulSnapshot::new("assistant", "")
+                };
 
                 // Construct user-facing text from the agent message payload.
                 let text = format!(

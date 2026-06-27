@@ -247,7 +247,16 @@ impl AgentHarness {
             engine_config: json!({"model": model}),
         };
         let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
-        let reply = engine.process(&ctx, obs).await.map_err(|e| Error::ConfigInvalid { message: format!("cognitive engine: {e}") })?
+        let result = engine.process(&ctx, obs).await;
+        // ── Cleanup on error: reset agent state so it doesn't stay stuck ──
+        if result.is_err() {
+            self.unregister_interrupt(session_id);
+            let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+            let _ = self.registry.set_active_session(agent_id, None).await;
+            self.session_history.clear(session_id);
+        }
+        let reply = result.map_err(|e| Error::ConfigInvalid { message: format!("cognitive engine: {e}") })?
             .iter().find_map(|d| match &d.kind { cognitive_engine::DecisionKind::Reply { text, is_final: true } => Some(text.clone()), _ => None }).unwrap_or_else(|| "[no reply]".into());
         self.session_history.clear(session_id); self.session_history.extend(session_id, vec![ChatMessage::user(user_text), ChatMessage::assistant(&reply)]);
         self.unregister_interrupt(session_id);
@@ -409,13 +418,20 @@ impl AgentHarness {
         let harness = Arc::clone(self);
         self.runtime.spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot, skill_name.as_deref(), react_mode, background, continuation_mode)
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot.clone(), skill_name.as_deref(), react_mode, background, continuation_mode)
                 .await
             {
                 tracing::error!(
                     error = %e, session_id = %session_id, agent_id = %agent_id,
                     "process_message failed"
                 );
+                // Ensure agent state is reset even if process_message_v2
+                // returned an error without cleaning up.
+                harness.unregister_interrupt(&session_id);
+                let _ = harness.registry.set_status(&agent_id, AgentStatus::Idle).await;
+                let _ = harness.registry.set_system_state(&agent_id, AgentSystemState::Idle).await;
+                let _ = harness.registry.set_active_session(&agent_id, None).await;
+                harness.session_history.clear(&session_id);
             }
         })
     }

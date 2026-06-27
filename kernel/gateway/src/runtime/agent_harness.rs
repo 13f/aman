@@ -121,25 +121,6 @@ impl AnonymousAgentHandle {
     }
 }
 
-// ── Detached process helpers ──────────────────────────────────────────────
-
-/// Captures the completion event from a detached process monitor thread.
-///
-/// The monitor publishes `tool:completed` (source `tool:detached`) when the
-/// child process exits. This struct subscribes to that event on the agent's
-/// local bus and provides a `wait()` method that blocks until the event
-/// arrives or the caller is interrupted.
-
-/// Event handler that captures a `tool:completed` event in a `DetachCapture`.
-///
-/// Uses `Arc` for the shared state because `EventHandler` requires `'static`.
-
-// ── ToolExecutor ──────────────────────────────────────────────────────────
-
-/// Wraps tool execution with permission checks and event publishing.
-
-/// Concrete ReAct engine that calls an LLM provider.
-
 /// Agent Harness — orchestrates the ReAct loop for a single agent.
 ///
 /// One harness instance processes one message at a time through
@@ -581,10 +562,6 @@ impl AgentHarness {
         self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, background).await
     }
 
-    /// Build tool descriptors for an anonymous agent, filtering by the
-    /// descriptor's inline allow/deny lists instead of calling
-    /// `AgentRegistry::tool_allowed()`.
-
     // ── process_message helpers ──────────────────────────────────────
     //
     // These methods were extracted from the previously 465-line
@@ -786,51 +763,6 @@ impl AgentHarness {
         Some(mem_text.join("\n"))
     }
 
-    /// Direct execution mode for skills that only invoke a fixed script/API.
-    ///
-    /// Unlike the full ReAct loop, this runs exactly 2 turns:
-    /// 1. LLM reads the methodology → outputs tool calls (no reasoning/search)
-    /// 2. Tools execute → LLM reports results
-    ///
-    /// When a tool spawns a detached process, Turn 1 returns immediately with
-    /// `AwaitingDetach`; a continuation task runs Turn 2 after the process exits.
-    /// No multi-turn exploration, no compression, no token budget tracking.
-
-    /// Run the Turn 2 LLM report phase for `direct_act`.
-    ///
-    /// Assumes `ctx.history` already contains Turn 1 assistant message and
-    /// tool results.  Calls the LLM to produce a human-readable summary.
-    /// Wait for a detached process to complete, returning the
-    /// `tool:completed` event (or `None` if interrupted).
-
-    /// Replace the tool result for `tool_call_id` in the conversation history
-    /// with the final output (after process exit).
-
-    /// Publish final reply and set agent to idle.
-
-    /// Continuation for `direct_act` after a detached process completes.
-    ///
-    /// Spawned by `process_message` when `direct_act` returns `AwaitingDetach`.
-    /// Waits for the process, updates the tool result in history, runs Turn 2,
-    /// and publishes the final reply.
-
-    /// The core think-act-observe loop with M4 token budget management.
-    /// Shared core: process one ReAct turn (LLM → tools → results).
-    ///
-    /// Returns `Ok(true)` if the caller should continue looping (tools executed,
-    /// results added to history), `Ok(false)` if a final reply was produced,
-    /// or `Err` on failure.
-    ///
-    /// Used by both [`react_loop`] and [`direct_act`] — after skill selection
-    /// the logic is identical.
-
-    /// Publish agent:got_tool_calls event.
-
-    /// Publish agent:tool_results_fed_back event.
-
-    /// Publish llm_error event.
-
-
     /// Build tool descriptors from the tool registry for the given agent.
     async fn build_tool_descriptors(&self, agent_id: &str) -> Vec<ToolDescriptor> {
         let names = self.tool_registry.list_tools();
@@ -912,28 +844,6 @@ impl AgentHarness {
             &tool_descriptors,
         )
     }
-
-    /// Set up streaming for one ReAct turn: create an mpsc channel, attach it
-    /// as the streaming callback on the context, and spawn a task that forwards
-    /// each event to the event bus as `agent:reply_*` events.
-    ///
-    /// Returns a [`JoinHandle`] that resolves once the forwarder has finished
-    /// draining the channel.  Callers MUST await this handle after clearing
-    /// [`ReActContext::stream_cb`] and BEFORE publishing `reply_ready` or `idle`,
-    /// so that `reply_stream_done` is guaranteed to appear first in the event log.
-    ///
-    /// # Bounded buffer with backpressure
-    ///
-    /// The channel is a `std::sync::mpsc::sync_channel` whose capacity is
-    /// configured via `event_bus.stream_forwarder_capacity` (default 8192).
-    /// The synchronous callback calls `sync_tx.send(event)`, which **blocks**
-    /// the LLM stream task when the buffer is full. That blocking propagates
-    /// naturally through the HTTP stream reader → TCP receive window → LLM
-    /// provider, slowing token generation until the consumer catches up.
-    ///
-    /// A dedicated OS thread bridges the synchronous channel to a small
-    /// `tokio::sync::mpsc` channel consumed by the forwarder task. No chunks
-    /// are dropped — backpressure replaces the old `try_send` + drop strategy.
 
     /// Publish an agent-to-agent message to the event bus (M7).
     pub async fn publish_agent_message(
@@ -1213,28 +1123,6 @@ mod tests {
         let (text, memories) = process_remember_commands("[remember: ] [remember: x] valid");
         assert_eq!(text, "valid");
         assert!(memories.is_empty());
-    }
-
-    #[test]
-    fn sanitize_api_keys_redacts_openai_key_in_api_key_context() {
-        let input = r#"{ "apiKey": "sk-abcdefghijklmnopqrstuvwxyz12" }"#;
-        let out = sanitize_api_keys(input);
-        assert!(out.contains("[REDACTED]"));
-        assert!(!out.contains("sk-abcdefghijklmnopqrstuvwxyz12"));
-    }
-
-    #[test]
-    fn sanitize_api_keys_redacts_bearer_authorization() {
-        let input = "Authorization: Bearer sk-12345678901234567890";
-        let out = sanitize_api_keys(input);
-        assert!(out.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn sanitize_api_keys_leaves_sk_outside_api_context() {
-        let input = "The ski-trip to sk-foo was fun";
-        let out = sanitize_api_keys(input);
-        assert_eq!(out, input);
     }
 
     #[test]

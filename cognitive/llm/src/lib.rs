@@ -850,17 +850,17 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // ── Interrupt check (before LLM call) ──────────────────
-            if let Some(ref flag) = self.interrupt_flag {
-                if flag.is_interrupted() {
-                    if let Some(ref sink) = self.event_sink {
-                        sink(kernel::event::Event::new(
-                            "cognitive-engine",
-                            kernel::event::EventType::Custom("agent:reply_interrupted".into()),
-                            serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
-                        ));
-                    }
-                    return Err(CognitiveError::Interrupted);
+            if let Some(ref flag) = self.interrupt_flag
+                && flag.is_interrupted()
+            {
+                if let Some(ref sink) = self.event_sink {
+                    sink(kernel::event::Event::new(
+                        "cognitive-engine",
+                        kernel::event::EventType::Custom("agent:reply_interrupted".into()),
+                        serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
+                    ));
                 }
+                return Err(CognitiveError::Interrupted);
             }
 
             // Publish llm:call_started
@@ -928,14 +928,14 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // Publish llm_error if the call failed after all retries
-            if let Err(ref err_msg) = response {
-                if let Some(ref sink) = self.event_sink {
-                    sink(kernel::event::Event::new(
-                        "cognitive-engine",
-                        kernel::event::EventType::Custom("llm_error".into()),
-                        serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "error": err_msg }),
-                    ));
-                }
+            if let Err(ref err_msg) = response
+                && let Some(ref sink) = self.event_sink
+            {
+                sink(kernel::event::Event::new(
+                    "cognitive-engine",
+                    kernel::event::EventType::Custom("llm_error".into()),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "error": err_msg }),
+                ));
             }
 
             let response = response.map_err(|e| CognitiveError::EngineError {
@@ -1039,17 +1039,17 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // ── Interrupt check (after tool execution) ──────────────
-            if let Some(ref flag) = self.interrupt_flag {
-                if flag.is_interrupted() {
-                    if let Some(ref sink) = self.event_sink {
-                        sink(kernel::event::Event::new(
-                            "cognitive-engine",
-                            kernel::event::EventType::Custom("agent:reply_interrupted".into()),
-                            serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
-                        ));
-                    }
-                    return Err(CognitiveError::Interrupted);
+            if let Some(ref flag) = self.interrupt_flag
+                && flag.is_interrupted()
+            {
+                if let Some(ref sink) = self.event_sink {
+                    sink(kernel::event::Event::new(
+                        "cognitive-engine",
+                        kernel::event::EventType::Custom("agent:reply_interrupted".into()),
+                        serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
+                    ));
                 }
+                return Err(CognitiveError::Interrupted);
             }
 
             // ── Format reminder (once per session, after N turns with tool use) ─

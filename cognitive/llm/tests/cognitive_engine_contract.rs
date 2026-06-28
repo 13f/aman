@@ -537,7 +537,7 @@ async fn multi_turn_react_loop_executes_tools_and_returns_final_reply() {
 
     // Set up tool registry with echo tool
     let registry = ToolRegistry::new();
-    registry.register(Arc::new(EchoTool::new()));
+    let _ = registry.register(Arc::new(EchoTool::new()));
 
     // Set up event bus
     let bus_config = InMemoryBusConfig::default();
@@ -581,7 +581,7 @@ async fn non_background_mode_stops_at_max_turns() {
     ]));
 
     let registry = ToolRegistry::new();
-    registry.register(Arc::new(EchoTool::new()));
+    let _ = registry.register(Arc::new(EchoTool::new()));
     let bus_config = InMemoryBusConfig::default();
     let bus = Arc::new(InMemoryBus::new(bus_config));
 

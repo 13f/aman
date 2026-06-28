@@ -2236,6 +2236,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plugin_candidate_with_options(
         name: &str,
         version: Version,

@@ -139,9 +139,11 @@ mod tests {
     #[test]
     fn event_sources_disabled_returns_empty() {
         let (registry, router, store) = registries();
-        let mut config = SlackConfig::default();
-        config.enabled = false;
-        config.bot_token = "xoxb-secret".to_owned();
+        let config = SlackConfig {
+            enabled: false,
+            bot_token: "xoxb-secret".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = SlackPlugin::new(config).with_registries(registry, router, store);
 
@@ -151,9 +153,11 @@ mod tests {
     #[test]
     fn event_sources_no_token_returns_empty() {
         let (registry, router, store) = registries();
-        let mut config = SlackConfig::default();
-        config.enabled = true;
-        config.bot_token = String::new();
+        let config = SlackConfig {
+            enabled: true,
+            bot_token: String::new(),
+            ..Default::default()
+        };
 
         let plugin = SlackPlugin::new(config).with_registries(registry, router, store);
 
@@ -163,9 +167,11 @@ mod tests {
     #[test]
     fn event_sources_enabled_registers_sender_and_returns_source() {
         let (registry, router, store) = registries();
-        let mut config = SlackConfig::default();
-        config.enabled = true;
-        config.bot_token = "xoxb-test-token".to_owned();
+        let config = SlackConfig {
+            enabled: true,
+            bot_token: "xoxb-test-token".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = SlackPlugin::new(config).with_registries(
             Arc::clone(&registry),

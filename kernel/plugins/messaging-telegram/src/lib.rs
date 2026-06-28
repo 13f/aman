@@ -153,9 +153,11 @@ mod tests {
     #[test]
     fn event_sources_disabled_returns_empty() {
         let (registry, router, store) = registries();
-        let mut config = TelegramConfig::default();
-        config.enabled = false;
-        config.bot_token = "secret".to_owned();
+        let config = TelegramConfig {
+            enabled: false,
+            bot_token: "secret".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = TelegramPlugin::new(config)
             .with_registries(registry, router, store);
@@ -166,9 +168,11 @@ mod tests {
     #[test]
     fn event_sources_no_token_returns_empty() {
         let (registry, router, store) = registries();
-        let mut config = TelegramConfig::default();
-        config.enabled = true;
-        config.bot_token = String::new();
+        let config = TelegramConfig {
+            enabled: true,
+            bot_token: String::new(),
+            ..Default::default()
+        };
 
         let plugin = TelegramPlugin::new(config)
             .with_registries(registry, router, store);
@@ -179,10 +183,12 @@ mod tests {
     #[test]
     fn event_sources_enabled_registers_sender_and_returns_source() {
         let (registry, router, store) = registries();
-        let mut config = TelegramConfig::default();
-        config.enabled = true;
-        config.bot_token = "test-token-123".to_owned();
-        config.bot_username = "testbot".to_owned();
+        let config = TelegramConfig {
+            enabled: true,
+            bot_token: "test-token-123".to_owned(),
+            bot_username: "testbot".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = TelegramPlugin::new(config).with_registries(
             Arc::clone(&registry),
@@ -200,9 +206,11 @@ mod tests {
     #[test]
     fn event_sources_uses_token_prefix_when_username_missing() {
         let (registry, router, store) = registries();
-        let mut config = TelegramConfig::default();
-        config.enabled = true;
-        config.bot_token = "abcdefgh1234".to_owned();
+        let config = TelegramConfig {
+            enabled: true,
+            bot_token: "abcdefgh1234".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = TelegramPlugin::new(config).with_registries(
             Arc::clone(&registry),

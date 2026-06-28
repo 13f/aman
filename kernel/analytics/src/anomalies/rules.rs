@@ -184,10 +184,12 @@ mod tests {
 
     #[test]
     fn error_rate_critical_fires() {
-        let mut tm = TraceBucketMetrics::default();
-        tm.trace_count = 10;
-        tm.failure_count = 8;
-        tm.error_count = 20;
+        let tm = TraceBucketMetrics {
+            trace_count: 10,
+            failure_count: 8,
+            error_count: 20,
+            ..Default::default()
+        };
         let sm = SessionBucketMetrics::default();
         let rule = &predefined_rules()[0];
         let result = (rule.check)(&tm, &sm, "test");
@@ -197,11 +199,13 @@ mod tests {
 
     #[test]
     fn error_rate_normal_silent() {
-        let mut tm = TraceBucketMetrics::default();
-        tm.trace_count = 100;
-        tm.success_count = 95;
-        tm.failure_count = 5;
-        tm.error_count = 2;
+        let tm = TraceBucketMetrics {
+            trace_count: 100,
+            success_count: 95,
+            failure_count: 5,
+            error_count: 2,
+            ..Default::default()
+        };
         let sm = SessionBucketMetrics::default();
         let rule = &predefined_rules()[0];
         assert!((rule.check)(&tm, &sm, "test").is_none());

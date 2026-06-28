@@ -1637,10 +1637,10 @@ mod tests {
             "finding": "Second discovery"
         })).unwrap();
 
-        let count = PlannerTool::count_findings(&plan_id).unwrap();
+        let count = PlannerTool::count_findings(plan_id).unwrap();
         assert_eq!(count, 2);
 
-        let findings = PlannerTool::read_findings(&plan_id).unwrap();
+        let findings = PlannerTool::read_findings(plan_id).unwrap();
         assert_eq!(findings.len(), 2);
         assert_eq!(findings[0]["task_id"], "1");
         assert_eq!(findings[0]["finding"], "First discovery");

@@ -49,7 +49,7 @@ async fn connect_to_http_mcp_server() {
         result
             .get("content")
             .and_then(|v| v.as_str())
-            .map_or(false, |s| s.contains("pong")),
+            .is_some_and(|s| s.contains("pong")),
         "ping should return pong"
     );
 
@@ -63,7 +63,7 @@ async fn connect_to_http_mcp_server() {
         result
             .get("content")
             .and_then(|v| v.as_str())
-            .map_or(false, |s| s.contains("7")),
+            .is_some_and(|s| s.contains("7")),
         "3 + 4 should equal 7"
     );
 
@@ -77,7 +77,7 @@ async fn connect_to_http_mcp_server() {
         result
             .get("content")
             .and_then(|v| v.as_str())
-            .map_or(false, |s| s.contains("aman")),
+            .is_some_and(|s| s.contains("aman")),
         "greet should mention aman"
     );
 

@@ -53,7 +53,7 @@ async fn connect_to_everything_stdio() {
         result
             .get("content")
             .and_then(|v| v.as_str())
-            .map_or(false, |s| s.contains("hello from aman")),
+            .is_some_and(|s| s.contains("hello from aman")),
         "echo should return our message"
     );
 

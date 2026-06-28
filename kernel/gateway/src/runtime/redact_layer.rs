@@ -117,9 +117,9 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut writer = RedactWriter::new(&mut buf);
-            write!(
+            writeln!(
                 writer,
-                "INFO gateway: Loaded API key: sk-abc123def456ghi789jkl012mno345\n"
+                "INFO gateway: Loaded API key: sk-abc123def456ghi789jkl012mno345"
             )
             .unwrap();
             writer.flush().unwrap();
@@ -134,7 +134,7 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut writer = RedactWriter::new(&mut buf);
-            write!(writer, "INFO gateway: starting up\n").unwrap();
+            writeln!(writer, "INFO gateway: starting up").unwrap();
             writer.flush().unwrap();
         }
         let output = String::from_utf8(buf).unwrap();
@@ -177,7 +177,7 @@ mod tests {
         let mut inner = Vec::new();
         {
             let mut writer = RedactWriter::new(&mut inner);
-            write!(writer, "token: sk-abc123def456ghi789jkl012mno\n").unwrap();
+            writeln!(writer, "token: sk-abc123def456ghi789jkl012mno").unwrap();
             let recovered = writer.into_inner().unwrap();
             // recovered is the original inner writer
             let _ = recovered;

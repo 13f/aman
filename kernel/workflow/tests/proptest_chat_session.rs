@@ -283,10 +283,10 @@ fn legal_transition_succeeds() {
         Just("RETRYING"),
         Just("TIMEOUT"),
     ])| {
-        prop_assume!(!ChatEvent::legal_for(&state).is_empty());
+        prop_assume!(!ChatEvent::legal_for(state).is_empty());
 
-        for event in ChatEvent::legal_for(&state) {
-            let result = wf.find_transition(&state, event.as_str());
+        for event in ChatEvent::legal_for(state) {
+            let result = wf.find_transition(state, event.as_str());
             prop_assert!(result.is_some(), "legal transition missing: {} --[{}]-> ?", state, event);
         }
     });
@@ -305,8 +305,8 @@ fn illegal_transition_rejected() {
         Just("TIMEOUT"),
         Just("CLOSED"),
     ])| {
-        for event in ChatEvent::illegal_for(&state) {
-            let result = wf.find_transition(&state, event.as_str());
+        for event in ChatEvent::illegal_for(state) {
+            let result = wf.find_transition(state, event.as_str());
             prop_assert!(result.is_none(), "illegal transition allowed: {} --[{}]-> ?", state, event);
         }
     });

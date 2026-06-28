@@ -376,9 +376,9 @@ mod tests {
             args: serde_json::json!({"path": "/tmp/test.txt"}),
         };
 
-        detector.feed_turn("", &[call.clone()]);
-        detector.feed_turn("", &[call.clone()]);
-        detector.feed_turn("", &[call.clone()]);
+        detector.feed_turn("", std::slice::from_ref(&call));
+        detector.feed_turn("", std::slice::from_ref(&call));
+        detector.feed_turn("", std::slice::from_ref(&call));
 
         // The "read|args" key should have count 3
         assert!(!detector.recent_tool_calls.is_empty());

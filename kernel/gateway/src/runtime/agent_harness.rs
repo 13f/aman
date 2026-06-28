@@ -1225,7 +1225,6 @@ fn process_remember_commands(text: &str) -> (String, Vec<String>) {
 /// LLMs trained on code and API documentation may hallucinate patterns like
 /// `"apiKey": "sk-..."` or `Authorization: Bearer sk-...` when their context
 /// includes tool schemas or skill docs referencing API-based services.
-
 #[cfg(test)]
 mod tests {
     use super::*;

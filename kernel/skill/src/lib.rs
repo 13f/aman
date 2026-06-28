@@ -2210,6 +2210,11 @@ idle_prompts:
             .with_debounce_ms(500);
         manager.start_watching().expect("start watching");
 
+        // Give the FSEvents watcher a moment to stabilise on macOS —
+        // otherwise the file write can race past its initialisation and
+        // poll_once never sees the event.
+        std::thread::sleep(Duration::from_millis(200));
+
         std::fs::write(
             root.join("watch.yaml"),
             "name: watch-skill\nversion: 0.1.0\ndescription: watcher\ntriggers: []\n",
@@ -2431,6 +2436,11 @@ idle_prompts:
         let manager = HotReloadManager::new(root.clone(), Arc::clone(&registry), Arc::clone(&search))
             .with_debounce_ms(300);
         manager.start_watching().expect("start watcher");
+
+        // Give the FSEvents watcher a moment to stabilise on macOS —
+        // otherwise the file write can race past its initialisation and
+        // poll_once never sees the event.
+        std::thread::sleep(Duration::from_millis(200));
 
         std::fs::write(
             &skill_file,

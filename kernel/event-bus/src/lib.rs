@@ -1574,7 +1574,7 @@ mod tests {
             let files: Vec<_> = fs::read_dir(&overflow_dir)
                 .expect("read overflow dir")
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
                 .collect();
             assert_eq!(files.len(), 1, "one event should be overflowed to disk");
 
@@ -1796,7 +1796,7 @@ mod tests {
             let remaining: Vec<_> = fs::read_dir(&overflow_dir)
                 .expect("read dir")
                 .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
                 .collect();
             assert_eq!(remaining.len(), 0, "overflow dir should be empty after recovery");
 

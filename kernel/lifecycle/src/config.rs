@@ -214,8 +214,10 @@ mod tests {
 
     #[test]
     fn zero_step_timeout_is_invalid() {
-        let mut c = ExecutionConfig::default();
-        c.step_timeout = Duration::ZERO;
+        let c = ExecutionConfig {
+            step_timeout: Duration::ZERO,
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
     }
 
@@ -228,8 +230,10 @@ mod tests {
 
     #[test]
     fn zero_queue_size_is_invalid() {
-        let mut c = QueueConfig::default();
-        c.max_size = 0;
+        let c = QueueConfig {
+            max_size: 0,
+            ..Default::default()
+        };
         assert!(c.validate().is_err());
     }
 

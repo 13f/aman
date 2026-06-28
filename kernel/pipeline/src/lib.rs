@@ -757,6 +757,7 @@ mod tests {
         active: Arc<AtomicUsize>,
         max_active: Arc<AtomicUsize>,
         sleep_ms: u64,
+        #[allow(clippy::type_complexity)]
         captures: Arc<Mutex<Vec<(String, String, Option<String>, String)>>>,
     }
 

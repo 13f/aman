@@ -1596,7 +1596,7 @@ mod sqlite_tests {
         assert_eq!(recent2.len(), 1);
         assert_eq!(recent2[0].trace_id, "t3");
 
-        assert!(pollster::block_on(store.is_empty("agent1")).unwrap() == false);
+        assert!(!pollster::block_on(store.is_empty("agent1")).unwrap());
         assert!(pollster::block_on(store.is_empty("nobody")).unwrap());
     }
 

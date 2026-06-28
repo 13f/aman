@@ -149,9 +149,11 @@ mod tests {
     #[test]
     fn event_sources_disabled_returns_empty() {
         let (registry, router, store) = registries();
-        let mut config = MatrixConfig::default();
-        config.enabled = false;
-        config.username = "@test:matrix.org".to_owned();
+        let config = MatrixConfig {
+            enabled: false,
+            username: "@test:matrix.org".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = MatrixPlugin::new(config).with_registries(registry, router, store);
 
@@ -161,10 +163,12 @@ mod tests {
     #[test]
     fn event_sources_no_homeserver_returns_empty() {
         let (registry, router, store) = registries();
-        let mut config = MatrixConfig::default();
-        config.enabled = true;
-        config.homeserver_url = String::new();
-        config.username = "@test:matrix.org".to_owned();
+        let config = MatrixConfig {
+            enabled: true,
+            homeserver_url: String::new(),
+            username: "@test:matrix.org".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = MatrixPlugin::new(config).with_registries(registry, router, store);
 
@@ -174,11 +178,13 @@ mod tests {
     #[test]
     fn event_sources_enabled_registers_sender_and_returns_source() {
         let (registry, router, store) = registries();
-        let mut config = MatrixConfig::default();
-        config.enabled = true;
-        config.homeserver_url = "https://matrix.org".to_owned();
-        config.username = "@test:matrix.org".to_owned();
-        config.password = "s3cret".to_owned();
+        let config = MatrixConfig {
+            enabled: true,
+            homeserver_url: "https://matrix.org".to_owned(),
+            username: "@test:matrix.org".to_owned(),
+            password: "s3cret".to_owned(),
+            ..Default::default()
+        };
 
         let plugin = MatrixPlugin::new(config).with_registries(
             Arc::clone(&registry),

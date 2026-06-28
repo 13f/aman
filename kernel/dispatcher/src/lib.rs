@@ -950,8 +950,10 @@ mod tests {
 
     /// Helper: build a bare-bones InMemoryBus for testing.
     fn test_bus() -> Arc<InMemoryBus> {
-        let mut config = event_bus::InMemoryBusConfig::default();
-        config.max_queue_size = 100;
+        let config = event_bus::InMemoryBusConfig {
+            max_queue_size: 100,
+            ..Default::default()
+        };
         Arc::new(InMemoryBus::new(config))
     }
 

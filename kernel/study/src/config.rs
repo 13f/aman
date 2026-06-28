@@ -270,8 +270,10 @@ mod tests {
 
     #[test]
     fn zero_phase_timeout_is_invalid() {
-        let mut config = StudyConfig::default();
-        config.phase_timeout = Duration::ZERO;
+        let config = StudyConfig {
+            phase_timeout: Duration::ZERO,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 

@@ -187,6 +187,76 @@ impl SessionStore {
         .is_ok()
     }
 
+    // ── Low-value reply detection ───────────────────────────────────
+
+    /// Returns true if the concatenated agent reply text matches patterns
+    /// that indicate a session produced no useful output.
+    ///
+    /// Detects two categories:
+    /// 1. **Idle signals** — agent checked for work and found nothing
+    /// 2. **No-result batch jobs** — computationally expensive tasks that
+    ///    ran to completion without finding anything (lottery, collision
+    ///    search, etc.)
+    fn is_low_value_reply(reply_text: &str) -> bool {
+        let normalized = reply_text.to_lowercase();
+
+        // ── Category 1: Idle / no-work signals ──
+        let idle_signals = [
+            "agent is idle",
+            "no work items",
+            "nothing to do",
+            "no tasks assigned",
+            "no pending work",
+            "currently idle",
+            "没有工作项目",
+            "无任务分配",
+            "agent idle",
+            "no active work",
+        ];
+        if idle_signals.iter().any(|s| normalized.contains(s)) {
+            return true;
+        }
+
+        // ── Category 2: No-result batch/compute tasks ──
+        let no_result_signals = [
+            "no match found",
+            "no collision found",
+            "no results",
+            "result: ❌",
+            "nothing found",
+            "0 matches",
+            "no match",
+            "未找到匹配",
+            "无碰撞",
+            "no wallet was cracked",
+        ];
+        let has_no_result = no_result_signals.iter().any(|s| normalized.contains(s));
+        if !has_no_result {
+            return false;
+        }
+
+        // Require corroborating signals that this was a batch compute task,
+        // not a legitimate search that happened to find nothing.
+        let batch_signals = [
+            "keys checked",
+            "workers",
+            "duration",
+            "elapsed",
+            "average rate",
+            "search space",
+            "keys/sec",
+            "probability",
+            "expected time",
+        ];
+        let batch_hits = batch_signals
+            .iter()
+            .filter(|s| normalized.contains(*s))
+            .count();
+
+        // At least 3 batch signals + a no-result signal → low-value batch job
+        batch_hits >= 3
+    }
+
     /// Retrieve a single session record by id.
     pub fn get(&self, id: &str) -> AmanResult<Option<SessionRecord>> {
         let db = self.db.lock().expect("session store lock");
@@ -313,9 +383,9 @@ impl SessionStore {
     }
 
     /// Delete background sessions older than `older_than_days` whose total
-    /// agent reply text is shorter than `min_reply_chars` characters.  These
-    /// are typically idle-run sessions (prize games, luck, etc.) that ran
-    /// without producing any useful output.
+    /// agent reply text is shorter than `min_reply_chars` characters, OR
+    /// whose reply content matches low-value patterns (idle signals,
+    /// no-result batch jobs, etc.).
     ///
     /// Only considers sessions with `message_count > 0` — sessions with zero
     /// messages are handled by [`delete_empty_sessions`].
@@ -365,28 +435,31 @@ impl SessionStore {
             return Ok(0);
         }
 
-        // Inspect each candidate's JSONL to measure actual reply content.
+        // Inspect each candidate's JSONL: collect all agent reply text
+        // for both length-based and semantic low-value detection.
         let mut to_delete: Vec<String> = Vec::new();
         for (id, _msg_count) in &candidates {
             let events = self.load_session_events(id);
-            let total_reply_chars: usize = events
-                .iter()
-                .filter_map(|e| {
-                    let et = e["event_type"].as_str()?;
-                    if et.contains("reply_ready") || et == "llm_reply_ready" {
-                        // Reply text lives in payload.reply or payload.full_text
-                        let payload = &e["payload"];
-                        payload["reply"]
-                            .as_str()
-                            .or_else(|| payload["full_text"].as_str())
-                            .map(|s| s.chars().count())
-                    } else {
-                        None
-                    }
-                })
-                .sum();
+            let mut all_reply_text = String::new();
+            let mut total_reply_chars: usize = 0;
 
-            if total_reply_chars < min_reply_chars {
+            for e in &events {
+                let Some(et) = e["event_type"].as_str() else { continue };
+                if !et.contains("reply_ready") && et != "llm_reply_ready" {
+                    continue;
+                }
+                let payload = &e["payload"];
+                if let Some(reply) = payload["reply"]
+                    .as_str()
+                    .or_else(|| payload["full_text"].as_str())
+                {
+                    total_reply_chars += reply.chars().count();
+                    all_reply_text.push_str(reply);
+                    all_reply_text.push('\n');
+                }
+            }
+
+            if total_reply_chars < min_reply_chars || Self::is_low_value_reply(&all_reply_text) {
                 to_delete.push(id.clone());
             }
         }

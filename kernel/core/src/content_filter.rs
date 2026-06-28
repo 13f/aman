@@ -68,6 +68,21 @@ static CREDIT_CARD_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:\d[ -]*?){13,19}\b").unwrap()
 });
 
+/// OpenAI / Anthropic API key pattern.
+static API_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"sk-(?:proj-|ant-)?[a-zA-Z0-9_-]{20,}").unwrap()
+});
+
+/// GitHub personal access token.
+static GITHUB_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bgh[pousr]_[a-zA-Z0-9]{36,}\b").unwrap()
+});
+
+/// AWS access key ID.
+static AWS_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bAKIA[A-Z0-9]{16}\b").unwrap()
+});
+
 /// JWT token (base64url-encoded, 3 parts separated by dots).
 static JWT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+").unwrap()
@@ -100,14 +115,27 @@ impl ContentFilter {
         Self {
             rules: vec![
                 // ── High severity (block) ──────────────────────────
-                // API key patterns (sk-*, ghp_*, AKIA*) are handled by
-                // OutputValidator — kept there to avoid redundant filtering.
+                FilterRule {
+                    name: "api_key_openai".into(),
+                    regex: API_KEY_RE.clone(),
+                    severity: RuleSeverity::High,
+                },
+                FilterRule {
+                    name: "github_token".into(),
+                    regex: GITHUB_TOKEN_RE.clone(),
+                    severity: RuleSeverity::High,
+                },
+                FilterRule {
+                    name: "aws_access_key".into(),
+                    regex: AWS_KEY_RE.clone(),
+                    severity: RuleSeverity::High,
+                },
                 FilterRule {
                     name: "jwt_token".into(),
                     regex: JWT_RE.clone(),
                     severity: RuleSeverity::High,
                 },
-                // ── Medium severity (flag, logged — never blocks) ───
+                // ── Medium severity (flag) ─────────────────────────
                 FilterRule {
                     name: "email_address".into(),
                     regex: EMAIL_RE.clone(),
@@ -118,7 +146,7 @@ impl ContentFilter {
                     regex: CREDIT_CARD_RE.clone(),
                     severity: RuleSeverity::Medium,
                 },
-                // ── Low severity (flag, logged) ─────────────────────
+                // ── Low severity (log) ─────────────────────────────
                 FilterRule {
                     name: "phone_us".into(),
                     regex: PHONE_US_RE.clone(),
@@ -261,8 +289,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn api_key_blocked() {
+        let filter = ContentFilter::new();
+        // API key needs 20+ chars after sk- prefix for regex to match
+        let result = filter.filter("My key is sk-proj-abcdefghijklmnopqrstuvwxyz");
+        assert!(
+            matches!(result, FilterDecision::Block { .. }),
+            "API key should be blocked, got {result:?}"
+        );
+    }
 
+    #[test]
+    fn github_token_blocked() {
+        let filter = ContentFilter::new();
+        let result = filter.filter("token: ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+        assert!(matches!(result, FilterDecision::Block { .. }));
+    }
 
+    #[test]
+    fn aws_key_blocked() {
+        let filter = ContentFilter::new();
+        let result = filter.filter("AKIAIOSFODNN7EXAMPLE");
+        assert!(matches!(result, FilterDecision::Block { .. }));
+    }
 
     #[test]
     fn jwt_blocked() {
@@ -305,6 +355,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn high_severity_overrides_lower() {
+        let filter = ContentFilter::new();
+        // Contains both email (Medium) and API key (High).
+        // API key needs 20+ chars after the prefix to match the regex.
+        let result = filter.filter(
+            "My key sk-proj-abcdefghijklmnopqrstuvwxyz123456 and email user@example.com",
+        );
+        assert!(
+            matches!(result, FilterDecision::Block { .. }),
+            "high-severity API key should override email flag"
+        );
+    }
 
     #[test]
     fn luhn_validation_works() {

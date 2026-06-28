@@ -422,6 +422,12 @@
       const text = firstUserMsg.content.trim();
       const title = text.length <= 40 ? text : text.slice(0, 40) + '…';
       sessions = sessions.map(s => s.id === sessionId ? { ...s, title } : s);
+      // Persist to backend so title survives agent switches
+      invoke("chat_session_rename", {
+        agentKey: activeAgentKey || null,
+        sessionId,
+        title,
+      }).catch(e => console.error("Failed to persist auto-generated session title:", e));
     }
   }
 

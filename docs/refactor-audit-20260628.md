@@ -251,3 +251,15 @@ let _tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snaps
 3. **用户中断从「响应式」退化为「完全无视」**
 
 LLM 能正常运行（provider 适配层正确）但结果不满意的根因就在于这些编排层功能的退化。
+
+---
+
+## 后续迭代 (2026-06-28)
+
+审计报告的 P0/P1/P2 修复完成后，auto-continue 机制进一步深化为三层渐进式智能循环：
+
+1. **第一层：Continuation Context 描述→引导** — `build_continuation_context_summary()` 替换为结构化的 `build_continuation_context()`，新增工具成败分析、方法描述提取、未完成项检测、prescriptive lesson 生成。
+2. **第二层：Progress 二值→五级梯度** — `SessionProgress { collision_found, looks_stuck }` 替换为 `ProgressLevel { Achieved, Advancing, Creeping, Circling, Stuck }`。Advancing 不消耗 continuation budget，Circling 限制两次 pivot。
+3. **第三层：Approach Tracking 跨轮记忆** — 新增 `ContinuationRecord` 和 `continuation_history`，保留最近 3 轮的方法记忆。`generate_lesson()` 利用历史生成跨轮建议（全局无效工具累积、已尝试方法统计）。
+
+详见 `docs/loop-strategy.md`。测试：40/40 通过，零回归。

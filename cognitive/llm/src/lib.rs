@@ -547,36 +547,279 @@ fn is_retryable_llm_error(err: Option<&String>) -> bool {
         || msg.contains("unexpected eof")
 }
 
-// ── Session progress evaluation (mirrors kernel/eval/src/session_progress.rs) ─
+// ── Continuation Context — prescriptive auto-continue guidance ─────
+//
+// Instead of a flat descriptive summary, the continuation context now
+// provides strategic direction for the next round:
+//   1. Tool effectiveness analysis (what worked vs what to avoid)
+//   2. Approach tracking (what strategy was attempted)
+//   3. Unresolved items (what still needs attention)
+//   4. Lessons learned (concrete guidance for the next round)
+//
+// This turns auto-continue from blind retry into guided iteration.
 
-/// Lightweight session progress signals — no LLM call needed.
-struct SessionProgress {
-    collision_found: bool,
-    looks_stuck: bool,
+/// Record of a completed continuation round — enables cross-round memory.
+///
+/// After each auto-continue, the engine stores one of these so the next
+/// round's continuation context can reference what was tried before:
+/// "Round 1: grep was effective. Round 2: find failed. Round 3: do NOT use find."
+#[derive(Debug, Clone)]
+struct ContinuationRecord {
+    round: u32,
+    approach: String,
+    effective_tools: Vec<String>,
+    ineffective_tools: Vec<String>,
+    key_findings: Vec<String>,
+    lesson: Option<String>,
 }
 
-/// Build a structured continuation context summary from conversation history.
+/// Structured continuation context — prescriptive, not just descriptive.
+struct ContinuationContext {
+    goal: String,
+    round: u32,
+    max_rounds: u32,
+    approach_description: String,
+    effective_patterns: Vec<EffectivePattern>,
+    ineffective_patterns: Vec<IneffectivePattern>,
+    unresolved_items: Vec<String>,
+    tool_stats: Vec<ToolStat>,
+    key_findings: Vec<String>,
+    status: ContinuationStatus,
+    last_action: String,
+    lesson: Option<String>,
+    /// Prior continuation rounds — enables cross-round methodological memory.
+    prior_rounds: Vec<ContinuationRecord>,
+}
+
+struct EffectivePattern {
+    description: String,
+    evidence: String,
+}
+
+struct IneffectivePattern {
+    description: String,
+    reason: String,
+}
+
+struct ToolStat {
+    name: String,
+    calls: u32,
+    successes: u32,
+    key_output: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ContinuationStatus {
+    CollisionFound,
+    Advancing,
+    Incomplete,
+    Stuck,
+}
+
+impl ContinuationContext {
+    fn render(&self) -> String {
+        let mut s = String::new();
+
+        // ── Prior rounds (cross-round memory) ──
+        if !self.prior_rounds.is_empty() {
+            s.push_str("[Prior Rounds]\n");
+            for pr in &self.prior_rounds {
+                s.push_str(&format!("  Round {}: {}\n", pr.round, pr.approach));
+                if !pr.effective_tools.is_empty() {
+                    s.push_str(&format!("    ✅ effective: {}\n", pr.effective_tools.join(", ")));
+                }
+                if !pr.ineffective_tools.is_empty() {
+                    s.push_str(&format!("    ❌ ineffective: {}\n", pr.ineffective_tools.join(", ")));
+                }
+                if !pr.key_findings.is_empty() {
+                    for f in &pr.key_findings {
+                        s.push_str(&format!("    🔍 {}\n", f));
+                    }
+                }
+                if let Some(ref lesson) = pr.lesson {
+                    s.push_str(&format!("    💡 lesson: {}\n", lesson));
+                }
+            }
+            s.push('\n');
+        }
+
+        s.push_str(&format!(
+            "[Continuation Context — Round {}/{}]\n",
+            self.round, self.max_rounds
+        ));
+        s.push_str(&format!("Goal: {}\n", self.goal));
+
+        if !self.approach_description.is_empty() {
+            s.push_str(&format!("\nApproach so far: {}\n", self.approach_description));
+        }
+
+        // ── Effective patterns ──
+        if !self.effective_patterns.is_empty() {
+            s.push_str("\n✅ EFFECTIVE (continue using):\n");
+            for p in &self.effective_patterns {
+                s.push_str(&format!("  {} — {}\n", p.description, p.evidence));
+            }
+        }
+
+        // ── Ineffective patterns ──
+        if !self.ineffective_patterns.is_empty() {
+            s.push_str("\n❌ INEFFECTIVE (DO NOT retry):\n");
+            for p in &self.ineffective_patterns {
+                s.push_str(&format!("  {} — {}\n", p.description, p.reason));
+            }
+        }
+
+        // ── Unresolved items ──
+        if !self.unresolved_items.is_empty() {
+            s.push_str("\n⚠️ UNRESOLVED (needs attention this round):\n");
+            for item in &self.unresolved_items {
+                s.push_str(&format!("  - {}\n", item));
+            }
+        }
+
+        // ── Tool stats ──
+        let total_calls: u32 = self.tool_stats.iter().map(|t| t.calls).sum();
+        let total_successes: u32 = self.tool_stats.iter().map(|t| t.successes).sum();
+        if total_calls > 0 {
+            s.push_str(&format!(
+                "\nTool usage: {} calls across {} tools ({} succeeded, {} failed)\n",
+                total_calls,
+                self.tool_stats.len(),
+                total_successes,
+                total_calls.saturating_sub(total_successes),
+            ));
+            for stat in &self.tool_stats {
+                s.push_str(&format!(
+                    "  {}: {} calls ({} successes)",
+                    stat.name, stat.calls, stat.successes
+                ));
+                if let Some(ref ko) = stat.key_output {
+                    s.push_str(&format!(" — key output: {}", ko));
+                }
+                s.push('\n');
+            }
+        }
+
+        // ── Key findings ──
+        if !self.key_findings.is_empty() {
+            s.push_str("\nKey findings:\n");
+            for f in &self.key_findings {
+                s.push_str(&format!("  - {}\n", f));
+            }
+        }
+
+        // ── Status ──
+        let status_str = match self.status {
+            ContinuationStatus::CollisionFound => "complete — goal achieved",
+            ContinuationStatus::Advancing => "advancing — clear progress, continue current approach",
+            ContinuationStatus::Incomplete => "incomplete — task still in progress",
+            ContinuationStatus::Stuck => "stuck — no progress detected, MUST change approach",
+        };
+        s.push_str(&format!("\nStatus: {}\n", status_str));
+
+        // ── Last action ──
+        if !self.last_action.is_empty() {
+            let truncated = if self.last_action.len() > 500 {
+                format!("{}…[truncated]", &self.last_action[..500])
+            } else {
+                self.last_action.clone()
+            };
+            s.push_str(&format!("Last action: {}\n", truncated));
+        }
+
+        // ── Lesson (prescriptive guidance) ──
+        if let Some(ref lesson) = self.lesson {
+            s.push_str(&format!(
+                "\n💡 LESSON FOR THIS ROUND: {}\n", lesson
+            ));
+        }
+
+        s
+    }
+}
+
+/// Infer whether a tool execution succeeded from its output text.
 ///
-/// Instead of dumping raw tool outputs into the LLM prompt, this compresses
-/// the session into a structured summary:
+/// Heuristic-based — ToolCallResult.success is discarded when converting
+/// to ChatMessage, so we analyze the output string.
+fn infer_tool_success(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    // Explicit failure JSON
+    if lower.contains("\"success\": false") || lower.contains("\"success\":false") {
+        return false;
+    }
+    // Common error patterns
+    if lower.contains("error:") || lower.contains("failed:") || lower.contains("timed out")
+        || lower.contains("permission denied") || lower.contains("not found")
+        || lower.contains("no such file") || lower.contains("connection refused")
+        || lower.contains("tool panicked") || lower.contains("hardline_blocked")
+    {
+        return false;
+    }
+    // Explicit success JSON
+    if lower.contains("\"success\": true") || lower.contains("\"success\":true") {
+        return true;
+    }
+    // Default: non-empty output without obvious errors → likely success
+    !output.trim().is_empty()
+}
+
+/// Extract a short signal string from tool output for human-readable context.
 ///
-/// ```text
-/// [Previous Session Summary]
-/// Goal: <what the user originally asked for>
-/// Progress: <N messages exchanged>
-/// Key findings: <important discoveries from tool outputs>
-/// Tool usage: <N calls across M unique tools>
-/// Status: <complete | incomplete | collision_found | stuck>
-/// Last actions: <what was happening when the session paused>
-/// ```
-fn build_continuation_context_summary(messages: &[crate::react::ChatMessage]) -> String {
+/// Looks for count/quantity indicators and trims to a short line.
+fn extract_tool_output_signal(output: &str) -> Option<String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() || trimmed.len() > 2000 {
+        return None;
+    }
+    // Try to extract a key metric line
+    for line in trimmed.lines() {
+        let lower = line.to_lowercase();
+        if lower.contains("found") || lower.contains("match")
+            || lower.contains("result") || lower.contains("count")
+            || lower.contains("total") || lower.contains("file")
+            || lower.contains("line") || lower.contains("bytes")
+            || lower.contains("elapsed") || lower.contains("rows")
+            || lower.contains("items")
+        {
+            let short = if line.len() > 120 {
+                format!("{}…", &line[..120])
+            } else {
+                line.to_owned()
+            };
+            return Some(short);
+        }
+    }
+    // Fallback: first non-empty line (truncated)
+    let first_line = trimmed.lines().next()?;
+    let short = if first_line.len() > 100 {
+        format!("{}…", &first_line[..100])
+    } else {
+        first_line.to_owned()
+    };
+    Some(short)
+}
+
+/// Build a prescriptive continuation context that guides the next round.
+///
+/// Unlike the old `build_continuation_context_summary` which only described
+/// what happened, this analyzes tool effectiveness, identifies patterns to
+/// continue/avoid, and generates prescriptive guidance for the next round.
+fn build_continuation_context(
+    messages: &[crate::react::ChatMessage],
+    round: u32,
+    max_rounds: u32,
+    prior_rounds: Vec<ContinuationRecord>,
+) -> ContinuationContext {
     use std::collections::BTreeMap;
+
     let mut user_messages: Vec<&str> = Vec::new();
     let mut assistant_replies: Vec<&str> = Vec::new();
-    let mut tool_calls: BTreeMap<String, usize> = BTreeMap::new();
-    let mut total_tool_calls: usize = 0;
-    let mut key_findings: Vec<String> = Vec::new();
     let mut last_assistant_reply: &str = "";
+
+    // Per-tool stats: (calls, successes, best_output_signal)
+    let mut tool_raw: BTreeMap<String, (u32, u32, Option<String>)> = BTreeMap::new();
+    let mut key_findings: Vec<String> = Vec::new();
 
     for msg in messages {
         match msg.role {
@@ -597,27 +840,43 @@ fn build_continuation_context_summary(messages: &[crate::react::ChatMessage]) ->
                     assistant_replies.push(text);
                     last_assistant_reply = text;
                 }
+                // Count tool calls from assistant messages (pre-execution)
                 if let Some(ref tcs) = msg.tool_calls {
                     for tc in tcs {
                         if let Some(name) = tc["function"]["name"].as_str() {
-                            *tool_calls.entry(name.to_owned()).or_default() += 1;
-                            total_tool_calls += 1;
+                            let entry = tool_raw.entry(name.to_owned()).or_insert((0, 0, None));
+                            entry.0 += 1;
                         }
                     }
                 }
             }
             crate::react::ChatMessageRole::Tool => {
                 let name = msg.tool_name.as_deref().unwrap_or("unknown");
-                *tool_calls.entry(name.to_owned()).or_default() += 1;
-                total_tool_calls += 1;
                 let content = &msg.content;
+                let success = infer_tool_success(content);
+                let signal = extract_tool_output_signal(content);
+
+                let entry = tool_raw.entry(name.to_owned()).or_insert((0, 0, None));
+                entry.0 += 1;
+                if success {
+                    entry.1 += 1;
+                }
+                // Keep the best signal (prefer success signals)
+                if signal.is_some() {
+                    if entry.2.is_none() || success {
+                        entry.2 = signal;
+                    }
+                }
+
+                // Extract key findings
                 if content.contains("COLLISION FOUND")
                     || content.contains("found\": true")
                     || content.contains("found: true")
                 {
                     key_findings.push(format!("[{name}] COLLISION FOUND — goal achieved"));
                 } else if let Some(line) = content.lines().find(|l| {
-                    l.contains("best_residual") || l.contains("best_partial") || l.contains("elapsed_seconds")
+                    l.contains("best_residual") || l.contains("best_partial")
+                        || l.contains("elapsed_seconds")
                 }) {
                     key_findings.push(format!("[{name}] {}", line.trim()));
                 }
@@ -626,67 +885,327 @@ fn build_continuation_context_summary(messages: &[crate::react::ChatMessage]) ->
         }
     }
 
-    let mut summary = String::from("[Previous Session Summary]\n");
-    if let Some(first) = user_messages.first() {
-        summary.push_str(&format!("Goal: {}\n", first));
-    }
-    let msg_count = user_messages.len() + assistant_replies.len();
-    if msg_count > 0 {
-        summary.push_str(&format!(
-            "Progress: {} messages exchanged ({} user, {} assistant)\n",
-            msg_count, user_messages.len(), assistant_replies.len(),
-        ));
-    }
-    if !key_findings.is_empty() {
-        summary.push_str("Key findings:\n");
-        for f in &key_findings {
-            summary.push_str(&format!("  - {}\n", f));
+    // ── Build tool stats ──
+    let tool_stats: Vec<ToolStat> = tool_raw
+        .into_iter()
+        .map(|(name, (calls, successes, key_output))| ToolStat {
+            name,
+            calls,
+            successes,
+            key_output,
+        })
+        .collect();
+
+    // ── Categorize effective / ineffective patterns ──
+    let mut effective_patterns = Vec::new();
+    let mut ineffective_patterns = Vec::new();
+
+    for stat in &tool_stats {
+        if stat.calls == 0 {
+            continue;
+        }
+        let rate = stat.successes as f64 / stat.calls as f64;
+        let signal_desc = stat.key_output.as_deref().unwrap_or("no output signal");
+
+        if rate >= 0.7 && stat.calls >= 2 {
+            effective_patterns.push(EffectivePattern {
+                description: format!("{} ({}/{} calls)", stat.name, stat.successes, stat.calls),
+                evidence: signal_desc.to_owned(),
+            });
+        } else if rate <= 0.3 && stat.calls >= 2 {
+            let reason = if stat.successes == 0 {
+                format!("all {} calls failed — do not use this tool for this task again", stat.calls)
+            } else {
+                format!("{}/{} calls failed — reconsider approach", stat.calls - stat.successes, stat.calls)
+            };
+            ineffective_patterns.push(IneffectivePattern {
+                description: format!("{} ({}/{})", stat.name, stat.successes, stat.calls),
+                reason,
+            });
         }
     }
-    if total_tool_calls > 0 {
-        summary.push_str(&format!(
-            "Tool usage: {} calls across {} unique tools\n",
-            total_tool_calls, tool_calls.len(),
-        ));
-        if tool_calls.len() <= 8 {
-            for (name, count) in &tool_calls {
-                summary.push_str(&format!("  - {}: {} calls\n", name, count));
+
+    // ── Extract approach description from assistant replies ──
+    let approach_description = extract_approach_description(&assistant_replies);
+
+    // ── Detect unresolved items ──
+    let unresolved_items = detect_unresolved_items(&assistant_replies, &tool_stats);
+
+    // ── Determine status ──
+    let status = if key_findings.iter().any(|f| f.contains("COLLISION FOUND")) {
+        ContinuationStatus::CollisionFound
+    } else if last_assistant_reply.contains("stuck")
+        || last_assistant_reply.contains("no progress")
+    {
+        ContinuationStatus::Stuck
+    } else if !effective_patterns.is_empty() {
+        ContinuationStatus::Advancing
+    } else {
+        ContinuationStatus::Incomplete
+    };
+
+    // ── Generate lesson (with cross-round history) ──
+    let lesson = generate_lesson(
+        round,
+        &effective_patterns,
+        &ineffective_patterns,
+        &unresolved_items,
+        &status,
+        &prior_rounds,
+    );
+
+    let goal = user_messages
+        .first()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "(unknown goal)".to_owned());
+
+    ContinuationContext {
+        goal,
+        round,
+        max_rounds,
+        approach_description,
+        effective_patterns,
+        ineffective_patterns,
+        unresolved_items,
+        tool_stats,
+        key_findings,
+        status,
+        last_action: last_assistant_reply.to_owned(),
+        lesson,
+        prior_rounds,
+    }
+}
+
+/// Extract a human-readable approach description from assistant replies.
+///
+/// Looks for strategic intent signals: "I'll", "let me", "my approach",
+/// "I'm going to", "the plan is", etc.
+fn extract_approach_description(assistant_replies: &[&str]) -> String {
+    // Scan the first 3 assistant replies for approach-defining language
+    for reply in assistant_replies.iter().take(3) {
+        let lower = reply.to_lowercase();
+        for marker in [
+            "i'll", "let me", "my approach", "i'm going to",
+            "the plan is", "first, i'll", "strategy:",
+            "i will start by", "let's begin by",
+        ] {
+            if let Some(pos) = lower.find(marker) {
+                let start = reply[..pos].rfind(|c: char| c == '.' || c == '\n')
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                let end = reply[start..]
+                    .find(|c: char| c == '\n')
+                    .map(|p| start + p)
+                    .unwrap_or(reply.len());
+                let snippet = reply[start..end].trim();
+                if snippet.len() >= 20 && snippet.len() <= 300 {
+                    return snippet.to_owned();
+                }
             }
         }
     }
-    let status = if key_findings.iter().any(|f| f.contains("COLLISION FOUND")) {
-        "complete — collision found"
-    } else if last_assistant_reply.contains("stuck") || last_assistant_reply.contains("no progress") {
-        "stuck"
-    } else {
-        "incomplete — task still in progress"
-    };
-    summary.push_str(&format!("Status: {}\n", status));
-    if !last_assistant_reply.is_empty() {
-        let truncated = if last_assistant_reply.len() > 500 {
-            format!("{}…[truncated]", &last_assistant_reply[..500])
-        } else {
-            last_assistant_reply.to_owned()
-        };
-        summary.push_str(&format!("Last action: {}\n", truncated));
-    }
-
-    tracing::info!(
-        summary_len = summary.len(),
-        original_messages = messages.len(),
-        original_tool_calls = total_tool_calls,
-        "continuation: built compressed session summary"
-    );
-
-    summary
+    // Fallback: use first assistant reply (truncated)
+    assistant_replies
+        .first()
+        .map(|r| {
+            if r.len() > 200 {
+                format!("{}…", &r[..200])
+            } else {
+                r.to_string()
+            }
+        })
+        .unwrap_or_default()
 }
 
-/// Evaluate whether a session is making progress from ChatMessages.
+/// Detect unresolved items from assistant messages.
 ///
-/// Scans the most recent ~64 messages for collision detection,
-/// repetitive-pattern detection (Jaccard word overlap), and
-/// long-session-without-signs heuristics.
-fn evaluate_session_progress(messages: &[crate::react::ChatMessage]) -> SessionProgress {
+/// Scans for signals that the agent acknowledged something isn't done yet.
+fn detect_unresolved_items(
+    assistant_replies: &[&str],
+    _tool_stats: &[ToolStat],
+) -> Vec<String> {
+    let mut items = Vec::new();
+    for reply in assistant_replies.iter().rev().take(2) {
+        let lower = reply.to_lowercase();
+        for marker in [
+            "still need to", "haven't yet", "not yet", "remaining:",
+            "still missing", "todo:", "left to do",
+        ] {
+            if let Some(pos) = lower.find(marker) {
+                let end = reply[pos..]
+                    .find(|c: char| c == '.' || c == '\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(reply.len());
+                let item = reply[pos..end].trim();
+                let item_str = item.to_string();
+                if item.len() >= 10 && !items.contains(&item_str) {
+                    items.push(item_str);
+                }
+            }
+        }
+    }
+    items
+}
+
+/// Generate prescriptive lesson for the next round.
+///
+/// This is the key upgrade from descriptive → prescriptive.
+/// The lesson gives the LLM concrete guidance on what to do differently.
+fn generate_lesson(
+    round: u32,
+    effective: &[EffectivePattern],
+    ineffective: &[IneffectivePattern],
+    unresolved: &[String],
+    status: &ContinuationStatus,
+    prior_rounds: &[ContinuationRecord],
+) -> Option<String> {
+    // ── Cross-round: accumulate globally ineffective tools ──
+    let mut global_ineffective: Vec<String> = Vec::new();
+    for pr in prior_rounds {
+        for tool in &pr.ineffective_tools {
+            if !global_ineffective.contains(tool) {
+                global_ineffective.push(tool.clone());
+            }
+        }
+    }
+    // Add current round's ineffective tools
+    for p in ineffective {
+        let name = p.description.split(' ').next().unwrap_or("unknown");
+        if !global_ineffective.contains(&name.to_string()) {
+            global_ineffective.push(name.to_string());
+        }
+    }
+
+    // ── Cross-round: count distinct approaches tried ──
+    let approaches_tried: Vec<&str> = prior_rounds.iter()
+        .map(|pr| pr.approach.as_str())
+        .collect();
+    let distinct_approaches: std::collections::BTreeSet<&str> = approaches_tried.iter().copied().collect();
+
+    match status {
+        ContinuationStatus::CollisionFound => None,
+
+        ContinuationStatus::Stuck => {
+            if !global_ineffective.is_empty() {
+                Some(format!(
+                    "Previous approach has stalled. Across {} rounds, these tools consistently failed: {}. \
+                     ABANDON your current strategy. Try a fundamentally different method — \
+                     different tools, different search space, or break the problem into smaller sub-problems.",
+                    prior_rounds.len() + 1,
+                    global_ineffective.join(", ")
+                ))
+            } else {
+                Some(
+                    "Previous approach has stalled. ABANDON your current strategy entirely. \
+                     Try a fundamentally different method — different tools, different search space, \
+                     or break the problem into smaller sub-problems.".into()
+                )
+            }
+        }
+
+        ContinuationStatus::Advancing if !ineffective.is_empty() => {
+            let avoid: Vec<&str> = ineffective.iter().map(|p| p.description.as_str()).collect();
+            let global_avoid = if !global_ineffective.is_empty() {
+                format!(
+                    " (across all rounds, consistently avoid: {})",
+                    global_ineffective.join(", ")
+                )
+            } else {
+                String::new()
+            };
+            Some(format!(
+                "Progress is good, but avoid: {}.{} Focus on the effective patterns \
+                 and address unresolved items before the budget runs out.",
+                avoid.join(", "),
+                global_avoid
+            ))
+        }
+
+        ContinuationStatus::Advancing => Some(
+            "Good progress. Narrow further: use the effective patterns to drill \
+             into specific findings rather than expanding scope.".into()
+        ),
+
+        ContinuationStatus::Incomplete if round >= 3 => {
+            let focus: Vec<&str> = unresolved.iter().map(|s| s.as_str()).collect();
+            let cross_round_note = if distinct_approaches.len() >= 2 {
+                format!(
+                    " You've tried {} different approaches: {}. ",
+                    distinct_approaches.len(),
+                    distinct_approaches.iter().copied().collect::<Vec<_>>().join(", ")
+                )
+            } else {
+                String::new()
+            };
+            if focus.is_empty() {
+                Some(format!(
+                    "Running out of rounds.{}Prioritize: produce the BEST PARTIAL RESULT \
+                     you can with current data — don't start new searches.",
+                    cross_round_note
+                ))
+            } else {
+                Some(format!(
+                    "Running out of rounds.{}Focus ONLY on: {}. \
+                     Do not start new investigations — complete what's pending.",
+                    cross_round_note,
+                    focus.join("; ")
+                ))
+            }
+        }
+
+        ContinuationStatus::Incomplete => {
+            if effective.is_empty() && !unresolved.is_empty() {
+                let focus: Vec<&str> = unresolved.iter().map(|s| s.as_str()).collect();
+                Some(format!(
+                    "No clear effective patterns yet. Narrow your focus: {}. \
+                     Try ONE targeted approach and verify results before expanding.",
+                    focus.join("; ")
+                ))
+            } else {
+                None
+            }
+        }
+    }
+}
+
+// ── Session progress evaluation (gradient) ──────────────────────────
+//
+// Replaces the binary SessionProgress with a five-level gradient.
+// Each level drives different auto-continue behaviour:
+//   Achieved  → stop, return result
+//   Advancing → continue WITHOUT consuming budget (valuable work)
+//   Creeping  → continue, consume budget, inject stronger pivot
+//   Circling  → one more chance with forced approach-change
+//   Stuck     → stop immediately
+
+/// Five-level progress gradient for auto-continue decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProgressLevel {
+    /// Goal achieved — collision found or task explicitly completed.
+    Achieved,
+    /// Clear forward progress — tools succeeding, new findings, search converging.
+    Advancing,
+    /// Slow progress — some output but high effort-to-signal ratio.
+    Creeping,
+    /// Going in circles — repetitive output, no new information.
+    Circling,
+    /// Completely stuck — no progress for many turns.
+    Stuck,
+}
+
+/// Evaluate session progress as a gradient level from ChatMessages.
+///
+/// Detection signals (in priority order):
+/// 1. Collision found → Achieved
+/// 2. Assistant says "stuck"/"no progress" → Stuck
+/// 3. Jaccard word overlap > 0.8 across 3+ consecutive replies → Circling
+/// 4. 100+ messages with zero partial-progress signals → Stuck
+/// 5. Tool success rate analysis:
+///    - ≥70% success, new findings present → Advancing
+///    - 30-70% success or many tools but few signals → Creeping
+///    - <30% success after 3+ calls → Circling
+/// 6. Default: Advancing (assume progress until proven otherwise)
+fn evaluate_progress_level(messages: &[crate::react::ChatMessage]) -> ProgressLevel {
     use std::collections::BTreeSet;
 
     let recent: Vec<&str> = messages
@@ -698,12 +1217,34 @@ fn evaluate_session_progress(messages: &[crate::react::ChatMessage]) -> SessionP
 
     let full_text = recent.join(" ").to_lowercase();
 
-    // Collision / success detection
+    // ── 1. Collision / explicit success detection ──
     let collision_found = full_text.contains("collision found")
         || full_text.contains("✅ collision")
         || full_text.contains("verify_collision_solution");
+    if collision_found {
+        return ProgressLevel::Achieved;
+    }
 
-    // Stuck detection — Jaccard word overlap on last 8 assistant messages
+    // ── 2. Explicit stuck declaration ──
+    let last_assistant = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == crate::react::ChatMessageRole::Assistant)
+        .map(|m| m.content.to_lowercase())
+        .unwrap_or_default();
+    if last_assistant.contains("stuck") || last_assistant.contains("no progress") {
+        return ProgressLevel::Stuck;
+    }
+
+    // ── 3. Tool success rate analysis ──
+    let (total_tool_msgs, total_tool_successes) = count_tool_results(messages);
+    let tool_success_rate = if total_tool_msgs > 0 {
+        total_tool_successes as f64 / total_tool_msgs as f64
+    } else {
+        1.0 // No tools used yet — can't judge
+    };
+
+    // ── 4. Jaccard word overlap on last 8 assistant messages → Circling ──
     let assistant_msgs: Vec<&str> = messages
         .iter()
         .rev()
@@ -712,39 +1253,78 @@ fn evaluate_session_progress(messages: &[crate::react::ChatMessage]) -> SessionP
         .map(|m| m.content.as_str())
         .collect();
 
-    let mut looks_stuck = false;
-    if assistant_msgs.len() >= 4 {
-        let similar_pairs = assistant_msgs
+    let jaccard_similar_pairs = if assistant_msgs.len() >= 4 {
+        assistant_msgs
             .windows(2)
             .filter(|w| {
                 let wa: BTreeSet<&str> = w[0].split_whitespace().collect();
                 let wb: BTreeSet<&str> = w[1].split_whitespace().collect();
-                if wa.is_empty() || wb.is_empty() { return false; }
+                if wa.is_empty() || wb.is_empty() {
+                    return false;
+                }
                 let intersection = wa.intersection(&wb).count();
                 let union = wa.union(&wb).count();
                 (intersection as f64 / union as f64) > 0.8
             })
-            .count();
-        if similar_pairs >= 3 {
-            looks_stuck = true;
-        }
+            .count()
+    } else {
+        0
+    };
+
+    if jaccard_similar_pairs >= 3 {
+        return ProgressLevel::Circling;
     }
 
-    // Long session + zero progress signals → stuck
-    if messages.len() > 100 && !collision_found {
-        // Check for partial match signals: "best_match=", "match=", etc.
+    // ── 5. Long session + zero progress signals → Stuck ──
+    if messages.len() > 100 {
         let has_partial = recent.iter().any(|line| {
             let lower = line.to_lowercase();
             lower.contains("best_match=")
                 || lower.contains("match=")
                 || lower.contains("best partial match:")
+                || lower.contains("found")
+                || lower.contains("result")
         });
         if !has_partial {
-            looks_stuck = true;
+            return ProgressLevel::Stuck;
         }
     }
 
-    SessionProgress { collision_found, looks_stuck }
+    // ── 6. Tool success rate + findings → gradient decision ──
+    let has_new_findings = recent.iter().any(|line| {
+        let lower = line.to_lowercase();
+        lower.contains("found") || lower.contains("match")
+            || lower.contains("discovered") || lower.contains("identified")
+    });
+
+    if total_tool_msgs >= 3 && tool_success_rate < 0.3 {
+        // Most tools failing → Circling
+        ProgressLevel::Circling
+    } else if total_tool_msgs >= 5 && tool_success_rate < 0.5 {
+        // Marginal success rate → Creeping
+        ProgressLevel::Creeping
+    } else if total_tool_msgs >= 10 && !has_new_findings {
+        // Lots of tool calls but no discoveries → Creeping
+        ProgressLevel::Creeping
+    } else {
+        // Default: assume advancing
+        ProgressLevel::Advancing
+    }
+}
+
+/// Count tool result messages and how many appear successful.
+fn count_tool_results(messages: &[crate::react::ChatMessage]) -> (usize, usize) {
+    let mut total = 0;
+    let mut successes = 0;
+    for msg in messages {
+        if msg.role == crate::react::ChatMessageRole::Tool {
+            total += 1;
+            if infer_tool_success(&msg.content) {
+                successes += 1;
+            }
+        }
+    }
+    (total, successes)
 }
 
 #[async_trait]
@@ -801,32 +1381,83 @@ impl CognitiveEngine for LlmCognitiveEngine {
         let final_content: String;
         let mut turn = 0u32;
         let mut continuation = 0u32;
+        let mut consecutive_circling = 0u32;
+        let mut continuation_history: Vec<ContinuationRecord> = Vec::new();
         let mut format_reminder_fired = false;
         loop {
             // ── Pre-turn: max turns check + auto-continue ────────────
             if turn >= max_turns {
                 if self.config.background && continuation < self.config.max_continuations {
-                    // Evaluate session progress before deciding to continue
-                    let progress = evaluate_session_progress(&messages);
-                    if progress.collision_found || progress.looks_stuck {
-                        if let Some(ref sink) = self.event_sink {
-                            sink(kernel::event::Event::new(
-                                "cognitive-engine",
-                                kernel::event::EventType::Custom("agent:auto_continue_stopped".into()),
-                                serde_json::json!({
-                                    "agent_id": &agent_id, "session_id": &session_id,
-                                    "continuation": continuation,
-                                    "collision_found": progress.collision_found,
-                                    "looks_stuck": progress.looks_stuck,
-                                }),
-                            ));
+                    // Evaluate session progress with gradient levels
+                    let level = evaluate_progress_level(&messages);
+
+                    match level {
+                        ProgressLevel::Achieved | ProgressLevel::Stuck => {
+                            if let Some(ref sink) = self.event_sink {
+                                sink(kernel::event::Event::new(
+                                    "cognitive-engine",
+                                    kernel::event::EventType::Custom("agent:auto_continue_stopped".into()),
+                                    serde_json::json!({
+                                        "agent_id": &agent_id, "session_id": &session_id,
+                                        "continuation": continuation,
+                                        "level": format!("{:?}", level),
+                                    }),
+                                ));
+                            }
+                            return Err(CognitiveError::MaxDepthReached { depth: turn });
                         }
-                        return Err(CognitiveError::MaxDepthReached { depth: turn });
+                        ProgressLevel::Circling => {
+                            consecutive_circling += 1;
+                            if consecutive_circling >= 2 {
+                                if let Some(ref sink) = self.event_sink {
+                                    sink(kernel::event::Event::new(
+                                        "cognitive-engine",
+                                        kernel::event::EventType::Custom("agent:auto_continue_stopped".into()),
+                                        serde_json::json!({
+                                            "agent_id": &agent_id, "session_id": &session_id,
+                                            "continuation": continuation,
+                                            "level": "Circling",
+                                            "consecutive_circling": consecutive_circling,
+                                        }),
+                                    ));
+                                }
+                                return Err(CognitiveError::MaxDepthReached { depth: turn });
+                            }
+                            // Allow one more try — consume budget, force pivot
+                            continuation += 1;
+                        }
+                        ProgressLevel::Creeping => {
+                            consecutive_circling = 0;
+                            continuation += 1; // Consume budget
+                        }
+                        ProgressLevel::Advancing => {
+                            consecutive_circling = 0;
+                            // Don't increment continuation — valuable work gets more budget
+                        }
                     }
-                    continuation += 1;
+
                     turn = 0;
-                    // Build structured continuation context instead of raw truncation
-                    let summary = build_continuation_context_summary(&messages);
+                    // Build prescriptive continuation context with cross-round history
+                    let ctx = build_continuation_context(
+                        &messages, continuation, self.config.max_continuations,
+                        continuation_history.clone(),
+                    );
+                    // Record this round before compressing messages
+                    continuation_history.push(ContinuationRecord {
+                        round: continuation,
+                        approach: ctx.approach_description.clone(),
+                        effective_tools: ctx.effective_patterns.iter()
+                            .map(|p| p.description.clone()).collect(),
+                        ineffective_tools: ctx.ineffective_patterns.iter()
+                            .map(|p| p.description.clone()).collect(),
+                        key_findings: ctx.key_findings.clone(),
+                        lesson: ctx.lesson.clone(),
+                    });
+                    // Keep only the last 3 records to bound memory
+                    if continuation_history.len() > 3 {
+                        continuation_history.remove(0);
+                    }
+                    let summary = ctx.render();
                     let original_msg_count = messages.len();
                     messages = vec![crate::react::ChatMessage::system(summary)];
                     // Publish history_compressed

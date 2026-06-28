@@ -380,12 +380,16 @@ impl AgentRegistry {
 
 ---
 
-### ✅ M2：ReAct 循环引擎 ⭐ P0 — 已完成
+### ✅ M2：ReAct 循环引擎 ⭐ P0 — 已完成 + 已深化
 
 > 目标：实现可复用的 Think-Act-Observe 循环引擎，统一管理 LLM 调用、Tool 执行、结果反馈的迭代过程。
 > 验收：AgentHarness 可以接收 MESSAGE_RECEIVED 事件，完整执行 ReAct 循环并输出最终回复。
 >
-> **已实现**: `ReActEngine` trait + `AgentHarness::process_message()` + `LlmReActEngine` + `ToolExecutor` + 完整事件发布 + `MessageReceivedHandler`（MESSAGE_RECEIVED 订阅）+ 流式输出（SSE `agent:reply_chunk` 事件）
+> **已实现**: `ReActEngine` trait + `AgentHarness::process_message()` + `LlmCognitiveEngine` + `ToolExecutor` + 完整事件发布 + `MessageReceivedHandler`（MESSAGE_RECEIVED 订阅）+ 流式输出（SSE `agent:reply_chunk` 事件）
+>
+> **架构迁移 (2026-06-27)**：ReAct 循环已从 `AgentHarness::react_loop()` 内化到 `LlmCognitiveEngine::process()`。Gateway 现在只调用 `CognitiveEngine::process(observations)`，不再直接管理 LLM 调用和工具执行。详见 `docs/react-migration-checklist.md`。
+>
+> **Loop 策略深化 (2026-06-28)**：auto-continue 机制已从简单的「二值计数器」升级为三层渐进式智能循环。详见 `docs/loop-strategy.md`。
 
 #### T2.1 — 定义 ReAct 循环的核心 trait（core crate）
 

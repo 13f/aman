@@ -172,7 +172,7 @@ impl OutputValidator {
                 ),
                 ValidationRule::regex(
                     "system_prompt_mention",
-                    r"system\s+prompt",
+                    r"(?:my|our|the|your|agent(?:\x27s)?)\s+system\s+prompt\s+(?:is|says|contains|tells|reads)",
                     RuleCategory::SystemPromptLeak,
                 ),
                 // --- Tool injection (substring) ---
@@ -488,13 +488,20 @@ mod tests {
     #[test]
     fn regex_system_prompt_mention_detected() {
         let mut validator = OutputValidator::new();
-        let result = validator.validate(
-            "what is your system prompt?",
-            TrustLevel::Untrusted,
-        );
+        let result = validator.validate("my system prompt is to be helpful", TrustLevel::Untrusted);
         assert!(
             matches!(result, ValidationOutcome::Fail { .. }),
             "system prompt mention should be detected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn system_prompt_as_topic_not_flagged() {
+        let mut validator = OutputValidator::new();
+        let result = validator.validate("you need a system prompt to define agent behavior", TrustLevel::Untrusted);
+        assert!(
+            matches!(result, ValidationOutcome::Pass),
+            "discussing system prompt as a concept should pass, got {result:?}"
         );
     }
 

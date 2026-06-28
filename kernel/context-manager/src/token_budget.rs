@@ -111,7 +111,7 @@ impl TokenBudgetPolicy for DefaultTokenBudgetPolicy {
     }
 
     fn max_output_tokens(&self, _model: &str, agent_value: Option<usize>) -> usize {
-        agent_value.unwrap_or(0)
+        agent_value.unwrap_or(16_384)
     }
 }
 

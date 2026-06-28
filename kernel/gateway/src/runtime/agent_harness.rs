@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use event_bus::EventBus;
 use kernel::agent::{AgentInstance, AgentStatus, AgentSystemState};
+use kernel::content_filter::ContentFilter;
 use kernel::interrupt::InterruptFlag;
 use context_manager::{
     CompressionStrategy, HistoryCompressor, TokenBudget, TokenBudgetPolicy,
@@ -253,6 +254,22 @@ impl AgentHarness {
         let past_history = self.session_history.get(session_id);
         let tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &past_history, &tools).await;
         let mem = self.retrieve_relevant_memories(agent_id, user_text).await;
+
+        // ── Input content filter: block sensitive data before it reaches the LLM ──
+        let cf = ContentFilter::new();
+        match cf.filter(user_text) {
+            kernel::content_filter::FilterDecision::Block { reason, matched_rules } => {
+                tracing::warn!(%agent_id, %session_id, %reason, rules=?matched_rules, "content_filter blocked user input");
+                let msg = format!("Your message contains sensitive data that cannot be processed: {reason}");
+                // Still need to clean up — unregister interrupt that hasn't been created yet
+                return Ok(msg);
+            }
+            kernel::content_filter::FilterDecision::Flag { matched_rules } => {
+                tracing::info!(%agent_id, %session_id, rules=?matched_rules, "content_filter flagged user input (allowed)");
+            }
+            _ => {}
+        }
+
         let flag = Arc::new(InterruptFlag::new()); self.register_interrupt(session_id, Arc::clone(&flag));
         let engine = self.build_cognitive_engine(agent_id, model, session_id, background, Some(Arc::clone(&flag)), &tb).await?;
         let ctx = CognitiveContext {

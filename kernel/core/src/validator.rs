@@ -190,6 +190,12 @@ impl OutputValidator {
                     r"execute\s+shell\s+command",
                     RuleCategory::ToolInjection,
                 ),
+                // --- JWT token detection (from ContentFilter) ---
+                ValidationRule::regex(
+                    "jwt_token",
+                    r"eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+",
+                    RuleCategory::SecretLeak,
+                ),
             ],
             timeout: Duration::from_secs(2),
             audit_log: Vec::new(),
@@ -466,7 +472,7 @@ mod tests {
     #[test]
     fn rule_count_matches() {
         let v = OutputValidator::new();
-        assert_eq!(v.rule_count(), 10);
+        assert_eq!(v.rule_count(), 11);
     }
 
     // ── Migrated tests from secret::OutputValidator ──────────────
@@ -515,6 +521,19 @@ mod tests {
         assert!(
             matches!(result, ValidationOutcome::Fail { .. }),
             "shell command injection should be detected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn jwt_token_detected() {
+        let mut validator = OutputValidator::new();
+        let result = validator.validate(
+            "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+            TrustLevel::Untrusted,
+        );
+        assert!(
+            matches!(result, ValidationOutcome::Fail { .. }),
+            "JWT token should be detected, got {result:?}"
         );
     }
 

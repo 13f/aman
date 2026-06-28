@@ -971,38 +971,6 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 }
             };
 
-            // Content filter
-            let cf = kernel::content_filter::ContentFilter::new();
-            let content = match cf.filter(&content) {
-                kernel::content_filter::FilterDecision::Block { reason, matched_rules } => {
-                    // Notify listeners that streamed content was blocked
-                    let guard = self.listeners.lock().ok();
-                    if let Some(g) = guard {
-                        for l in g.iter() {
-                            l.on_cognitive_event(CognitiveEvent::StreamError {
-                                session_id: session_id.clone(),
-                                error: format!("content_filter_blocked: {reason} (rules: {})", matched_rules.join(", ")),
-                            });
-                        }
-                    }
-                    // Also publish via event sink for monitoring
-                    if let Some(ref sink) = self.event_sink {
-                        sink(kernel::event::Event::new(
-                            "cognitive-engine",
-                            kernel::event::EventType::Custom("agent:reply_stream_error".into()),
-                            serde_json::json!({
-                                "agent_id": &agent_id, "session_id": &session_id,
-                                "error": format!("content_filter blocked: {reason}"),
-                                "matched_rules": matched_rules,
-                            }),
-                        ));
-                    }
-                    tracing::warn!(%agent_id, %session_id, %reason, rules=?matched_rules, "content_filter blocked LLM output");
-                    "[I apologize, I cannot provide that response.]".into()
-                }
-                _ => content,
-            };
-
             // Token event
             if let Some(ref sink) = self.event_sink {
                 sink(kernel::event::Event::new(

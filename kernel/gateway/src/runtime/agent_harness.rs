@@ -238,8 +238,10 @@ impl AgentHarness {
         let inst = self.prepare_agent_session(agent_id, session_id, background).await?;
         if let Some(c) = self.registry.get_idle_coordination(agent_id).await { c.reset_idle_signal().await; c.arousal.boost(0.3); }
         let tools = self.build_tool_descriptors(agent_id).await;
-        let mut hist = self.session_history.get(session_id); hist.push(ChatMessage::user(user_text));
-        let _tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &hist, &tools).await;
+        // Get past conversation history (without current message — it will be
+        // passed as an Observation below, avoiding duplication).
+        let past_history = self.session_history.get(session_id);
+        let _tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &past_history, &tools).await;
         let mem = self.retrieve_relevant_memories(agent_id, user_text).await;
         let flag = Arc::new(InterruptFlag::new()); self.register_interrupt(session_id, Arc::clone(&flag));
         let engine = self.build_cognitive_engine(agent_id, model, session_id, background).await?;
@@ -249,6 +251,7 @@ impl AgentHarness {
             capabilities: tools.iter().map(|t| cognitive_engine::Capability { name: t.name.clone(), description: t.description.clone(), parameters: t.parameters.clone(), cap_type: cognitive_engine::CapabilityType::Tool }).collect(),
             memory_context: mem.map(|m| vec![cognitive_engine::MemoryItem { key: "retrieved".into(), content: m, importance: 0.5, timestamp: None }]).unwrap_or_default(),
             engine_config: json!({"model": model}),
+            conversation_history: filter_conversation_history(&past_history),
         };
         let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
         tracing::info!(%agent_id, %session_id, "process_message_v2: calling engine.process()");
@@ -307,8 +310,9 @@ impl AgentHarness {
         }
 
         // ── Persist history + cleanup ──
-        self.session_history.clear(session_id);
-        self.session_history.extend(session_id, vec![ChatMessage::user(user_text), ChatMessage::assistant(&reply)]);
+        // Persist current exchange to session history
+        self.session_history.append(session_id, ChatMessage::user(user_text));
+        self.session_history.append(session_id, ChatMessage::assistant(&reply));
         self.unregister_interrupt(session_id);
         let _ = self.registry.set_active_session(agent_id, None).await;
         // Reset state to Idle on success
@@ -1183,6 +1187,43 @@ fn build_continuation_context(history: &[ChatMessage]) -> Vec<ChatMessage> {
 }
 // ──────────────────────────────────────────────────────────────────────────
 
+/// Filter conversation history to user↔agent dialogue only.
+///
+/// Strips tool-call invocations, tool results, system messages, and
+/// internal markers so the LLM sees a clean chat transcript — not
+/// the raw ReAct loop internals.
+///
+/// Keeps:
+/// - `User` messages (always)
+/// - `Assistant` messages **without** tool_calls (final replies)
+///
+/// Drops:
+/// - `Assistant` messages **with** tool_calls (tool invocations)
+/// - `Tool` messages (tool results)
+/// - `System` messages (internal markers, summaries)
+fn filter_conversation_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
+    history
+        .iter()
+        .filter(|msg| match msg.role {
+            ChatMessageRole::User => {
+                // Skip internal command markers
+                let text = msg.content.trim();
+                !text.is_empty()
+                    && text != "/continue"
+                    && text != "继续"
+                    && !text.starts_with("[ACTIVATED SKILL:")
+            }
+            ChatMessageRole::Assistant => {
+                // Keep only final replies (no tool_calls — those are
+                // tool invocations, not user-visible replies).
+                msg.tool_calls.is_none() && !msg.content.trim().is_empty()
+            }
+            ChatMessageRole::Tool | ChatMessageRole::System => false,
+        })
+        .cloned()
+        .collect()
+}
+
 /// Extract [remember: ...] commands from agent reply text.
 ///
 /// Returns the cleaned text (with markers removed) and a list of
@@ -1308,5 +1349,55 @@ mod tests {
         assert!(summary.contains("Tool usage: 3 calls across 2 unique tools"));
         assert!(summary.contains("grep: 2 calls"));
         assert!(summary.contains("cat: 1 calls"));
+    }
+
+    #[test]
+    fn filter_conversation_history_keeps_user_and_final_assistant() {
+        let history = vec![
+            ChatMessage::user("Hello"),
+            ChatMessage::assistant("Hi there!"),
+            ChatMessage::user("What's the weather?"),
+            ChatMessage::assistant("It's sunny!"),
+        ];
+        let filtered = filter_conversation_history(&history);
+        assert_eq!(filtered.len(), 4);
+        assert_eq!(filtered[0].content, "Hello");
+        assert_eq!(filtered[1].content, "Hi there!");
+        assert_eq!(filtered[2].content, "What's the weather?");
+        assert_eq!(filtered[3].content, "It's sunny!");
+    }
+
+    #[test]
+    fn filter_conversation_history_strips_tool_calls_and_results() {
+        let mut tool_invocation = ChatMessage::assistant("");
+        tool_invocation.tool_calls = Some(vec![
+            serde_json::json!({"function": {"name": "search"}}),
+        ]);
+        let history = vec![
+            ChatMessage::user("Search for cats"),
+            tool_invocation,
+            ChatMessage::tool_result("tc1", "search", "Found 5 cats"),
+            ChatMessage::assistant("I found 5 cats for you!"),
+        ];
+        let filtered = filter_conversation_history(&history);
+        assert_eq!(filtered.len(), 2, "should keep only user msg and final reply");
+        assert_eq!(filtered[0].content, "Search for cats");
+        assert_eq!(filtered[1].content, "I found 5 cats for you!");
+    }
+
+    #[test]
+    fn filter_conversation_history_strips_system_and_internal_markers() {
+        let history = vec![
+            ChatMessage::system("[Previous Session Summary]"),
+            ChatMessage::user("/continue"),
+            ChatMessage::user("继续"),
+            ChatMessage::user("[ACTIVATED SKILL: search]"),
+            ChatMessage::user("Real question"),
+            ChatMessage::assistant("Real answer"),
+        ];
+        let filtered = filter_conversation_history(&history);
+        assert_eq!(filtered.len(), 2, "should keep only real user question and answer");
+        assert_eq!(filtered[0].content, "Real question");
+        assert_eq!(filtered[1].content, "Real answer");
     }
 }

@@ -179,6 +179,7 @@ fn make_context(session_id: &str) -> CognitiveContext {
         },
         capabilities: vec![],
         memory_context: vec![],
+        conversation_history: vec![],
         engine_config: Value::Null,
     }
 }

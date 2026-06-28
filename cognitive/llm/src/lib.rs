@@ -284,6 +284,8 @@ impl LlmCognitiveEngine {
     async fn execute_tool_calls(
         &self,
         calls: &[crate::react::ParsedToolCall],
+        session_id: &str,
+        agent_id: &str,
     ) -> Vec<crate::react::ToolCallResult> {
         let Some(ref registry) = self.tool_registry else {
             return calls.iter().map(|c| crate::react::ToolCallResult {
@@ -323,8 +325,10 @@ impl LlmCognitiveEngine {
                 let b = Arc::clone(&bus);
                 let c = call.clone();
                 let t = timeout;
+                let sid = session_id.to_owned();
+                let aid = agent_id.to_owned();
                 handles.push((i, tokio::spawn(async move {
-                    execute_one_with_retry(&reg, &b, &c, t, TOOL_MAX_RETRIES).await
+                    execute_one_with_retry(&reg, &b, &c, t, TOOL_MAX_RETRIES, &sid, &aid).await
                 })));
             }
         }
@@ -333,7 +337,7 @@ impl LlmCognitiveEngine {
         let mut serial_results: Vec<(usize, crate::react::ToolCallResult)> = Vec::new();
         for (i, call) in calls.iter().enumerate() {
             if !models[i] {
-                let result = execute_one_with_retry(&registry, &bus, call, timeout, TOOL_MAX_RETRIES).await;
+                let result = execute_one_with_retry(&registry, &bus, call, timeout, TOOL_MAX_RETRIES, session_id, agent_id).await;
                 serial_results.push((i, result));
             }
         }
@@ -424,6 +428,8 @@ async fn execute_one_with_retry(
     call: &crate::react::ParsedToolCall,
     timeout_ms: u64,
     max_retries: u32,
+    session_id: &str,
+    agent_id: &str,
 ) -> crate::react::ToolCallResult {
     let start = std::time::Instant::now();
 
@@ -466,6 +472,8 @@ async fn execute_one_with_retry(
             serde_json::json!({
                 "tool_call_id": call.id, "tool_name": call.tool_name,
                 "success": success, "duration_ms": duration_ms,
+                "session_id": session_id,
+                "agent_id": agent_id,
             }),
         )).await;
 
@@ -564,7 +572,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
             .collect();
 
         // Build initial messages from observations
-        let mut messages = Self::observations_to_messages(&observations, &[]);
+        let mut messages = Self::observations_to_messages(&observations, &ctx.conversation_history);
 
         // ── ReAct loop ──────────────────────────────────────────────
         let final_content: String;
@@ -741,7 +749,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
             });
 
             // Execute tools (with retry + security)
-            let results = self.execute_tool_calls(&parsed_calls).await;
+            let results = self.execute_tool_calls(&parsed_calls, &session_id, &agent_id).await;
             for r in &results {
                 messages.push(ChatMessage::tool_result(&r.id, &r.tool_name, &r.output));
             }

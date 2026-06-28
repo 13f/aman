@@ -60,8 +60,7 @@ impl Tool for WebSearchTool {
                     },
                     "backend": {
                         "type": "string",
-                        "description": "Search backend: tavily, brave, duckduckgo, google, x",
-                        "default": "tavily"
+                        "description": "Search backend to use. If omitted, the first available backend will be used automatically. Do NOT guess — omit this field unless you have a specific reason.",
                     },
                     "count": {
                         "type": "integer",
@@ -117,6 +116,19 @@ impl Tool for WebSearchTool {
             .and_then(Value::as_str)
             .unwrap_or(default_backend);
 
+        // Check backend availability before dispatching (so we return
+        // a proper error instead of a fake "success" with error JSON).
+        let configured = available_backends();
+        if !configured.contains(&backend) {
+            return Err(Error::ConfigInvalid {
+                message: format!(
+                    "Search backend '{backend}' is not configured. Available: {}. \
+                     Use one of the available backends or answer from your own knowledge.",
+                    configured.join(", ")
+                ),
+            });
+        }
+
         Ok(execute_search(backend, query, count).await)
     }
 }
@@ -171,18 +183,6 @@ fn available_backends() -> Vec<&'static str> {
 
 /// Dispatch to the appropriate search backend.
 async fn execute_search(backend: &str, query: &str, count: usize) -> Value {
-    let configured = available_backends();
-    if !configured.contains(&backend) {
-        return json!({
-            "results": [],
-            "error": format!(
-                "Backend '{backend}' is not configured. Available: {}.\
-                 Do not retry with a different backend — pick one from the available list or answer from your own knowledge.",
-                configured.join(", ")
-            ),
-        });
-    }
-
     match backend {
         "tavily" => search_tavily(query, count).await,
         "brave" => search_brave(query, count).await,

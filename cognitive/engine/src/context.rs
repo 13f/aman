@@ -3,6 +3,7 @@
 
 //! Cognitive context — the environment in which a cognitive engine operates.
 
+use cognitive_react::ChatMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -23,6 +24,12 @@ pub struct CognitiveContext {
     pub capabilities: Vec<Capability>,
     /// Recent context / retrieved memories (engine-agnostic representation).
     pub memory_context: Vec<MemoryItem>,
+    /// Conversation history for this session (previous turns).
+    ///
+    /// Each [`ChatMessage`] represents one turn in the conversation.
+    /// Engines use this to maintain dialogue continuity across
+    /// multiple `process()` calls.
+    pub conversation_history: Vec<ChatMessage>,
     /// Engine-specific configuration blob.
     ///
     /// For LLM engines this might contain model name, temperature, etc.

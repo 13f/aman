@@ -801,9 +801,7 @@ impl CognitiveEngine for LlmCognitiveEngine {
         let final_content: String;
         let mut turn = 0u32;
         let mut continuation = 0u32;
-        let mut estimated_total_tokens: usize = 0;
         let mut format_reminder_fired = false;
-        const MAX_HISTORY_TOKENS: usize = 100_000;
         loop {
             // ── Pre-turn: max turns check + auto-continue ────────────
             if turn >= max_turns {
@@ -831,7 +829,6 @@ impl CognitiveEngine for LlmCognitiveEngine {
                     let summary = build_continuation_context_summary(&messages);
                     let original_msg_count = messages.len();
                     messages = vec![crate::react::ChatMessage::system(summary)];
-                    estimated_total_tokens = messages[0].content.len() / 2;
                     // Publish history_compressed
                     if let Some(ref sink) = self.event_sink {
                         sink(kernel::event::Event::new(
@@ -850,13 +847,6 @@ impl CognitiveEngine for LlmCognitiveEngine {
                     continue;
                 }
                 return Err(CognitiveError::MaxDepthReached { depth: turn });
-            }
-
-            // Token budget check
-            if turn == 0 {
-                estimated_total_tokens = messages.iter()
-                    .map(|m| m.content.len() / 2) // rough estimate: ~2 chars per token
-                    .sum();
             }
 
             // ── Interrupt check (before LLM call) ──────────────────
@@ -1016,7 +1006,6 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // Tool calls — execute and feed back
-            let content_len = content.len();
             let parsed_calls = response.tool_calls;
             messages.push(ChatMessage {
                 role: crate::react::ChatMessageRole::Assistant,
@@ -1044,12 +1033,6 @@ impl CognitiveEngine for LlmCognitiveEngine {
                     kernel::event::EventType::Custom("agent:tool_results_fed_back".into()),
                     serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "total": results.len(), "success": success_count }),
                 ));
-            }
-
-            // Track estimated tokens (content + tool results)
-            estimated_total_tokens += content_len / 2;
-            for r in &results {
-                estimated_total_tokens += r.output.len() / 2;
             }
 
             // ── Interrupt check (after tool execution) ──────────────

@@ -212,6 +212,7 @@ impl AgentHarness {
             token_limit: token_budget.context_window as u64,
             max_output_tokens: token_budget.max_output_tokens as u64,
             max_llm_retries: 5, background, max_continuations: 5,
+            format_reminder_turns: 0,
         }).with_event_sink(sink).with_tool_executor(Arc::clone(&self.tool_registry), bus, 30_000);
         // Wire interrupt flag if provided
         let mut engine = engine;

@@ -64,6 +64,9 @@ struct EmotionResponse {
 struct EmotionCandidate {
     id: String,
     description: String,
+    /// All tags for this emotion (Chinese + English). Used as a fallback
+    /// when the LLM returns a tag instead of the canonical id.
+    tags: Vec<String>,
 }
 
 /// LLM API configuration for the emotion evaluator.
@@ -314,17 +317,44 @@ impl EmotionEvaluator {
             format!("emotion JSON parse error: {e} — raw: {}", truncate(&raw, 200))
         })?;
 
-        // Validate the emotion_id exists in our candidates
-        if !self.emotion_candidates.iter().any(|c| c.id == parsed.emotion_id) {
-            tracing::warn!(
-                agent = %self.agent_id,
-                emotion_id = %parsed.emotion_id,
-                "LLM returned unknown emotion_id, ignoring"
-            );
-            return Ok(None);
+        // Validate the emotion_id exists in our candidates.
+        // Normalize the returned ID (trim + lowercase) to handle LLM
+        // formatting quirks (e.g. "Calm" vs "calm", or trailing spaces).
+        let returned = parsed.emotion_id.trim().to_lowercase();
+        let returned_trimmed = parsed.emotion_id.trim().to_owned();
+
+        // 1. Exact match on canonical id (case-insensitive, trimmed)
+        if self.emotion_candidates.iter().any(|c| c.id.to_lowercase() == returned) {
+            return Ok(Some(parsed));
         }
 
-        Ok(Some(parsed))
+        // 2. Fallback: tag→id reverse lookup (LLM may return a tag
+        //    like "平静" or "anxious" instead of the canonical id)
+        for candidate in &self.emotion_candidates {
+            if candidate.tags.iter().any(|t| t.to_lowercase() == returned) {
+                // Patch the emotion_id to the canonical id so downstream
+                // consumers get a clean value.
+                let mut corrected = parsed;
+                corrected.emotion_id = candidate.id.clone();
+                tracing::debug!(
+                    agent = %self.agent_id,
+                    returned = %returned_trimmed,
+                    resolved_to = %candidate.id,
+                    "emotion_id resolved via tag fallback"
+                );
+                return Ok(Some(corrected));
+            }
+        }
+
+        // 3. No match — log all candidates so the mismatch is debuggable
+        let id_list: Vec<&str> = self.emotion_candidates.iter().map(|c| c.id.as_str()).collect();
+        tracing::warn!(
+            agent = %self.agent_id,
+            emotion_id = %returned_trimmed,
+            candidates = ?id_list,
+            "LLM returned unknown emotion_id, ignoring"
+        );
+        return Ok(None);
     }
 
     /// Collect recent activity context for the LLM.
@@ -553,6 +583,17 @@ fn load_emotion_candidates(dir: &Path) -> Option<Vec<EmotionCandidate>> {
         let id = item["id"].as_str()?.to_owned();
         let description = item["description"].as_str().unwrap_or("").to_owned();
 
+        // Parse tags for tag→id reverse lookup (fallback when LLM returns
+        // a tag like "平静" instead of the canonical id "calm").
+        let tags: Vec<String> = item["tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Validate the image file exists
         let img_path = dir.join(format!("{}.{}", id, img_ext));
         if !img_path.exists() {
@@ -560,7 +601,7 @@ fn load_emotion_candidates(dir: &Path) -> Option<Vec<EmotionCandidate>> {
             return None;
         }
 
-        candidates.push(EmotionCandidate { id, description });
+        candidates.push(EmotionCandidate { id, description, tags });
     }
 
     Some(candidates)
@@ -580,8 +621,11 @@ fn build_system_prompt(agent_id: &str, candidates: &[EmotionCandidate]) -> Strin
          Available emotions:\n{emotions}\n\n\
          Respond with valid JSON only, in this exact format:\n\
          {{\"emotion_id\": \"<id>\", \"reasoning\": \"<under 60 chars>\"}}\n\n\
-         CRITICAL: Keep reasoning under 60 characters. Return ONLY the JSON object, \
-         no markdown fences, no extra text.",
+         CRITICAL RULES:\n\
+         - The emotion_id MUST be one of the exact IDs listed above — copy it \
+         verbatim (lowercase, as shown). Do NOT use tags, descriptions, or Chinese names.\n\
+         - Keep reasoning under 60 characters.\n\
+         - Return ONLY the JSON object, no markdown fences, no extra text.",
         agent_id = agent_id,
         emotions = emotion_list.join("\n"),
     )

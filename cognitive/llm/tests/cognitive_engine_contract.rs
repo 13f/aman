@@ -31,6 +31,14 @@ use cognitive_llm::{LlmCognitiveEngine, LlmEngineConfig};
 use cognitive_llm::react::ParsedToolCall;
 use serde_json::{json, Value};
 
+// These crates are transitive deps of cognitive-llm and available in tests.
+use event_bus::{InMemoryBus, InMemoryBusConfig};
+use kernel::context::ToolContext;
+use kernel::types::{ExecutionModel, ToolMode};
+use kernel::{AmanResult, schema};
+use kernel::tool::Tool;
+use cognitive_llm::ToolRegistry;
+
 // ── StubLlmProvider ────────────────────────────────────────────────────
 
 /// Clone a `Result<LlmResponse, String>` by destructuring the response
@@ -486,6 +494,120 @@ async fn stub_uses_first_response_then_repeats_last() {
         .await
         .unwrap();
     assert_eq!(r4.content, "second");
+}
+
+// ── Multi-turn ReAct loop integration test ────────────────────────────
+
+/// A minimal echo tool for integration testing the ReAct loop.
+/// Returns its input args as output.
+struct EchoTool {
+    params: schema::JsonSchema,
+    returns_schema: schema::JsonSchema,
+}
+
+impl EchoTool {
+    fn new() -> Self {
+        Self {
+            params: schema::JsonSchema::empty(),
+            returns_schema: schema::JsonSchema::empty(),
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for EchoTool {
+    fn name(&self) -> &str { "echo" }
+    fn description(&self) -> &str { "Echoes back its arguments" }
+    fn parameters(&self) -> &schema::JsonSchema { &self.params }
+    fn returns(&self) -> &schema::JsonSchema { &self.returns_schema }
+    fn mode(&self) -> ToolMode { ToolMode::Local }
+    fn execution_model(&self) -> ExecutionModel { ExecutionModel::Independent }
+    async fn execute(&self, args: serde_json::Value, _ctx: ToolContext) -> AmanResult<serde_json::Value> {
+        Ok(args)
+    }
+}
+
+#[tokio::test]
+async fn multi_turn_react_loop_executes_tools_and_returns_final_reply() {
+    // Provider: first call → tool_call, second call → final text
+    let stub = Arc::new(StubLlmProvider::new(vec![
+        Ok(make_response_with_tool_call("echo", json!({"message": "hello"}))),
+        Ok(make_response_with_content("Echo executed. All done!")),
+    ]));
+
+    // Set up tool registry with echo tool
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool::new()));
+
+    // Set up event bus
+    let bus_config = InMemoryBusConfig::default();
+    let bus = Arc::new(InMemoryBus::new(bus_config));
+
+    let config = LlmEngineConfig {
+        max_llm_retries: 1,
+        ..LlmEngineConfig::default()
+    };
+    let engine = LlmCognitiveEngine::new(stub.clone(), config)
+        .with_tool_executor(Arc::new(registry), bus, 30_000);
+
+    let decisions = engine
+        .process(
+            &make_context_with_capabilities("multi-turn"),
+            vec![make_user_message("multi-turn", "echo hello then respond")],
+        )
+        .await
+        .expect("multi-turn ReAct loop should succeed");
+
+    // Should produce a final Reply decision (not CallTools)
+    assert_eq!(decisions.len(), 1, "multi-turn should return exactly one Reply decision");
+    match &decisions[0].kind {
+        DecisionKind::Reply { text, is_final } => {
+            assert!(is_final, "final decision should be marked final");
+            assert_eq!(text, "Echo executed. All done!");
+        }
+        other => panic!("expected Reply, got {other:?}"),
+    }
+
+    // Provider should have been called exactly twice (tool_call + final)
+    assert_eq!(stub.call_count(), 2, "LLM should be called twice: once for tool_call, once for final reply");
+}
+
+/// Regression: verify auto-continue doesn't fire when not in background mode.
+#[tokio::test]
+async fn non_background_mode_stops_at_max_turns() {
+    // Provider returns tool_calls forever (will hit max_turns)
+    let stub = Arc::new(StubLlmProvider::new(vec![
+        Ok(make_response_with_tool_call("echo", json!({"x": 1}))),
+    ]));
+
+    let registry = ToolRegistry::new();
+    registry.register(Arc::new(EchoTool::new()));
+    let bus_config = InMemoryBusConfig::default();
+    let bus = Arc::new(InMemoryBus::new(bus_config));
+
+    let config = LlmEngineConfig {
+        max_turns: 3,
+        max_llm_retries: 1,
+        background: false,
+        ..LlmEngineConfig::default()
+    };
+    let engine = LlmCognitiveEngine::new(stub.clone(), config)
+        .with_tool_executor(Arc::new(registry), bus, 30_000);
+
+    let result = engine
+        .process(
+            &make_context_with_capabilities("max-turns"),
+            vec![make_user_message("max-turns", "loop forever")],
+        )
+        .await;
+
+    // Non-background should error with MaxDepthReached, not auto-continue
+    match result {
+        Err(CognitiveError::MaxDepthReached { depth }) => {
+            assert_eq!(depth, 3, "should stop exactly at max_turns");
+        }
+        other => panic!("expected MaxDepthReached, got {other:?}"),
+    }
 }
 
 // Reference `ObservationPayload::ToolCompleted` so a future test that

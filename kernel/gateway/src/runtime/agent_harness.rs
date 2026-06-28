@@ -187,6 +187,8 @@ impl AgentHarness {
 
     async fn build_cognitive_engine(
         &self, agent_id: &str, model: &str, session_id: &str, background: bool,
+        interrupt_flag: Option<Arc<InterruptFlag>>,
+        token_budget: &context_manager::TokenBudget,
     ) -> AmanResult<LlmCognitiveEngine> {
         let kernel_provider = self.registry.get_llm_provider(agent_id).await
             .ok_or_else(|| Error::ConfigInvalid { message: format!("no LLM provider for agent '{agent_id}'") })?;
@@ -206,9 +208,16 @@ impl AgentHarness {
         let eb = Arc::clone(&bus);
         let sink: Arc<dyn Fn(Event) + Send + Sync> = Arc::new(move |e| { let b = Arc::clone(&eb); tokio::spawn(async move { let _ = b.publish(e).await; }); });
         let engine = cognitive_llm::LlmCognitiveEngine::new(provider, cognitive_llm::LlmEngineConfig {
-            model: model.into(), max_turns: self.max_react_turns, token_limit: self.budget_policy.session_token_limit(),
-            max_output_tokens: 4096, max_llm_retries: 5, background, max_continuations: 5,
+            model: model.into(), max_turns: self.max_react_turns,
+            token_limit: token_budget.context_window as u64,
+            max_output_tokens: token_budget.max_output_tokens as u64,
+            max_llm_retries: 5, background, max_continuations: 5,
         }).with_event_sink(sink).with_tool_executor(Arc::clone(&self.tool_registry), bus, 30_000);
+        // Wire interrupt flag if provided
+        let mut engine = engine;
+        if let Some(flag) = interrupt_flag {
+            engine = engine.with_interrupt_flag(flag);
+        }
         let lb: Arc<dyn EventBus> = self.registry.get_local_bus(agent_id).await.unwrap_or_else(|| Arc::clone(&self.bus));
         let sid = session_id.to_owned(); let aid = agent_id.to_owned();
         struct SB { bus: Arc<dyn EventBus>, aid: String, sid: String }
@@ -241,10 +250,10 @@ impl AgentHarness {
         // Get past conversation history (without current message — it will be
         // passed as an Observation below, avoiding duplication).
         let past_history = self.session_history.get(session_id);
-        let _tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &past_history, &tools).await;
+        let tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &past_history, &tools).await;
         let mem = self.retrieve_relevant_memories(agent_id, user_text).await;
         let flag = Arc::new(InterruptFlag::new()); self.register_interrupt(session_id, Arc::clone(&flag));
-        let engine = self.build_cognitive_engine(agent_id, model, session_id, background).await?;
+        let engine = self.build_cognitive_engine(agent_id, model, session_id, background, Some(Arc::clone(&flag)), &tb).await?;
         let ctx = CognitiveContext {
             agent_id: agent_id.into(), session_id: session_id.into(),
             identity: CognitiveIdentity { name: soul_snapshot.name.clone(), identity: soul_snapshot.system_prompt.clone(), boundaries: soul_snapshot.boundaries.clone(), expertise: vec![], vibe: None, raw: soul_snapshot.system_prompt.clone() },

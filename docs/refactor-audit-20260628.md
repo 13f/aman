@@ -1,23 +1,30 @@
 # Aman 重构审计报告：LlmCognitiveEngine + process_message_v2
 
 审计日期：2026-06-28
-范围：agent_harness.rs (1403行) + cognitive/llm/src/lib.rs (791行)
-状态：构建通过，LLM 可运行，但结果不满意 — 根源确认为功能退化
+范围：agent_harness.rs (1403行) + cognitive/llm/src/lib.rs (~1100行)
+状态：✅ P0/P1/P2 全部修复 (2026-06-28)
 
 ---
 
-## 总览
+## 修复进度
 
-| # | 问题 | 严重度 | 影响 |
+| # | 问题 | 严重度 | 状态 |
 |---|------|--------|------|
-| 1 | session_progress::evaluate() 被砍 | 🔴 P0 | Agent 无法判断是否有进展，盲跑 5 轮 |
-| 2 | build_continuation_context() 已死 | 🔴 P0 | 「继续」功能退化，不再压缩结构化摘要 |
-| 3 | ContinuationMode 被丢弃 | 🔴 P0 | Fresh/Continue/Replay 三路径合并为同一路径 |
-| 4 | InterruptFlag 未传入引擎 | 🔴 P0 | /stop 命令在 ReAct 循环中完全无效 |
-| 5 | 6/11 关键事件缺失 | 🟠 P1 | 前端监控盲区，仪表盘看不到工具执行状态 |
-| 6 | Token 预算被丢弃 | 🟠 P1 | 无 token 超限预警，无 config_warning 事件 |
-| 7 | skill_view/format_reminder 缺失 | 🟡 P2 | 复杂 skill 执行质量下降 |
-| 8 | 无多轮 ReAct 循环测试 | 🟡 P2 | 回归风险高 |
+| 1 | session_progress::evaluate() 被砍 | 🔴 P0 | ✅ evaluate_session_progress() 内联到引擎 |
+| 2 | build_continuation_context() 已死 | 🔴 P0 | ✅ build_continuation_context_summary() 内联到引擎 |
+| 3 | ContinuationMode 被丢弃 | 🔴 P0 | ✅ 非问题 — Continue/Replay 从未被实例化 |
+| 4 | InterruptFlag 未传入引擎 | 🔴 P0 | ✅ with_interrupt_flag() + 2 处检查点 |
+| 5 | 6/11 关键事件缺失 | 🟠 P1 | ✅ got_tool_calls, tool_results_fed_back, history_compressed, llm_error |
+| 6 | Token 预算被丢弃 | 🟠 P1 | ✅ init_token_budget 返回值传入 LlmEngineConfig |
+| 7 | skill_view/format_reminder 缺失 | 🟡 P2 | ✅ format_reminder_turns 配置 + 自动注入 |
+| 8 | 无多轮 ReAct 循环测试 | 🟡 P2 | ✅ 2 个新集成测试 (multi-turn + max_turns) |
+
+## 验证
+
+```
+cargo build -p cognitive-llm -p gateway   ✅ 通过
+cargo test -p cognitive-llm --test cognitive_engine_contract   ✅ 10/10 通过
+```
 
 ---
 

@@ -52,6 +52,9 @@ use crate::prompt::{DefaultPromptPipeline, PromptPipeline};
 use crate::provider::{LlmChatRequest, LlmProvider};
 use crate::react::{ChatMessage, SoulSnapshot};
 
+// Re-export for integration tests
+pub use tool::ToolRegistry;
+
 // ── LlmCognitiveEngine ─────────────────────────────────────────────────
 
 /// Configuration for the LLM cognitive engine.
@@ -73,6 +76,10 @@ pub struct LlmEngineConfig {
     pub background: bool,
     /// Maximum auto-continuations for background runs (default: 5).
     pub max_continuations: u32,
+    /// Inject a format reminder after this many turns if tools were used
+    /// (0 = disabled). The reminder nudges the LLM to produce complete output
+    /// with all sections filled when working on complex multi-turn tasks.
+    pub format_reminder_turns: u32,
 }
 
 impl Default for LlmEngineConfig {
@@ -85,6 +92,7 @@ impl Default for LlmEngineConfig {
             max_llm_retries: 5,
             background: false,
             max_continuations: 5,
+            format_reminder_turns: 0,
         }
     }
 }
@@ -130,6 +138,8 @@ pub struct LlmCognitiveEngine {
     tool_timeout_ms: u64,
     /// Tool security config for path/network/command allowlist.
     tool_security: Option<tool::ToolSecurityConfig>,
+    /// Optional interrupt flag for external /stop during ReAct loop.
+    interrupt_flag: Option<Arc<cognitive_react::InterruptFlag>>,
 }
 
 impl LlmCognitiveEngine {
@@ -148,6 +158,7 @@ impl LlmCognitiveEngine {
             bus: None,
             tool_timeout_ms: 30_000,
             tool_security: None,
+            interrupt_flag: None,
         }
     }
 
@@ -167,6 +178,7 @@ impl LlmCognitiveEngine {
             bus: None,
             tool_timeout_ms: 30_000,
             tool_security: None,
+            interrupt_flag: None,
         }
     }
 
@@ -198,6 +210,17 @@ impl LlmCognitiveEngine {
     #[must_use]
     pub fn with_tool_security(mut self, config: tool::ToolSecurityConfig) -> Self {
         self.tool_security = Some(config);
+        self
+    }
+
+    /// Set an interrupt flag that the engine checks during the ReAct loop.
+    ///
+    /// When set, each iteration of the loop checks `flag.is_interrupted()`
+    /// before the LLM call and after tool execution. If the flag is set,
+    /// the engine returns `CognitiveError::Interrupted`.
+    #[must_use]
+    pub fn with_interrupt_flag(mut self, flag: Arc<cognitive_react::InterruptFlag>) -> Self {
+        self.interrupt_flag = Some(flag);
         self
     }
 
@@ -524,6 +547,206 @@ fn is_retryable_llm_error(err: Option<&String>) -> bool {
         || msg.contains("unexpected eof")
 }
 
+// ── Session progress evaluation (mirrors kernel/eval/src/session_progress.rs) ─
+
+/// Lightweight session progress signals — no LLM call needed.
+struct SessionProgress {
+    collision_found: bool,
+    looks_stuck: bool,
+}
+
+/// Build a structured continuation context summary from conversation history.
+///
+/// Instead of dumping raw tool outputs into the LLM prompt, this compresses
+/// the session into a structured summary:
+///
+/// ```text
+/// [Previous Session Summary]
+/// Goal: <what the user originally asked for>
+/// Progress: <N messages exchanged>
+/// Key findings: <important discoveries from tool outputs>
+/// Tool usage: <N calls across M unique tools>
+/// Status: <complete | incomplete | collision_found | stuck>
+/// Last actions: <what was happening when the session paused>
+/// ```
+fn build_continuation_context_summary(messages: &[crate::react::ChatMessage]) -> String {
+    use std::collections::BTreeMap;
+    let mut user_messages: Vec<&str> = Vec::new();
+    let mut assistant_replies: Vec<&str> = Vec::new();
+    let mut tool_calls: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total_tool_calls: usize = 0;
+    let mut key_findings: Vec<String> = Vec::new();
+    let mut last_assistant_reply: &str = "";
+
+    for msg in messages {
+        match msg.role {
+            crate::react::ChatMessageRole::User => {
+                let text = msg.content.trim();
+                if !text.is_empty() && text != "/continue" && text != "继续"
+                    && !text.starts_with("[ACTIVATED SKILL:")
+                {
+                    user_messages.push(text);
+                }
+            }
+            crate::react::ChatMessageRole::Assistant => {
+                let text = msg.content.trim();
+                if text.starts_with("[max ") && text.contains("turns reached") {
+                    continue;
+                }
+                if !text.is_empty() {
+                    assistant_replies.push(text);
+                    last_assistant_reply = text;
+                }
+                if let Some(ref tcs) = msg.tool_calls {
+                    for tc in tcs {
+                        if let Some(name) = tc["function"]["name"].as_str() {
+                            *tool_calls.entry(name.to_owned()).or_default() += 1;
+                            total_tool_calls += 1;
+                        }
+                    }
+                }
+            }
+            crate::react::ChatMessageRole::Tool => {
+                let name = msg.tool_name.as_deref().unwrap_or("unknown");
+                *tool_calls.entry(name.to_owned()).or_default() += 1;
+                total_tool_calls += 1;
+                let content = &msg.content;
+                if content.contains("COLLISION FOUND")
+                    || content.contains("found\": true")
+                    || content.contains("found: true")
+                {
+                    key_findings.push(format!("[{name}] COLLISION FOUND — goal achieved"));
+                } else if let Some(line) = content.lines().find(|l| {
+                    l.contains("best_residual") || l.contains("best_partial") || l.contains("elapsed_seconds")
+                }) {
+                    key_findings.push(format!("[{name}] {}", line.trim()));
+                }
+            }
+            crate::react::ChatMessageRole::System => {}
+        }
+    }
+
+    let mut summary = String::from("[Previous Session Summary]\n");
+    if let Some(first) = user_messages.first() {
+        summary.push_str(&format!("Goal: {}\n", first));
+    }
+    let msg_count = user_messages.len() + assistant_replies.len();
+    if msg_count > 0 {
+        summary.push_str(&format!(
+            "Progress: {} messages exchanged ({} user, {} assistant)\n",
+            msg_count, user_messages.len(), assistant_replies.len(),
+        ));
+    }
+    if !key_findings.is_empty() {
+        summary.push_str("Key findings:\n");
+        for f in &key_findings {
+            summary.push_str(&format!("  - {}\n", f));
+        }
+    }
+    if total_tool_calls > 0 {
+        summary.push_str(&format!(
+            "Tool usage: {} calls across {} unique tools\n",
+            total_tool_calls, tool_calls.len(),
+        ));
+        if tool_calls.len() <= 8 {
+            for (name, count) in &tool_calls {
+                summary.push_str(&format!("  - {}: {} calls\n", name, count));
+            }
+        }
+    }
+    let status = if key_findings.iter().any(|f| f.contains("COLLISION FOUND")) {
+        "complete — collision found"
+    } else if last_assistant_reply.contains("stuck") || last_assistant_reply.contains("no progress") {
+        "stuck"
+    } else {
+        "incomplete — task still in progress"
+    };
+    summary.push_str(&format!("Status: {}\n", status));
+    if !last_assistant_reply.is_empty() {
+        let truncated = if last_assistant_reply.len() > 500 {
+            format!("{}…[truncated]", &last_assistant_reply[..500])
+        } else {
+            last_assistant_reply.to_owned()
+        };
+        summary.push_str(&format!("Last action: {}\n", truncated));
+    }
+
+    tracing::info!(
+        summary_len = summary.len(),
+        original_messages = messages.len(),
+        original_tool_calls = total_tool_calls,
+        "continuation: built compressed session summary"
+    );
+
+    summary
+}
+
+/// Evaluate whether a session is making progress from ChatMessages.
+///
+/// Scans the most recent ~64 messages for collision detection,
+/// repetitive-pattern detection (Jaccard word overlap), and
+/// long-session-without-signs heuristics.
+fn evaluate_session_progress(messages: &[crate::react::ChatMessage]) -> SessionProgress {
+    use std::collections::BTreeSet;
+
+    let recent: Vec<&str> = messages
+        .iter()
+        .rev()
+        .take(64)
+        .map(|m| m.content.as_str())
+        .collect();
+
+    let full_text = recent.join(" ").to_lowercase();
+
+    // Collision / success detection
+    let collision_found = full_text.contains("collision found")
+        || full_text.contains("✅ collision")
+        || full_text.contains("verify_collision_solution");
+
+    // Stuck detection — Jaccard word overlap on last 8 assistant messages
+    let assistant_msgs: Vec<&str> = messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == crate::react::ChatMessageRole::Assistant)
+        .take(8)
+        .map(|m| m.content.as_str())
+        .collect();
+
+    let mut looks_stuck = false;
+    if assistant_msgs.len() >= 4 {
+        let similar_pairs = assistant_msgs
+            .windows(2)
+            .filter(|w| {
+                let wa: BTreeSet<&str> = w[0].split_whitespace().collect();
+                let wb: BTreeSet<&str> = w[1].split_whitespace().collect();
+                if wa.is_empty() || wb.is_empty() { return false; }
+                let intersection = wa.intersection(&wb).count();
+                let union = wa.union(&wb).count();
+                (intersection as f64 / union as f64) > 0.8
+            })
+            .count();
+        if similar_pairs >= 3 {
+            looks_stuck = true;
+        }
+    }
+
+    // Long session + zero progress signals → stuck
+    if messages.len() > 100 && !collision_found {
+        // Check for partial match signals: "best_match=", "match=", etc.
+        let has_partial = recent.iter().any(|line| {
+            let lower = line.to_lowercase();
+            lower.contains("best_match=")
+                || lower.contains("match=")
+                || lower.contains("best partial match:")
+        });
+        if !has_partial {
+            looks_stuck = true;
+        }
+    }
+
+    SessionProgress { collision_found, looks_stuck }
+}
+
 #[async_trait]
 impl CognitiveEngine for LlmCognitiveEngine {
     fn name(&self) -> &str {
@@ -579,19 +802,43 @@ impl CognitiveEngine for LlmCognitiveEngine {
         let mut turn = 0u32;
         let mut continuation = 0u32;
         let mut estimated_total_tokens: usize = 0;
+        let mut format_reminder_fired = false;
         const MAX_HISTORY_TOKENS: usize = 100_000;
         loop {
             // ── Pre-turn: max turns check + auto-continue ────────────
             if turn >= max_turns {
                 if self.config.background && continuation < self.config.max_continuations {
+                    // Evaluate session progress before deciding to continue
+                    let progress = evaluate_session_progress(&messages);
+                    if progress.collision_found || progress.looks_stuck {
+                        if let Some(ref sink) = self.event_sink {
+                            sink(kernel::event::Event::new(
+                                "cognitive-engine",
+                                kernel::event::EventType::Custom("agent:auto_continue_stopped".into()),
+                                serde_json::json!({
+                                    "agent_id": &agent_id, "session_id": &session_id,
+                                    "continuation": continuation,
+                                    "collision_found": progress.collision_found,
+                                    "looks_stuck": progress.looks_stuck,
+                                }),
+                            ));
+                        }
+                        return Err(CognitiveError::MaxDepthReached { depth: turn });
+                    }
                     continuation += 1;
                     turn = 0;
-                    // Trim history if it's getting too large
-                    if estimated_total_tokens > MAX_HISTORY_TOKENS {
-                        let keep = messages.len() / 2;
-                        messages = messages[messages.len() - keep..].to_vec();
-                        estimated_total_tokens /= 2;
-                        tracing::info!(%agent_id, %session_id, continuation, "history trimmed for auto-continue");
+                    // Build structured continuation context instead of raw truncation
+                    let summary = build_continuation_context_summary(&messages);
+                    let original_msg_count = messages.len();
+                    messages = vec![crate::react::ChatMessage::system(summary)];
+                    estimated_total_tokens = messages[0].content.len() / 2;
+                    // Publish history_compressed
+                    if let Some(ref sink) = self.event_sink {
+                        sink(kernel::event::Event::new(
+                            "cognitive-engine",
+                            kernel::event::EventType::Custom("agent:history_compressed".into()),
+                            serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "messages_before": original_msg_count, "messages_after": 1 }),
+                        ));
                     }
                     if let Some(ref sink) = self.event_sink {
                         sink(kernel::event::Event::new(
@@ -610,6 +857,20 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 estimated_total_tokens = messages.iter()
                     .map(|m| m.content.len() / 2) // rough estimate: ~2 chars per token
                     .sum();
+            }
+
+            // ── Interrupt check (before LLM call) ──────────────────
+            if let Some(ref flag) = self.interrupt_flag {
+                if flag.is_interrupted() {
+                    if let Some(ref sink) = self.event_sink {
+                        sink(kernel::event::Event::new(
+                            "cognitive-engine",
+                            kernel::event::EventType::Custom("agent:reply_interrupted".into()),
+                            serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
+                        ));
+                    }
+                    return Err(CognitiveError::Interrupted);
+                }
             }
 
             // Publish llm:call_started
@@ -676,6 +937,17 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 ));
             }
 
+            // Publish llm_error if the call failed after all retries
+            if let Err(ref err_msg) = response {
+                if let Some(ref sink) = self.event_sink {
+                    sink(kernel::event::Event::new(
+                        "cognitive-engine",
+                        kernel::event::EventType::Custom("llm_error".into()),
+                        serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "error": err_msg }),
+                    ));
+                }
+            }
+
             let response = response.map_err(|e| CognitiveError::EngineError {
                 engine_name: self.name().to_owned(), message: e,
             })?;
@@ -721,6 +993,16 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 break;
             }
 
+            // Publish got_tool_calls before execution
+            if let Some(ref sink) = self.event_sink {
+                let tool_names: Vec<&str> = response.tool_calls.iter().map(|c| c.tool_name.as_str()).collect();
+                sink(kernel::event::Event::new(
+                    "cognitive-engine",
+                    kernel::event::EventType::Custom("agent:got_tool_calls".into()),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "tools": tool_names }),
+                ));
+            }
+
             // If tool execution is not configured, return tool calls as decisions
             // (single-turn mode — the caller handles tool execution)
             if self.tool_registry.is_none() {
@@ -754,10 +1036,48 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 messages.push(ChatMessage::tool_result(&r.id, &r.tool_name, &r.output));
             }
 
+            // Publish tool_results_fed_back
+            if let Some(ref sink) = self.event_sink {
+                let success_count = results.iter().filter(|r| r.success).count();
+                sink(kernel::event::Event::new(
+                    "cognitive-engine",
+                    kernel::event::EventType::Custom("agent:tool_results_fed_back".into()),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "total": results.len(), "success": success_count }),
+                ));
+            }
+
             // Track estimated tokens (content + tool results)
             estimated_total_tokens += content_len / 2;
             for r in &results {
                 estimated_total_tokens += r.output.len() / 2;
+            }
+
+            // ── Interrupt check (after tool execution) ──────────────
+            if let Some(ref flag) = self.interrupt_flag {
+                if flag.is_interrupted() {
+                    if let Some(ref sink) = self.event_sink {
+                        sink(kernel::event::Event::new(
+                            "cognitive-engine",
+                            kernel::event::EventType::Custom("agent:reply_interrupted".into()),
+                            serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
+                        ));
+                    }
+                    return Err(CognitiveError::Interrupted);
+                }
+            }
+
+            // ── Format reminder (once per session, after N turns with tool use) ─
+            if self.config.format_reminder_turns > 0
+                && turn >= self.config.format_reminder_turns
+                && !format_reminder_fired
+            {
+                format_reminder_fired = true;
+                messages.push(crate::react::ChatMessage::system(
+                    "[Format Reminder] You are working on a complex task with multiple tool calls. \
+                     Ensure your final response is complete — fill ALL sections, cover ALL dimensions, \
+                     and provide a thorough, well-structured answer. Do not truncate."
+                ));
+                tracing::info!(%agent_id, %session_id, turn, "injected format reminder");
             }
 
             turn += 1;

@@ -40,6 +40,7 @@ impl Adapter for DbAdapter {
             "query": input.query,
             "limit": input.limit,
             "offset": input.offset,
+            "since": input.since,
             "db_path": self.db_path,
         });
 

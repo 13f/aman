@@ -171,6 +171,10 @@ impl Tool for InfoSearchTool {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional source names to search (empty = all)"
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Only return articles published after this ISO 8601 timestamp (e.g. '2026-06-28T12:00:00Z'). Supported by db/fusion adapters."
                     }
                 }
             }))
@@ -218,6 +222,7 @@ impl Tool for InfoSearchTool {
                 limit: input.limit,
                 offset: input.offset,
                 sources: Some(vec![source.name().to_string()]),
+                since: input.since.clone(),
             };
             tasks.push(tokio::spawn(async move {
                 adapter.search(&input).await

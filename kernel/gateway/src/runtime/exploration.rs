@@ -229,6 +229,7 @@ impl ExplorationRunner {
                 limit: 5,
                 offset: 0,
                 sources: None,
+                since: None,
             };
 
             for source in &sources {
@@ -256,6 +257,7 @@ impl ExplorationRunner {
                         limit: 5,
                         offset: 0,
                         sources: None,
+                        since: None,
                     };
                     for source in &sources {
                         if cancel.is_cancelled() {

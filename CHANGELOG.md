@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plugin ecosystem**: Team kanban plugin with JSON-RPC subprocess bridge, info-hub plugin with
   unified search (API, CLI, DB, RSS) and AI processing pipeline, memory-store plugin, messaging
   plugins for Telegram/Slack/Discord/Matrix with multi-instance support, proxy support, hot reload.
+- **Info-hub dedup**: `since` parameter on `info_search` for incremental RSS fetching — agents
+  maintain per-agent `rss_fusion.json` state files, DB adapter passes `since` through to SQL
+  `WHERE pub_date > ?`, eliminating duplicate articles across surf sessions. Skill doc updated
+  with dedup workflow.
 - **Protocol support**: stdio JSON-RPC 2.0 (`aman serve`) and gRPC (tonic/prost) alongside the
   existing HTTP REST protocol — all three share the same `AgentRuntime` methods.
 - **Frontend pages**: Home with agent avatar grid and finance skill cards, Chat with IM-style UI

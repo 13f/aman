@@ -80,9 +80,40 @@ info_search(query: "AI agents", limit: 20, sources: ["rsshub-tech"])  // filter 
 | `limit` | integer | no | `20` | Max results (always use 20 unless asked otherwise) |
 | `offset` | integer | no | `0` | Pagination offset |
 | `sources` | string[] | no | all | Filter by configured source names |
+| `since` | string | no | — | ISO 8601 timestamp. Only return articles published AFTER this time. Supported by fusion/db adapters. Use this to skip already-seen articles. |
 
 **Returns:** `[{title, url, summary, published, source}]` — deduplicated by URL,
 sorted by date descending.
+
+### Dedup Workflow (fusion/local DB sources)
+
+When you have a local RSS database (fusion), avoid re-fetching articles you've
+already seen by maintaining a small state file at
+`~/.aman/agents/{your_agent_id}/memory/rss_fusion.json`.
+
+**Before searching:** read the file. If it exists and has `last_fetch`, pass that
+timestamp as `since` to `info_search`.
+
+**After searching:** update the file — bump `fetch_count`, update `last_fetch` to
+now (UTC ISO 8601), increment `total_articles_seen` by the number of new
+articles returned.
+
+```
+// BEFORE — read state
+read_file ~/.aman/agents/<agent_id>/memory/rss_fusion.json
+→ last_fetch = "2026-06-28T14:30:00Z"
+
+// SEARCH — only get what's new
+info_search(query: "AI agents", limit: 20, since: "2026-06-28T14:30:00Z")
+
+// AFTER — update state
+write_file with bumped fetch_count, updated last_fetch, and notes
+```
+
+If the file doesn't exist or `last_fetch` is null (first ever surf), don't pass
+`since` — get everything to build a baseline. Every 24 hours of real time,
+consider doing one full refresh (no `since`) to catch any articles that might
+have been missed (e.g. items with incorrect pub_date).
 
 ## AI Enrichment Pipeline (Optional)
 
@@ -145,7 +176,7 @@ say nothing interesting came up and move on — don't fabricate.
 3. **Calling enrichment before search.** Always run `info_search` first
 4. **Setting `min_score` too high.** No results at 20? Lower to 10. Default is 0
 5. **Over-enriching idle discoveries.** Don't run the full pipeline when browsing; enrich only if the user asks to drill deeper
-6. **Searching the same topics every idle run.** Rotate your interests — the `idle_prompts` suggest different angles for a reason
+6. **Not using `since` for dedup.** If you have a local RSS DB (fusion), always read `rss_fusion.json` before searching and pass `last_fetch` as `since` — otherwise you'll see the same articles every surf session. First time: create the file. Subsequent: maintain it.
 7. **Not handling empty results.** If the first round of `info_search` returns `[]`, fall back to a broad query (`info_search(query: "", limit: 20)`) to pull whatever is in the sources by recency. If that also returns empty, the user may not have configured sources — point them to `~/.aman/config.yaml` under the `info_hub` key
 
 ## Verification Checklist

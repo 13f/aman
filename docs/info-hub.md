@@ -53,11 +53,11 @@
 User query: "golang generics"
      │
      ▼
-info_search(query: "golang generics", limit: 20)
+info_search(query: "golang generics", limit: 20, since: "2026-06-28T12:00:00Z")
      │
      ├──[parallel]──▶ api adapter   → GET https://rsshub.app/feed/golang%20generics
      ├──[parallel]──▶ cli adapter   → spawn blogwatcher search "golang generics" --json
-     └──[parallel]──▶ db adapter    → echo '{"query":"golang generics"}' | python3 search.py
+     └──[parallel]──▶ db adapter    → echo '{"query":"golang generics","since":"2026-06-28T12:00:00Z"}' | python3 fusion.py
      │
      ▼
 merge results, dedup by url, sort by published desc
@@ -76,6 +76,7 @@ struct InfoSearchInput {
     limit: Option<usize>,      // default 20
     offset: Option<usize>,     // default 0
     sources: Option<Vec<String>>, // filter by source name, empty = all
+    since: Option<String>,     // ISO 8601 timestamp — only return articles published after this time
 }
 
 /// Normalized result from any data source.
@@ -149,8 +150,8 @@ config → spawn runtime + script → stdin JSON → stdout JSON → Vec<InfoIte
 **脚本契约（stdin/stdout）：**
 
 ```
-stdin:  {"query": "...", "limit": 20, "offset": 0, "db_path": "/path/to/db"}
-stdout: [{"title": "...", "url": "...", "summary": "...", "published": "..."}, ...]
+stdin:  {"query": "...", "limit": 20, "offset": 0, "since": "2026-06-28T12:00:00Z", "db_path": "/path/to/db"}
+stdout: [{"title": "...", "url": "...", "summary": "...", "published": "...", "source": "..."}, ...]
 stderr: free-form, logged at debug level
 exit:   0 = success, non-zero = error (logged, empty result returned)
 ```
@@ -158,6 +159,7 @@ exit:   0 = success, non-zero = error (logged, empty result returned)
 - info-hub 不引入任何 DB driver
 - 用户用自己熟悉的语言写查询脚本，连 SQLite / LanceDB / 任何存储
 - 脚本崩了不影响 aman 主进程（subprocess 隔离）
+- `since` 参数（ISO 8601）是可选的时间过滤。DB adapter 透传给脚本，脚本自行处理（通常是 `WHERE pub_date > ?`）。api/cli adapter 忽略此参数。
 
 **最小示例脚本（Python）：**
 
@@ -215,12 +217,13 @@ info_hub:
 ## Execution Model
 
 ```
-info_search(query, limit, sources_filter)
+info_search(query, limit, sources_filter, since)
 │
 ├─ Filter sources by sources_filter (if specified)
 ├─ For each source, spawn async task (tokio::spawn)
 │   ├─ timeout_ms per source
 │   └─ on timeout → log warning, skip source
+│   └─ db adapter: since passed through stdin JSON
 │
 ├─ Collect all results
 ├─ Dedup by url (first wins)
@@ -307,9 +310,25 @@ JSON 解析支持 markdown fence 剥离、中文智能引号替换、截断 JSON
 ### DB Adapter Protocol
 
 ```
-stdin:  {"query": "...", "limit": 20, "offset": 0, "db_path": "/path/to/db"}
+stdin:  {"query": "...", "limit": 20, "offset": 0, "since": "2026-06-28T12:00:00Z", "db_path": "/path/to/db"}
 stdout: [{"title": "...", "url": "...", "summary": "...", "published": "...", "source": "..."}, ...]
 ```
+
+### Agent-Side Dedup (fusion/local DB)
+
+Agent 端通过 `rss_fusion.json` 维护去重状态，避免重复抓取相同文章：
+
+```
+~/.aman/agents/{agent_id}/memory/rss_fusion.json
+```
+
+**工作流：**
+
+1. **冲浪前** — 读取 JSON，取出 `last_fetch` 时间戳
+2. **搜索时** — 作为 `since` 参数传入 `info_search`，SQL 层 `WHERE pub_date > ?` 只返回增量
+3. **冲浪后** — 更新 JSON 的 `last_fetch`、`fetch_count`、`total_articles_seen`
+
+首次冲浪（文件不存在）不传 `since`，建立基线。每 24h 做一次全量刷新兜底（不传 `since`），捕获 `pub_date` 异常的数据。
 
 ### Standalone Mode
 
@@ -367,3 +386,4 @@ LLM 在 ReAct 循环中看到 tool 列表里有 `info_search`，根据 SKILL.md 
 | Phase 5 | AI scoring, summarization, highlights tools | Done |
 | Phase 6 | Python scripts (common, ai, fusion, rss) | Done |
 | Phase 7 | Wire into runtime as built-in plugin | Pending |
+| Phase 8 | Agent-side dedup (`since` param + `rss_fusion.json` state file) | Done |

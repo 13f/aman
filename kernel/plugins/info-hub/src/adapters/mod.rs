@@ -197,6 +197,7 @@ mod tests {
             limit: 10,
             offset: 5,
             sources: None,
+            since: None,
         };
         let result = replace_placeholders("{query} limit={limit} offset={offset}", &input);
         assert_eq!(result, "rust limit=10 offset=5");

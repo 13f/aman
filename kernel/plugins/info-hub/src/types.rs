@@ -22,6 +22,11 @@ pub struct InfoSearchInput {
     pub offset: usize,
     #[serde(default)]
     pub sources: Option<Vec<String>>,
+    /// Only return articles published after this ISO 8601 timestamp.
+    /// When set, adapters that support time filtering (db, fusion) use it
+    /// as a WHERE clause.  Adapters that don't (api, cli) ignore it.
+    #[serde(default)]
+    pub since: Option<String>,
 }
 
 const fn default_limit() -> usize {

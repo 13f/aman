@@ -95,48 +95,90 @@ def _unix_to_iso(ts) -> str:
         return str(ts) if ts else ""
 
 
+def _iso_to_unix(iso_str: str) -> int:
+    """Convert ISO 8601 date string to unix timestamp (int).
+
+    Returns 0 if parsing fails (treated as no filter).
+    """
+    if not iso_str:
+        return 0
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except (ValueError, TypeError):
+        return 0
+
+
 def search_articles(
     db_path: str,
     query: str = "",
     limit: int = 20,
     offset: int = 0,
+    since: str = "",
 ) -> list[dict]:
     conn = open_db(db_path)
     try:
         if _is_fusion_db(conn):
-            return _search_fusion(conn, query, limit, offset)
+            return _search_fusion(conn, query, limit, offset, since)
         else:
-            return _search_standalone(conn, query, limit, offset)
+            return _search_standalone(conn, query, limit, offset, since)
     finally:
         conn.close()
 
 
 def _search_fusion(
-    conn: sqlite3.Connection, query: str, limit: int, offset: int
+    conn: sqlite3.Connection, query: str, limit: int, offset: int, since: str = ""
 ) -> list[dict]:
     """Search fusion RSS items table joined with feeds."""
+    since_ts = _iso_to_unix(since)
+
     if query.strip():
-        sql = """
-            SELECT i.id, i.title, i.link, i.content, i.pub_date,
-                   f.name as feed_name, f.site_url as feed_url
-            FROM items i
-            JOIN feeds f ON i.feed_id = f.id
-            WHERE i.title LIKE ? OR i.content LIKE ?
-            ORDER BY i.pub_date DESC
-            LIMIT ? OFFSET ?
-        """
-        pattern = f"%{query}%"
-        rows = conn.execute(sql, (pattern, pattern, limit, offset)).fetchall()
+        if since_ts > 0:
+            sql = """
+                SELECT i.id, i.title, i.link, i.content, i.pub_date,
+                       f.name as feed_name, f.site_url as feed_url
+                FROM items i
+                JOIN feeds f ON i.feed_id = f.id
+                WHERE (i.title LIKE ? OR i.content LIKE ?) AND i.pub_date > ?
+                ORDER BY i.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            pattern = f"%{query}%"
+            rows = conn.execute(sql, (pattern, pattern, since_ts, limit, offset)).fetchall()
+        else:
+            sql = """
+                SELECT i.id, i.title, i.link, i.content, i.pub_date,
+                       f.name as feed_name, f.site_url as feed_url
+                FROM items i
+                JOIN feeds f ON i.feed_id = f.id
+                WHERE i.title LIKE ? OR i.content LIKE ?
+                ORDER BY i.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            pattern = f"%{query}%"
+            rows = conn.execute(sql, (pattern, pattern, limit, offset)).fetchall()
     else:
-        sql = """
-            SELECT i.id, i.title, i.link, i.content, i.pub_date,
-                   f.name as feed_name, f.site_url as feed_url
-            FROM items i
-            JOIN feeds f ON i.feed_id = f.id
-            ORDER BY i.pub_date DESC
-            LIMIT ? OFFSET ?
-        """
-        rows = conn.execute(sql, (limit, offset)).fetchall()
+        if since_ts > 0:
+            sql = """
+                SELECT i.id, i.title, i.link, i.content, i.pub_date,
+                       f.name as feed_name, f.site_url as feed_url
+                FROM items i
+                JOIN feeds f ON i.feed_id = f.id
+                WHERE i.pub_date > ?
+                ORDER BY i.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(sql, (since_ts, limit, offset)).fetchall()
+        else:
+            sql = """
+                SELECT i.id, i.title, i.link, i.content, i.pub_date,
+                       f.name as feed_name, f.site_url as feed_url
+                FROM items i
+                JOIN feeds f ON i.feed_id = f.id
+                ORDER BY i.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(sql, (limit, offset)).fetchall()
 
     results = []
     for row in rows:
@@ -170,33 +212,60 @@ def _search_fusion(
 
 
 def _search_standalone(
-    conn: sqlite3.Connection, query: str, limit: int, offset: int
+    conn: sqlite3.Connection, query: str, limit: int, offset: int, since: str = ""
 ) -> list[dict]:
     """Search standalone articles table (created if needed)."""
     _ensure_standalone_articles(conn)
+    since_ts = _iso_to_unix(since)
 
     if query.strip():
-        sql = """
-            SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
-                   m.category, m.keywords, m.title_zh, m.summary, m.reason
-            FROM articles a
-            LEFT JOIN article_meta m ON a.link = m.item_key
-            WHERE a.title LIKE ? OR a.description LIKE ? OR m.summary LIKE ?
-            ORDER BY a.pub_date DESC
-            LIMIT ? OFFSET ?
-        """
-        pattern = f"%{query}%"
-        rows = conn.execute(sql, (pattern, pattern, pattern, limit, offset)).fetchall()
+        if since_ts > 0:
+            sql = """
+                SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
+                       m.category, m.keywords, m.title_zh, m.summary, m.reason
+                FROM articles a
+                LEFT JOIN article_meta m ON a.link = m.item_key
+                WHERE (a.title LIKE ? OR a.description LIKE ? OR m.summary LIKE ?)
+                  AND a.pub_date > ?
+                ORDER BY a.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            pattern = f"%{query}%"
+            rows = conn.execute(sql, (pattern, pattern, pattern, since_ts, limit, offset)).fetchall()
+        else:
+            sql = """
+                SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
+                       m.category, m.keywords, m.title_zh, m.summary, m.reason
+                FROM articles a
+                LEFT JOIN article_meta m ON a.link = m.item_key
+                WHERE a.title LIKE ? OR a.description LIKE ? OR m.summary LIKE ?
+                ORDER BY a.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            pattern = f"%{query}%"
+            rows = conn.execute(sql, (pattern, pattern, pattern, limit, offset)).fetchall()
     else:
-        sql = """
-            SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
-                   m.category, m.keywords, m.title_zh, m.summary, m.reason
-            FROM articles a
-            LEFT JOIN article_meta m ON a.link = m.item_key
-            ORDER BY m.score DESC, a.pub_date DESC
-            LIMIT ? OFFSET ?
-        """
-        rows = conn.execute(sql, (limit, offset)).fetchall()
+        if since_ts > 0:
+            sql = """
+                SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
+                       m.category, m.keywords, m.title_zh, m.summary, m.reason
+                FROM articles a
+                LEFT JOIN article_meta m ON a.link = m.item_key
+                WHERE a.pub_date > ?
+                ORDER BY m.score DESC, a.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(sql, (since_ts, limit, offset)).fetchall()
+        else:
+            sql = """
+                SELECT a.*, m.score, m.relevance, m.quality, m.timeliness,
+                       m.category, m.keywords, m.title_zh, m.summary, m.reason
+                FROM articles a
+                LEFT JOIN article_meta m ON a.link = m.item_key
+                ORDER BY m.score DESC, a.pub_date DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(sql, (limit, offset)).fetchall()
 
     results = []
     for row in rows:
@@ -426,8 +495,9 @@ def main():
     query = input_data.get("query", "")
     limit = input_data.get("limit", 20)
     offset = input_data.get("offset", 0)
+    since = input_data.get("since", "")
 
-    results = search_articles(db_path, query=query, limit=limit, offset=offset)
+    results = search_articles(db_path, query=query, limit=limit, offset=offset, since=since)
     write_stdout_result(results)
 
 

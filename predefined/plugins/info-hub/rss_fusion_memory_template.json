@@ -1,0 +1,8 @@
+{
+  "source": "fusion-local",
+  "last_fetch": null,
+  "first_fetch": null,
+  "fetch_count": 0,
+  "total_articles_seen": 0,
+  "notes": "Agent-maintained RSS dedup state. Read before info_search, write after."
+}

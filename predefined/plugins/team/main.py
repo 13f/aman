@@ -378,7 +378,8 @@ def get_work(project_key: str, work_id: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def list_works(project_key: str, stage: Optional[str] = None) -> list:
+def list_works(project_key: str, stage: Optional[str] = None,
+              exclude_stages: Optional[list] = None) -> list:
     db = get_db(project_key)
     query = """SELECT t.*, COALESCE(
                    (SELECT sh.assignee FROM stage_history sh
@@ -390,6 +391,10 @@ def list_works(project_key: str, stage: Optional[str] = None) -> list:
     if stage:
         conditions.append("t.current_stage=?")
         params.append(stage)
+    if exclude_stages:
+        placeholders = ",".join(["?" for _ in exclude_stages])
+        conditions.append(f"t.current_stage NOT IN ({placeholders})")
+        params.extend(exclude_stages)
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY t.created_at DESC"
@@ -993,7 +998,19 @@ def _handle_get_project(project_key: str) -> dict:
 def _handle_list_works(project_key: str, query: Optional[str]) -> dict:
     proj = _projects.get(project_key, {}).get("config", {})
     # Parse query params
-    works = list_works(project_key)
+    exclude_need_review = False
+    if query:
+        from urllib.parse import parse_qs
+        qs = parse_qs(query)
+        exclude_need_review = qs.get("exclude_need_review", ["0"])[0] == "1"
+
+    # When exclude_need_review=1, filter out review + terminal stages so
+    # the agent only sees actionable (non-review) work items. The kanban
+    # board UI calls without this param and sees all columns.
+    if exclude_need_review:
+        works = list_works(project_key, exclude_stages=["review", "done", "closed", "archived"])
+    else:
+        works = list_works(project_key)
     return {
         "status": 200,
         "headers": {"content-type": "application/json"},

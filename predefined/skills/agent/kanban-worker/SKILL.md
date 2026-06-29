@@ -43,17 +43,26 @@ Find which agent you are:
 GET http://127.0.0.1:9999/api/v1/team/projects
 ```
 
-From the response, pick a project. Then list works **excluding items already
-marked for review**:
+From the response, pick a project. Then list works, **temporarily skipping
+items in the "review" stage** (those are awaiting human sign-off and must
+not be picked up by the agent):
 
 ```
 GET http://127.0.0.1:9999/api/v1/team/projects/{project_key}/works?exclude_need_review=1
 ```
 
+The `?exclude_need_review=1` parameter filters out works in the `review`,
+`done`, `closed`, and `archived` stages — leaving only actionable items.
+
 Look for work items where:
-- The work item is in an active stage (not "done", "closed", "archived")
+- The work item is in an active, non-review stage (e.g. `todo`, `in_progress`, `backlog`)
 - The work item is assigned to you (check `assignee` field)
 - Or: the work item is unassigned but in a stage with `auto_assign` policy
+
+**Review-stage items are NOT actionable.** They have been submitted for human
+verification. Only a human can accept (→ done) or reject (→ todo) them. The
+agent must NOT modify, execute, or comment on review-stage items unless the
+human explicitly asks.
 
 **If no work items are assigned to you:**
 > No work items assigned. Agent is idle.

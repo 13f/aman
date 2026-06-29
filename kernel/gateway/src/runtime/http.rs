@@ -2099,7 +2099,7 @@ async fn explore_start(
     }) {
         Some(k) => k,
         None => {
-            return ApiError::bad_request("no agent configured").into_response();
+            return ApiError::bad_request("no agent configured — specify agent_key or add an agent to config.yaml").into_response();
         }
     };
 
@@ -3795,7 +3795,7 @@ async fn idle_run(
         }) {
         Some(k) => k,
         None => {
-            return ApiError::bad_request("no agent configured").into_response();
+            return ApiError::bad_request("no agent configured — specify agent_key or add an agent to config.yaml").into_response();
         }
     };
 

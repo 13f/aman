@@ -132,6 +132,9 @@ async fn run() -> Result<(), i32> {
         1
     })?;
 
+    let addr = server.local_addr();
+    agenverse.set_server_handle(server).await;
+
     write_pid_file();
 
     // Publish gateway lifecycle event before starting runtime.
@@ -169,14 +172,12 @@ async fn run() -> Result<(), i32> {
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT during startup, shutting down");
-                let _ = runtime.shutdown().await;
-                server.shutdown();
+                agenverse.shutdown().await;
                 return Err(1);
             }
             _ = sigterm.recv() => {
                 tracing::info!("received SIGTERM during startup, shutting down");
-                let _ = runtime.shutdown().await;
-                server.shutdown();
+                agenverse.shutdown().await;
                 return Err(1);
             }
         }
@@ -201,14 +202,12 @@ async fn run() -> Result<(), i32> {
             }
             _ = tokio::signal::ctrl_c() => {
                 tracing::info!("received SIGINT during startup, shutting down");
-                let _ = runtime.shutdown().await;
-                server.shutdown();
+                agenverse.shutdown().await;
                 return Err(1);
             }
         }
     }
 
-    let addr = server.local_addr();
     tracing::info!(%addr, "gateway ready");
 
     let _ = runtime.publish_event(Event::new(
@@ -245,7 +244,8 @@ async fn run() -> Result<(), i32> {
         }
     }
 
-    do_shutdown(&agenverse, server).await;
+    agenverse.shutdown().await;
+    remove_pid_file();
     Ok(())
 }
 
@@ -278,6 +278,9 @@ async fn run_tui_mode(
         tracing::error!(error = %e, "HTTP server error");
         1
     })?;
+
+    let addr = server.local_addr();
+    agenverse.set_server_handle(server).await;
 
     write_pid_file();
 
@@ -312,7 +315,6 @@ async fn run_tui_mode(
     // Wait for startup to complete (or timeout).
     let _ = tokio::time::timeout(Duration::from_secs(35), startup_handle).await;
 
-    let addr = server.local_addr();
     tracing::info!(%addr, "gateway ready (TUI mode)");
 
     // Run the TUI on the current (main) thread. This blocks until the user
@@ -334,7 +336,8 @@ async fn run_tui_mode(
     }
 
     tracing::info!("shutting down (TUI exited)");
-    do_shutdown(&agenverse, server).await;
+    agenverse.shutdown().await;
+    remove_pid_file();
     Ok(())
 }
 
@@ -429,57 +432,12 @@ fn write_pid_file() {
     }
 }
 
-async fn do_shutdown(
-    agenverse: &Agenverse,
-    server: gateway::runtime::HttpServerHandle,
-) {
-    let runtime = agenverse.runtime();
-    let _ = runtime.publish_event(Event::new(
-        "gateway:lifecycle",
-        EventType::Custom("gateway:stopping".to_owned()),
-        serde_json::json!({}),
-    )).await;
-
-    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-
-    let (force_quit_tx, mut force_quit_rx) = tokio::sync::oneshot::channel::<()>();
-    tokio::spawn(async move {
-        match tokio::signal::ctrl_c().await {
-            Ok(()) => {
-                let _ = force_quit_tx.send(());
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to register second SIGINT handler");
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = &mut force_quit_rx => {
-            tracing::error!("second SIGINT received, force quitting");
-            std::process::exit(1);
-        }
-        _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
-            tracing::error!(
-                "shutdown timed out after {}s, force exiting",
-                SHUTDOWN_TIMEOUT.as_secs()
-            );
-            std::process::exit(1);
-        }
-        result = runtime.shutdown() => {
-            if let Err(e) = result {
-                tracing::error!(error = %e, "shutdown completed with errors");
-            }
-        }
-    }
-
-    server.shutdown();
-
-    // Clean up PID file.
+/// Remove the PID file written at startup. Best-effort — failures are
+/// logged but never propagated.
+fn remove_pid_file() {
     if let Ok(home) = std::env::var("HOME") {
         let pid_path = PathBuf::from(&home).join(PID_FILE);
-        let _ = std::fs::remove_file(pid_path);
+        let _ = std::fs::remove_file(&pid_path);
+        tracing::debug!(pid_path = %pid_path.display(), "pid file removed");
     }
-
-    tracing::info!("gateway shut down gracefully");
 }

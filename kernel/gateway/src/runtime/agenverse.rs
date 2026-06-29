@@ -10,12 +10,14 @@
 //! agenverse, not the universe itself.
 
 use kernel::Error;
+use kernel::event::{Event, EventType};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 use super::agent_runtime::AgentRuntime;
+use super::http::HttpServerHandle;
 
 // ── Runtime phase ────────────────────────────────────────────────────────────
 
@@ -63,6 +65,10 @@ pub struct Agenverse {
     startup_pause: Duration,
     /// The built agent runtime. Set once after [`AgentRuntimeBuilder`] completes.
     runtime: OnceLock<Arc<AgentRuntime>>,
+    /// Handle to the HTTP server, stored for shutdown orchestration.
+    /// `Option` + `Mutex` because [`HttpServerHandle::shutdown`] takes `self`
+    /// by value; [`shutdown`](Self::shutdown) calls `take()`.
+    server: Mutex<Option<HttpServerHandle>>,
 }
 
 impl Agenverse {
@@ -76,6 +82,7 @@ impl Agenverse {
             shutdown_notify: tokio::sync::Notify::new(),
             startup_pause,
             runtime: OnceLock::new(),
+            server: Mutex::new(None),
         }
     }
 
@@ -211,5 +218,91 @@ impl Agenverse {
             Ok(()) => {}
             Err(_) => panic!("Agenverse::set_runtime() called more than once"),
         }
+    }
+
+    /// Number of agents currently alive in the agenverse.
+    pub async fn agent_count(&self) -> usize {
+        self.runtime().agent_registry().list().await.len()
+    }
+
+    /// Store the HTTP server handle so [`shutdown`](Self::shutdown) can stop
+    /// it. Called once by `main()` after the server is built.
+    pub async fn set_server_handle(&self, handle: HttpServerHandle) {
+        *self.server.lock().await = Some(handle);
+    }
+
+    /// Full graceful shutdown orchestration.
+    ///
+    /// 1. Publishes `"gateway:stopping"` lifecycle event.
+    /// 2. Acquires the shutdown gate. If successful, runs
+    ///    [`AgentRuntime::shutdown`] guarded by a 10-second timeout
+    ///    (forced exit on timeout or second SIGINT).
+    /// 3. Stops the HTTP server.
+    ///
+    /// Idempotent: safe to call after an HTTP-initiated shutdown has
+    /// already run `AgentRuntime::shutdown()`.
+    pub async fn shutdown(&self) {
+        // Publish the stopping event regardless of gate state — the
+        // event bus is still operational even when shutting down.
+        let _ = self.runtime().publish_event(Event::new(
+            "gateway:lifecycle",
+            EventType::Custom("gateway:stopping".to_owned()),
+            serde_json::json!({}),
+        ))
+        .await;
+
+        // Acquire the shutdown gate. If it fails (already shutting
+        // down / shut down), skip the runtime phase transitions.
+        if self.try_acquire_shutdown_gate().await.is_ok() {
+            const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+            let (force_quit_tx, mut force_quit_rx) =
+                tokio::sync::oneshot::channel::<()>();
+            tokio::spawn(async move {
+                match tokio::signal::ctrl_c().await {
+                    Ok(()) => {
+                        let _ = force_quit_tx.send(());
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "failed to register second SIGINT handler"
+                        );
+                    }
+                }
+            });
+
+            tokio::select! {
+                _ = &mut force_quit_rx => {
+                    tracing::error!(
+                        "second SIGINT received, force quitting"
+                    );
+                    std::process::exit(1);
+                }
+                _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
+                    tracing::error!(
+                        "shutdown timed out after {}s, force exiting",
+                        SHUTDOWN_TIMEOUT.as_secs()
+                    );
+                    std::process::exit(1);
+                }
+                result = self.runtime().shutdown() => {
+                    if let Err(e) = result {
+                        tracing::error!(
+                            error = %e,
+                            "shutdown completed with errors"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Stop the HTTP server. Option::take ensures at-most-once
+        // delivery even if shutdown() is called multiple times.
+        if let Some(handle) = self.server.lock().await.take() {
+            handle.shutdown();
+        }
+
+        tracing::info!("gateway shut down gracefully");
     }
 }

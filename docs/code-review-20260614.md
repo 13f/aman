@@ -69,13 +69,17 @@ tui# Aaman 项目代码质量评估报告
 **✅ 已修复 (2026-06-16)**:
 
 - **`RuntimeLifecycle` 正式迁入 `AgentRuntime`**：`AgentRuntime` 现在内嵌 `lifecycle: RuntimeLifecycle`（`agent_runtime.rs:2846`），原 6 个生命周期字段（`phase` / `status` / `transition_lock` / `shutdown_requested` / `shutdown_notify` / `startup_pause`）已从 `AgentRuntime` 移除。`RuntimeLifecycle` 不再标记 `#[allow(dead_code)]`，其公开 API 包括 `phase()` / `status()` / `is_ready()` / `is_live()` / `shutdown_notify()` / `set_phase()` / `try_acquire_start_gate()` / `try_acquire_shutdown_gate()` / `mark_ready()` / `mark_shutdown()` / `notify_shutdown_complete()`。
+  > **演进 (2026-06-29)**: `RuntimeLifecycle` 已重命名为 `Agenverse` 并移至独立模块
+  > `kernel/gateway/src/runtime/agenverse.rs`。所有权已反转：`Agenverse` 现在是顶层容器，
+  > 在 `main.rs` 中最先创建，通过 `OnceLock` 持有 `AgentRuntime`。关停编排移入
+  > `Agenverse::shutdown()`，消除了 `main.rs` 中的 `do_shutdown()` 自由函数。
 - **`start()` / `shutdown()` 完全通过生命周期子系统推进**：`start()` 调用 `try_acquire_start_gate()` 获取原子启动门控，然后执行 `ensure_*()` / `bump_phase()`，最后 `mark_ready()`；`shutdown()` 调用 `try_acquire_shutdown_gate()`，执行反向 `bump_shutdown_phase()`，清理 watcher，最后 `mark_shutdown()`。状态转换的锁窗口保持最短，不跨越 await。
-- **已删除未使用的 `RuntimePhase::from_u8`**： phase 转换统一通过 `RuntimeLifecycle::phase()` / `set_phase()` 完成。
+- **已删除未使用的 `RuntimePhase::from_u8`**： phase 转换统一通过 `Agenverse::phase()` / `set_phase()` 完成。
 
 **✅ 部分修复 (2026-06-14)**:
 
 - **Magic string 集中**：新增 `kernel/gateway/src/runtime/event_consts.rs` 模块，集中所有 event-type 常量（`EVT_TOOL_DISPATCHED` / `EVT_AGENT_BUSY` / `SOURCE_AGENT_HARNESS` 等 23 个常量），`agent_harness.rs` 32 处 `"agent:harness"` 字符串 + 33 处 `EventType::Custom("...")` 已全部迁移到常量。包含守卫测试确保常量非空、无 NUL。
-- **re-export**：通过 `runtime::mod.rs` 公开 `RuntimeLifecycle`。
+- **re-export**：通过 `runtime::mod.rs` 公开 `Agenverse`（原 `RuntimeLifecycle`）。
 
 **当前状态**：生命周期子系统已完全落地；剩余 4 个子系统（`EventSubsystem` / `SkillSubsystem` / `PluginSubsystem` / `MessagingSubsystem`）+ `build()` 拆分属于 P3 长期工作，跟随同一模式逐 PR 完成。
 
@@ -194,7 +198,9 @@ fn kill_process(...) {
 
 **✅ 部分修复 (2026-06-16)**:
 
-- **RuntimeLifecycle 单元测试落地**：`kernel/gateway/src/runtime/agent_runtime.rs` 新增 9 个 `RuntimeLifecycle` 状态机测试，覆盖初始状态、phase 往返、`mark_ready`、启动门控（New→Starting、幂等、Ready 可重入、Shutdown 拒绝）、关闭门控（New→ShuttingDown、幂等、`mark_shutdown`、通知等待者）。这些测试不依赖完整 `AgentRuntime` 构造，直接验证 P0-2 提取出的生命周期子系统。
+- **Agenverse（原 RuntimeLifecycle）单元测试落地**：`kernel/gateway/src/runtime/agent_runtime.rs` 新增 9 个 `Agenverse` 状态机测试，覆盖初始状态、phase 往返、`mark_ready`、启动门控（New→Starting、幂等、Ready 可重入、Shutdown 拒绝）、关闭门控（New→ShuttingDown、幂等、`mark_shutdown`、通知等待者）。这些测试不依赖完整 `AgentRuntime` 构造，直接验证提取出的生命周期子系统。
+  > **演进 (2026-06-29)**: 类型已重命名为 `Agenverse`，移至 `agenverse.rs`。测试导入已更新。
+  > 额外测试了 `Arc<Agenverse>` 包装的 `build()` 集成。
 - **HTTP helper 单元测试落地**：`kernel/gateway/src/runtime/http.rs` 新增 10 个纯本地单元测试，覆盖 `parse_bearer`、`operator_from_headers`、`require_confirmation`、`guard_confirmation`、`with_audit` 五个 helper。验证 token 提取、operator header 修剪、确认头匹配规则、缺确认头时的冲突短路与审计记录、成功/失败结果的审计记录与状态码映射。
 - **Agent harness 单元测试落地**：`kernel/gateway/src/runtime/agent_harness.rs` 新增 11 个纯本地单元测试，覆盖 `process_remember_commands`（单/多标记、未闭合、空/短内容）、`sanitize_api_keys`（apiKey/Bearer 上下文脱敏、非 API 上下文保留）、`build_continuation_context`（空历史、用户/助手对话摘要、工具结果中的 COLLISION FOUND、结构化 tool_calls 计数）。
 - 更新覆盖率表：`agent_runtime.rs` 从 1 个测试 → 10 个；`http.rs` 从 0 个 → 10 个；`agent_harness.rs` 从 0 个 → 11 个。

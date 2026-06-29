@@ -92,7 +92,7 @@ Workspace with ~40 crates:
 | `secret` | `kernel/secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
 | `config` | `kernel/config` | 4-layer config loader, validation |
 | `context-manager` | `kernel/context-manager` | Token budgeting, context compression/rotation (LLM-specific) |
-| `gateway` | `kernel/gateway` | Agent gateway daemon — binary name `aman` |
+| `gateway` | `kernel/gateway` | Agent gateway daemon — binary name `aman`. Built around `Agenverse` (agents universe), the top-level container that owns lifecycle, HTTP server, and `AgentRuntime`.
 | `cli` | `kernel/cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
 | `sdk` | `kernel/sdk` | Pub re-export crate for external devs |
 | `skm-core-patched` | `kernel/skm-core-patched` | Patched fork of skill-manager core (Tantivy index fixes) |
@@ -172,7 +172,7 @@ live under `predefined/skills/startup/`.
 - All config validation in `config::AgentConfig::validate()`
 - Events flow: Source → EventBus → Dispatcher → Pipeline/Skill → Workflow
 - **Cognitive flow**: EventBus → Observation → CognitiveEngine::process() → Decision → EventBus
-- Runtime lifecycle: Phase 0→5 (startup), Phase 5→0 (shutdown)
+- Agenverse lifecycle: Phase 0→5 (startup), Phase 5→0 (shutdown). Agenverse is the top-level container created first in `main.rs`; `AgentRuntime` is stored in it via `OnceLock`. Shutdown is orchestrated by `Agenverse::shutdown()` (publish event → acquire gate → runtime phases → server stop). TUI polls `agenverse.shutdown_requested()` directly.
 - Error recovery in workflows: ERROR → RETRY event → last_active_state
 - Backpressure: L1(~81%)→L2(~90%)→L3(~96%)→L4A(~98%/overflow)→L4B→Critical(100%)
 - API auth: Bearer token, x-aman-operator, x-aman-confirm for destructive ops
@@ -196,6 +196,32 @@ live under `predefined/skills/startup/`.
   AWS keys (`AKIA...`), JWTs (`eyJ...`), Bearer tokens, `key=value` secrets,
   JSON field secrets, and env-var-style tokens.
 - Tests in the same file serve as the canonical list of what gets redacted.
+
+## Agenverse Architecture
+
+`Agenverse` (`kernel/gateway/src/runtime/agenverse.rs`) is the top-level container
+that represents the "agents universe" — the world that exists independently of any
+individual agent. Created first in `main.rs` via `Arc::new(Agenverse::new(...))`.
+
+```
+Agenverse {
+    phase, status, shutdown_requested, shutdown_notify,     ← lifecycle state machine
+    runtime: OnceLock<Arc<AgentRuntime>>,                   ← set after build
+    server: Mutex<Option<HttpServerHandle>>,                ← set after serve
+}
+```
+
+Key methods:
+- `shutdown()` — full graceful shutdown orchestration (publish event → acquire gate → runtime phases → server stop). Idempotent.
+- `shutdown_requested()` — polled by TUI to detect external shutdown (e.g. desktop app)
+- `runtime()` / `set_runtime()` — access/store the built `AgentRuntime`
+- `set_server_handle()` — store HTTP server handle for shutdown
+- `agent_count()` — number of agents currently alive in the agenverse
+
+The agenverse can run with zero agents — `build()` and `start()` succeed on
+an empty `agents: {}` config. Agent lifecycle events (`agent:registered`,
+`agent:removed`, `agent:reloaded`, `agent:status_changed`) flow through the
+event bus owned by the agenverse.
 
 ## Cognitive Engine Architecture
 

@@ -126,6 +126,8 @@
   let initialLoadDone = $state(false);
   let shuttingDown = $state(false);
   let shutdownComplete = $state(false);
+  let busyAgents: Array<{ agent_id: string; display_name: string; system_state: string; active_session_id?: string }> = $state([]);
+  let showBusyAgentDialog = $state(false);
 
   function toggleGroup(name: string) {
     expandedGroups[name] = !expandedGroups[name];
@@ -202,6 +204,42 @@
     chatPrefill = text;
     chatPrefillSeq++;
     navigateTo("chat");
+  }
+
+  // ── Shutdown busy-agent confirmation ──────────────────────────
+
+  /** User confirmed shutdown despite busy agents. */
+  async function confirmShutdownWithBusyAgents() {
+    showBusyAgentDialog = false;
+    try {
+      await invoke("respond_shutdown", { confirmed: true });
+    } catch {
+      // If the backend no longer waits, treat as cancelled.
+    }
+  }
+
+  /** User cancelled shutdown to let agents finish. */
+  async function cancelShutdown() {
+    showBusyAgentDialog = false;
+    busyAgents = [];
+    try {
+      await invoke("respond_shutdown", { confirmed: false });
+    } catch {
+      // Backend may have already timed out.
+    }
+  }
+
+  /** Human-readable label for system_state values. */
+  function stateLabel(state: string): string {
+    switch (state) {
+      case "Chatting": return "Chatting";
+      case "Working": return "Working";
+      case "Studying": return "Studying";
+      case "DailyLife": return "Daily life";
+      case "Prize": return "Prize task";
+      case "Waiting": return "Waiting";
+      default: return state || "Active";
+    }
   }
 
   async function refreshActiveAgent() {
@@ -323,9 +361,18 @@
 
     listen("shutdown:started", () => {
       shuttingDown = true;
+      showBusyAgentDialog = false;
     });
     listen("shutdown:complete", () => {
       shutdownComplete = true;
+    });
+    listen("shutdown:busy-agents", (event: { payload: Array<{ agent_id: string; display_name: string; system_state: string; active_session_id?: string }> }) => {
+      busyAgents = event.payload;
+      showBusyAgentDialog = true;
+    });
+    listen("shutdown:cancelled", () => {
+      showBusyAgentDialog = false;
+      busyAgents = [];
     });
     listen("agent:selected", () => {
       refreshActiveAgent();
@@ -458,6 +505,35 @@
   {/key}
 </main>
 
+{#if showBusyAgentDialog}
+  <div class="shutdown-overlay">
+    <div class="busy-agent-dialog">
+      <div class="busy-agent-icon">&#9888;</div>
+      <p class="busy-agent-title">Agents are still active</p>
+      <p class="busy-agent-desc">
+        The following agents are currently busy. Shutting down will interrupt
+        their work and may leave tasks incomplete.
+      </p>
+      <ul class="busy-agent-list">
+        {#each busyAgents as agent}
+          <li class="busy-agent-item">
+            <span class="busy-agent-name">{agent.display_name || agent.agent_id}</span>
+            <span class="busy-agent-state">{stateLabel(agent.system_state)}</span>
+          </li>
+        {/each}
+      </ul>
+      <div class="busy-agent-actions">
+        <button class="busy-agent-btn cancel" onclick={cancelShutdown}>
+          Cancel — let them finish
+        </button>
+        <button class="busy-agent-btn confirm" onclick={confirmShutdownWithBusyAgents}>
+          Shut down anyway
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if shuttingDown}
   <div class="shutdown-overlay">
     <div class="shutdown-card">
@@ -554,5 +630,102 @@
   @keyframes spin {
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
+  }
+
+  /* ── Busy-agent shutdown confirmation dialog ─────────────── */
+
+  .busy-agent-dialog {
+    max-width: 440px;
+    width: 90%;
+    padding: 32px 36px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xl);
+    animation: scaleIn 0.3s ease;
+    text-align: center;
+  }
+
+  .busy-agent-icon {
+    font-size: 36px;
+    margin-bottom: 12px;
+    color: var(--yellow, #f0a020);
+  }
+
+  .busy-agent-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fg);
+    margin-bottom: 8px;
+  }
+
+  .busy-agent-desc {
+    font-size: 13px;
+    color: var(--fg-dim);
+    margin-bottom: 18px;
+    line-height: 1.5;
+  }
+
+  .busy-agent-list {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 22px;
+    text-align: left;
+  }
+
+  .busy-agent-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    margin-bottom: 4px;
+    background: var(--bg-subtle, rgba(255,255,255,0.03));
+    border-radius: var(--radius-sm, 6px);
+    font-size: 13px;
+  }
+
+  .busy-agent-name {
+    font-weight: 500;
+    color: var(--fg);
+  }
+
+  .busy-agent-state {
+    font-size: 11px;
+    color: var(--fg-dim);
+    background: var(--bg-raised, rgba(255,255,255,0.06));
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  .busy-agent-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+  }
+
+  .busy-agent-btn {
+    padding: 9px 20px;
+    border-radius: var(--radius-md, 8px);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: opacity 0.15s ease;
+  }
+
+  .busy-agent-btn:hover {
+    opacity: 0.85;
+  }
+
+  .busy-agent-btn.cancel {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--fg-dim);
+  }
+
+  .busy-agent-btn.confirm {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
   }
 </style>

@@ -20,13 +20,19 @@ use i18n::Translator;
 use state::AppState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tokio::sync::oneshot;
 
 /// Guard to prevent re-entrant `CloseRequested` from `window.close()` after
 /// the gateway shutdown sequence has already started.
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Channel used to wait for the frontend's shutdown confirmation when
+/// busy agents are detected during window close.
+static SHUTDOWN_CONFIRM_TX: Mutex<Option<oneshot::Sender<bool>>> = Mutex::new(None);
 
 /// Build and run the Tauri application.
 ///
@@ -82,6 +88,78 @@ pub fn run() {
                     let guard = shutdown_gp.lock().await;
                     guard.is_some()
                 });
+
+                // ── Check for busy agents before shutting down ──────────
+                // Query the gateway for agent statuses. If any agents are
+                // currently processing (Busy), ask the frontend to confirm.
+                let busy_agents: Vec<serde_json::Value> = rt.block_on(async {
+                    let guard = shutdown_gc.lock().await;
+                    if let Some(ref client) = *guard {
+                        match client.list_agents().await {
+                            Ok(v) => v
+                                .as_array()
+                                .map(|a| {
+                                    a.iter()
+                                        .filter(|item| {
+                                            item.get("status")
+                                                .and_then(|s| s.as_str())
+                                                == Some("Busy")
+                                        })
+                                        .cloned()
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    }
+                });
+
+                if !busy_agents.is_empty() {
+                    // Alert the frontend and wait for user confirmation.
+                    tracing::info!(
+                        count = busy_agents.len(),
+                        agents = ?busy_agents.iter().map(|a| a.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?")).collect::<Vec<_>>(),
+                        "busy agents detected during shutdown — awaiting user confirmation"
+                    );
+                    api.prevent_close();
+
+                    // Build a lightweight payload for the frontend.
+                    let payload: Vec<serde_json::Value> = busy_agents
+                        .iter()
+                        .map(|a| {
+                            serde_json::json!({
+                                "agent_id": a.get("agent_id").and_then(|v| v.as_str()).unwrap_or(""),
+                                "display_name": a.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
+                                "system_state": a.get("system_state").and_then(|v| v.as_str()).unwrap_or(""),
+                                "active_session_id": a.get("active_session_id").and_then(|v| v.as_str()),
+                            })
+                        })
+                        .collect();
+                    let _ = window.emit("shutdown:busy-agents", &payload);
+
+                    // Wait for the frontend to respond (confirm / cancel).
+                    let (tx, rx) = oneshot::channel::<bool>();
+                    {
+                        let mut guard = SHUTDOWN_CONFIRM_TX
+                            .lock()
+                            .expect("SHUTDOWN_CONFIRM_TX lock");
+                        *guard = Some(tx);
+                    }
+                    let confirmed = rt.block_on(async {
+                        rx.await.unwrap_or(false)
+                    });
+                    if !confirmed {
+                        // User cancelled — release the close guard and allow
+                        // the window to stay open.
+                        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+                        // Tell the frontend to resume normal state.
+                        let _ = window.emit("shutdown:cancelled", ());
+                        return;
+                    }
+                    // User confirmed — fall through to shutdown.
+                }
 
                 // Show the shutdown animation immediately, then perform the
                 // actual shutdown work in the background so the user sees
@@ -141,6 +219,7 @@ pub fn run() {
             commands::get_runtime_config,
             commands::start_runtime,
             commands::stop_runtime,
+            commands::respond_shutdown,
             commands::get_gateway_port,
             commands::get_metrics,
             commands::list_skills,

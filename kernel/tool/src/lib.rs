@@ -38,15 +38,92 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
+/// Registry of running child process PIDs, used during gateway shutdown
+/// to kill orphaned subprocesses that were spawned by tool execution.
+///
+/// Processes are registered by PID after spawn and unregistered when they
+/// exit normally or are killed by a timeout. During shutdown,
+/// [`kill_all`] sends SIGKILL (Unix) or `taskkill /F` (Windows) to every
+/// still-registered PID.
+#[derive(Default)]
+pub struct ChildProcessRegistry {
+    pids: std::sync::Mutex<Vec<u32>>,
+}
+
+impl ChildProcessRegistry {
+    /// Register a child process PID for shutdown cleanup.
+    pub fn register(&self, pid: u32) {
+        self.pids.lock().expect("child registry lock").push(pid);
+    }
+
+    /// Remove a PID that has exited normally (or was killed by timeout).
+    pub fn unregister(&self, pid: u32) {
+        let mut pids = self.pids.lock().expect("child registry lock");
+        pids.retain(|&p| p != pid);
+    }
+
+    /// Kill every registered child process.
+    ///
+    /// Sends SIGKILL on Unix, `taskkill /F` on Windows. Each kill is
+    /// best-effort — failures are silently ignored because the process
+    /// may have already exited.
+    pub fn kill_all(&self) {
+        let mut pids = self.pids.lock().expect("child registry lock");
+        for &pid in pids.iter() {
+            #[cfg(unix)]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .arg("/F")
+                    .arg("/PID")
+                    .arg(pid.to_string())
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+        }
+        pids.clear();
+    }
+
+    /// Number of currently registered child processes.
+    #[allow(dead_code)]
+    fn len(&self) -> usize {
+        self.pids.lock().expect("child registry lock").len()
+    }
+}
+
+impl std::fmt::Debug for ChildProcessRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.pids.lock().expect("child registry lock").len();
+        f.debug_struct("ChildProcessRegistry")
+            .field("pids", &count)
+            .finish()
+    }
+}
+
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
+    /// Shared child-process registry used by exec/sandbox tools to
+    /// register spawned subprocesses for shutdown cleanup.
+    children: Arc<ChildProcessRegistry>,
 }
 
 impl std::fmt::Debug for ToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolRegistry")
             .field("tools", &self.list_tools())
+            .field("children", &self.children)
             .finish()
     }
 }
@@ -54,7 +131,24 @@ impl std::fmt::Debug for ToolRegistry {
 impl ToolRegistry {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            tools: RwLock::default(),
+            children: Arc::new(ChildProcessRegistry::default()),
+        }
+    }
+
+    /// Return a clone of the shared [`ChildProcessRegistry`] so that tools
+    /// can register / unregister spawned subprocesses.
+    #[must_use]
+    pub fn child_process_registry(&self) -> Arc<ChildProcessRegistry> {
+        Arc::clone(&self.children)
+    }
+
+    /// Kill all child processes registered by tools.
+    ///
+    /// Called during gateway shutdown to clean up orphaned subprocesses.
+    pub fn kill_all_children(&self) {
+        self.children.kill_all();
     }
 
     pub fn register(&self, tool: Arc<dyn Tool>) -> AmanResult<()> {
@@ -127,6 +221,10 @@ pub struct SandboxConfig {
     pub allowed_paths: Vec<PathBuf>,
     pub network_allowed: bool,
     pub max_memory_bytes: u64,
+    /// Optional registry for shutdown-time subprocess cleanup.
+    /// When set, spawned children are registered so they can be killed
+    /// during gateway shutdown if they haven't exited yet.
+    pub child_registry: Option<Arc<ChildProcessRegistry>>,
 }
 
 impl Default for SandboxConfig {
@@ -135,6 +233,7 @@ impl Default for SandboxConfig {
             allowed_paths: Vec::new(),
             network_allowed: false,
             max_memory_bytes: 256 * 1024 * 1024,
+            child_registry: None,
         }
     }
 }
@@ -432,7 +531,9 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     registry.register(Arc::new(fs_tools::FindTool))?;
     registry.register(Arc::new(fs_tools::GrepTool))?;
     registry.register(Arc::new(HttpTool))?;
-    registry.register(Arc::new(ExecTool))?;
+    registry.register(Arc::new(ExecTool {
+        child_registry: Some(registry.child_process_registry()),
+    }))?;
     registry.register(Arc::new(DbTool))?;
     registry.register(Arc::new(WebSearchTool))?;
     registry.register(Arc::new(WebFetchTool))?;
@@ -628,15 +729,22 @@ impl SubprocessSandbox {
             message: format!("failed to spawn command: {error}"),
         })?;
 
+        let pid = child.id();
+        // Register for shutdown cleanup so the gateway can kill this
+        // subprocess if it is still running when the gateway exits.
+        if let Some(ref reg) = self.config.child_registry {
+            reg.register(pid);
+        }
+
         let started = Instant::now();
-        loop {
+        let result = loop {
             if let Some(status) = child.try_wait().map_err(|error| Error::Unrecoverable {
                 message: format!("failed to poll command status: {error}"),
             })? {
                 let output = child.wait_with_output().map_err(|error| Error::Unrecoverable {
                     message: format!("failed to read command output: {error}"),
                 })?;
-                return Ok(SandboxExecutionResult {
+                break Ok(SandboxExecutionResult {
                     status: status.code(),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -648,7 +756,7 @@ impl SubprocessSandbox {
                 let output = child.wait_with_output().map_err(|error| Error::Unrecoverable {
                     message: format!("failed to collect timed out command output: {error}"),
                 })?;
-                return Ok(SandboxExecutionResult {
+                break Ok(SandboxExecutionResult {
                     status: None,
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                     stderr: String::from_utf8_lossy(&output.stderr).to_string(),
@@ -656,7 +764,13 @@ impl SubprocessSandbox {
                 });
             }
             std::thread::sleep(Duration::from_millis(5));
+        };
+
+        // Unregister — process has exited (or been killed by timeout).
+        if let Some(ref reg) = self.config.child_registry {
+            reg.unregister(pid);
         }
+        result
     }
 }
 
@@ -755,7 +869,9 @@ fn shell_split(input: &str) -> Vec<String> {
     words
 }
 
-struct ExecTool;
+struct ExecTool {
+    child_registry: Option<Arc<ChildProcessRegistry>>,
+}
 
 /// Background monitor for a detached child process.
 ///
@@ -763,6 +879,7 @@ struct ExecTool;
 /// publishes a final `tool:completed` or `tool:failed` event when the process
 /// exits. The calling thread blocks until the child exits — call this from a
 /// dedicated `std::thread` so the tool response can return immediately.
+#[allow(clippy::too_many_arguments)]
 fn monitor_detached_process(
     mut child: std::process::Child,
     stdout: Option<std::process::ChildStdout>,
@@ -771,6 +888,7 @@ fn monitor_detached_process(
     pid: u32,
     tool_name: String,
     runtime: tokio::runtime::Handle,
+    child_registry: Option<Arc<ChildProcessRegistry>>,
 ) {
     // ── Reader threads ───────────────────────────────────────────────
     let (line_tx, line_rx) = mpsc::channel::<DetachedLine>();
@@ -851,6 +969,10 @@ fn monitor_detached_process(
                 }),
             ))) {
                 tracing::warn!(error = %e, "event bus publish failed; event dropped");
+            }
+            // Process exited normally — remove from shutdown kill list.
+            if let Some(ref reg) = child_registry {
+                reg.unregister(pid);
             }
             return;
         }
@@ -1011,6 +1133,12 @@ impl Tool for ExecTool {
             })?;
             let pid = child.id();
 
+            // Register for shutdown cleanup before moving the child into
+            // the background monitor thread.
+            if let Some(ref reg) = self.child_registry {
+                reg.register(pid);
+            }
+
             // If an event bus is available, spawn a background monitor so the
             // agent receives progress and completion events. Otherwise the
             // child runs fully detached (fire-and-forget).
@@ -1018,20 +1146,27 @@ impl Tool for ExecTool {
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
                 let tool_name = self.name().to_owned();
+                let child_reg = self.child_registry.clone();
 
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     std::thread::spawn(move || {
                         monitor_detached_process(
-                            child, stdout, stderr, bus, pid, tool_name, handle,
+                            child, stdout, stderr, bus, pid, tool_name, handle, child_reg,
                         );
                     });
                 } else {
                     // No tokio runtime on this thread — process runs detached
                     // without progress reporting (still returns PID).
+                    // Unregister since we can't monitor it.
+                    if let Some(ref reg) = self.child_registry {
+                        reg.unregister(pid);
+                    }
                     drop(child);
                 }
             } else {
                 // Fully detached: no event bus, no monitoring.
+                // The process is truly fire-and-forget — keep it registered
+                // so shutdown can still kill it.
                 drop(child);
             }
 
@@ -1047,6 +1182,7 @@ impl Tool for ExecTool {
             allowed_paths: Vec::new(),
             network_allowed: false,
             max_memory_bytes: 256 * 1024 * 1024,
+            child_registry: self.child_registry.clone(),
         });
         let outcome = sandbox.execute_command(&command, &args, cwd.as_deref(), timeout_ms)?;
         if outcome.timed_out {

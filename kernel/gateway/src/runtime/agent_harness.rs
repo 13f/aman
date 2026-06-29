@@ -139,6 +139,8 @@ pub struct AgentHarness {
     session_history: Box<dyn SessionHistoryStore>,
     /// Per-session interrupt flags for external stop (M6).
     active_interrupts: RwLock<HashMap<String, Arc<InterruptFlag>>>,
+    /// Per-session task abort handles for shutdown force-cancel (M6).
+    active_tasks: RwLock<HashMap<String, tokio::task::AbortHandle>>,
     /// Default max ReAct turns.
     max_react_turns: u32,
     /// Pluggable token budget policy.
@@ -177,6 +179,7 @@ impl AgentHarness {
             bus,
             session_history,
             active_interrupts: RwLock::new(HashMap::new()),
+            active_tasks: RwLock::new(HashMap::new()),
             max_react_turns: DEFAULT_MAX_REACT_TURNS,
             budget_policy,
             agent_router,
@@ -419,6 +422,51 @@ impl AgentHarness {
         }
     }
 
+    /// Remove a completed task handle from the active-tasks map.
+    fn remove_task(&self, session_id: &str) {
+        self.active_tasks
+            .write()
+            .expect("active_tasks lock")
+            .remove(session_id);
+    }
+
+    /// Interrupt every currently active session.
+    ///
+    /// Called during gateway shutdown to signal all in-flight ReAct loops
+    /// that they should finish at their next check-point.
+    pub fn interrupt_all_sessions(&self) {
+        let interrupts = self
+            .active_interrupts
+            .read()
+            .expect("interrupt lock");
+        for flag in interrupts.values() {
+            flag.interrupt();
+        }
+        tracing::info!(
+            count = interrupts.len(),
+            "interrupted all active agent sessions for shutdown"
+        );
+    }
+
+    /// Abort every tracked task handle (best-effort force cancel).
+    ///
+    /// Called after the grace period in shutdown, when agents haven't
+    /// responded to the interrupt signal in time.
+    pub fn abort_all_tasks(&self) {
+        let mut tasks = self
+            .active_tasks
+            .write()
+            .expect("active_tasks lock");
+        let count = tasks.len();
+        for (sid, handle) in tasks.drain() {
+            handle.abort();
+            tracing::warn!(%sid, "aborted lingering agent task during shutdown");
+        }
+        if count > 0 {
+            tracing::info!(count, "aborted all lingering agent tasks");
+        }
+    }
+
     /// Rebuild session history from persisted JSONL events — **replay path**.
     ///
     /// This is the **replay** (恢复) operation, distinct from **continue** (继续):
@@ -564,7 +612,10 @@ impl AgentHarness {
         continuation_mode: ContinuationMode,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
-        self.runtime.spawn(async move {
+        // Clone session_id before moving into the async closure —
+        // we need the original to insert into active_tasks below.
+        let sid = session_id.clone();
+        let handle = self.runtime.spawn(async move {
             if let Err(e) = harness
                 .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot.clone(), skill_name.as_deref(), react_mode, background, continuation_mode)
                 .await
@@ -581,7 +632,15 @@ impl AgentHarness {
                 let _ = harness.registry.set_activity(&agent_id, "").await;
                 harness.session_history.clear(&session_id);
             }
-        })
+            // Remove the task handle — the session is done (success or error).
+            harness.remove_task(&session_id);
+        });
+        // Save the abort handle so shutdown can force-cancel lingering tasks.
+        self.active_tasks
+            .write()
+            .expect("active_tasks lock")
+            .insert(sid, handle.abort_handle());
+        handle
     }
 
     /// Spawn an anonymous, ephemeral agent that runs a single task and

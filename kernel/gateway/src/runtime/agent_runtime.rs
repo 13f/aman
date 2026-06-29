@@ -5170,7 +5170,50 @@ impl AgentRuntime {
 
         match phase {
             RuntimePhase::Phase5 => {
-                // Stop SSE background tasks first — they hold Arc<AgentRuntime>
+                // ── Interrupt all active agent sessions ──────────────────
+                // Signal every in-flight ReAct loop to stop at its next
+                // check-point. Most sessions will finish within a few seconds
+                // once the LLM call or tool execution completes.
+                self.agent_harness.interrupt_all_sessions();
+
+                // Wait for agents to drain naturally (grace period).
+                // We poll every 200 ms and stop as soon as every agent is
+                // Idle, or give up after the configured drain timeout.
+                let grace = Duration::from_secs(
+                    self.config
+                        .runtime
+                        .drain_timeout_sec
+                        .clamp(3, 10),
+                );
+                let deadline = tokio::time::Instant::now() + grace;
+                loop {
+                    let busy = self
+                        .agent_registry
+                        .list()
+                        .await
+                        .iter()
+                        .any(|a| a.status == kernel::agent::AgentStatus::Busy);
+                    if !busy {
+                        tracing::info!("all agents idle — proceeding with shutdown");
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        tracing::warn!(
+                            "agents did not become idle within {:?} — forcing abort",
+                            grace
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+
+                // Force-cancel any task that didn't respond to the interrupt.
+                self.agent_harness.abort_all_tasks();
+
+                // Kill every tool-spawned child process that is still running.
+                self.tools.kill_all_children();
+
+                // Stop SSE background tasks — they hold Arc<AgentRuntime>
                 // refs and their never-ending loops would prevent Tokio's
                 // multi-threaded Runtime::drop() from ever returning.
                 self.sse_broadcast.stop_background_tasks().await;

@@ -287,6 +287,26 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
     }
 }
 
+/// Frontend response to the shutdown busy-agent confirmation dialog.
+///
+/// Called by the frontend after the user confirms or cancels the
+/// "agents are still busy" prompt shown during window close.
+#[tauri::command]
+pub fn respond_shutdown(confirmed: bool) -> Result<(), String> {
+    let tx = {
+        let mut guard = crate::SHUTDOWN_CONFIRM_TX
+            .lock()
+            .map_err(|e| format!("lock: {e}"))?;
+        guard.take()
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(confirmed);
+        Ok(())
+    } else {
+        Err("no pending shutdown confirmation".to_owned())
+    }
+}
+
 #[tauri::command]
 pub async fn get_gateway_port() -> Result<u16, String> {
     let cfg = config::AmanConfig::from_default_path()

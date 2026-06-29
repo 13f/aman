@@ -7,6 +7,7 @@
 mod agent_harness;
 mod agent_registry;
 mod agent_runtime;
+mod agenverse;
 mod analytics_handler;
 mod date_util;
 mod orchestrator;
@@ -40,9 +41,9 @@ mod emotion_evaluator;
 pub use agent_registry::AgentRegistry;
 pub use date_util::current_date_string;
 pub use agent_runtime::{
-    AgentRuntime, AgentRuntimeBuilder, PendingApprovalInfo, RuntimeLifecycle, RuntimePhase,
-    RuntimeStatus,
+    AgentRuntime, AgentRuntimeBuilder, PendingApprovalInfo,
 };
+pub use agenverse::{Agenverse, RuntimePhase, RuntimeStatus};
 pub use audit::{AuditLogger, AuditRecord};
 pub use event_store::EventStore;
 pub use http::{serve, HttpServerConfig, HttpServerHandle};

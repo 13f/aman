@@ -42,7 +42,7 @@ use source::{CronJobConfig, CronSource, CronStore, SourceMode, SourceRegistry, T
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
@@ -50,6 +50,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use super::{AuditLogger, EventStore};
+use super::agenverse::{Agenverse, RuntimePhase, RuntimeStatus};
 use super::SoulRuntime;
 use soul::SoulHotReloadManager;
 use tracing::instrument;
@@ -85,36 +86,11 @@ pub struct PendingApprovalInfo {
     pub capabilities: CapabilitySet,
 }
 
-// ---------------------------------------------------------------------------
-// Runtime lifecycle
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimePhase {
-    Phase0 = 0,
-    Phase05 = 1,
-    Phase1 = 2,
-    Phase2 = 3,
-    Phase3 = 4,
-    Phase4 = 5,
-    Phase5 = 6,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeStatus {
-    New,
-    Starting,
-    Ready,
-    ShuttingDown,
-    Shutdown,
-}
-
 pub struct AgentRuntimeBuilder {
     config: AgentConfig,
     runtime_dir: PathBuf,
     bind_addr: SocketAddr,
     api_token: Option<String>,
-    startup_pause: Duration,
     soul_file: Option<PathBuf>,
     extra_plugins: Vec<plugin::PluginCandidate>,
     predefined_dir: PathBuf,
@@ -129,7 +105,6 @@ impl AgentRuntimeBuilder {
             runtime_dir: default_runtime_dir(),
             bind_addr: "127.0.0.1:9999".parse().expect("socket addr parse"),
             api_token: None,
-            startup_pause: Duration::from_millis(0),
             soul_file: None,
             extra_plugins: vec![],
             predefined_dir: PathBuf::from("predefined"),
@@ -162,12 +137,6 @@ impl AgentRuntimeBuilder {
     }
 
     #[must_use]
-    pub fn with_startup_pause(mut self, pause: Duration) -> Self {
-        self.startup_pause = pause;
-        self
-    }
-
-    #[must_use]
     pub fn with_soul(mut self, soul_file: impl Into<PathBuf>) -> Self {
         self.soul_file = Some(soul_file.into());
         self
@@ -187,7 +156,7 @@ impl AgentRuntimeBuilder {
         self
     }
 
-    pub fn build(self) -> AmanResult<Arc<AgentRuntime>> {
+    pub fn build(self, agenverse: Arc<Agenverse>) -> AmanResult<Arc<AgentRuntime>> {
         super::init_tracing();
         std::fs::create_dir_all(&self.runtime_dir)?;
 
@@ -2197,7 +2166,7 @@ impl AgentRuntimeBuilder {
             soul_thread: Mutex::new(None),
             backpressure_stop: Arc::new(AtomicBool::new(false)),
             backpressure_task: Mutex::new(None),
-            lifecycle: RuntimeLifecycle::new(self.startup_pause),
+            agenverse,
             inflight_pipelines,
             inflight_skills,
             metrics,
@@ -3474,151 +3443,6 @@ impl kernel::plugin::JsonRpcMethodHandler for RuntimeJsonRpcHandler {
     }
 }
 
-/// Lifecycle state for the agent runtime — owns the phase/status/lock
-/// triad that gates `start()` and `shutdown()`.
-///
-/// This is the first extracted subsystem from the `AgentRuntime` god struct
-/// (P0-2 in `docs/code-review-20260614.md`). It intentionally owns only the
-/// state-machine primitives; the per-phase work stays in `AgentRuntime`, which
-/// calls `set_phase()` and the start/shutdown gates here.
-pub struct RuntimeLifecycle {
-    phase: AtomicU8,
-    status: RwLock<RuntimeStatus>,
-    transition_lock: Mutex<()>,
-    shutdown_requested: AtomicBool,
-    shutdown_notify: tokio::sync::Notify,
-    startup_pause: Duration,
-}
-
-impl RuntimeLifecycle {
-    /// Construct a fresh lifecycle in `New` state.
-    pub fn new(startup_pause: Duration) -> Self {
-        Self {
-            phase: AtomicU8::new(RuntimePhase::Phase0 as u8),
-            status: RwLock::new(RuntimeStatus::New),
-            transition_lock: Mutex::new(()),
-            shutdown_requested: AtomicBool::new(false),
-            shutdown_notify: tokio::sync::Notify::new(),
-            startup_pause,
-        }
-    }
-
-    /// Current runtime phase.
-    #[must_use]
-    pub fn phase(&self) -> RuntimePhase {
-        match self.phase.load(Ordering::Acquire) {
-            x if x == RuntimePhase::Phase0 as u8 => RuntimePhase::Phase0,
-            x if x == RuntimePhase::Phase05 as u8 => RuntimePhase::Phase05,
-            x if x == RuntimePhase::Phase1 as u8 => RuntimePhase::Phase1,
-            x if x == RuntimePhase::Phase2 as u8 => RuntimePhase::Phase2,
-            x if x == RuntimePhase::Phase3 as u8 => RuntimePhase::Phase3,
-            x if x == RuntimePhase::Phase4 as u8 => RuntimePhase::Phase4,
-            x if x == RuntimePhase::Phase5 as u8 => RuntimePhase::Phase5,
-            _ => RuntimePhase::Phase0,
-        }
-    }
-
-    /// Set the runtime phase.
-    pub fn set_phase(&self, phase: RuntimePhase) {
-        self.phase.store(phase as u8, Ordering::Release);
-    }
-
-    /// Current runtime status.
-    pub async fn status(&self) -> RuntimeStatus {
-        *self.status.read().await
-    }
-
-    /// Whether the runtime has reached `Ready` and is therefore live.
-    #[must_use]
-    pub fn is_ready(&self) -> bool {
-        self.phase() == RuntimePhase::Phase5
-    }
-
-    /// Whether the runtime is not fully shut down. Returns `true` if the
-    /// status lock is currently held, matching the previous `AgentRuntime`
-    /// behavior.
-    #[must_use]
-    pub fn is_live(&self) -> bool {
-        match self.status.try_read() {
-            Ok(guard) => *guard != RuntimeStatus::Shutdown,
-            Err(_) => true,
-        }
-    }
-
-    /// Configured pause between startup/shutdown phase transitions.
-    #[must_use]
-    pub fn startup_pause(&self) -> Duration {
-        self.startup_pause
-    }
-
-    /// Whether a shutdown has been requested.
-    #[must_use]
-    pub fn shutdown_requested(&self) -> bool {
-        self.shutdown_requested.load(Ordering::Acquire)
-    }
-
-    /// Returns a reference to the shutdown-complete notification channel.
-    #[must_use]
-    pub fn shutdown_notify(&self) -> &tokio::sync::Notify {
-        &self.shutdown_notify
-    }
-
-    /// Notify waiters that shutdown has completed.
-    pub fn notify_shutdown_complete(&self) {
-        self.shutdown_notify.notify_one();
-    }
-
-    /// Wait for the shutdown-complete notification.
-    pub async fn wait_shutdown_complete(&self) {
-        self.shutdown_notify.notified().await;
-    }
-
-    /// Atomic `New → Starting` gate. Returns `Ok(())` if we acquired the
-    /// gate, `Err` if a previous `start()` is in progress, or if the
-    /// runtime is already shutting down / shut down.
-    pub async fn try_acquire_start_gate(&self) -> Result<(), Error> {
-        let _guard = self.transition_lock.lock().await;
-        let current = *self.status.read().await;
-        match current {
-            RuntimeStatus::Ready | RuntimeStatus::Starting => return Ok(()),
-            RuntimeStatus::ShuttingDown | RuntimeStatus::Shutdown => {
-                return Err(Error::InvalidStateTransition {
-                    message: "runtime is shutting down".to_owned(),
-                });
-            }
-            RuntimeStatus::New => {}
-        }
-        self.shutdown_requested.store(false, Ordering::Release);
-        *self.status.write().await = RuntimeStatus::Starting;
-        self.phase.store(RuntimePhase::Phase0 as u8, Ordering::Release);
-        Ok(())
-    }
-
-    /// Atomic `Ready → ShuttingDown` gate. Returns `Ok(())` on success,
-    /// `Err(())` if the runtime is already shut down.
-    pub async fn try_acquire_shutdown_gate(&self) -> Result<(), ()> {
-        self.shutdown_requested.store(true, Ordering::Release);
-        let _guard = self.transition_lock.lock().await;
-        let current = *self.status.read().await;
-        if current == RuntimeStatus::Shutdown {
-            return Err(());
-        }
-        *self.status.write().await = RuntimeStatus::ShuttingDown;
-        Ok(())
-    }
-
-    /// Mark the runtime as fully shut down.
-    pub async fn mark_shutdown(&self) {
-        *self.status.write().await = RuntimeStatus::Shutdown;
-        self.notify_shutdown_complete();
-    }
-
-    /// Mark the runtime as ready after start completes.
-    pub async fn mark_ready(&self) {
-        *self.status.write().await = RuntimeStatus::Ready;
-    }
-}
-
 pub struct AgentRuntime {
     config: AgentConfig,
     runtime_dir: PathBuf,
@@ -3649,7 +3473,7 @@ pub struct AgentRuntime {
     soul_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     backpressure_stop: Arc<AtomicBool>,
     backpressure_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    lifecycle: RuntimeLifecycle,
+    agenverse: Arc<Agenverse>,
     inflight_pipelines: Arc<AtomicUsize>,
     inflight_skills: Arc<AtomicUsize>,
     metrics: super::metrics::MetricsRegistry,
@@ -4050,21 +3874,28 @@ impl AgentRuntime {
 
     #[must_use]
     pub fn phase(&self) -> RuntimePhase {
-        self.lifecycle.phase()
+        self.agenverse.phase()
     }
 
     pub async fn status(&self) -> RuntimeStatus {
-        self.lifecycle.status().await
+        self.agenverse.status().await
     }
 
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.lifecycle.is_ready()
+        self.agenverse.is_ready()
     }
 
     #[must_use]
     pub fn is_live(&self) -> bool {
-        self.lifecycle.is_live()
+        self.agenverse.is_live()
+    }
+
+    /// Whether a shutdown has been requested (e.g. via HTTP from the desktop
+    /// app). The TUI polls this to know when to exit.
+    #[must_use]
+    pub fn shutdown_requested(&self) -> bool {
+        self.agenverse.shutdown_requested()
     }
 
     #[must_use]
@@ -4446,7 +4277,7 @@ impl AgentRuntime {
     /// Callers can `.await` on `notified()` to wait for shutdown completion.
     #[must_use]
     pub fn shutdown_notify(&self) -> &tokio::sync::Notify {
-        self.lifecycle.shutdown_notify()
+        self.agenverse.shutdown_notify()
     }
 
     #[must_use]
@@ -4731,7 +4562,7 @@ impl AgentRuntime {
 
     #[instrument(skip(self))]
     pub async fn start(&self) -> AmanResult<()> {
-        self.lifecycle.try_acquire_start_gate().await?;
+        self.agenverse.try_acquire_start_gate().await?;
         self.ensure_observer_subscribed().await?;
         self.ensure_soul_watching().await?;
         self.ensure_skill_watching().await?;
@@ -4752,7 +4583,7 @@ impl AgentRuntime {
         tracing::info!("runtime start: Phase5");
         self.bump_phase(RuntimePhase::Phase5).await?;
 
-        self.lifecycle.mark_ready().await;
+        self.agenverse.mark_ready().await;
         Ok(())
     }
 
@@ -4958,7 +4789,7 @@ impl AgentRuntime {
 
     #[instrument(skip(self))]
     pub async fn shutdown(&self) -> AmanResult<()> {
-        if self.lifecycle.try_acquire_shutdown_gate().await.is_err() {
+        if self.agenverse.try_acquire_shutdown_gate().await.is_err() {
             return Ok(());
         }
 
@@ -4974,20 +4805,20 @@ impl AgentRuntime {
         self.stop_skill_watching().await;
         self.stop_backpressure_watching().await;
 
-        self.lifecycle.mark_shutdown().await;
+        self.agenverse.mark_shutdown().await;
         Ok(())
     }
 
     async fn bump_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
-        if self.lifecycle.shutdown_requested() && phase != RuntimePhase::Phase0 {
-            self.bump_shutdown_phase(self.lifecycle.phase()).await?;
-            self.lifecycle.mark_shutdown().await;
+        if self.agenverse.shutdown_requested() && phase != RuntimePhase::Phase0 {
+            self.bump_shutdown_phase(self.agenverse.phase()).await?;
+            self.agenverse.mark_shutdown().await;
             return Err(Error::InvalidStateTransition {
                 message: "startup interrupted by shutdown".to_owned(),
             });
         }
 
-        let startup_pause = self.lifecycle.startup_pause();
+        let startup_pause = self.agenverse.startup_pause();
         if !startup_pause.is_zero() {
             tokio::time::sleep(startup_pause).await;
         }
@@ -4995,17 +4826,17 @@ impl AgentRuntime {
         tracing::info!(?phase, "bump_phase enter");
         match phase {
             RuntimePhase::Phase0 => {
-                self.lifecycle.set_phase(RuntimePhase::Phase0);
+                self.agenverse.set_phase(RuntimePhase::Phase0);
             }
             RuntimePhase::Phase05 => {
-                self.lifecycle.set_phase(RuntimePhase::Phase05);
+                self.agenverse.set_phase(RuntimePhase::Phase05);
             }
             RuntimePhase::Phase1 => {
                 if let Some(persistent) = &self.persistent_bus {
                     let _ = persistent.recover_from_wal().await?;
                     let _ = persistent.recover_from_overflow()?;
                 }
-                self.lifecycle.set_phase(RuntimePhase::Phase1);
+                self.agenverse.set_phase(RuntimePhase::Phase1);
             }
             RuntimePhase::Phase2 => {
                 let _ = self.skill_hot_reload.reload_once()?;
@@ -5032,13 +4863,13 @@ impl AgentRuntime {
                     }
                 }
                 tracing::info!("Phase2: store");
-                self.lifecycle.set_phase(RuntimePhase::Phase2);
+                self.agenverse.set_phase(RuntimePhase::Phase2);
             }
             RuntimePhase::Phase3 => {
                 if let Err(e) = self.load_workflows_once() {
                     tracing::warn!(error = %e, "Phase3: failed to load workflows; no workflows available");
                 }
-                self.lifecycle.set_phase(RuntimePhase::Phase3);
+                self.agenverse.set_phase(RuntimePhase::Phase3);
             }
             RuntimePhase::Phase4 => {
                 // Start per-agent idle loops
@@ -5118,17 +4949,17 @@ impl AgentRuntime {
 
                 let snapshots = self.sources.list().await;
                 for source in snapshots {
-                    if self.lifecycle.shutdown_requested() {
+                    if self.agenverse.shutdown_requested() {
                         break;
                     }
                     tracing::info!(id = %source.id, "starting source");
                     self.sources.start(&source.id).await?;
                     tracing::info!(id = %source.id, "source started");
                 }
-                self.lifecycle.set_phase(RuntimePhase::Phase4);
+                self.agenverse.set_phase(RuntimePhase::Phase4);
             }
             RuntimePhase::Phase5 => {
-                self.lifecycle.set_phase(RuntimePhase::Phase5);
+                self.agenverse.set_phase(RuntimePhase::Phase5);
             }
         }
         Ok(())
@@ -5163,7 +4994,7 @@ impl AgentRuntime {
 
     async fn bump_shutdown_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
         tracing::info!(?phase, "bump_shutdown_phase enter");
-        let startup_pause = self.lifecycle.startup_pause();
+        let startup_pause = self.agenverse.startup_pause();
         if !startup_pause.is_zero() {
             tokio::time::sleep(startup_pause).await;
         }
@@ -5217,7 +5048,7 @@ impl AgentRuntime {
                 // refs and their never-ending loops would prevent Tokio's
                 // multi-threaded Runtime::drop() from ever returning.
                 self.sse_broadcast.stop_background_tasks().await;
-                self.lifecycle.set_phase(RuntimePhase::Phase4);
+                self.agenverse.set_phase(RuntimePhase::Phase4);
             }
             RuntimePhase::Phase4 => {
                 // Stop agent idle/work systems before draining the event bus.
@@ -5273,10 +5104,10 @@ impl AgentRuntime {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 tracing::info!("Phase4: event bus drain complete");
-                self.lifecycle.set_phase(RuntimePhase::Phase3);
+                self.agenverse.set_phase(RuntimePhase::Phase3);
             }
             RuntimePhase::Phase3 => {
-                self.lifecycle.set_phase(RuntimePhase::Phase2);
+                self.agenverse.set_phase(RuntimePhase::Phase2);
             }
             RuntimePhase::Phase2 => {
                 {
@@ -5294,7 +5125,7 @@ impl AgentRuntime {
                 // Clear agent registry during shutdown
                 self.agent_registry.clear().await;
                 tracing::info!("Phase2: plugin unload and agent registry clear complete");
-                self.lifecycle.set_phase(RuntimePhase::Phase1);
+                self.agenverse.set_phase(RuntimePhase::Phase1);
             }
             RuntimePhase::Phase1 => {
                 if let Some(persistent) = &self.persistent_bus {
@@ -5323,13 +5154,13 @@ impl AgentRuntime {
                     }
                 }
                 tracing::info!("Phase1: WAL checkpoint complete");
-                self.lifecycle.set_phase(RuntimePhase::Phase05);
+                self.agenverse.set_phase(RuntimePhase::Phase05);
             }
             RuntimePhase::Phase05 => {
-                self.lifecycle.set_phase(RuntimePhase::Phase0);
+                self.agenverse.set_phase(RuntimePhase::Phase0);
             }
             RuntimePhase::Phase0 => {
-                self.lifecycle.set_phase(RuntimePhase::Phase0);
+                self.agenverse.set_phase(RuntimePhase::Phase0);
             }
         }
         Ok(())
@@ -5690,7 +5521,7 @@ fn secret_resolver_config(runtime_dir: &Path) -> SecretResolverConfig {
 #[cfg(test)]
 mod tests {
     use super::resolve_secrets_in_config;
-    use super::{RuntimeLifecycle, RuntimePhase, RuntimeStatus};
+    use super::super::{Agenverse, RuntimePhase, RuntimeStatus};
     use config::AgentConfig;
     use std::sync::Arc;
     use std::time::Duration;
@@ -5707,7 +5538,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_initial_state() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         assert_eq!(lc.phase(), RuntimePhase::Phase0);
         assert_eq!(lc.status().await, RuntimeStatus::New);
         assert!(!lc.is_ready());
@@ -5718,7 +5549,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_set_phase_roundtrip() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         for phase in [
             RuntimePhase::Phase0,
             RuntimePhase::Phase05,
@@ -5735,7 +5566,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_mark_ready() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         lc.set_phase(RuntimePhase::Phase5);
         lc.mark_ready().await;
         assert_eq!(lc.status().await, RuntimeStatus::Ready);
@@ -5745,7 +5576,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_start_gate_from_new() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         assert!(lc.try_acquire_start_gate().await.is_ok());
         assert_eq!(lc.status().await, RuntimeStatus::Starting);
         assert_eq!(lc.phase(), RuntimePhase::Phase0);
@@ -5754,7 +5585,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_start_gate_idempotent() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         assert!(lc.try_acquire_start_gate().await.is_ok());
         assert!(lc.try_acquire_start_gate().await.is_ok());
         assert_eq!(lc.status().await, RuntimeStatus::Starting);
@@ -5766,14 +5597,14 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_start_gate_rejected_after_shutdown_request() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         lc.try_acquire_shutdown_gate().await.expect("shutdown gate");
         assert!(lc.try_acquire_start_gate().await.is_err());
     }
 
     #[tokio::test]
     async fn lifecycle_shutdown_gate_and_mark_shutdown() {
-        let lc = RuntimeLifecycle::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0));
         assert!(lc.try_acquire_shutdown_gate().await.is_ok());
         assert!(lc.shutdown_requested());
         assert_eq!(lc.status().await, RuntimeStatus::ShuttingDown);
@@ -5790,7 +5621,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_shutdown_notifies_waiters() {
-        let lc = Arc::new(RuntimeLifecycle::new(Duration::from_millis(0)));
+        let lc = Arc::new(Agenverse::new(Duration::from_millis(0)));
         let lc2 = Arc::clone(&lc);
         let waiter = tokio::spawn(async move { lc2.wait_shutdown_complete().await });
 
@@ -5804,7 +5635,9 @@ mod tests {
 #[cfg(test)]
 mod build_tests {
     use super::AgentRuntimeBuilder;
+    use super::super::Agenverse;
     use config::AgentConfig;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     /// Smoke test: verify that AgentRuntime::build() accepts the default
@@ -5818,11 +5651,12 @@ mod build_tests {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _enter = rt.enter();
         let tmp = TempDir::new().expect("temp dir");
+        let agenverse = Arc::new(Agenverse::new(std::time::Duration::from_millis(0)));
         let result = AgentRuntimeBuilder::new(AgentConfig::default())
             .with_runtime_dir(tmp.path().to_path_buf())
             .with_predefined_dir("predefined")
             .with_runtime_handle(rt.handle().clone())
-            .build();
+            .build(Arc::clone(&agenverse));
 
         assert!(
             result.is_ok(),

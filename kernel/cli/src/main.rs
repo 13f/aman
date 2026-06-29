@@ -6,7 +6,8 @@
 mod grpc_client;
 
 use config::{ConfigLoader, AgentConfig};
-use gateway::runtime::{serve, serve_stdio, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, serve_stdio, AgentRuntimeBuilder, Agenverse, HttpServerConfig};
+use std::sync::Arc;
 use gateway::ai_signal::AmanSignalV1;
 use grpc_client::GrpcClient;
 use kernel::{safe_eprintln, safe_println};
@@ -172,7 +173,9 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }
-    let runtime = builder.build().map_err(|_| 1)?;
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let runtime = builder.build(Arc::clone(&agenverse)).map_err(|_| 1)?;
+    agenverse.set_runtime(Arc::clone(&runtime));
 
     let server = serve(
         runtime.clone(),
@@ -232,7 +235,9 @@ async fn serve_cmd(args: &[String]) -> Result<(), i32> {
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }
-    let runtime = builder.build().map_err(|_| 1)?;
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let runtime = builder.build(Arc::clone(&agenverse)).map_err(|_| 1)?;
+    agenverse.set_runtime(Arc::clone(&runtime));
 
     serve_stdio(runtime)
         .await

@@ -25,7 +25,7 @@ use ratatui::{DefaultTerminal, Frame};
 use tracing::Level;
 use tracing_subscriber::Layer;
 
-use crate::runtime::AgentRuntime;
+use crate::runtime::Agenverse;
 use i18n::Translator;
 use kernel::AmanResult;
 
@@ -142,7 +142,7 @@ struct PendingItem {
 
 struct TuiState {
     log_buffer: Arc<LogBuffer>,
-    runtime: Arc<AgentRuntime>,
+    agenverse: Arc<Agenverse>,
     /// Translator for i18n.
     translator: Translator,
     /// Log lines captured since last render.
@@ -160,12 +160,12 @@ struct TuiState {
 }
 
 impl TuiState {
-    fn new(log_buffer: Arc<LogBuffer>, runtime: Arc<AgentRuntime>) -> Self {
-        let locale = runtime.locale();
+    fn new(log_buffer: Arc<LogBuffer>, agenverse: Arc<Agenverse>) -> Self {
+        let locale = agenverse.runtime().locale();
         let translator = Translator::new(locale);
         Self {
             log_buffer,
-            runtime,
+            agenverse,
             translator,
             log_lines: Vec::new(),
             pending: Vec::new(),
@@ -183,7 +183,7 @@ impl TuiState {
 
     /// Pull fresh pending approvals from the runtime.
     fn refresh_pending(&mut self) {
-        let list = pollster::block_on(self.runtime.pending_plugin_approvals_list());
+        let list = pollster::block_on(self.agenverse.runtime().pending_plugin_approvals_list());
         self.pending = list
             .into_iter()
             .map(|p| PendingItem {
@@ -230,7 +230,7 @@ impl TuiState {
             message: err_msg.clone(),
         })?;
         let item = &self.pending[idx];
-        self.runtime.resolve_plugin_approval_sync(&item.plugin_name, true)?;
+        self.agenverse.runtime().resolve_plugin_approval_sync(&item.plugin_name, true)?;
         self.refresh_pending();
         Ok(())
     }
@@ -242,7 +242,7 @@ impl TuiState {
             message: err_msg.clone(),
         })?;
         let item = &self.pending[idx];
-        self.runtime.resolve_plugin_approval_sync(&item.plugin_name, false)?;
+        self.agenverse.runtime().resolve_plugin_approval_sync(&item.plugin_name, false)?;
         self.refresh_pending();
         Ok(())
     }
@@ -511,7 +511,7 @@ fn level_color(level: Level) -> Color {
 /// `runtime` must already be built and started (server running in background).
 pub fn run_tui(
     log_buffer: Arc<LogBuffer>,
-    runtime: Arc<AgentRuntime>,
+    agenverse: Arc<Agenverse>,
 ) -> io::Result<()> {
     // Set up the terminal.
     let mut stdout = stdout();
@@ -521,7 +521,7 @@ pub fn run_tui(
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let mut state = TuiState::new(log_buffer, runtime);
+    let mut state = TuiState::new(log_buffer, agenverse);
     state.refresh_logs();
     state.refresh_pending();
 
@@ -540,6 +540,13 @@ fn event_loop(terminal: &mut DefaultTerminal, state: &mut TuiState) -> io::Resul
     let pending_refresh_interval = Duration::from_secs(2);
 
     loop {
+        // If shutdown was requested externally (e.g. desktop app sent
+        // POST /agent/shutdown), exit the TUI so the gateway can shut
+        // down gracefully instead of blocking until Ctrl+Q.
+        if state.agenverse.shutdown_requested() {
+            return Ok(());
+        }
+
         // Draw current frame.
         render(terminal, state)?;
 

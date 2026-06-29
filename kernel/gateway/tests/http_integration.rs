@@ -9,14 +9,16 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// A test harness that owns a tokio runtime, AgentRuntime, and temp dir.
 ///
 /// Fields are ordered so that drop happens in the correct sequence:
-/// server handle → runtime → temp dir → tokio runtime.
+/// server handle → runtime → agenverse → temp dir → tokio runtime.
 struct GatewayTestHarness {
     server_handle: Option<gateway::runtime::HttpServerHandle>,
     runtime: Arc<gateway::runtime::AgentRuntime>,
+    _agenverse: Arc<gateway::runtime::Agenverse>,
     _tmp: tempfile::TempDir,
     rt: tokio::runtime::Runtime,
 }
@@ -26,6 +28,7 @@ impl GatewayTestHarness {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _enter = rt.enter();
         let _tmp = tempfile::TempDir::new().expect("temp dir");
+        let agenverse = Arc::new(gateway::runtime::Agenverse::new(Duration::from_millis(0)));
         let runtime = gateway::runtime::AgentRuntimeBuilder::new(
             config::AgentConfig::default(),
         )
@@ -33,12 +36,14 @@ impl GatewayTestHarness {
         .with_predefined_dir("predefined")
         .with_bind_addr("127.0.0.1:0".parse::<SocketAddr>().unwrap())
         .with_runtime_handle(rt.handle().clone())
-        .build()
+        .build(Arc::clone(&agenverse))
         .expect("AgentRuntime::build() should succeed with default config");
+        agenverse.set_runtime(Arc::clone(&runtime));
         drop(_enter);
         Self {
             server_handle: None,
             runtime,
+            _agenverse: agenverse,
             _tmp,
             rt,
         }

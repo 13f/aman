@@ -13,7 +13,7 @@
 //!   aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]
 
 use config::ConfigLoader;
-use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig, RedactWriter};
+use gateway::runtime::{serve, AgentRuntimeBuilder, Agenverse, HttpServerConfig, RedactWriter};
 use gateway::ai_signal::AmanSignalV1;
 use kernel::event::{Event, EventType};
 use std::fs::File;
@@ -117,7 +117,8 @@ async fn run() -> Result<(), i32> {
         })?
         .config;
 
-    let runtime = build_runtime(config, bind, api_token, soul_path).await?;
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let runtime = build_runtime(config, bind, api_token, soul_path, Arc::clone(&agenverse)).await?;
 
     tracing::info!(bind = %bind, "starting gateway");
 
@@ -244,7 +245,7 @@ async fn run() -> Result<(), i32> {
         }
     }
 
-    do_shutdown(&runtime, server).await;
+    do_shutdown(&agenverse, server).await;
     Ok(())
 }
 
@@ -263,7 +264,8 @@ async fn run_tui_mode(
         })?
         .config;
 
-    let runtime = build_runtime(config, bind, api_token, soul_path).await?;
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let runtime = build_runtime(config, bind, api_token, soul_path, Arc::clone(&agenverse)).await?;
 
     tracing::info!(bind = %bind, "starting gateway (TUI mode)");
 
@@ -315,13 +317,13 @@ async fn run_tui_mode(
 
     // Run the TUI on the current (main) thread. This blocks until the user
     // presses `q`. Worker threads continue running the tokio runtime.
-    let tui_runtime = Arc::clone(&runtime);
+    let tui_agenverse = Arc::clone(&agenverse);
     let tui_log_buffer = Arc::clone(&log_buffer);
 
     // Spawn the TUI on a dedicated thread (since the main thread is the tokio
     // runtime thread and we need it responsive for signal handling).
     let tui_result = tokio::task::spawn_blocking(move || {
-        gateway::tui::run_tui(tui_log_buffer, tui_runtime)
+        gateway::tui::run_tui(tui_log_buffer, tui_agenverse)
     })
     .await;
 
@@ -332,7 +334,7 @@ async fn run_tui_mode(
     }
 
     tracing::info!("shutting down (TUI exited)");
-    do_shutdown(&runtime, server).await;
+    do_shutdown(&agenverse, server).await;
     Ok(())
 }
 
@@ -388,6 +390,7 @@ async fn build_runtime(
     bind: SocketAddr,
     api_token: Option<String>,
     soul_path: Option<PathBuf>,
+    agenverse: Arc<Agenverse>,
 ) -> Result<Arc<gateway::runtime::AgentRuntime>, i32> {
     let handle = tokio::runtime::Handle::current();
     let mut builder = AgentRuntimeBuilder::new(config)
@@ -401,14 +404,18 @@ async fn build_runtime(
     // Use spawn_blocking so builder.build() runs off the async worker
     // threads but still has a valid Tokio runtime context — any
     // tokio::spawn call inside build() (e.g. source registry) needs it.
-    tokio::task::spawn_blocking(move || {
-        builder.build().map_err(|e| {
+    let agenverse_for_build = Arc::clone(&agenverse);
+    let runtime = tokio::task::spawn_blocking(move || {
+        builder.build(agenverse_for_build).map_err(|e| {
             safe_eprintln!("Runtime build error: {e}");
             1
         })
     })
     .await
-    .expect("build thread panicked")
+    .expect("build thread panicked")?;
+
+    agenverse.set_runtime(Arc::clone(&runtime));
+    Ok(runtime)
 }
 
 fn write_pid_file() {
@@ -423,9 +430,10 @@ fn write_pid_file() {
 }
 
 async fn do_shutdown(
-    runtime: &gateway::runtime::AgentRuntime,
+    agenverse: &Agenverse,
     server: gateway::runtime::HttpServerHandle,
 ) {
+    let runtime = agenverse.runtime();
     let _ = runtime.publish_event(Event::new(
         "gateway:lifecycle",
         EventType::Custom("gateway:stopping".to_owned()),

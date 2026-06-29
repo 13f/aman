@@ -4,10 +4,12 @@
 mod common;
 
 use config::AgentConfig;
-use gateway::runtime::{serve, AgentRuntimeBuilder, HttpServerConfig};
+use gateway::runtime::{serve, AgentRuntimeBuilder, Agenverse, HttpServerConfig};
 use serde_json::json;
 use std::fs;
 use std::process::Command;
+use std::sync::Arc;
+use std::time::Duration;
 
 fn run_ok(args: &[&str]) {
     let bin = common::aman_cli_bin();
@@ -32,12 +34,14 @@ fn run_stdout(args: &[&str]) -> String {
 async fn cli_smoke_all_current_subcommands() {
     let mut config = AgentConfig::default();
     config.security.risky_capabilities_enabled = true;
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
     let runtime = AgentRuntimeBuilder::new(config)
         .with_bind_addr("127.0.0.1:0".parse().expect("addr"))
         .with_api_token(Some("token".to_owned()))
         .with_runtime_handle(tokio::runtime::Handle::current())
-        .build()
+        .build(Arc::clone(&agenverse))
         .expect("build runtime");
+    agenverse.set_runtime(Arc::clone(&runtime));
     let skills_dir = runtime.runtime_dir().join("skills");
     fs::create_dir_all(&skills_dir).expect("create skills dir");
 

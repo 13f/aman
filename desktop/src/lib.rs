@@ -34,6 +34,10 @@ static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 /// busy agents are detected during window close.
 static SHUTDOWN_CONFIRM_TX: Mutex<Option<oneshot::Sender<bool>>> = Mutex::new(None);
 
+/// Set to `true` during shutdown to signal the SSE listener that it should
+/// stop reconnecting and exit gracefully.
+static SSE_SHOULD_STOP: AtomicBool = AtomicBool::new(false);
+
 /// Build and run the Tauri application.
 ///
 /// Called from the binary entry point (`src-tauri/main.rs`).
@@ -69,110 +73,127 @@ pub fn run() {
         })
         .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Guard: prevent re-entrant close from the background task's
+                // `window.close()` call. SHUTTING_DOWN is set at the start so
+                // the guard also prevents a second close attempt while the
+                // first is still in progress.
                 if SHUTTING_DOWN.load(Ordering::SeqCst) {
                     return;
                 }
-
-                // Only intercept if gateway client is still connected.
-                let has_gateway = rt.block_on(async {
-                    let guard = shutdown_gc.lock().await;
-                    guard.is_some()
-                });
-                if !has_gateway {
-                    return;
-                }
-
-                // Check whether we own a child process before spawning the
-                // background task (so we can move the handle in).
-                let owns_gateway = rt.block_on(async {
-                    let guard = shutdown_gp.lock().await;
-                    guard.is_some()
-                });
-
-                // ── Check for busy agents before shutting down ──────────
-                // Query the gateway for agent statuses. If any agents are
-                // currently processing (Busy), ask the frontend to confirm.
-                let busy_agents: Vec<serde_json::Value> = rt.block_on(async {
-                    let guard = shutdown_gc.lock().await;
-                    if let Some(ref client) = *guard {
-                        match client.list_agents().await {
-                            Ok(v) => v
-                                .as_array()
-                                .map(|a| {
-                                    a.iter()
-                                        .filter(|item| {
-                                            item.get("status")
-                                                .and_then(|s| s.as_str())
-                                                == Some("Busy")
-                                        })
-                                        .cloned()
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            Err(_) => Vec::new(),
-                        }
-                    } else {
-                        Vec::new()
-                    }
-                });
-
-                if !busy_agents.is_empty() {
-                    // Alert the frontend and wait for user confirmation.
-                    tracing::info!(
-                        count = busy_agents.len(),
-                        agents = ?busy_agents.iter().map(|a| a.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?")).collect::<Vec<_>>(),
-                        "busy agents detected during shutdown — awaiting user confirmation"
-                    );
-                    api.prevent_close();
-
-                    // Build a lightweight payload for the frontend.
-                    let payload: Vec<serde_json::Value> = busy_agents
-                        .iter()
-                        .map(|a| {
-                            serde_json::json!({
-                                "agent_id": a.get("agent_id").and_then(|v| v.as_str()).unwrap_or(""),
-                                "display_name": a.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
-                                "system_state": a.get("system_state").and_then(|v| v.as_str()).unwrap_or(""),
-                                "active_session_id": a.get("active_session_id").and_then(|v| v.as_str()),
-                            })
-                        })
-                        .collect();
-                    let _ = window.emit("shutdown:busy-agents", &payload);
-
-                    // Wait for the frontend to respond (confirm / cancel).
-                    let (tx, rx) = oneshot::channel::<bool>();
-                    {
-                        let mut guard = SHUTDOWN_CONFIRM_TX
-                            .lock()
-                            .expect("SHUTDOWN_CONFIRM_TX lock");
-                        *guard = Some(tx);
-                    }
-                    let confirmed = rt.block_on(async {
-                        rx.await.unwrap_or(false)
-                    });
-                    if !confirmed {
-                        // User cancelled — release the close guard and allow
-                        // the window to stay open.
-                        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-                        // Tell the frontend to resume normal state.
-                        let _ = window.emit("shutdown:cancelled", ());
-                        return;
-                    }
-                    // User confirmed — fall through to shutdown.
-                }
-
-                // Show the shutdown animation immediately, then perform the
-                // actual shutdown work in the background so the user sees
-                // feedback instead of a frozen / instantly-closing window.
                 SHUTTING_DOWN.store(true, Ordering::SeqCst);
                 api.prevent_close();
-                let _ = window.emit("shutdown:started", ());
 
                 let gc = shutdown_gc.clone();
                 let gp = shutdown_gp.clone();
                 let handle = window.app_handle().clone();
+
+                // All async shutdown work runs in a background tokio task so
+                // the main thread (Cocoa event loop) stays responsive.
                 rt.spawn(async move {
-                    // 1. Graceful HTTP shutdown (best-effort).
+                    // 1. Fast path: no gateway client → close immediately.
+                    let has_gateway = {
+                        let guard = gc.lock().await;
+                        guard.is_some()
+                    };
+                    if !has_gateway {
+                        tracing::info!("no gateway client — closing window");
+                        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+                        let _ = handle
+                            .get_webview_window("main")
+                            .map(|w| w.close());
+                        return;
+                    }
+
+                    // 2. Check whether we own a child process (needed later
+                    //    for cleanup).
+                    let owns_gateway = {
+                        let guard = gp.lock().await;
+                        guard.is_some()
+                    };
+
+                    // 3. Query the gateway for busy agents. If any agents are
+                    //    currently processing, ask the frontend to confirm.
+                    let busy_agents: Vec<serde_json::Value> = {
+                        let guard = gc.lock().await;
+                        if let Some(ref client) = *guard {
+                            match client.list_agents().await {
+                                Ok(v) => v
+                                    .as_array()
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter(|item| {
+                                                item.get("status")
+                                                    .and_then(|s| s.as_str())
+                                                    == Some("Busy")
+                                            })
+                                            .cloned()
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(),
+                                Err(_) => Vec::new(),
+                            }
+                        } else {
+                            Vec::new()
+                        }
+                    };
+
+                    if !busy_agents.is_empty() {
+                        tracing::info!(
+                            count = busy_agents.len(),
+                            agents = ?busy_agents.iter()
+                                .map(|a| a.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?"))
+                                .collect::<Vec<_>>(),
+                            "busy agents detected — awaiting user confirmation"
+                        );
+
+                        let payload: Vec<serde_json::Value> = busy_agents
+                            .iter()
+                            .map(|a| {
+                                serde_json::json!({
+                                    "agent_id": a.get("agent_id").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "display_name": a.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "system_state": a.get("system_state").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "active_session_id": a.get("active_session_id").and_then(|v| v.as_str()),
+                                })
+                            })
+                            .collect();
+                        let _ = handle.emit("shutdown:busy-agents", &payload);
+
+                        // Wait for the frontend to confirm or cancel.
+                        let (tx, rx) = oneshot::channel::<bool>();
+                        {
+                            let mut guard = SHUTDOWN_CONFIRM_TX
+                                .lock()
+                                .expect("SHUTDOWN_CONFIRM_TX lock");
+                            *guard = Some(tx);
+                        }
+                        let confirmed = match tokio::time::timeout(
+                            std::time::Duration::from_secs(60),
+                            rx,
+                        )
+                        .await
+                        {
+                            Ok(Ok(v)) => v,
+                            _ => false,
+                        };
+
+                        if !confirmed {
+                            tracing::info!(
+                                "shutdown cancelled by user or confirmation timed out"
+                            );
+                            SHUTTING_DOWN.store(false, Ordering::SeqCst);
+                            let _ = handle.emit("shutdown:cancelled", ());
+                            return;
+                        }
+                    }
+
+                    // 4. Proceed with graceful shutdown.
+                    let _ = handle.emit("shutdown:started", ());
+
+                    // Signal the SSE listener to stop reconnecting.
+                    crate::SSE_SHOULD_STOP.store(true, Ordering::Release);
+
+                    // 5. Graceful HTTP shutdown (best-effort, 5 s timeout).
                     let base_url = {
                         let guard = gc.lock().await;
                         guard.as_ref().map(|c| c.base_url.clone())
@@ -180,6 +201,7 @@ pub fn run() {
                     if let Some(ref url) = base_url
                         && let Ok(http_client) = reqwest::Client::builder()
                             .no_proxy()
+                            .timeout(std::time::Duration::from_secs(5))
                             .build()
                     {
                         let _ = http_client
@@ -189,13 +211,13 @@ pub fn run() {
                             .await;
                     }
 
-                    // 2. Clear the client from state.
+                    // 6. Clear the client from state.
                     {
                         let mut guard = gc.lock().await;
                         *guard = None;
                     }
 
-                    // 3. Kill the child process if we own it.
+                    // 7. Kill the child process if we own it.
                     if owns_gateway {
                         let mut proc_guard = gp.lock().await;
                         if let Some(mut child) = proc_guard.take() {
@@ -204,11 +226,14 @@ pub fn run() {
                         }
                     }
 
-                    // 4. Let the frontend animation breathe before closing.
+                    // 8. Let the frontend animation breathe before closing.
                     let _ = handle.emit("shutdown:complete", ());
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                    // Close window (re-enters CloseRequested, SHUTTING_DOWN lets it through).
-                    let _ = handle.get_webview_window("main").map(|w| w.close());
+                    // Re-enters CloseRequested; SHUTTING_DOWN is true → returns
+                    // without prevent_close() → window actually closes.
+                    let _ = handle
+                        .get_webview_window("main")
+                        .map(|w| w.close());
                 });
             }
         })

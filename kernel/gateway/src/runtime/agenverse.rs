@@ -254,7 +254,11 @@ impl Agenverse {
         // Acquire the shutdown gate. If it fails (already shutting
         // down / shut down), skip the runtime phase transitions.
         if self.try_acquire_shutdown_gate().await.is_ok() {
-            const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+            // Phase5 drain + Phase4 event-bus drain each take up to
+            // drain_timeout_sec (clamped 3-10 s). 30 s gives generous
+            // headroom so the outer timeout only fires when something
+            // is genuinely stuck, not during a normal slow drain.
+            const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
             let (force_quit_tx, mut force_quit_rx) =
                 tokio::sync::oneshot::channel::<()>();
@@ -281,10 +285,12 @@ impl Agenverse {
                 }
                 _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
                     tracing::error!(
-                        "shutdown timed out after {}s, force exiting",
+                        "shutdown timed out after {}s — returning (process will exit naturally)",
                         SHUTDOWN_TIMEOUT.as_secs()
                     );
-                    std::process::exit(1);
+                    // Do NOT call std::process::exit here — let the
+                    // process unwind naturally so tracing subscribers
+                    // flush to disk and destructors run.
                 }
                 result = self.runtime().shutdown() => {
                     if let Err(e) = result {

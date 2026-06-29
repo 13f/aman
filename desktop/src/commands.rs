@@ -252,6 +252,13 @@ pub async fn start_runtime(
 #[tauri::command]
 pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> {
     let t = translator(&state);
+
+    // If the CloseRequested shutdown sequence is already in progress,
+    // skip to avoid a redundant / duplicate shutdown POST.
+    if crate::SHUTTING_DOWN.load(std::sync::atomic::Ordering::Acquire) {
+        return Ok(t.translate(i18n::key::DESKTOP_INFO_GATEWAY_DISCONNECTED).to_owned());
+    }
+
     // Best-effort call to the gateway's shutdown endpoint
     let base_url = {
         let guard = state.gateway_client.lock().await;
@@ -261,6 +268,7 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
     if let Some(ref url) = base_url {
         let http_client = reqwest::Client::builder()
             .no_proxy()
+            .timeout(std::time::Duration::from_secs(5))
             .build()
             .map_err(|e| format!("create http client: {e}"))?;
         let _ = http_client

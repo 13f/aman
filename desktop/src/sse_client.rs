@@ -37,6 +37,12 @@ pub async fn run_sse_listener(
     let mut delay = BASE_DELAY;
 
     loop {
+        // Check for shutdown signal before reconnecting.
+        if crate::SSE_SHOULD_STOP.load(std::sync::atomic::Ordering::Acquire) {
+            tracing::info!("sse_client: shutdown requested, exiting");
+            break;
+        }
+
         let base_url = {
             let guard = gateway_client.lock().await;
             guard.as_ref().map(|c| c.base_url.clone())

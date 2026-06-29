@@ -5017,19 +5017,42 @@ impl AgentRuntime {
                         .clamp(3, 10),
                 );
                 let deadline = tokio::time::Instant::now() + grace;
+                let mut last_log = tokio::time::Instant::now();
+                let log_interval = Duration::from_secs(1);
                 loop {
-                    let busy = self
-                        .agent_registry
-                        .list()
-                        .await
+                    let agents = self.agent_registry.list().await;
+                    let busy: Vec<&str> = agents
                         .iter()
-                        .any(|a| a.status == kernel::agent::AgentStatus::Busy);
-                    if !busy {
-                        tracing::info!("all agents idle — proceeding with shutdown");
+                        .filter(|a| a.status == kernel::agent::AgentStatus::Busy)
+                        .map(|a| a.descriptor.agent_id.as_str())
+                        .collect();
+                    if busy.is_empty() {
+                        tracing::info!(
+                            total = agents.len(),
+                            "all agents idle — proceeding with shutdown"
+                        );
                         break;
+                    }
+                    // Log progress once per second so the operator can see
+                    // which agents are still draining.
+                    if last_log.elapsed() >= log_interval {
+                        let remaining = deadline
+                            .checked_duration_since(tokio::time::Instant::now())
+                            .map(|d| d.as_secs_f32())
+                            .unwrap_or(0.0);
+                        tracing::info!(
+                            busy = busy.len(),
+                            total = agents.len(),
+                            agents = ?busy,
+                            remaining_secs = remaining,
+                            "draining active agent sessions"
+                        );
+                        last_log = tokio::time::Instant::now();
                     }
                     if tokio::time::Instant::now() >= deadline {
                         tracing::warn!(
+                            busy = busy.len(),
+                            agents = ?busy,
                             "agents did not become idle within {:?} — forcing abort",
                             grace
                         );
@@ -5048,6 +5071,10 @@ impl AgentRuntime {
                 // refs and their never-ending loops would prevent Tokio's
                 // multi-threaded Runtime::drop() from ever returning.
                 self.sse_broadcast.stop_background_tasks().await;
+                // Brief yield so tracing subscribers flush before the next
+                // phase transition (helpful when the outer shutdown timeout
+                // is tight).
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 self.agenverse.set_phase(RuntimePhase::Phase4);
             }
             RuntimePhase::Phase4 => {

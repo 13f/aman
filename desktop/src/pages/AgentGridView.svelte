@@ -251,7 +251,7 @@
     font-weight: 700;
     color: var(--fg);
     line-height: 1.3;
-    word-break: break-word;
+    overflow-wrap: break-word;
     letter-spacing: 0.01em;
   }
 

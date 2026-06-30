@@ -1541,6 +1541,19 @@ impl CognitiveEngine for LlmCognitiveEngine {
             let response = loop {
                 llm_attempt += 1;
                 let r = self.provider.chat_completion(request.clone(), stream_cb.clone()).await;
+                // Empty response with no tool calls is effectively a failure —
+                // the LLM produced nothing actionable.  Retry it like a
+                // transient error so we don't exit the ReAct loop with an
+                // empty final_content (which would silently hang the agent).
+                let is_empty_reply = r.as_ref().is_ok_and(|resp| {
+                    resp.content.is_empty() && resp.tool_calls.is_empty()
+                });
+                if is_empty_reply && llm_attempt < max_retries {
+                    let delay = (3_u64.pow(llm_attempt - 1)).min(120);
+                    tracing::warn!(%agent_id, %session_id, turn, attempt=llm_attempt, delay, "LLM returned empty response — retrying (cognitive engine)");
+                    tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                    continue;
+                }
                 if r.is_ok() || llm_attempt >= max_retries
                     || !is_retryable_llm_error(r.as_ref().err())
                 { break r; }
@@ -1572,6 +1585,16 @@ impl CognitiveEngine for LlmCognitiveEngine {
             let response = response.map_err(|e| CognitiveError::EngineError {
                 engine_name: self.name().to_owned(), message: e,
             })?;
+
+            // If the LLM returned empty content with no tool calls (even
+            // after retries), treat it as an engine error rather than
+            // silently completing with an empty reply.
+            if response.content.is_empty() && response.tool_calls.is_empty() {
+                return Err(CognitiveError::EngineError {
+                    engine_name: self.name().to_owned(),
+                    message: "LLM returned empty response with no tool calls".into(),
+                });
+            }
 
             // Output validation
             let content = {

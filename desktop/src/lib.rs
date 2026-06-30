@@ -141,7 +141,7 @@ pub fn run() {
                         tracing::info!(
                             count = busy_agents.len(),
                             agents = ?busy_agents.iter()
-                                .map(|a| a.get("agent_id").and_then(|v| v.as_str()).unwrap_or("?"))
+                                .map(|a| a.get("descriptor").and_then(|d| d.get("agent_id")).and_then(|v| v.as_str()).unwrap_or("?"))
                                 .collect::<Vec<_>>(),
                             "busy agents detected — awaiting user confirmation"
                         );
@@ -150,8 +150,8 @@ pub fn run() {
                             .iter()
                             .map(|a| {
                                 serde_json::json!({
-                                    "agent_id": a.get("agent_id").and_then(|v| v.as_str()).unwrap_or(""),
-                                    "display_name": a.get("display_name").and_then(|v| v.as_str()).unwrap_or(""),
+                                    "agent_id": a.get("descriptor").and_then(|d| d.get("agent_id")).and_then(|v| v.as_str()).unwrap_or(""),
+                                    "display_name": a.get("descriptor").and_then(|d| d.get("display_name")).and_then(|v| v.as_str()).unwrap_or(""),
                                     "system_state": a.get("system_state").and_then(|v| v.as_str()).unwrap_or(""),
                                     "active_session_id": a.get("active_session_id").and_then(|v| v.as_str()),
                                 })

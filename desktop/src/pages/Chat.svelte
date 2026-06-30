@@ -17,22 +17,77 @@
   // This preserves inline formatting (bold, code, lists, tables) while
   // preventing accidental content loss from LLM-generated section separators.
   function escapeMarkdown(text: string): string {
-    return text
-      // Escape standalone --- lines (horizontal rules)
-      .replace(/^---+$/gm, "\\---")
-      // Escape standalone === lines (setext headings or HR-like)
-      .replace(/^====+$/gm, "\\===")
-      // Escape lines that start with ==== and have content (like ASCII separator headers)
-      .replace(/^(====+)([^=].*)$/gm, "\\$1$2")
-      // Escape malformed table rows: lines starting with | that don't form
-      // a proper GFM table (missing separator row after header).
-      // Wrap them in backtick-escaping to prevent marked from interpreting them.
-      .replace(/^(\|[^\n]+\|)$/gm, (_, line: string) => {
-        // Only escape if it looks like a malformed table (no separator row context)
-        // Count the pipes — if more than 2, likely a table row
-        const pipeCount = (line.match(/\|/g) || []).length;
-        return pipeCount >= 3 ? "`" + line + "`" : line;
-      });
+    // GFM table detection: track whether we're inside a table body
+    // (after a separator row) so that all contiguous pipe-delimited
+    // rows render as a proper <table>.  Standalone pipe-delimited
+    // lines that lack a separator are escaped to prevent marked
+    // from misinterpreting them as malformed tables.
+    const lines = text.split("\n");
+    const GFM_SEP = /^\|[\s\-:|]+\|$/;
+    const PIPE_ROW = /^\|.+\|$/;
+
+    let inTableBody = false;
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let processed = line;
+
+      // --- lines → horizontal rules
+      if (/^-{3,}$/.test(processed.trim())) {
+        processed = processed.replace(/^(-{3,})$/, "\\$1");
+        inTableBody = false;
+      }
+      // === lines → setext headings
+      else if (/^={4,}$/.test(processed.trim())) {
+        processed = processed.replace(/^(={4,})$/, "\\$1");
+        inTableBody = false;
+      }
+      // ==== with content → escaped
+      else if (/^={4,}[^=].*$/.test(processed.trim())) {
+        processed = "\\" + processed;
+        inTableBody = false;
+      }
+      // GFM separator row — always keep, starts table body
+      else if (GFM_SEP.test(processed.trim())) {
+        inTableBody = true;
+        // leave as-is
+      }
+      // Pipe-delimited row — check table context
+      else if (PIPE_ROW.test(processed.trim())) {
+        if (inTableBody) {
+          // Still inside a table block — leave as-is
+        } else if (i + 1 < lines.length && GFM_SEP.test(lines[i + 1].trim())) {
+          // Header row immediately followed by separator — valid table
+          // (inTableBody will be set on the next iteration)
+        } else {
+          // Standalone pipe-delimited row — escape it
+          const pipeCount = (processed.match(/\|/g) || []).length;
+          if (pipeCount >= 3) {
+            processed = "`" + processed + "`";
+          }
+        }
+      }
+      // Any other line ends the table body
+      else if (processed.trim().length > 0) {
+        inTableBody = false;
+      }
+
+      out.push(processed);
+    }
+    return out.join("\n");
+  }
+  // ── Safe markdown render action ────────────────────────────────────
+  // Uses a Svelte `use:` action instead of `{@html}` so that innerHTML
+  // is set only after the element is fully mounted in the DOM.  This
+  // works around a WebKit bug where CJK + inline-element text layout
+  // can produce garbled glyph positions during the initial layout pass.
+  function safeMarkdownHtml(node: HTMLElement, content: string) {
+    node.innerHTML = renderMarkdown(escapeMarkdown(content));
+    return {
+      update(newContent: string) {
+        node.innerHTML = renderMarkdown(escapeMarkdown(newContent));
+      },
+    };
   }
 
   type MessageType =
@@ -2021,7 +2076,26 @@
             class:archived={isArchived}
           >
             {#if isAssistant}
-              <span class="msg-label">{agentList.find(a => a.key === activeAgentKey)?.display_name ?? "Assistant"}</span>
+              <div class="msg-meta">
+                <span class="msg-label">{agentList.find(a => a.key === activeAgentKey)?.display_name ?? "Assistant"}</span>
+                <span class="msg-time">
+                  {msg.timestamp.slice(11, 19)}
+                  {#if msg.channelType}
+                    <span class="channel-tag">{msg.channelType}</span>
+                  {/if}
+                  {#if isArchived}
+                    <span class="archived-label">archived</span>
+                  {/if}
+                  {#if msg.status === "pending"}
+                    <span class="msg-status pending">sending...</span>
+                  {:else if msg.status === "error"}
+                    <span class="msg-status error">failed</span>
+                  {/if}
+                  {#if msg.traceId}
+                    <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
+                  {/if}
+                </span>
+              </div>
             {/if}
             {#if isToolCall && msg.toolCall}
               <ToolCallCard tool={msg.toolCall} />
@@ -2032,8 +2106,7 @@
                 class:status-error={msg.status === "error"}
               >
                 {#if isAssistant}
-                  <div class="markdown-body">
-                    {@html renderMarkdown(escapeMarkdown(msg.content))}
+                  <div class="markdown-body" use:safeMarkdownHtml={msg.content}>
                     {#if msg.type === "assistant_streaming"}
                       <span class="cursor"></span>
                     {/if}
@@ -2043,23 +2116,25 @@
                 {/if}
               </div>
             {/if}
-            <span class="msg-time">
-              {msg.timestamp.slice(11, 19)}
-              {#if msg.channelType}
-                <span class="channel-tag">{msg.channelType}</span>
-              {/if}
-              {#if isArchived}
-                <span class="archived-label">archived</span>
-              {/if}
-              {#if msg.status === "pending"}
-                <span class="msg-status pending">sending...</span>
-              {:else if msg.status === "error"}
-                <span class="msg-status error">failed</span>
-              {/if}
-              {#if msg.traceId}
-                <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
-              {/if}
-            </span>
+            {#if !isAssistant}
+              <span class="msg-time">
+                {msg.timestamp.slice(11, 19)}
+                {#if msg.channelType}
+                  <span class="channel-tag">{msg.channelType}</span>
+                {/if}
+                {#if isArchived}
+                  <span class="archived-label">archived</span>
+                {/if}
+                {#if msg.status === "pending"}
+                  <span class="msg-status pending">sending...</span>
+                {:else if msg.status === "error"}
+                  <span class="msg-status error">failed</span>
+                {/if}
+                {#if msg.traceId}
+                  <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
+                {/if}
+              </span>
+            {/if}
           </div>
         {/each}
       {/if}
@@ -2739,25 +2814,33 @@
   .msg-bubble p {
     margin: 0;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: break-word;
+  }
+
+  /* ── Message meta row: agent name + timestamp on the same line ── */
+  .msg-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 2px;
+    padding: 0 4px;
   }
 
   .msg-time {
     font-size: 11px;
     color: var(--fg-dim);
-    margin-top: 2px;
-    padding: 0 4px;
     display: flex;
     gap: 4px;
     align-items: center;
+    flex-shrink: 0;
   }
 
   .msg-label {
     font-size: 11px;
     font-weight: 600;
     color: var(--fg-dim);
-    margin-bottom: 2px;
-    padding: 0 4px;
+    flex-shrink: 0;
   }
 
   .msg-status {
@@ -2958,7 +3041,7 @@
 
   .toast-msg {
     flex: 1;
-    word-break: break-word;
+    overflow-wrap: break-word;
   }
 
   /* ── Markdown body (assistant messages) ──
@@ -2966,7 +3049,8 @@
      {@html marked.parse(...)} — Svelte can't scope styles to it. */
   .markdown-body {
     line-height: var(--line-height-relaxed, 1.7);
-    word-break: break-word;
+    overflow-wrap: break-word;
+    unicode-bidi: isolate;
   }
   :global(.markdown-body p) { margin: 0 0 0.5em 0; }
   :global(.markdown-body p:last-child) { margin-bottom: 0; }

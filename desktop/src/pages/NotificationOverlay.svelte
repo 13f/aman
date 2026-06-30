@@ -190,7 +190,7 @@
     font-size: 12px;
     opacity: 0.85;
     line-height: 1.4;
-    word-break: break-word;
+    overflow-wrap: break-word;
   }
 
   .notif-actions {

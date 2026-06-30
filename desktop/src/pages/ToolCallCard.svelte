@@ -203,7 +203,7 @@
     margin: 0;
     font-size: 12px;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: break-word;
     color: var(--fg);
     line-height: 1.4;
   }
@@ -212,7 +212,7 @@
     margin: 0;
     font-size: 12px;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: break-word;
     color: var(--red);
     line-height: 1.4;
   }

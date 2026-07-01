@@ -225,23 +225,36 @@ impl AgentHarness {
         }
         let lb: Arc<dyn EventBus> = self.registry.get_local_bus(agent_id).await.unwrap_or_else(|| Arc::clone(&self.bus));
         let sid = session_id.to_owned(); let aid = agent_id.to_owned();
-        struct SB { bus: Arc<dyn EventBus>, aid: String, sid: String }
+        // Use an mpsc channel so streaming chunks are published in
+        // order.  tokio::spawn does NOT guarantee FIFO scheduling
+        // across threads, which would scramble CJK text.
+        let aid = agent_id.to_owned();
+        let sid = session_id.to_owned();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        let lb2 = Arc::clone(&lb);
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let _ = lb2.publish(event).await;
+            }
+        });
+        struct SB {
+            tx: tokio::sync::mpsc::UnboundedSender<Event>,
+            aid: String,
+            sid: String,
+        }
         impl cognitive_engine::CognitiveListener for SB {
             fn on_cognitive_event(&self, e: cognitive_engine::CognitiveEvent) {
-                let b = Arc::clone(&self.bus); let a = self.aid.clone(); let s = self.sid.clone();
-                tokio::spawn(async move {
-                    let (et, pl) = match e {
-                        cognitive_engine::CognitiveEvent::StreamStart { .. } => ("agent:reply_stream_start", json!({})),
-                        cognitive_engine::CognitiveEvent::TextChunk { text, .. } => ("agent:reply_chunk", json!({"delta": text})),
-                        cognitive_engine::CognitiveEvent::StreamDone { finish_reason, .. } => ("agent:reply_stream_done", json!({"finish_reason": finish_reason})),
-                        cognitive_engine::CognitiveEvent::StreamError { error, .. } => ("agent:reply_stream_error", json!({"error": error})),
-                        _ => return,
-                    };
-                    let _ = b.publish(Event::new(SOURCE_AGENT_HARNESS, EventType::Custom(et.into()), json!({"agent_id": a, "session_id": s, "extra": pl}))).await;
-                });
+                let (et, pl) = match e {
+                    cognitive_engine::CognitiveEvent::StreamStart { .. } => ("agent:reply_stream_start", json!({})),
+                    cognitive_engine::CognitiveEvent::TextChunk { text, .. } => ("agent:reply_chunk", json!({"delta": text})),
+                    cognitive_engine::CognitiveEvent::StreamDone { finish_reason, .. } => ("agent:reply_stream_done", json!({"finish_reason": finish_reason})),
+                    cognitive_engine::CognitiveEvent::StreamError { error, .. } => ("agent:reply_stream_error", json!({"error": error})),
+                    _ => return,
+                };
+                let _ = self.tx.send(Event::new(SOURCE_AGENT_HARNESS, EventType::Custom(et.into()), json!({"agent_id": &self.aid, "session_id": &self.sid, "extra": pl})));
             }
         }
-        engine.subscribe(Arc::new(SB { bus: lb, aid, sid }));
+        engine.subscribe(Arc::new(SB { tx, aid, sid }));
         Ok(engine)
     }
 

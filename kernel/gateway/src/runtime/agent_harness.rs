@@ -224,7 +224,6 @@ impl AgentHarness {
             engine = engine.with_interrupt_flag(flag);
         }
         let lb: Arc<dyn EventBus> = self.registry.get_local_bus(agent_id).await.unwrap_or_else(|| Arc::clone(&self.bus));
-        let sid = session_id.to_owned(); let aid = agent_id.to_owned();
         // Use an mpsc channel so streaming chunks are published in
         // order.  tokio::spawn does NOT guarantee FIFO scheduling
         // across threads, which would scramble CJK text.

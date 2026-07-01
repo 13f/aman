@@ -101,9 +101,21 @@ def strip_frontmatter(raw: str) -> str:
     return s
 
 
+# Directory names skipped when collecting supporting files — they hold
+# reference material (examples, tests, cached output) that should not be
+# injected into the LLM prompt.
+_EXCLUDED_SKILL_DIRS = frozenset({
+    "examples", "example", "testcase", "testcases", "test", "tests",
+    "output", "outputs", "__pycache__", "node_modules", "fixtures",
+})
+
+
 def discover_supporting_files(skill_dir: str) -> list[tuple[str, str]]:
     """Walk skill_dir, return (relative_path, absolute_path) for every file
-    except SKILL.md. Returns empty list if directory cannot be read."""
+    except SKILL.md. Returns empty list if directory cannot be read.
+
+    Hidden files (e.g. .DS_Store) and excluded directories
+    (examples, tests, output, …) are skipped."""
     from pathlib import Path as P
 
     files = []
@@ -111,12 +123,25 @@ def discover_supporting_files(skill_dir: str) -> list[tuple[str, str]]:
     if not base.is_dir():
         return files
     for entry in base.rglob("*"):
-        if entry.is_file() and entry.name != "SKILL.md":
-            try:
-                rel = str(entry.relative_to(base))
-                files.append((rel, str(entry)))
-            except ValueError:
-                pass
+        if not entry.is_file():
+            continue
+        if entry.name == "SKILL.md":
+            continue
+        # Skip hidden files (.DS_Store, .gitignore, …).
+        if entry.name.startswith("."):
+            continue
+        # Skip excluded directories (examples, tests, output, …).
+        try:
+            parts = entry.relative_to(base).parts
+        except ValueError:
+            continue
+        if parts and parts[0] in _EXCLUDED_SKILL_DIRS:
+            continue
+        try:
+            rel = str(entry.relative_to(base))
+            files.append((rel, str(entry)))
+        except ValueError:
+            pass
     files.sort(key=lambda x: x[0])
     return files
 

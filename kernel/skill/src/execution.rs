@@ -56,7 +56,27 @@ pub fn discover_supporting_files(skill_dir: &Path) -> Vec<SupportingFile> {
     files
 }
 
+/// Directory names that are skipped when walking a skill folder for supporting
+/// files. These typically hold reference material (examples, tests, cached
+/// output) that should not be injected into the LLM prompt.
+const EXCLUDED_SKILL_DIRS: &[&str] = &[
+    "examples",
+    "example",
+    "testcase",
+    "testcases",
+    "test",
+    "tests",
+    "output",
+    "outputs",
+    "__pycache__",
+    "node_modules",
+    "fixtures",
+];
+
 /// Recursively walk `dir`, collecting every file except `SKILL.md`.
+///
+/// Hidden files (e.g. `.DS_Store`) and directories listed in
+/// [`EXCLUDED_SKILL_DIRS`] are skipped.
 fn walk_supporting_files(base: &Path, dir: &Path, files: &mut Vec<SupportingFile>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -64,10 +84,26 @@ fn walk_supporting_files(base: &Path, dir: &Path, files: &mut Vec<SupportingFile
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
+            // Skip excluded directories (examples, tests, output, …).
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| EXCLUDED_SKILL_DIRS.contains(&name))
+            {
+                continue;
+            }
             walk_supporting_files(base, &path, files);
         } else if path.is_file()
             && path.file_name().and_then(|n| n.to_str()) != Some("SKILL.md")
         {
+            // Skip hidden files (e.g. .DS_Store, .gitignore).
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.starts_with('.'))
+            {
+                continue;
+            }
             let relative_path = path
                 .strip_prefix(base)
                 .ok()

@@ -259,7 +259,24 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
         return Ok(t.translate(i18n::key::DESKTOP_INFO_GATEWAY_DISCONNECTED).to_owned());
     }
 
-    // Best-effort call to the gateway's shutdown endpoint
+    // Best-effort call to the gateway's shutdown endpoint.
+    // Timeout = drain_timeout_sec * 2, mirroring the gateway's own
+    // shutdown machinery.
+    let secs = {
+        let guard = state.gateway_client.lock().await;
+        if let Some(ref client) = *guard {
+            client
+                .runtime_config()
+                .await
+                .ok()
+                .and_then(|v| v.get("drain_timeout_sec").and_then(|d| d.as_u64()))
+                .unwrap_or(30)
+        } else {
+            30
+        }
+    };
+    let shutdown_timeout = std::time::Duration::from_secs(secs.saturating_mul(2));
+
     let base_url = {
         let guard = state.gateway_client.lock().await;
         guard.as_ref().map(|c| c.base_url.clone())
@@ -268,7 +285,7 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
     if let Some(ref url) = base_url {
         let http_client = reqwest::Client::builder()
             .no_proxy()
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(shutdown_timeout)
             .build()
             .map_err(|e| format!("create http client: {e}"))?;
         let _ = http_client
@@ -284,14 +301,69 @@ pub async fn stop_runtime(state: State<'_, AppState>) -> Result<String, String> 
         *guard = None;
     }
 
-    // Kill the child process if we own it
-    let mut proc_guard = state.gateway_process.lock().await;
-    if let Some(mut child) = proc_guard.take() {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
+    // Kill the child process with graceful escalation
+    let child = {
+        let mut proc_guard = state.gateway_process.lock().await;
+        proc_guard.take()
+    };
+    if let Some(child) = child {
+        crate::commands::escalate_kill(child).await;
         Ok(t.translate(i18n::key::DESKTOP_INFO_GATEWAY_STOPPED).to_owned())
     } else {
         Ok(t.translate(i18n::key::DESKTOP_INFO_GATEWAY_DISCONNECTED).to_owned())
+    }
+}
+
+/// Send SIGTERM, wait a grace period, then escalate to SIGKILL.
+///
+/// This avoids the old behavior of unconditional SIGKILL, which bypassed
+/// all Drop impls in the gateway process (tracing flush, crossterm TUI
+/// cleanup) and froze the terminal in raw mode.
+pub(crate) async fn escalate_kill(mut child: tokio::process::Child) {
+    // Step 1: SIGTERM — lets the gateway run agenverse.shutdown().
+    let pid = child.id();
+    #[cfg(unix)]
+    {
+        // Use the shell's kill command for portability (no extra deps).
+        let _ = tokio::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.map(|p| p.to_string()).unwrap_or_default())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(unix))]
+    {
+        // tokio's Child::kill is SIGKILL on Windows — but we only get
+        // here after transport.send has already unblocked, so the
+        // gateway has had its chance. Fall through to hard kill below.
+    }
+
+    // Step 2: wait up to 3 s for the gateway to exit.
+    let grace = std::time::Duration::from_secs(3);
+    let exited = tokio::time::timeout(grace, child.wait())
+        .await
+        .is_ok();
+
+    // Step 3: hard kill if it didn't exit in time.
+    if !exited {
+        let pid_str = pid.map(|p| p.to_string()).unwrap_or_default();
+        #[cfg(unix)]
+        {
+            let _ = tokio::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(&pid_str)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill().await;
+        }
+        let _ = child.wait().await;
     }
 }
 

@@ -193,7 +193,31 @@ pub fn run() {
                     // Signal the SSE listener to stop reconnecting.
                     crate::SSE_SHOULD_STOP.store(true, Ordering::Release);
 
-                    // 5. Graceful HTTP shutdown (best-effort, 5 s timeout).
+                    // 5. Graceful HTTP shutdown.
+                    // Timeout = drain_timeout_sec * 2, fetched from the
+                    // gateway's /runtime/config endpoint. This mirrors the
+                    // gateway's own shutdown machinery so we never SIGKILL
+                    // it mid-drain (which froze the terminal when the TUI's
+                    // disable_raw_mode ran after SIGKILL). Fallback: 60 s.
+                    let secs = {
+                        let guard = gc.lock().await;
+                        if let Some(ref client) = *guard {
+                            client
+                                .runtime_config()
+                                .await
+                                .ok()
+                                .and_then(|v| {
+                                    v.get("drain_timeout_sec")
+                                        .and_then(|d| d.as_u64())
+                                })
+                                .unwrap_or(30)
+                        } else {
+                            30
+                        }
+                    };
+                    let shutdown_timeout =
+                        std::time::Duration::from_secs(secs.saturating_mul(2));
+
                     let base_url = {
                         let guard = gc.lock().await;
                         guard.as_ref().map(|c| c.base_url.clone())
@@ -201,7 +225,7 @@ pub fn run() {
                     if let Some(ref url) = base_url
                         && let Ok(http_client) = reqwest::Client::builder()
                             .no_proxy()
-                            .timeout(std::time::Duration::from_secs(5))
+                            .timeout(shutdown_timeout)
                             .build()
                     {
                         let _ = http_client
@@ -217,12 +241,18 @@ pub fn run() {
                         *guard = None;
                     }
 
-                    // 7. Kill the child process if we own it.
+                    // 7. Kill the child process with graceful escalation:
+                    //    SIGTERM → 3 s wait → SIGKILL. Gives the gateway time
+                    //    to complete its phase-5→phase-0 drain and run TUI
+                    //    cleanup. Direct SIGKILL (the old code) bypassed all
+                    //    Drop impls and froze the terminal in raw mode.
                     if owns_gateway {
-                        let mut proc_guard = gp.lock().await;
-                        if let Some(mut child) = proc_guard.take() {
-                            let _ = child.kill().await;
-                            let _ = child.wait().await;
+                        let child = {
+                            let mut proc_guard = gp.lock().await;
+                            proc_guard.take()
+                        };
+                        if let Some(child) = child {
+                            crate::commands::escalate_kill(child).await;
                         }
                     }
 

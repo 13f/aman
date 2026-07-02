@@ -3877,6 +3877,12 @@ impl AgentRuntime {
         self.agenverse.phase()
     }
 
+    /// Expose the runtime config (desktop reads `drain_timeout_sec` to
+    /// size its graceful-shutdown POST timeout).
+    pub fn runtime_cfg(&self) -> &config::RuntimeConfig {
+        &self.config.runtime
+    }
+
     pub async fn status(&self) -> RuntimeStatus {
         self.agenverse.status().await
     }

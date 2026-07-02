@@ -1819,6 +1819,10 @@ struct RuntimeConfigResponse {
     skills_dir: String,
     api_token_configured: bool,
     risky_capabilities_enabled: bool,
+    /// Drain timeout (seconds) — the desktop uses `drain_timeout_sec * 2`
+    /// as its graceful-shutdown POST timeout so it doesn't SIGKILL a
+    /// gateway that is merely slow to drain.
+    drain_timeout_sec: u64,
 }
 
 async fn runtime_config(State(runtime): State<Arc<AgentRuntime>>) -> Response {
@@ -1828,6 +1832,7 @@ async fn runtime_config(State(runtime): State<Arc<AgentRuntime>>) -> Response {
         skills_dir: runtime.skills_dir().display().to_string(),
         api_token_configured: runtime.api_token().is_some(),
         risky_capabilities_enabled: runtime.risky_capabilities_enabled(),
+        drain_timeout_sec: runtime.runtime_cfg().drain_timeout_sec,
     })
     .into_response()
 }

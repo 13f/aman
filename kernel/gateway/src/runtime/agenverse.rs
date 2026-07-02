@@ -258,31 +258,21 @@ impl Agenverse {
             // drain_timeout_sec (clamped 3-10 s). 30 s gives generous
             // headroom so the outer timeout only fires when something
             // is genuinely stuck, not during a normal slow drain.
+            //
+            // Note: we do NOT register a second ctrl_c() handler here.
+            // Tokio only allows one process-wide ctrl_c listener, and
+            // the outer loop in main.rs already owns it. Spawning a
+            // second listener can panic ("no signal handler installed")
+            // and the previous std::process::exit(1) on the force_quit
+            // branch bypassed all Drop impls (tracing flush, crossterm
+            // TUI cleanup), which is what froze the terminal when the
+            // desktop SIGKILL'd the gateway mid-shutdown. Instead we
+            // rely on the outer timeout to fire once SHUTDOWN_TIMEOUT
+            // elapses; the process then exits naturally with full
+            // cleanup.
             const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-            let (force_quit_tx, mut force_quit_rx) =
-                tokio::sync::oneshot::channel::<()>();
-            tokio::spawn(async move {
-                match tokio::signal::ctrl_c().await {
-                    Ok(()) => {
-                        let _ = force_quit_tx.send(());
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = %e,
-                            "failed to register second SIGINT handler"
-                        );
-                    }
-                }
-            });
-
             tokio::select! {
-                _ = &mut force_quit_rx => {
-                    tracing::error!(
-                        "second SIGINT received, force quitting"
-                    );
-                    std::process::exit(1);
-                }
                 _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
                     tracing::error!(
                         "shutdown timed out after {}s — returning (process will exit naturally)",

@@ -27,6 +27,26 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// Classify a chat-completion error for log-tiered reporting.
+///
+/// Provider implementations map transport problems (timeout, EOF, reset,
+/// DNS failure, 5xx) onto `kernel::Error::Io` / `Timeout`, which we treat as
+/// *transient* — the same session is left un-reflected and will be retried
+/// automatically on the next QueueDrained cycle. Everything else (auth,
+/// schema-rejection, model-not-found) is presented to the operator.
+#[must_use]
+fn is_transient_llm_error(err: &kernel::Error) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("connection")
+        || msg.contains("reset")
+        || msg.contains("dns")
+        || msg.contains("refused")
+        || msg.contains("eof")
+        || msg.contains("streaming error http 5")
+}
+
 use super::agent_registry::AgentRegistry;
 
 /// Handles QueueDrained → reflection for all agents.
@@ -45,6 +65,10 @@ use super::agent_registry::AgentRegistry;
 pub struct ReflectionRunner {
     agent_registry: OnceLock<Arc<AgentRegistry>>,
     memory_llm: OnceLock<MemoryLlmConfig>,
+    /// Dedicated LLM provider for memory/extraction work, built at startup
+    /// from `memory.llm.provider` + `memory.llm.model`. Stored separately so
+    /// reflection can use a different backend than the agent's default.
+    memory_llm_provider: OnceLock<Arc<dyn kernel::llm::LlmProvider>>,
 }
 
 impl ReflectionRunner {
@@ -52,6 +76,7 @@ impl ReflectionRunner {
         Self {
             agent_registry: OnceLock::new(),
             memory_llm: OnceLock::new(),
+            memory_llm_provider: OnceLock::new(),
         }
     }
 
@@ -61,6 +86,38 @@ impl ReflectionRunner {
 
     pub fn set_memory_llm(&self, config: MemoryLlmConfig) {
         let _ = self.memory_llm.set(config);
+    }
+
+    /// Set the dedicated LLM provider for memory/extraction work. Called by
+    /// `AgentRuntime` after it has built the provider from the config's
+    /// `providers:` map. This is the single source of truth for reflection's
+    /// LLM backend — it always wins over the agent's default provider.
+    pub fn set_memory_llm_provider(&self, provider: Arc<dyn kernel::llm::LlmProvider>) {
+        let _ = self.memory_llm_provider.set(provider);
+    }
+
+    /// Resolve the LLM provider best suited for reflection's extraction call.
+    ///
+    /// Priority:
+    /// 1. Use the dedicated memory LLM provider if `AgentRuntime` wired one
+    ///    (built from `memory.llm.*` at startup). This is the operator's
+    ///    explicit choice — reflection always wins over the agent's default.
+    /// 2. Otherwise, fall back to the agent's default provider (legacy).
+    /// 3. If neither is available, return `None`.
+    async fn resolve_reflection_llm(
+        &self,
+        registry: &super::agent_registry::AgentRegistry,
+        agent_id: &str,
+    ) -> Option<Arc<dyn kernel::llm::LlmProvider>> {
+        if let Some(dedicated) = self.memory_llm_provider.get() {
+            debug!(
+                agent_id,
+                "Reflection: using dedicated memory.llm provider"
+            );
+            return Some(Arc::clone(dedicated));
+        }
+        // Fallback: legacy agent provider.
+        registry.get_llm_provider(agent_id).await
     }
 
     // -- session_extract ------------------------------------------------------
@@ -87,9 +144,17 @@ impl ReflectionRunner {
             debug!(agent_id, "Reflection: no MemoryProvider for agent, skipping");
             return;
         };
-        let Some(llm) = registry.get_llm_provider(agent_id).await else {
-            debug!(agent_id, "Reflection: no LlmProvider for agent, skipping");
-            return;
+        // Resolve the LLM provider for reflection. Three-step fallback:
+        //   1. If memory.llm.provider is configured, use that dedicated provider
+        //      (so reflection uses the exact backend the operator selected).
+        //   2. Otherwise, fall back to the agent's default provider.
+        //   3. If neither is available, skip this cycle.
+        let llm = match self.resolve_reflection_llm(registry, agent_id).await {
+            Some(provider) => provider,
+            None => {
+                debug!(agent_id, "Reflection: no LlmProvider resolvable for agent, skipping");
+                return;
+            }
         };
 
         let session = match store.list_unreflected() {
@@ -174,12 +239,25 @@ impl ReflectionRunner {
                 }
             }
             Err(e) => {
-                warn!(
-                    agent_id,
-                    session_id = %session.id,
-                    error = %e,
-                    "Reflection: session_extract failed for agent {agent_id}"
-                );
+                // Transient provider blips (timeout / EOF / 5xx) don't mark
+                // the session, so it's retried on the next cycle — log at
+                // info to keep `warn` reserved for real operator issues.
+                if is_transient_llm_error(&e) {
+                    info!(
+                        agent_id,
+                        session_id = %session.id,
+                        error = %e,
+                        "Reflection: LLM extraction call transient — \
+                         timeout/connection/5xx — will retry next QueueDrained"
+                    );
+                } else {
+                    warn!(
+                        agent_id,
+                        session_id = %session.id,
+                        error = %e,
+                        "Reflection: LLM extraction call failed for agent {agent_id}"
+                    );
+                }
             }
         }
     }

@@ -976,7 +976,21 @@ impl AgentRuntimeBuilder {
             .and_then(|c| c.memory.as_ref())
             .and_then(|m| m.llm.clone());
         if let Some(cfg) = memory_llm_cfg.clone() {
-            reflection_runner.set_memory_llm(cfg);
+            reflection_runner.set_memory_llm(cfg.clone());
+            // Build and wire a dedicated LLM provider for memory work. Without
+            // this, reflection silently uses the agent's main provider and
+            // ignores `memory.llm.provider` — a latent bug exposed when the
+            // operator configures separate backends per agent and for memory.
+            if let Some(provider) = build_memory_llm_provider(aman_cfg.as_ref(), &cfg) {
+                reflection_runner.set_memory_llm_provider(provider);
+            } else {
+                tracing::warn!(
+                    provider = %cfg.provider,
+                    model = %cfg.model,
+                    "Reflection dedicated memory.llm provider could not be built — \
+                     reflection will fall back to per-agent providers"
+                );
+            }
         }
 
         // Subscribe to QueueDrained events on the global bus (handles both
@@ -6348,6 +6362,34 @@ fn build_provider(_provider_key: &str, api_key: &str, base_url: &str, api_type: 
             ))
         }
     }
+}
+
+/// Build a dedicated LLM provider for memory/extraction work from the
+/// `memory.llm` section of the config.
+///
+/// Returns `None` when the configured provider key is not found in the
+/// `providers:` map or the provider config cannot be resolved. Reflection
+/// falls back to per-agent providers in that case.
+fn build_memory_llm_provider(
+    aman_cfg: Option<&config::AmanConfig>,
+    mem_cfg: &config::MemoryLlmConfig,
+) -> Option<Arc<dyn LlmProvider>> {
+    let aman_cfg = aman_cfg?;
+    let p = aman_cfg.providers.get(&mem_cfg.provider)?;
+    let api_key = get_llm_api_key_or_inline(&mem_cfg.provider, Some(p));
+    let api_type = aman_cfg
+        .llm
+        .as_ref()
+        .map(|l| l.api_type.as_str())
+        .or(p.api_type.as_deref())
+        .unwrap_or("openai");
+    tracing::info!(
+        provider = %mem_cfg.provider,
+        model = %mem_cfg.model,
+        api_type = %api_type,
+        "building dedicated memory LLM provider for reflection"
+    );
+    Some(build_provider(&mem_cfg.provider, &api_key, &p.base_url, api_type))
 }
 
 /// Wrap a `cognitive_llm::provider::LlmProvider` as a `kernel::llm::LlmProvider`.

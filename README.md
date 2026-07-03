@@ -77,6 +77,14 @@ No additional system packages are needed — WebKit, CoreAudio, Security
 3. Install **Node.js** from [nodejs.org](https://nodejs.org) and **ripgrep**
    via `winget install BurntSushi.ripgrep.MSVC` or `choco install ripgrep`.
 
+4. Install Rust
+
+5. Run script
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-gateway.ps1 -Release -Run
+```
+
 ## Quick Start
 
 ### Option A: Tauri Desktop App

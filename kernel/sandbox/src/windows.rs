@@ -227,7 +227,7 @@ impl WindowsSandbox {
             pid,
         )};
 
-        if process_handle == 0 || process_handle == INVALID_HANDLE_VALUE {
+        if process_handle.is_null() || process_handle == INVALID_HANDLE_VALUE {
             let err = unsafe { GetLastError() };
             return Err(SandboxError::ApplicationFailed(format!(
                 "OpenProcess failed for PID {pid}: error {err}"
@@ -271,7 +271,7 @@ impl WindowsSandbox {
 
 impl Drop for WindowsSandbox {
     fn drop(&mut self) {
-        if self.job_handle != 0 && self.job_handle != INVALID_HANDLE_VALUE {
+        if !self.job_handle.is_null() && self.job_handle != INVALID_HANDLE_VALUE {
             // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE ensures all children
             // are terminated. Closing the handle is sufficient.
             unsafe { CloseHandle(self.job_handle); }
@@ -296,7 +296,7 @@ fn create_job_object(config: &SandboxConfig) -> Result<HANDLE, SandboxError> {
         )
     };
 
-    if job == 0 || job == INVALID_HANDLE_VALUE {
+    if job.is_null() || job == INVALID_HANDLE_VALUE {
         let err = unsafe { GetLastError() };
         return Err(SandboxError::ApplicationFailed(format!(
             "CreateJobObjectW failed: error {err}"
@@ -311,7 +311,7 @@ fn create_job_object(config: &SandboxConfig) -> Result<HANDLE, SandboxError> {
     // Memory limit
     if config.max_memory_mb > 0 {
         info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
-        info.JobMemoryLimit = config.max_memory_mb.saturating_mul(1024 * 1024);
+        info.JobMemoryLimit = config.max_memory_mb.saturating_mul(1024 * 1024) as usize;
     }
 
     // Process-spawn restriction
@@ -368,7 +368,7 @@ fn resume_process_threads(pid: u32) -> Result<(), SandboxError> {
             loop {
                 if te.th32OwnerProcessID == pid {
                     let th = OpenThread(THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
-                    if th != 0 && th != INVALID_HANDLE_VALUE {
+                    if !th.is_null() && th != INVALID_HANDLE_VALUE {
                         // ResumeThread returns the previous suspend count.
                         // For a CREATE_SUSPENDED process, this is 1.
                         ResumeThread(th);
@@ -411,21 +411,22 @@ unsafe fn create_appcontainer_profile(
     sid_out: &mut Vec<u8>,
 ) -> bool {
     use windows_sys::Win32::Security::{
+        FreeSid, GetLengthSid, IsWellKnownSid, PSID, SID_AND_ATTRIBUTES,
+    };
+    use windows_sys::Win32::Security::Isolation::{
         CreateAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
-        FreeSid, GetLengthSid, IsWellKnownSid,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows_sys::Win32::System::SystemServices::{PROCESSOR_ARCHITECTURE_AMD64, IMAGE_FILE_MACHINE_AMD64};
 
     // Check if the API is available (Win8+)
     let kernel32 = GetModuleHandleW(str_to_wide("kernel32.dll").as_ptr());
-    if kernel32 == 0 {
+    if kernel32.is_null() {
         return false;
     }
 
     // Create the AppContainer profile
-    let mut appcontainer_sid: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
-    let caps: [windows_sys::Win32::Security::SID_AND_ATTRIBUTES; 0] = [];
+    let mut appcontainer_sid: PSID = std::ptr::null_mut();
+    let caps: [SID_AND_ATTRIBUTES; 0] = [];
     let result = CreateAppContainerProfile(
         name,
         display_name,
@@ -437,7 +438,7 @@ unsafe fn create_appcontainer_profile(
 
     if result != 0 || appcontainer_sid.is_null() {
         // Profile may already exist — try deriving the SID
-        let mut sid_ptr: windows_sys::Win32::Security::PSID = std::ptr::null_mut();
+        let mut sid_ptr: PSID = std::ptr::null_mut();
         let derive_result = DeriveAppContainerSidFromAppContainerName(name, &mut sid_ptr);
         if derive_result != 0 || sid_ptr.is_null() {
             return false;

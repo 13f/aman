@@ -47,7 +47,8 @@ fn run_pre_build_steps(workspace_root: &Path) {
             args.join(" "),
             dir.display(),
         );
-        let status = Command::new(cmd)
+        let status = Command::new("cmd")
+            .args(&["/c", cmd])
             .args(*args)
             .current_dir(&dir)
             .status()

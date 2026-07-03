@@ -132,7 +132,7 @@ tonic = "0.13"
 prost = "0.13"
 rand = "0.8"
 regex = "1"
-windows-sys = "0.59"
+windows-sys = "0.61"
 arbitrary = { version = "1.4", features = ["derive"] }
 insta = { version = "1.42", features = ["filters"] }
 loom = "0.7"

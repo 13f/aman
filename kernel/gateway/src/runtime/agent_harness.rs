@@ -300,6 +300,20 @@ impl AgentHarness {
         let result = engine.process(&ctx, obs).await;
         tracing::info!(%agent_id, %session_id, success = result.is_ok(), "process_message_v2: engine.process() completed");
 
+        // Report LLM call result to BackendHealth for cognitive state tracking.
+        if let Some(health) = self.registry.get_agent_backend_health(agent_id).await {
+            let config = self.registry.backend_health_registry().config();
+            let changed = if result.is_ok() {
+                health.record_success(config)
+            } else {
+                let err_msg = result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+                health.record_failure(&err_msg, config)
+            };
+            if let Some(ev) = changed {
+                self.publish_backend_health_event(ev);
+            }
+        }
+
         // ── Error path: full state cleanup (matches old process_message) ──
         if result.is_err() {
             let err_msg = result.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
@@ -1105,6 +1119,33 @@ impl AgentHarness {
             payload,
         )).await?;
         Ok(())
+    }
+
+    /// Publish a backend health change event to the global event bus.
+    fn publish_backend_health_event(self: &Arc<Self>, changed: super::backend_health::BackendHealthChanged) {
+        let event_type = match changed.to {
+            super::backend_health::BackendStatus::Ok => "llm_backend_recovered",
+            super::backend_health::BackendStatus::Degraded => "llm_backend_degraded",
+            super::backend_health::BackendStatus::Down => "llm_backend_down",
+            super::backend_health::BackendStatus::Unknown => "llm_backend_unknown",
+        };
+        let payload = match serde_json::to_value(&changed) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize BackendHealthChanged");
+                serde_json::json!({ "base_url": changed.base_url })
+            }
+        };
+        let bus = Arc::clone(&self.bus);
+        tokio::spawn(async move {
+            let _ = bus
+                .publish(Event::new(
+                    "llm_health",
+                    EventType::Custom(event_type.to_owned()),
+                    payload,
+                ))
+                .await;
+        });
     }
 }
 

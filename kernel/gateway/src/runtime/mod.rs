@@ -9,6 +9,8 @@ mod agent_registry;
 mod agent_runtime;
 mod agenverse;
 mod analytics_handler;
+mod backend_health;
+mod cognitive_state;
 mod date_util;
 mod orchestrator;
 mod subagent_spawner;
@@ -39,6 +41,8 @@ mod sse;
 mod emotion_evaluator;
 
 pub use agent_registry::AgentRegistry;
+pub use backend_health::{BackendHealth, BackendHealthChanged, BackendStatus};
+pub use cognitive_state::{CognitiveState, CognitiveStateMachine, CognitiveStateConfig};
 pub use date_util::current_date_string;
 pub use agent_runtime::{
     AgentRuntime, AgentRuntimeBuilder, PendingApprovalInfo,

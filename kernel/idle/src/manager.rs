@@ -386,8 +386,11 @@ impl AgentIdleManager {
                     continue;
                 }
 
-                // Bus is empty, no recent activity — progress idle state
-                let kind = if detector.idle_depth == 0 {
+                // Bus is empty, no recent activity — progress idle state.
+                // Override: if cognitive state is not Lucid, force Sleep.
+                let kind = if coord.is_cognitive_force_sleep() {
+                    IdleKind::Sleep
+                } else if detector.idle_depth == 0 {
                     IdleKind::Daze
                 } else {
                     let arousal = coord.arousal.current();

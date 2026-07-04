@@ -17,8 +17,10 @@ use mcp_client::McpClientManager;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
+use super::backend_health::{BackendHealth, BackendHealthRegistry};
+use super::cognitive_state::{CognitiveState, CognitiveStateConfig, CognitiveStateMachine};
 use super::session_store::SessionStore;
 
 /// Agent 运行时注册表。
@@ -58,7 +60,16 @@ pub struct AgentRegistry {
     mcp_managers: RwLock<HashMap<String, Arc<mcp_client::McpClientManager>>>,
     /// Per-agent plan orchestrators (autonomous plan iteration).
     orchestrators: RwLock<HashMap<String, Arc<super::orchestrator::Orchestrator>>>,
+    /// Per-agent cognitive state machines (brain status: Lucid/Groggy/Catatonic/Coma).
+    cognitive_states: RwLock<HashMap<String, Arc<CognitiveStateMachine>>>,
+    /// Per-agent cognitive state watch receivers (for idle/emotion/arousal subscriptions).
+    cognitive_watchers:
+        RwLock<HashMap<String, watch::Receiver<CognitiveState>>>,
     bus: Arc<dyn EventBus>,
+    /// LLM 后端健康状态注册表（按 base_url 聚合，跨 agent 共享）。
+    backend_health: Arc<BackendHealthRegistry>,
+    /// agent_id → base_url mapping (for looking up an agent's BackendHealth).
+    agent_base_urls: RwLock<HashMap<String, String>>,
     /// Skill search index for BoredomActor tag-based skill lookup.
     skill_search: Option<Arc<skill::SkillSearch>>,
     /// Skill registry for BoredomActor direct skill execution.
@@ -84,7 +95,11 @@ impl AgentRegistry {
             emotion_latest: RwLock::new(HashMap::new()),
             mcp_managers: RwLock::new(HashMap::new()),
             orchestrators: RwLock::new(HashMap::new()),
+            cognitive_states: RwLock::new(HashMap::new()),
+            cognitive_watchers: RwLock::new(HashMap::new()),
             bus,
+            backend_health: Arc::new(BackendHealthRegistry::default()),
+            agent_base_urls: RwLock::new(HashMap::new()),
             skill_search: None,
             skill_registry: None,
         }
@@ -776,6 +791,10 @@ impl AgentRegistry {
         llms.clear();
         let mut traces = self.trace_stores.write().await;
         traces.clear();
+        let mut cog_states = self.cognitive_states.write().await;
+        cog_states.clear();
+        let mut cog_watchers = self.cognitive_watchers.write().await;
+        cog_watchers.clear();
     }
 
     /// 设置 Agent 的 Local EventBus。
@@ -932,6 +951,96 @@ impl AgentRegistry {
         providers.get(agent_id).cloned()
     }
 
+    // ── Backend health (shared across agents with same base_url) ──────
+
+    /// Get the backend health registry.
+    pub fn backend_health_registry(&self) -> &Arc<BackendHealthRegistry> {
+        &self.backend_health
+    }
+
+    /// Get or insert a BackendHealth for the given base_url.
+    pub async fn get_or_insert_backend_health(
+        &self,
+        base_url: &str,
+    ) -> Arc<BackendHealth> {
+        self.backend_health.get_or_insert(base_url).await
+    }
+
+    /// Get a BackendHealth for the given base_url (if exists).
+    pub async fn get_backend_health(&self, base_url: &str) -> Option<Arc<BackendHealth>> {
+        self.backend_health.get(base_url).await
+    }
+
+    /// Record the base_url for an agent (called when LLM provider is created).
+    pub async fn set_agent_base_url(&self, agent_id: &str, base_url: &str) {
+        let mut urls = self.agent_base_urls.write().await;
+        urls.insert(agent_id.to_owned(), base_url.to_owned());
+    }
+
+    /// Get the BackendHealth for a specific agent (by agent_id).
+    pub async fn get_agent_backend_health(
+        &self,
+        agent_id: &str,
+    ) -> Option<Arc<BackendHealth>> {
+        let urls = self.agent_base_urls.read().await;
+        let base_url = urls.get(agent_id)?.clone();
+        drop(urls);
+        self.backend_health.get(&base_url).await
+    }
+
+    // ── Per-agent cognitive state ─────────────────────────────────────
+
+    /// Initialize the cognitive state machine for an agent.
+    ///
+    /// Should be called after the LLM provider is set up, so we can subscribe
+    /// to backend health changes.
+    pub async fn init_cognitive_state(
+        &self,
+        agent_id: &str,
+        config: CognitiveStateConfig,
+    ) -> Arc<CognitiveStateMachine> {
+        let (machine, rx) = CognitiveStateMachine::new(config);
+        let arc = Arc::new(machine);
+        {
+            let mut states = self.cognitive_states.write().await;
+            states.insert(agent_id.to_owned(), Arc::clone(&arc));
+        }
+        {
+            let mut watchers = self.cognitive_watchers.write().await;
+            watchers.insert(agent_id.to_owned(), rx);
+        }
+        arc
+    }
+
+    /// Get the cognitive state machine for an agent.
+    pub async fn get_cognitive_state_machine(
+        &self,
+        agent_id: &str,
+    ) -> Option<Arc<CognitiveStateMachine>> {
+        let states = self.cognitive_states.read().await;
+        states.get(agent_id).cloned()
+    }
+
+    /// Get the current cognitive state for an agent.
+    pub async fn get_cognitive_state(&self, agent_id: &str) -> Option<CognitiveState> {
+        let machine = self.get_cognitive_state_machine(agent_id).await?;
+        Some(machine.state())
+    }
+
+    /// Get the cognitive state watch receiver for an agent (for idle/emotion/arousal).
+    pub async fn get_cognitive_watcher(
+        &self,
+        agent_id: &str,
+    ) -> Option<watch::Receiver<CognitiveState>> {
+        let watchers = self.cognitive_watchers.read().await;
+        watchers.get(agent_id).cloned()
+    }
+
+    /// Get a reference to the global event bus.
+    pub fn bus(&self) -> &Arc<dyn EventBus> {
+        &self.bus
+    }
+
     // ── Per-agent trace store ─────────────────────────────────────────
 
     /// Set the trace store for an agent.
@@ -1075,6 +1184,90 @@ impl AgentRegistry {
         }
         if !evaluators.is_empty() {
             tracing::info!(count = evaluators.len(), "emotion evaluators started");
+        }
+    }
+
+    /// Start per-agent cognitive state monitoring tasks.
+    ///
+    /// Each task subscribes to its agent's `CognitiveStateMachine` watch channel
+    /// and propagates state changes to idle coordination (force Sleep) and
+    /// arousal tracker (freeze on Catatonic/Coma).
+    pub async fn start_all_cognitive_monitors(self: &Arc<Self>) {
+        let agent_ids: Vec<String> = {
+            let agents = self.agents.read().await;
+            agents.keys().cloned().collect()
+        };
+
+        for agent_id in agent_ids {
+            let Some(coord) = self.get_idle_coordination(&agent_id).await else {
+                continue;
+            };
+            let Some(cog_machine) = self.get_cognitive_state_machine(&agent_id).await else {
+                continue;
+            };
+
+            let mut rx = cog_machine.subscribe();
+            let registry = Arc::clone(self);
+
+            tokio::spawn(async move {
+                loop {
+                    // Wait for the next state change
+                    if rx.changed().await.is_err() {
+                        // Channel closed — machine dropped
+                        break;
+                    }
+                    let state = *rx.borrow();
+
+                    // Propagate to idle coordination
+                    let force_sleep = state != CognitiveState::Lucid;
+                    coord.set_cognitive_force_sleep(force_sleep);
+
+                    // Propagate to arousal tracker
+                    match state {
+                        CognitiveState::Catatonic => {
+                            coord.arousal.reset(0.05);
+                        }
+                        CognitiveState::Coma => {
+                            coord.arousal.reset(0.0);
+                        }
+                        CognitiveState::Groggy => {
+                            // Decay toward 0.3
+                            let current = coord.arousal.current();
+                            if current > 0.3 {
+                                coord.arousal.reset(0.3);
+                            }
+                        }
+                        CognitiveState::Lucid => {
+                            // Normal — restore to a reasonable default
+                            let current = coord.arousal.current();
+                            if current < 0.5 {
+                                coord.arousal.reset(0.7);
+                            }
+                        }
+                    }
+
+                    // Publish cognitive_state_changed event
+                    let _ = registry
+                        .bus
+                        .publish(Event::new(
+                            "cognitive_health",
+                            EventType::Custom("cognitive_state_changed".to_owned()),
+                            json!({
+                                "agent_id": agent_id,
+                                "state": format!("{:?}", state),
+                                "force_sleep": force_sleep,
+                            }),
+                        ))
+                        .await;
+
+                    tracing::info!(
+                        agent = %agent_id,
+                        ?state,
+                        force_sleep,
+                        "cognitive state changed"
+                    );
+                }
+            });
         }
     }
 

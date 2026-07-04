@@ -136,6 +136,15 @@ impl ReflectionRunner {
             info!("Reflection: no AgentRegistry, skipping session_extract");
             return;
         };
+
+        // Service degradation: skip LLM calls when backend is Down.
+        if let Some(health) = registry.get_agent_backend_health(agent_id).await {
+            if health.status() == super::backend_health::BackendStatus::Down {
+                debug!(agent_id, "Reflection: LLM backend down, skipping session_extract");
+                return;
+            }
+        }
+
         let Some(store) = registry.get_session_store(agent_id).await else {
             debug!(agent_id, "Reflection: no SessionStore for agent, skipping");
             return;
@@ -197,6 +206,15 @@ impl ReflectionRunner {
 
         match self.extract_and_store(&llm, &memory, agent_id, &session.id, &events, Self::MAX_CONVERSATION_CHARS).await {
             Ok(()) => {
+                // Report success to BackendHealth.
+                if let Some(health) = registry.get_agent_backend_health(agent_id).await {
+                    let changed = health.record_success(
+                        registry.backend_health_registry().config(),
+                    );
+                    if let Some(ev) = changed {
+                        publish_health_event(&registry, ev);
+                    }
+                }
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -239,6 +257,18 @@ impl ReflectionRunner {
                 }
             }
             Err(e) => {
+                // Report failure to BackendHealth for cognitive state tracking.
+                if let Some(registry) = self.agent_registry.get() {
+                    if let Some(health) = registry.get_agent_backend_health(agent_id).await {
+                        let changed = health.record_failure(
+                            &e.to_string(),
+                            registry.backend_health_registry().config(),
+                        );
+                        if let Some(ev) = changed {
+                            publish_health_event(registry, ev);
+                        }
+                    }
+                }
                 // Transient provider blips (timeout / EOF / 5xx) don't mark
                 // the session, so it's retried on the next cycle — log at
                 // info to keep `warn` reserved for real operator issues.
@@ -774,4 +804,31 @@ impl EventHandler for ReflectionRunner {
 
         Ok(())
     }
+}
+
+/// Publish a backend health change event to the event bus.
+pub fn publish_health_event(registry: &AgentRegistry, changed: super::backend_health::BackendHealthChanged) {
+    let event_type = match changed.to {
+        super::backend_health::BackendStatus::Ok => "llm_backend_recovered",
+        super::backend_health::BackendStatus::Degraded => "llm_backend_degraded",
+        super::backend_health::BackendStatus::Down => "llm_backend_down",
+        super::backend_health::BackendStatus::Unknown => "llm_backend_unknown",
+    };
+    let payload = match serde_json::to_value(&changed) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to serialize BackendHealthChanged");
+            serde_json::json!({ "base_url": changed.base_url })
+        }
+    };
+    let bus = registry.bus().clone();
+    tokio::spawn(async move {
+        let _ = bus
+            .publish(Event::new(
+                "llm_health",
+                EventType::Custom(event_type.to_owned()),
+                payload,
+            ))
+            .await;
+    });
 }

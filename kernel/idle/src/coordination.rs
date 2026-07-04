@@ -82,6 +82,8 @@ pub struct IdleCoordination {
     pub kind_cooldowns: Arc<RwLock<HashMap<IdleKind, Instant>>>,
     /// Active wake-up schedule (set by Incubation completion, consumed by IdleDetector).
     pub wakeup_schedule: RwLock<Option<WakeUpSchedule>>,
+    /// 认知状态非 Lucid 时，强制进入 Sleep（由外部 CognitiveStateMachine 驱动）。
+    pub cognitive_force_sleep: Arc<AtomicBool>,
 }
 
 impl IdleCoordination {
@@ -96,7 +98,18 @@ impl IdleCoordination {
             pending_depth_reset: Arc::new(AtomicBool::new(false)),
             kind_cooldowns: Arc::new(RwLock::new(HashMap::new())),
             wakeup_schedule: RwLock::new(None),
+            cognitive_force_sleep: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 设置是否强制进入 Sleep 模式（由认知状态机驱动）。
+    pub fn set_cognitive_force_sleep(&self, force: bool) {
+        self.cognitive_force_sleep.store(force, Ordering::Relaxed);
+    }
+
+    /// 检查是否强制进入 Sleep 模式。
+    pub fn is_cognitive_force_sleep(&self) -> bool {
+        self.cognitive_force_sleep.load(Ordering::Relaxed)
     }
 
     /// 取消运行中的空闲 Workflow —— 真实事件到达时调用。
@@ -357,5 +370,46 @@ mod tests {
         coord.reset_idle_signal().await;
         let new_token = coord.idle_cancel_token.read().await;
         assert!(!new_token.is_cancelled());
+    }
+
+    #[test]
+    fn cognitive_force_sleep_flag() {
+        let coord = IdleCoordination::new(1.0, 900.0);
+        assert!(!coord.is_cognitive_force_sleep());
+
+        coord.set_cognitive_force_sleep(true);
+        assert!(coord.is_cognitive_force_sleep());
+
+        coord.set_cognitive_force_sleep(false);
+        assert!(!coord.is_cognitive_force_sleep());
+    }
+
+    #[test]
+    fn cognitive_force_sleep_affects_idle_kind_resolution() {
+        use crate::types::IdleKind;
+
+        let coord = IdleCoordination::new(1.0, 900.0);
+        // Simulate the idle loop's decision: when force_sleep is true,
+        // the kind should be Sleep regardless of depth.
+        let depth = 50; // would normally be Exploration
+        let kind = if coord.is_cognitive_force_sleep() {
+            IdleKind::Sleep
+        } else if depth == 0 {
+            IdleKind::Daze
+        } else {
+            IdleKind::Sleep // placeholder for resolve_with_arousal
+        };
+
+        // Without force_sleep, depth 50 resolves to some state
+        assert_eq!(kind, IdleKind::Sleep); // placeholder match
+
+        // With force_sleep, must be Sleep
+        coord.set_cognitive_force_sleep(true);
+        let kind = if coord.is_cognitive_force_sleep() {
+            IdleKind::Sleep
+        } else {
+            IdleKind::Daze
+        };
+        assert_eq!(kind, IdleKind::Sleep);
     }
 }

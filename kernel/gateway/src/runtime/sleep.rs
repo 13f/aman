@@ -177,6 +177,14 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         agent_id: &str,
         cancel: &CancellationToken,
     ) -> AmanResult<serde_json::Value> {
+        // Service degradation: skip LLM calls when backend is Down.
+        if let Some(health) = self.agent_registry.get_agent_backend_health(agent_id).await {
+            if health.status() == super::backend_health::BackendStatus::Down {
+                debug!(agent_id, "Sleep phase 1: LLM backend down, skipping session_backfill");
+                return Ok(serde_json::json!({"status": "skipped", "reason": "llm_backend_down"}));
+            }
+        }
+
         let Some(store) = self.agent_registry.get_session_store(agent_id).await else {
             debug!(agent_id, "Sleep phase 1: no SessionStore, skipping");
             return Ok(serde_json::json!({"status": "skipped", "reason": "no session store"}));
@@ -237,6 +245,15 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         .await
         {
             Ok(()) => {
+                // Report success to BackendHealth.
+                if let Some(health) = self.agent_registry.get_agent_backend_health(agent_id).await {
+                    let changed = health.record_success(
+                        self.agent_registry.backend_health_registry().config(),
+                    );
+                    if let Some(ev) = changed {
+                        super::reflection::publish_health_event(&self.agent_registry, ev);
+                    }
+                }
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
@@ -246,6 +263,16 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
                 Ok(serde_json::json!({"extracted": 1, "session_id": session.id}))
             }
             Err(e) => {
+                // Report failure to BackendHealth.
+                if let Some(health) = self.agent_registry.get_agent_backend_health(agent_id).await {
+                    let changed = health.record_failure(
+                        &e.to_string(),
+                        self.agent_registry.backend_health_registry().config(),
+                    );
+                    if let Some(ev) = changed {
+                        super::reflection::publish_health_event(&self.agent_registry, ev);
+                    }
+                }
                 warn!(agent_id, session_id = %session.id, error = %e, "Sleep phase 1: extraction failed for agent {agent_id}");
                 Ok(serde_json::json!({"error": e.to_string()}))
             }

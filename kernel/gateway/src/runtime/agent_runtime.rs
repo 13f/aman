@@ -825,6 +825,21 @@ impl AgentRuntimeBuilder {
                 // -- LlmProvider --
                 if let Some(llm) = create_per_agent_llm_provider(cfg, agent_id, entry) {
                     pollster::block_on(agent_registry.set_llm_provider(agent_id, llm));
+                    // Register BackendHealth for this agent's base_url (shared across agents)
+                    // and record the agent_id → base_url mapping for later lookup.
+                    if let Some(provider) = cfg.providers.get(&entry.provider) {
+                        let base_url = provider.base_url.clone();
+                        let health = pollster::block_on(
+                            agent_registry.get_or_insert_backend_health(&base_url),
+                        );
+                        let _ = health; // stored in registry, used by record_success/failure
+                        pollster::block_on(agent_registry.set_agent_base_url(agent_id, &base_url));
+                    }
+                    // Initialize CognitiveStateMachine for this agent.
+                    let _cog = pollster::block_on(agent_registry.init_cognitive_state(
+                        agent_id,
+                        super::CognitiveStateConfig::default(),
+                    ));
                 }
 
                 // -- TraceStore (task execution traces) --
@@ -4896,6 +4911,10 @@ impl AgentRuntime {
                 self.agent_registry.start_all_idle_loops().await;
                 // Start emotion evaluators (require Tokio runtime)
                 self.agent_registry.start_all_emotion_evaluators().await;
+                // Start cognitive state monitors (propagate to idle/arousal)
+                Arc::clone(&self.agent_registry)
+                    .start_all_cognitive_monitors()
+                    .await;
                 // Initialize MCP clients for all agents (only when enabled in config)
                 if self.config.mcp.enabled {
                     self.agent_registry.init_mcp_all(self.tools()).await;

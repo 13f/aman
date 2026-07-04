@@ -1386,8 +1386,6 @@ impl AgentRuntimeBuilder {
                 // Set agent status immediately (synchronously, before the
                 // spawned task runs) so the idle detector doesn't race and
                 // fire a boredom activity while this message is queued.
-                // Skip for background boredom messages — the boredom actor
-                // already set the system_state before publishing.
                 if !background {
                     let is_work = super::session::work_session::parse_work_session_id(&session_id).is_some();
                     let _ = self.agent_registry.set_status(&agent_id, kernel::agent::AgentStatus::Busy).await;
@@ -1395,6 +1393,19 @@ impl AgentRuntimeBuilder {
                         &agent_id,
                         if is_work { kernel::agent::AgentSystemState::Working }
                         else { kernel::agent::AgentSystemState::Chatting },
+                    ).await;
+                } else if skill_name.is_some() {
+                    // Background idle_run (boredom): flip to DailyLife with the
+                    // skill name as activity right away, so the UI reflects the
+                    // living state instantly instead of waiting for the async
+                    // ReAct task to finish its cleanup.
+                    self.agent_registry.set_system_state(
+                        &agent_id,
+                        kernel::agent::AgentSystemState::DailyLife,
+                    ).await;
+                    self.agent_registry.set_activity(
+                        &agent_id,
+                        skill_name.as_deref().unwrap_or(""),
                     ).await;
                 }
 
@@ -2001,7 +2012,7 @@ impl AgentRuntimeBuilder {
 
                 tokio::spawn(async move {
                     let sid = format!("a2a:{}", session_id);
-                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, false).await {
+                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, None, false).await {
                         Ok(reply) => {
                             if !is_original {
                                 // Message was a reply — process but don't auto-respond.

@@ -258,9 +258,11 @@ impl AgentHarness {
         Ok(engine)
     }
 
+    #[allow(clippy::too_many_arguments)] // Mirrors `process_message` args + skill_name for DailyLife tracking.
     pub async fn process_message_v2(
         self: &Arc<Self>, agent_id: &str, session_id: &str, user_text: &str,
-        model: &str, soul_snapshot: SoulSnapshot, background: bool,
+        model: &str, soul_snapshot: SoulSnapshot, skill_name: Option<&str>,
+        background: bool,
     ) -> AmanResult<String> {
         let inst = self.prepare_agent_session(agent_id, session_id, background).await?;
         if let Some(c) = self.registry.get_idle_coordination(agent_id).await { c.reset_idle_signal().await; c.arousal.boost(0.3); }
@@ -331,8 +333,16 @@ impl AgentHarness {
             self.unregister_interrupt(session_id);
             let _ = self.registry.set_active_session(agent_id, None).await;
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
-            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
-            let _ = self.registry.set_activity(agent_id, "").await;
+            if background && skill_name.is_some() {
+                // Background idle_run (boredom) failed — leave the agent in
+                // DailyLife with a hint of which skill was attempted, rather
+                // than snapping back to Idle and making the UI look stuck.
+                let _ = self.registry.set_system_state(agent_id, AgentSystemState::DailyLife).await;
+                let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
+            } else {
+                let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+                let _ = self.registry.set_activity(agent_id, "").await;
+            }
             self.session_history.clear(session_id);
         }
 
@@ -372,10 +382,19 @@ impl AgentHarness {
         self.session_history.append(session_id, ChatMessage::assistant(&reply));
         self.unregister_interrupt(session_id);
         let _ = self.registry.set_active_session(agent_id, None).await;
-        // Reset state to Idle on success
-        let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
-        let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
-        let _ = self.registry.set_activity(agent_id, "").await;
+        // Background idle_run (boredom) keeps the agent in DailyLife with the
+        // skill name as its activity — otherwise a detached script that runs for
+        // minutes would flash Busy→Idle instantly and the UI would look stuck.
+        if background && skill_name.is_some() {
+            let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+            let _ = self.registry.set_system_state(agent_id, AgentSystemState::DailyLife).await;
+            let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
+        } else {
+            // Reset state to Idle on success
+            let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+            let _ = self.registry.set_activity(agent_id, "").await;
+        }
         if !is_a2a {
             // Publish agent:idle to the agent's local bus
             self.try_publish_to_agent_bus(agent_id, Event::new(
@@ -789,8 +808,8 @@ impl AgentHarness {
                 json!({"agent_id": agent_id, "session_id": session_id, "skill_name": skill_name}),
             )).await;
         }
-        let _ = (&react_mode, &continuation_mode); // consumed by process_message_v2
-        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, background).await
+        let _ = (&react_mode, &continuation_mode);
+        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, skill_name, background).await
     }
 
     /// Process a message through the ReAct loop for an anonymous agent.
@@ -809,7 +828,7 @@ impl AgentHarness {
         soul_snapshot: SoulSnapshot,
         background: bool,
     ) -> AmanResult<String> {
-        self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, background).await
+        self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, None, background).await
     }
 
     // ── process_message helpers ──────────────────────────────────────

@@ -105,6 +105,10 @@ impl LlmProvider for StubLlmProvider {
         &self.name
     }
 
+    fn base_url(&self) -> &str {
+        ""
+    }
+
     async fn chat_completion(
         &self,
         _req: LlmChatRequest,

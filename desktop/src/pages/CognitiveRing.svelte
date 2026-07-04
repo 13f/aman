@@ -35,6 +35,9 @@
     { phase: "result",    color: PHASE_COLORS["result"],    offset: -3 * SEG_LEN },
   ];
 
+  /** ReAct idle phase: ring shows waiting state instead of all-dim */
+  let idleMode = $derived(reactPhase === "idle" && active);
+
   /** Accessible label for the current phase. */
   const PHASE_LABEL: Record<ReactPhase, string> = {
     observing: "Observing",
@@ -57,6 +60,7 @@
 <div
   class="cognitive-ring"
   class:dimmed={!active}
+  class:idle={idleMode}
   class:no-transition={prefersReducedMotion}
   style="width: {size}px; height: {size}px;"
   role="img"
@@ -137,6 +141,23 @@
     transition: none;
   }
 
+  /* ── idle phase: gentle pulse on all segments ─────────────────────
+     ReAct phase is "idle" while waiting for the first processing event
+     of a new cycle. Instead of showing a completely dark ring, show
+     a subtle breathing pulse to indicate "ready and waiting". */
+
+  .cognitive-ring.idle .seg {
+    animation: seg-idle-pulse 2.5s ease-in-out infinite;
+  }
+  .cognitive-ring.idle.no-transition .seg {
+    animation: none;
+  }
+
+  @keyframes seg-idle-pulse {
+    0%, 100% { opacity: 0.22; }
+    50%      { opacity: 0.45; }
+  }
+
   /* ── centre content (same geometry as IdleRing) ─────────────────── */
 
   .ring-center {
@@ -184,6 +205,9 @@
     }
     .step-text {
       transition: none;
+    }
+    .cognitive-ring.idle .seg {
+      animation: none;
     }
   }
 </style>

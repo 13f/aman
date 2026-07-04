@@ -342,6 +342,100 @@ impl NotificationSubscriber {
                 self.store.push(Notification::info(Category::Idle, title, message));
             }
 
+            // ── LLM backend health changes ──────────────────────────
+            EventType::Custom(s) if s == "llm_backend_down" => {
+                let base_url = event
+                    .payload
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let consecutive = event
+                    .payload
+                    .get("consecutive_failures")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                self.store.push(
+                    Notification::critical(
+                        Category::Llm,
+                        "LLM 后端不可用",
+                        format!("{base_url} 连续 {consecutive} 次失败，已停止调用"),
+                    )
+                    .with_action("查看状态", "/agents"),
+                );
+            }
+            EventType::Custom(s) if s == "llm_backend_degraded" => {
+                let base_url = event
+                    .payload
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let consecutive = event
+                    .payload
+                    .get("consecutive_failures")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                self.store.push(
+                    Notification::warning(
+                        Category::Llm,
+                        "LLM 后端降级",
+                        format!("{base_url} 连续 {consecutive} 次失败，处于降级状态"),
+                    )
+                    .with_action("查看状态", "/agents"),
+                );
+            }
+            EventType::Custom(s) if s == "llm_backend_recovered" => {
+                let base_url = event
+                    .payload
+                    .get("base_url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                self.store.push(
+                    Notification::info(
+                        Category::Gateway,
+                        "LLM 后端已恢复",
+                        format!("{base_url} 恢复正常"),
+                    )
+                    .with_action("查看状态", "/agents"),
+                );
+            }
+
+            // ── Agent cognitive state changes ────────────────────────
+            EventType::Custom(s) if s == "cognitive_state_changed" => {
+                let agent_id = event
+                    .payload
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let state = event
+                    .payload
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                match state {
+                    "Catatonic" => {
+                        self.store.push(
+                            Notification::critical(
+                                Category::Llm,
+                                format!("{agent_id} 进入木僵状态"),
+                                "LLM 后端不可用，agent 无法思考但仍在运行",
+                            )
+                            .with_action("查看状态", "/agents"),
+                        );
+                    }
+                    "Coma" => {
+                        self.store.push(
+                            Notification::critical(
+                                Category::Llm,
+                                format!("{agent_id} 进入昏迷状态"),
+                                "LLM 后端长时间不可用，agent 已停止感知",
+                            )
+                            .with_action("查看状态", "/agents"),
+                        );
+                    }
+                    _ => {}
+                }
+            }
+
             _ => {}
         }
     }

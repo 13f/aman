@@ -107,6 +107,10 @@ impl LlmProvider for LlmOpenaiProvider {
         "openai"
     }
 
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     async fn chat_completion(
         &self,
         req: LlmChatRequest,

@@ -240,6 +240,12 @@ async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
         let agent_id = &inst.descriptor.agent_id;
         // Include the LLM-evaluated emotion_id if available.
         let emotion_id = registry.get_latest_emotion(agent_id).await;
+        // Include the cognitive state (Lucid/Groggy/Catatonic/Coma).
+        let cognitive_state = registry
+            .get_cognitive_state(agent_id)
+            .await
+            .map(|s| format!("{:?}", s))
+            .unwrap_or_else(|| "Lucid".to_owned());
 
         let mut entry = serde_json::json!({
             "agent_id": agent_id,
@@ -251,6 +257,7 @@ async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
                 .ok()
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_default(),
+            "cognitive_state": cognitive_state,
         });
 
         if let Some(ref emo) = emotion_id {

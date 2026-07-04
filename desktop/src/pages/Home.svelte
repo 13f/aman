@@ -94,6 +94,7 @@
   let llmEmotionIds = $state<Record<string, string>>({});
   let emotionsConfigs = $state<Record<string, EmotionsConfig | null>>({});
   let cognitiveStates = $state<Record<string, CognitiveState>>({});
+  let brainStates = $state<Record<string, string>>({});
   let observeTimers = $state<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
 
   function defaultCognitiveState(): CognitiveState {
@@ -386,15 +387,36 @@
 
     // Listen for system state updates from the gateway
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
-      const list: Array<{ agent_id: string; system_state: string; emotion_id?: string }> = e.payload?.agents ?? [];
+      const list: Array<{
+        agent_id: string;
+        system_state: string;
+        emotion_id?: string;
+        cognitive_state?: string;
+      }> = e.payload?.agents ?? [];
       const nextStates: Record<string, string> = {};
       const nextEmotions: Record<string, string> = {};
+      const nextBrainStates: Record<string, string> = {};
       for (const a of list) {
         nextStates[a.agent_id] = a.system_state;
         nextEmotions[a.agent_id] = a.emotion_id ?? "";
+        nextBrainStates[a.agent_id] = a.cognitive_state ?? "Lucid";
       }
       systemStates = nextStates;
       llmEmotionIds = { ...llmEmotionIds, ...nextEmotions };
+      brainStates = nextBrainStates;
+    }));
+
+    // 实时监听 cognitive_state_changed 事件（事件驱动，比 2s 快照更快）
+    unlisteners.push(await listen("event:processed", (e: any) => {
+      const p = e.payload;
+      const et: string | undefined = p?.event_type;
+      if (et !== "cognitive_state_changed") return;
+      const inner = p.payload ?? {};
+      const agentId: string | undefined = inner.agent_id;
+      const state: string | undefined = inner.state;
+      if (agentId && state) {
+        brainStates = { ...brainStates, [agentId]: state };
+      }
     }));
   });
 
@@ -442,6 +464,7 @@
         {agents}
         {idleStates}
         {systemStates}
+        {brainStates}
         onSelect={selectAgent}
       />
     {:else}
@@ -451,6 +474,7 @@
         {systemStates}
         {emotionsConfigs}
         {cognitiveStates}
+        {brainStates}
         {prefersReducedMotion}
         onSelect={selectAgent}
       />

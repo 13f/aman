@@ -74,6 +74,10 @@ impl LlmProvider for LlmLocalProvider {
         "local"
     }
 
+    fn base_url(&self) -> &str {
+        self.inner.base_url()
+    }
+
     async fn chat_completion(
         &self,
         req: LlmChatRequest,

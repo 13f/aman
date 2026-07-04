@@ -219,7 +219,9 @@ impl BackendHealth {
 /// key = 归一化后的 base_url，value = Arc<BackendHealth>。
 /// 多个 agent 共享同一个后端时，它们看到的 `Arc<BackendHealth>` 是同一个。
 pub struct BackendHealthRegistry {
-    map: RwLock<HashMap<String, Arc<BackendHealth>>>,
+    /// key = 归一化后的 base_url，value = Arc<BackendHealth>。
+    /// 公开以便 LlmHealthProbe 遍历所有后端。
+    pub map: RwLock<HashMap<String, Arc<BackendHealth>>>,
     config: BackendHealthConfig,
 }
 
@@ -276,7 +278,12 @@ impl BackendHealthRegistry {
 }
 
 /// 归一化 URL：去除 trailing slash，统一 scheme 小写。
-fn normalized_url(input: &str) -> String {
+pub fn normalized_url(input: &str) -> String {
+    normalized_url_internal(input)
+}
+
+/// 内部实现（不公开）。
+fn normalized_url_internal(input: &str) -> String {
     let mut s = input.trim().to_string();
     while s.ends_with('/') {
         s.pop();

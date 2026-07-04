@@ -250,6 +250,94 @@ mod tests {
     }
 
     #[test]
+    fn subscriber_llm_backend_down_creates_critical() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "llm_health",
+            EventType::Custom("llm_backend_down".into()),
+            serde_json::json!({
+                "base_url": "https://api.openai.com/v1",
+                "from": "Degraded",
+                "to": "Down",
+                "consecutive_failures": 6,
+                "last_error": "timeout"
+            }),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].severity, Severity::Critical);
+        assert_eq!(all[0].category, Category::Llm);
+        assert!(all[0].title.contains("不可用"));
+    }
+
+    #[test]
+    fn subscriber_llm_backend_recovered_creates_info() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "llm_health",
+            EventType::Custom("llm_backend_recovered".into()),
+            serde_json::json!({
+                "base_url": "https://api.openai.com/v1",
+                "from": "Down",
+                "to": "Ok",
+                "consecutive_failures": 0,
+                "last_error": ""
+            }),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].severity, Severity::Info);
+        assert_eq!(all[0].category, Category::Gateway);
+        assert!(all[0].title.contains("恢复"));
+    }
+
+    #[test]
+    fn subscriber_cognitive_state_catatonic_creates_critical() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "cognitive_health",
+            EventType::Custom("cognitive_state_changed".into()),
+            serde_json::json!({
+                "agent_id": "coder",
+                "state": "Catatonic",
+                "force_sleep": true
+            }),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].severity, Severity::Critical);
+        assert!(all[0].title.contains("木僵"));
+    }
+
+    #[test]
+    fn subscriber_cognitive_state_groggy_no_notification() {
+        // Groggy 不需要通知（只有 Catatonic/Coma 才通知）
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "cognitive_health",
+            EventType::Custom("cognitive_state_changed".into()),
+            serde_json::json!({
+                "agent_id": "coder",
+                "state": "Groggy",
+                "force_sleep": true
+            }),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        assert_eq!(store.unread_count(), 0);
+    }
+
+    #[test]
     fn notification_model_constructors() {
         let info = Notification::info(Category::Llm, "title", "msg");
         assert_eq!(info.severity, Severity::Info);

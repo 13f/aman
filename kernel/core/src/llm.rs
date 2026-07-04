@@ -71,6 +71,9 @@ pub trait LlmProvider: Send + Sync {
     /// Provider name identifier (e.g. "openai", "claude").
     fn name(&self) -> &str;
 
+    /// Base URL of the LLM API endpoint (e.g. "https://api.openai.com/v1").
+    fn base_url(&self) -> &str;
+
     /// Send a chat completion request to the LLM.
     ///
     /// When `cb` is `Some`, the implementation SHOULD stream the response

@@ -951,6 +951,16 @@ impl AgentRegistry {
         providers.get(agent_id).cloned()
     }
 
+    /// Get all LLM providers as (agent_id, provider) pairs.
+    /// Used by LlmHealthProbe to iterate unique backends.
+    pub async fn get_all_llm_providers(&self) -> Vec<(String, Arc<dyn LlmProvider>)> {
+        let providers = self.llm_providers.read().await;
+        providers
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect()
+    }
+
     // ── Backend health (shared across agents with same base_url) ──────
 
     /// Get the backend health registry.
@@ -1189,9 +1199,10 @@ impl AgentRegistry {
 
     /// Start per-agent cognitive state monitoring tasks.
     ///
-    /// Each task subscribes to its agent's `CognitiveStateMachine` watch channel
-    /// and propagates state changes to idle coordination (force Sleep) and
-    /// arousal tracker (freeze on Catatonic/Coma).
+    /// Each agent gets two background tasks:
+    /// 1. A watch-channel subscriber that propagates state changes to idle
+    ///    coordination (force Sleep) and arousal tracker in real-time.
+    /// 2. A periodic escalation timer that checks Catatonic timeout → Coma.
     pub async fn start_all_cognitive_monitors(self: &Arc<Self>) {
         let agent_ids: Vec<String> = {
             let agents = self.agents.read().await;
@@ -1206,8 +1217,10 @@ impl AgentRegistry {
                 continue;
             };
 
+            // ── Task 1: watch channel subscriber (real-time propagation) ──
             let mut rx = cog_machine.subscribe();
             let registry = Arc::clone(self);
+            let agent_id_t1 = agent_id.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -1253,7 +1266,7 @@ impl AgentRegistry {
                             "cognitive_health",
                             EventType::Custom("cognitive_state_changed".to_owned()),
                             json!({
-                                "agent_id": agent_id,
+                                "agent_id": agent_id_t1,
                                 "state": format!("{:?}", state),
                                 "force_sleep": force_sleep,
                             }),
@@ -1261,11 +1274,33 @@ impl AgentRegistry {
                         .await;
 
                     tracing::info!(
-                        agent = %agent_id,
+                        agent = %agent_id_t1,
                         ?state,
                         force_sleep,
                         "cognitive state changed"
                     );
+                }
+            });
+
+            // ── Task 2: periodic Catatonic → Coma escalation timer ──
+            let agent_id_t2 = agent_id;
+
+            tokio::spawn(async move {
+                // Check every 10 seconds — a balance between responsiveness
+                // and not spamming the check for a 15-min threshold.
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+                loop {
+                    interval.tick().await;
+                    if let Some(new_state) = cog_machine.maybe_escalate_to_coma() {
+                        tracing::warn!(
+                            agent = %agent_id_t2,
+                            ?new_state,
+                            "cognitive state escalated to Coma (timeout)"
+                        );
+                        // The escalation will be picked up by Task 1's watch channel.
+                    }
                 }
             });
         }

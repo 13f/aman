@@ -840,6 +840,18 @@ impl AgentRuntimeBuilder {
                         agent_id,
                         super::CognitiveStateConfig::default(),
                     ));
+                } else {
+                    // 没有可用的 LLM provider（首次启动 / 配置缺失）：
+                    // 直接将 CognitiveState 设为 Coma，不做无意义的探针查询。
+                    let cog = pollster::block_on(agent_registry.init_cognitive_state(
+                        agent_id,
+                        super::CognitiveStateConfig::default(),
+                    ));
+                    let _ = cog.force_coma();
+                    tracing::warn!(
+                        agent = %agent_id,
+                        "No LLM provider available, agent starts in Coma state"
+                    );
                 }
 
                 // -- TraceStore (task execution traces) --
@@ -4915,6 +4927,9 @@ impl AgentRuntime {
                 Arc::clone(&self.agent_registry)
                     .start_all_cognitive_monitors()
                     .await;
+
+                // Start LLM health probe (periodic backend availability check)
+                self.start_llm_health_probe().await;
                 // Initialize MCP clients for all agents (only when enabled in config)
                 if self.config.mcp.enabled {
                     self.agent_registry.init_mcp_all(self.tools()).await;
@@ -5002,6 +5017,70 @@ impl AgentRuntime {
             }
         }
         Ok(())
+    }
+
+    /// 启动 LLM 健康探针。
+    ///
+    /// 注册一个每分钟执行的 cron job，周期性检查所有 Down/Degraded 后端的
+    /// 健康状态。使用 `GET /models` 轻量请求（不消耗 token）。
+    async fn start_llm_health_probe(&self) {
+        let registry = Arc::clone(&self.agent_registry);
+        let bus = self.bus_cloned();
+
+        // 创建探针 EventHandler
+        let probe = super::llm_health_probe::LlmHealthProbe::new(registry);
+
+        // 订阅 CronTick 事件
+        let subscription_filter =
+            event_bus::SubscriptionFilter::default();
+        let probe_handler = Box::new(probe);
+        match bus.subscribe(subscription_filter, probe_handler).await {
+            Ok(_sub_id) => {
+                tracing::info!("llm_health_probe: subscribed to CronTick");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "llm_health_probe: failed to subscribe");
+                return;
+            }
+        }
+
+        // 注册 cron job：每分钟执行一次
+        match source::CronSource::new("llm_health_probe", "*/1 * * * *") {
+            Ok(cron_source) => {
+                let sr = self.sources();
+                match sr
+                    .register(
+                        Box::new(cron_source),
+                        source::SourceMode::Pull,
+                        source::TrustLevel::Untrusted,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        match sr.start("llm_health_probe").await {
+                            Ok(()) => {
+                                tracing::info!("llm_health_probe: cron job started (every 1min)");
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "llm_health_probe: failed to start cron job"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "llm_health_probe: failed to register cron source"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "llm_health_probe: failed to create cron source");
+            }
+        }
     }
 
     fn load_workflows_once(&self) -> AmanResult<()> {
@@ -6419,6 +6498,7 @@ fn wrap_cognitive_provider(
     #[async_trait::async_trait]
     impl LlmProvider for Adapter {
         fn name(&self) -> &str { self.0.name() }
+        fn base_url(&self) -> &str { self.0.base_url() }
         async fn chat_completion(&self, req: LlmChatRequest, cb: Option<Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync>>) -> Result<LlmResponse, kernel::Error> {
             let cr = cognitive_llm::provider::LlmChatRequest {
                 model: req.model, system_prompt: req.system_prompt,
@@ -6457,6 +6537,10 @@ struct KernelLlmProviderAdapter {
 impl cognitive_llm::provider::LlmProvider for KernelLlmProviderAdapter {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn base_url(&self) -> &str {
+        self.inner.base_url()
     }
 
     async fn chat_completion(
@@ -6609,6 +6693,10 @@ mod cognitive_adapter_tests {
             "stub"
         }
 
+        fn base_url(&self) -> &str {
+            "http://localhost:11434/v1"
+        }
+
         async fn chat_completion(
             &self,
             _req: cognitive_llm::provider::LlmChatRequest,
@@ -6704,6 +6792,10 @@ fn convert_stream_event_from_cognitive(evt: cognitive_llm::provider::StreamEvent
 impl kernel::llm::LlmProvider for CognitiveLlmProviderAdapter {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn base_url(&self) -> &str {
+        self.inner.base_url()
     }
 
     async fn chat_completion(

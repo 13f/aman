@@ -41,22 +41,30 @@
 
   /** Number of agents currently reporting an error/prize state. */
   let errorCount = $state(0);
+  /** Number of agents with degraded cognitive state (Groggy/Catatonic/Coma). */
+  let degradedCount = $state(0);
 
   function updateAggregate(event: any) {
-    const list: Array<{ agent_id: string; system_state: string }> =
-      event.payload?.agents ?? [];
+    const list: Array<{
+      agent_id: string;
+      system_state: string;
+      cognitive_state?: string;
+    }> = event.payload?.agents ?? [];
     if (list.length === 0) return;
 
     let active = 0;
     let errors = 0;
+    let degraded = 0;
     for (const a of list) {
       const s = a.system_state;
       if (s && s !== "idle") active++;
       if (s === "prize") errors++; // prize = agent hit an error/exception
+      if (a.cognitive_state && a.cognitive_state !== "Lucid") degraded++;
     }
     // Map active count → 0-1 (3+ active = full)
     targetActivity = Math.min(1, active / 3);
     errorCount = errors;
+    degradedCount = degraded;
   }
 
   // ── Canvas setup ──────────────────────────────────────────────────────
@@ -133,6 +141,13 @@
         // Subtle red boost when agents report errors.
         if (errorCount > 0) {
           r += 8 * errorCount;
+        }
+        // Murky amber/purple tint when LLM backend is degraded.
+        if (degradedCount > 0) {
+          const t = Math.min(1, degradedCount / 3);
+          r += 2 * t;
+          g -= 4 * t;
+          b += 6 * t;
         }
 
         const idx = (y * w + x) * 4;

@@ -2,6 +2,7 @@
   import { fade } from "svelte/transition";
   import IdleRing from "./IdleRing.svelte";
   import CognitiveRing from "./CognitiveRing.svelte";
+  import CognitiveAura from "./CognitiveAura.svelte";
   import { resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
   import type { CognitiveState } from "../lib/cognitive-state";
@@ -11,7 +12,6 @@
     type TiltState,
     type AgentGridViewEvents,
     COLORS,
-    IDLE_EMOJI,
     MODE_ICON,
     STATE_EMOJI,
     SYSTEM_STATE_LABEL,
@@ -24,6 +24,8 @@
     systemStates = {} as Record<string, string>,
     emotionsConfigs = {} as Record<string, EmotionsConfig | null>,
     cognitiveStates = {} as Record<string, CognitiveState>,
+    // CognitiveState (LLM backend health): "Lucid" | "Groggy" | "Catatonic" | "Coma"
+    brainStates = {} as Record<string, string>,
     onSelect = (_agent: AgentEntry) => {},
     prefersReducedMotion = false,
   }: AgentGridViewEvents & {
@@ -32,6 +34,7 @@
     systemStates?: Record<string, string>;
     emotionsConfigs?: Record<string, EmotionsConfig | null>;
     cognitiveStates?: Record<string, CognitiveState>;
+    brainStates?: Record<string, string>;
     prefersReducedMotion?: boolean;
   } = $props();
 
@@ -116,7 +119,21 @@
         style="--tilt-x: {ts.tiltX}deg; --tilt-y: {ts.tiltY}deg; --gloss-x: {ts.glossX}%; --gloss-y: {ts.glossY}%;"
       >
         <div class="agent-avatar-wrap">
-        {#if ss === "idle" || !agent.provider}
+        {#if (brainStates[agent.key] ?? "Lucid") !== "Lucid" && agent.provider}
+          <!-- Layer 1 (highest priority): LLM backend degraded → CognitiveAura -->
+          {@const bs = brainStates[agent.key] ?? "Groggy"}
+          {@const imgSrc = getEmotionImage(agent.key, "idle")}
+          <div transition:fade={{ duration: 400 }}>
+            <CognitiveAura
+              state={bs as "Groggy" | "Catatonic" | "Coma"}
+              emoji={bs === "Groggy" ? "\u{1F97A}" : bs === "Catatonic" ? "\u{1F636}" : "\u{1F4A4}"}
+              imageSrc={imgSrc}
+              size={165}
+              active={true}
+            />
+          </div>
+        {:else if ss === "idle" || !agent.provider}
+          <!-- Layer 2: idle aura (LLM healthy) -->
           {@const imgSrc = getEmotionImage(agent.key, st.kind || "idle")}
           <div transition:fade={{ duration: 300 }}>
             <IdleRing
@@ -133,6 +150,7 @@
             />
           </div>
         {:else}
+          <!-- Layer 3: active ReAct phase ring (LLM healthy + working) -->
           {@const cs = getCognitiveState(agent.key)}
           {@const imgSrc = getEmotionImage(agent.key, ss)}
           {@const phaseEmoji = cs.phase === "observing" ? "\u{1F50D}" :
@@ -140,7 +158,10 @@
                                cs.phase === "acting"    ? "\u{1F6E0}\u{FE0F}" :
                                cs.phase === "result"    ? "\u{2705}" :
                                STATE_EMOJI[ss] ?? "\u{1F4CB}"}
+          <!-- CognitiveRing 只在 ReAct 相位不是 idle 时显示（避免 DailyLife 等非 LLM 状态显示全暗）。
+               Phase 为 idle 时回退到 IdleRing（显示 processing 模式）。 -->
           <div transition:fade={{ duration: 300 }}>
+            {#if cs.phase !== "idle"}
             <CognitiveRing
               reactPhase={cs.phase}
               currentStep={cs.currentStep}
@@ -149,6 +170,20 @@
               size={165}
               active={!!agent.provider}
             />
+            {:else}
+            <IdleRing
+              mode="processing"
+              outerPct={50}
+              innerPct={50}
+              emoji={STATE_EMOJI[ss] ?? MODE_ICON.processing}
+              imageSrc={imgSrc}
+              ringColors={COLORS["processing"]}
+              size={165}
+              showLabel={false}
+              showInfo={false}
+              active={!!agent.provider}
+            />
+            {/if}
           </div>
         {/if}
         </div>

@@ -4,6 +4,7 @@
   import { fade } from "svelte/transition";
   import IdleRing from "./IdleRing.svelte";
   import CognitiveRing from "./CognitiveRing.svelte";
+  import CognitiveAura from "./CognitiveAura.svelte";
   import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
   import {
@@ -60,6 +61,7 @@
   let idleSnap = $state<IdleSnap | null>(null);
   let reflectSnap = $state<ReflectSnap | null>(null);
   let systemState = $state<string>("");
+  let brainState = $state<"Groggy" | "Catatonic" | "Coma" | "Lucid">("Lucid");
   let llmEmotionId = $state<string>("");
   let emotionsConfig = $state<EmotionsConfig | null>(null);
   let unlisteners: (() => void)[] = [];
@@ -143,6 +145,9 @@
   let isActive = $derived(
     systemState !== "idle" && systemState !== "" && systemState in SS_LABEL
   );
+
+  // When the LLM backend is degraded, the cognitive aura takes over.
+  let showCognitiveAura = $derived(brainState !== "Lucid");
 
   let displayState = $derived(
     isActive ? systemState : idleSubMode
@@ -307,11 +312,17 @@
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
       // Don't track state until an agent is selected.
       if (!agentId) return;
-      const list: Array<{ agent_id: string; system_state: string; emotion_id?: string }> = e.payload?.agents ?? [];
+      const list: Array<{
+        agent_id: string;
+        system_state: string;
+        emotion_id?: string;
+        cognitive_state?: string;
+      }> = e.payload?.agents ?? [];
       for (const a of list) {
         if (a.agent_id === agentId) {
           systemState = a.system_state;
           llmEmotionId = a.emotion_id ?? "";
+          brainState = (a.cognitive_state as "Groggy" | "Catatonic" | "Coma" | "Lucid") ?? "Lucid";
           break;
         }
       }
@@ -329,7 +340,18 @@
     {#if !compact}
       <span class="aw-name" title={agentName}>{agentName}</span>
       <div class="aw-ring-wrap">
-        {#if isActive}
+        {#if showCognitiveAura}
+          <div transition:fade={{ duration: 400 }}>
+            <CognitiveAura
+              state={brainState as "Groggy" | "Catatonic" | "Coma"}
+              arousal={undefined}
+              emoji={brainState === "Groggy" ? "\u{1F97A}" : brainState === "Catatonic" ? "\u{1F636}" : "\u{1F4A4}"}
+              imageSrc={emotionImage}
+              size={155}
+              active={runtimeRunning}
+            />
+          </div>
+        {:else if isActive && cognitiveState.phase !== "idle"}
           <div transition:fade={{ duration: 300 }}>
             <CognitiveRing
               reactPhase={cognitiveState.phase}
@@ -359,7 +381,18 @@
       </div>
       <span class="aw-state-label">{label}</span>
     {:else}
-      {#if isActive}
+      {#if showCognitiveAura}
+        <div transition:fade={{ duration: 400 }}>
+          <CognitiveAura
+            state={brainState as "Groggy" | "Catatonic" | "Coma"}
+            arousal={undefined}
+            emoji={brainState === "Groggy" ? "\u{1F97A}" : brainState === "Catatonic" ? "\u{1F636}" : "\u{1F4A4}"}
+            imageSrc={emotionImage}
+            size={36}
+            active={runtimeRunning}
+          />
+        </div>
+      {:else if isActive && cognitiveState.phase !== "idle"}
         <div transition:fade={{ duration: 300 }}>
           <CognitiveRing
             reactPhase={cognitiveState.phase}

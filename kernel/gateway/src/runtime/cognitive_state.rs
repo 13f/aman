@@ -134,6 +134,15 @@ impl CognitiveStateMachine {
         self.transition(new_state)
     }
 
+    /// 强制设为 Coma 状态。
+    ///
+    /// 用于首次启动时没有可用 LLM provider 的场景：
+    /// 不需要经历 Unknown → Groggy → Catatonic 的渐变过程，
+    /// 直接标记为昏迷，等待用户配置 provider 后再恢复。
+    pub fn force_coma(&self) -> Option<CognitiveState> {
+        self.transition(CognitiveState::Coma)
+    }
+
     /// 检查 Catatonic 是否超时进入 Coma。由内部定时器调用。
     pub fn maybe_escalate_to_coma(&self) -> Option<CognitiveState> {
         if self.state() != CognitiveState::Catatonic {
@@ -251,6 +260,40 @@ mod tests {
         let result = machine.maybe_escalate_to_coma();
         assert_eq!(result, Some(CognitiveState::Coma));
         assert_eq!(machine.state(), CognitiveState::Coma);
+    }
+
+    #[test]
+    fn test_force_coma_from_any_state() {
+        let (machine, _rx) = CognitiveStateMachine::new(CognitiveStateConfig::default());
+
+        // 初始状态是 Lucid，直接跳到 Coma
+        assert_eq!(machine.state(), CognitiveState::Lucid);
+        let result = machine.force_coma();
+        assert_eq!(result, Some(CognitiveState::Coma));
+        assert_eq!(machine.state(), CognitiveState::Coma);
+
+        // 已经是 Coma，再调一次不会触发转换
+        let result = machine.force_coma();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_no_provider_starts_in_coma() {
+        use super::BackendStatus;
+
+        // 模拟首次启动无 provider 的场景
+        let (machine, rx) = CognitiveStateMachine::new(CognitiveStateConfig::default());
+
+        // 用户未配置 provider → 直接 Coma
+        machine.force_coma();
+        assert_eq!(machine.state(), CognitiveState::Coma);
+
+        // watch channel 也收到通知
+        assert_eq!(*rx.borrow(), CognitiveState::Coma);
+
+        // 之后用户配置了 provider，BackendHealth Ok → 恢复 Lucid
+        machine.on_backend_status_change(BackendStatus::Ok);
+        assert_eq!(machine.state(), CognitiveState::Lucid);
     }
 
     #[test]

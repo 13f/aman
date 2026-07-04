@@ -60,13 +60,18 @@
   // ── SSE: gateway aggregate agent state ─────────────────────────────────
 
   function updateAggregate(event: any) {
-    const list: Array<{ agent_id: string; system_state: string }> =
-      event.payload?.agents ?? [];
+    const list: Array<{
+      agent_id: string;
+      system_state: string;
+      cognitive_state?: string;
+    }> = event.payload?.agents ?? [];
     if (list.length === 0) return;
 
     let active = 0;
+    // Cognitive-state-weighted activity: degraded agents don't count as "active".
     for (const a of list) {
-      if (a.system_state && a.system_state !== "idle") active++;
+      const cog = a.cognitive_state ?? "Lucid";
+      if (a.system_state && a.system_state !== "idle" && cog === "Lucid") active++;
     }
     targetActivity = Math.min(1, active / 3);
   }

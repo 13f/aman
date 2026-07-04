@@ -12,6 +12,7 @@ mod analytics_handler;
 mod backend_health;
 mod cognitive_state;
 mod date_util;
+mod llm_health_probe;
 mod orchestrator;
 mod subagent_spawner;
 mod event_consts;

@@ -9,11 +9,13 @@
     agents = [],
     idleStates = {} as Record<string, AgentIdleState>,
     systemStates = {} as Record<string, string>,
+    brainStates = {} as Record<string, string>,
     onSelect = (_agent: AgentEntry) => {},
   }: {
     agents: AgentEntry[];
     idleStates?: Record<string, AgentIdleState>;
     systemStates?: Record<string, string>;
+    brainStates?: Record<string, string>;
     onSelect?: (agent: AgentEntry) => void;
   } = $props();
 
@@ -23,7 +25,9 @@
 
   // ── Aman agent → HeroSnapshot mapping ──────────────────────────────────
 
-  function mapState(systemState: string, isActive: boolean): import("../lib/aoa/shared/index").HeroStateKind {
+  function mapState(systemState: string, isActive: boolean, brainState: string): import("../lib/aoa/shared/index").HeroStateKind {
+    // Degraded cognitive state always shows as sleeping/stunned in the realm.
+    if (brainState !== "Lucid") return "sleeping";
     if (!isActive) return "sleeping";
     switch (systemState) {
       case "working": return "working";
@@ -52,7 +56,7 @@
         projectDir: "aman",
         projectName: "Aman",
         teamColor: h % 8,
-        state: mapState(ss, agent.is_active),
+        state: mapState(ss, agent.is_active, brainStates[agent.key] ?? "Lucid"),
         currentTool: st?.kind,
         tokens: { input: 0, output: 0 },
         startedAt: now,

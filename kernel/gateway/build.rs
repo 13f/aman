@@ -47,21 +47,31 @@ fn run_pre_build_steps(workspace_root: &Path) {
             args.join(" "),
             dir.display(),
         );
-        let status = Command::new("cmd")
-            .args(&["/c", cmd])
-            .args(*args)
-            .current_dir(&dir)
-            .status()
-            .unwrap_or_else(|e| {
-                panic!(
-                    "Failed to run pre-build step [{}/{}]: {} {} — {}",
-                    i + 1,
-                    PRE_BUILD_STEPS.len(),
-                    cmd,
-                    args.join(" "),
-                    e,
-                )
-            });
+        // On Windows, run through `cmd /c`; on Unix, invoke the command
+        // directly. Using `cmd` unconditionally would fail with "No such
+        // file or directory" on non-Windows platforms.
+        let status = if cfg!(windows) {
+            Command::new("cmd")
+                .args(&["/c", cmd])
+                .args(*args)
+                .current_dir(&dir)
+                .status()
+        } else {
+            Command::new(cmd)
+                .args(*args)
+                .current_dir(&dir)
+                .status()
+        }
+        .unwrap_or_else(|e| {
+            panic!(
+                "Failed to run pre-build step [{}/{}]: {} {} — {}",
+                i + 1,
+                PRE_BUILD_STEPS.len(),
+                cmd,
+                args.join(" "),
+                e,
+            )
+        });
         if !status.success() {
             panic!(
                 "Pre-build step [{}/{}] failed with exit code {:?}: {} {}",

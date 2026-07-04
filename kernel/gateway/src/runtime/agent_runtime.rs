@@ -1395,14 +1395,12 @@ impl AgentRuntimeBuilder {
                         else { kernel::agent::AgentSystemState::Chatting },
                     ).await;
                 } else if skill_name.is_some() {
-                    // Background idle_run (boredom): flip to DailyLife with the
-                    // skill name as activity right away, so the UI reflects the
-                    // living state instantly instead of waiting for the async
-                    // ReAct task to finish its cleanup.
-                    self.agent_registry.set_system_state(
-                        &agent_id,
-                        kernel::agent::AgentSystemState::DailyLife,
-                    ).await;
+                    // Background idle_run (boredom): the idle manager / HTTP skill
+                    // endpoint already set system_state correctly based on the
+                    // boredom tag (fun→DailyLife, work→Working, study→Studying,
+                    // prize→Prize). Only set the activity to the chosen skill name
+                    // so the UI reflects what the agent is doing right away —
+                    // leave system_state untouched to preserve that tag mapping.
                     self.agent_registry.set_activity(
                         &agent_id,
                         skill_name.as_deref().unwrap_or(""),

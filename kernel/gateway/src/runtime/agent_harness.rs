@@ -334,10 +334,11 @@ impl AgentHarness {
             let _ = self.registry.set_active_session(agent_id, None).await;
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
             if background && skill_name.is_some() {
-                // Background idle_run (boredom) failed — leave the agent in
-                // DailyLife with a hint of which skill was attempted, rather
-                // than snapping back to Idle and making the UI look stuck.
-                let _ = self.registry.set_system_state(agent_id, AgentSystemState::DailyLife).await;
+                // Background idle_run (boredom) failed — the idle manager /
+                // HTTP endpoint already set system_state based on the boredom
+                // tag (fun→DailyLife, work→Working, …). Preserve that and only
+                // set the activity to the attempted skill name, so the UI shows
+                // what was being tried instead of snapping back to Idle.
                 let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
             } else {
                 let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
@@ -382,12 +383,14 @@ impl AgentHarness {
         self.session_history.append(session_id, ChatMessage::assistant(&reply));
         self.unregister_interrupt(session_id);
         let _ = self.registry.set_active_session(agent_id, None).await;
-        // Background idle_run (boredom) keeps the agent in DailyLife with the
-        // skill name as its activity — otherwise a detached script that runs for
-        // minutes would flash Busy→Idle instantly and the UI would look stuck.
         if background && skill_name.is_some() {
+            // Background idle_run (boredom): the idle manager / HTTP endpoint
+            // already set system_state correctly based on the boredom tag
+            // (fun→DailyLife, work→Working, study→Studying, prize→Prize).
+            // Don't overwrite it — just refresh the activity to the resolved
+            // skill name so the UI shows what is running. A detached script
+            // that runs for minutes must not flash Busy→Idle.
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
-            let _ = self.registry.set_system_state(agent_id, AgentSystemState::DailyLife).await;
             let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
         } else {
             // Reset state to Idle on success

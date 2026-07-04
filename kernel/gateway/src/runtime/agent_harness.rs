@@ -334,11 +334,13 @@ impl AgentHarness {
             let _ = self.registry.set_active_session(agent_id, None).await;
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
             if background && skill_name.is_some() {
-                // Background idle_run (boredom) failed — the idle manager /
-                // HTTP endpoint already set system_state based on the boredom
-                // tag (fun→DailyLife, work→Working, …). Preserve that and only
-                // set the activity to the attempted skill name, so the UI shows
-                // what was being tried instead of snapping back to Idle.
+                // Background idle_run (boudom) failed — the exec returned in
+                // ~1ms so the agent is logically idle even though a detached
+                // script may still be running. Reset system_state to Idle so
+                // the idle detector keeps polling (otherwise it would skip
+                // forever and the ring would freeze). Keep the activity text so
+                // the UI still shows what skill was being attempted.
+                let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
                 let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
             } else {
                 let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
@@ -384,13 +386,15 @@ impl AgentHarness {
         self.unregister_interrupt(session_id);
         let _ = self.registry.set_active_session(agent_id, None).await;
         if background && skill_name.is_some() {
-            // Background idle_run (boredom): the idle manager / HTTP endpoint
-            // already set system_state correctly based on the boredom tag
-            // (fun→DailyLife, work→Working, study→Studying, prize→Prize).
-            // Don't overwrite it — just refresh the activity to the resolved
-            // skill name so the UI shows what is running. A detached script
-            // that runs for minutes must not flash Busy→Idle.
+            // Background idle_run (boredom): the exec(detached) returned in
+            // ~1ms so the agent is logically idle even though a detached
+            // script may still be running in the background. Reset
+            // system_state to Idle so the idle detector keeps polling —
+            // otherwise it would skip forever (state != Idle) and the ring
+            // would freeze. Keep the activity text so the UI still shows
+            // what skill was triggered.
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
+            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
             let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
         } else {
             // Reset state to Idle on success

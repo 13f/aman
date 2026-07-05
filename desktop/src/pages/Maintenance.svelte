@@ -329,7 +329,7 @@
   <section class="dp-section">
     <div class="dp-section-header" role="button" tabindex="0" onclick={() => showDlqPanel = !showDlqPanel} onkeydown={(e) => e.key === 'Enter' && (showDlqPanel = !showDlqPanel)}>
       <span>{showDlqPanel ? "▼" : "▶"} Dead Letter Queue <span class="dp-count">({dlqEntries.length})</span></span>
-      <span class="dp-header-right" onclick={(e) => e.stopPropagation()}>
+      <span class="dp-header-right" role="button" onclick={(e) => e.stopPropagation()}>
         <button class="dp-btn" onclick={loadDlq} disabled={dlqLoading}>Refresh</button>
       </span>
     </div>

@@ -297,6 +297,37 @@ mod tests {
         assert!(all[0].title.contains("恢复"));
     }
 
+    /// `Unknown → Ok`（启动后首次连通）应触发欢迎语义的"已连接"通知，
+    /// 而非通用的"已恢复"。验证事件类型 `llm_backend_connected` 被正确处理。
+    #[test]
+    fn subscriber_llm_backend_connected_creates_welcome_info() {
+        let store = Arc::new(NotificationStore::new(100));
+        let subscriber = NotificationSubscriber::new(Arc::clone(&store));
+        let event = Event::new(
+            "llm_health",
+            EventType::Custom("llm_backend_connected".into()),
+            serde_json::json!({
+                "base_url": "https://api.openai.com/v1",
+                "from": "Unknown",
+                "to": "Ok",
+                "consecutive_failures": 0,
+                "last_error": ""
+            }),
+        );
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async { subscriber.handle(event).await.unwrap() });
+        let all = store.list(false, None, 10, 0);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].severity, Severity::Info);
+        assert_eq!(all[0].category, Category::Llm);
+        assert!(
+            all[0].title.contains("已连接"),
+            "expected welcome title, got: {}",
+            all[0].title
+        );
+        assert!(!all[0].title.contains("恢复"));
+    }
+
     #[test]
     fn subscriber_cognitive_state_catatonic_creates_critical() {
         let store = Arc::new(NotificationStore::new(100));

@@ -349,7 +349,8 @@ impl NotificationSubscriber {
             EventType::Custom(s)
                 if s == "llm_backend_down"
                     || s == "llm_backend_degraded"
-                    || s == "llm_backend_recovered" =>
+                    || s == "llm_backend_recovered"
+                    || s == "llm_backend_connected" =>
             {
                 let base_url = event
                     .payload
@@ -389,6 +390,13 @@ impl NotificationSubscriber {
                         format!(
                             "{base_url} 连续 {consecutive} 次失败，处于降级状态{err_line}"
                         ),
+                    ),
+                    // 启动后首次连通（Unknown → Ok）：与"已恢复"区分，
+                    // 使用 Info 级别但换用欢迎语义的文案。
+                    "llm_backend_connected" => Notification::info(
+                        Category::Llm,
+                        "LLM 服务已连接",
+                        format!("{base_url} 已就绪"),
                     ),
                     _ => Notification::info(
                         Category::Gateway,

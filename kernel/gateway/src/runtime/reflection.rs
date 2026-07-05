@@ -807,12 +807,17 @@ impl EventHandler for ReflectionRunner {
 }
 
 /// Publish a backend health change event to the event bus.
+///
+/// `Unknown → Ok`（启动后首次连通）单独标记为 `llm_backend_connected`，
+/// 以便通知层显示"LLM 服务已连接"欢迎消息，而非通用"已恢复"文案。
+/// 其他任何非 Ok → Ok 翻转仍沿用 `llm_backend_recovered`。
 pub fn publish_health_event(registry: &AgentRegistry, changed: super::backend_health::BackendHealthChanged) {
-    let event_type = match changed.to {
-        super::backend_health::BackendStatus::Ok => "llm_backend_recovered",
-        super::backend_health::BackendStatus::Degraded => "llm_backend_degraded",
-        super::backend_health::BackendStatus::Down => "llm_backend_down",
-        super::backend_health::BackendStatus::Unknown => "llm_backend_unknown",
+    let event_type = match (changed.from, changed.to) {
+        (super::backend_health::BackendStatus::Unknown, super::backend_health::BackendStatus::Ok) => "llm_backend_connected",
+        (_, super::backend_health::BackendStatus::Ok) => "llm_backend_recovered",
+        (_, super::backend_health::BackendStatus::Degraded) => "llm_backend_degraded",
+        (_, super::backend_health::BackendStatus::Down) => "llm_backend_down",
+        (_, super::backend_health::BackendStatus::Unknown) => "llm_backend_unknown",
     };
     let payload = match serde_json::to_value(&changed) {
         Ok(v) => v,

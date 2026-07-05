@@ -461,7 +461,7 @@
     50% { opacity: 0.6; }
   }
 
-  // LLM 后端健康标,配色与 Home 页面 CognitiveAura 一致。
+  /* LLM 后端健康标，配色与 Home 页面 CognitiveAura 一致。 */
   .brain-badge {
     font-size: 11px;
     font-weight: 600;

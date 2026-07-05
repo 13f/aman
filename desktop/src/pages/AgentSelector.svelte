@@ -34,6 +34,7 @@
     providers = [],
     variant = "compact",
     idleStates = {} as Record<string, IdleState>,
+    brainStates = {} as Record<string, string>,
     onSelect = (_agent: AgentEntry) => {},
     onDelete = async (_key: string) => {},
     onSaveEdit = async (_key: string, _displayName: string, _provider: string, _model: string, _soulContent: string) => {},
@@ -43,6 +44,7 @@
     providers?: ProviderEntry[];
     variant?: "full" | "compact";
     idleStates?: Record<string, IdleState>;
+    brainStates?: Record<string, string>;
     onSelect?: (agent: AgentEntry) => void;
     onDelete?: (key: string) => Promise<void>;
     onSaveEdit?: (key: string, displayName: string, provider: string, model: string, soulContent: string) => Promise<void>;
@@ -69,6 +71,14 @@
     const emoji = IDLE_EMOJI[s.kind] ?? "\u{1F4A4}";
     const label = IDLE_LABEL[s.kind] ?? s.kind;
     return { emoji, label };
+  }
+
+  // LLM 后端健康标(Lucid/Groggy/Catonic/Coma),与 Home 页面 CognitiveAura 一致。
+  function brainBadge(key: string): { emoji: string; label: string } | null {
+    const s = brainStates[key];
+    if (!s || s === "Lucid") return null;
+    const emoji = s === "Groggy" ? "\u{1F97A}" : s === "Catatonic" ? "\u{1F636}" : "\u{1F4A4}";
+    return { emoji, label: s };
   }
 
   let showEditForm = $state<string | null>(null);
@@ -146,6 +156,10 @@
             {#if idleBadge(agent.key)}
               {@const ib = idleBadge(agent.key)!}
               <span class="badge idle-badge idle-badge-{ib.label.toLowerCase()}">{ib.emoji} {ib.label}</span>
+            {/if}
+            {#if brainBadge(agent.key)}
+              {@const bb = brainBadge(agent.key)!}
+              <span class="badge brain-badge brain-badge-{bb.label.toLowerCase()}" title="LLM 后端状态: {bb.label}">{bb.emoji} {bb.label}</span>
             {/if}
           </div>
           <div class="agent-detail">
@@ -445,6 +459,27 @@
   @keyframes wakeup-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.6; }
+  }
+
+  // LLM 后端健康标,配色与 Home 页面 CognitiveAura 一致。
+  .brain-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 6px;
+    white-space: nowrap;
+  }
+  .brain-badge-groggy {
+    background: rgba(148,120,46,0.18);
+    color: #b08d30;
+  }
+  .brain-badge-catatonic {
+    background: rgba(107,114,128,0.20);
+    color: #9ca3af;
+  }
+  .brain-badge-coma {
+    background: rgba(139,69,139,0.20);
+    color: #a855f7;
   }
 
   /* ---- compact variant (Home modal) ---- */

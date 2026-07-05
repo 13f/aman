@@ -72,6 +72,9 @@ I prefer concise and accurate responses.
   // Real-time idle state per agent (from event:processed idle events).
   interface IdleState { kind: string; depth: number; arousal: number; }
   let idleStates = $state<Record<string, IdleState>>({});
+  // Per-agent LLM backend health (cognitive state). 由 cognitive_state_changed
+  // 事件更新,与 Home 页面一致。用来在卡片上标出 Lucid/Groggy/Catonic/Coma。
+  let brainStates = $state<Record<string, string>>({});
   let unlisteners: (() => void)[] = [];
 
   async function fetchNewModels() {
@@ -201,14 +204,28 @@ I prefer concise and accurate responses.
 
     // Clear idle state when agents transition to non-idle system state.
     listen("agent_states:updated", (e: any) => {
-      const list: Array<{ agent_id: string; system_state: string }> = e.payload?.agents ?? [];
+      const list: Array<{ agent_id: string; system_state: string; cognitive_state?: string }> = e.payload?.agents ?? [];
       for (const a of list) {
         if (a.system_state !== "idle" && idleStates[a.agent_id]) {
           const next = { ...idleStates };
           delete next[a.agent_id];
           idleStates = next;
         }
+        // agent_states:updated 快照已带 cognitive_state,直接更新。
+        if (a.cognitive_state) {
+          brainStates = { ...brainStates, [a.agent_id]: a.cognitive_state };
+        }
       }
+    }).then(fn => { unlisteners.push(fn); });
+
+    // 实时监听 cognitive_state_changed 事件(事件驱动,比快照更快)。
+    listen("event:processed", (e: any) => {
+      const p = e.payload;
+      if (p?.event_type !== "cognitive_state_changed") return;
+      const inner = p.payload ?? {};
+      const agentId: string | undefined = inner.agent_id;
+      const state: string | undefined = inner.state;
+      if (agentId && state) brainStates = { ...brainStates, [agentId]: state };
     }).then(fn => { unlisteners.push(fn); });
   });
 
@@ -303,7 +320,8 @@ I prefer concise and accurate responses.
     variant="full"
     {agents}
     {providers}
-                    {idleStates}
+    {idleStates}
+    {brainStates}
     onSelect={(agent) => selectAgent(agent.key)}
     onDelete={deleteAgent}
     onSaveEdit={handleSaveEditFromSelector}

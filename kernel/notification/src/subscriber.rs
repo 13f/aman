@@ -343,7 +343,14 @@ impl NotificationSubscriber {
             }
 
             // ── LLM backend health changes ──────────────────────────
-            EventType::Custom(s) if s == "llm_backend_down" => {
+            // 从 BackendHealthChanged 事件中提取关键字段。后端仅在状态翻转
+            // 时生成此事件，文案一并带上 last_error 与 consecutive_failures，
+            // 用户无需点进详情即可看到直接原因。
+            EventType::Custom(s)
+                if s == "llm_backend_down"
+                    || s == "llm_backend_degraded"
+                    || s == "llm_backend_recovered" =>
+            {
                 let base_url = event
                     .payload
                     .get("base_url")
@@ -354,49 +361,44 @@ impl NotificationSubscriber {
                     .get("consecutive_failures")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                self.store.push(
-                    Notification::critical(
+                // last_error 已经过 redactor 脱敏（见 backend_health::record_failure）。
+                let last_error = event
+                    .payload
+                    .get("last_error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let err_line = if last_error.is_empty() {
+                    String::new()
+                } else {
+                    // 只取第一行，避免把完整堆栈塞进通知挤占屏幕。
+                    let first = last_error.lines().next().unwrap_or("");
+                    format!("\n原因: {}", first)
+                };
+
+                let notif = match s.as_str() {
+                    "llm_backend_down" => Notification::critical(
                         Category::Llm,
                         "LLM 后端不可用",
-                        format!("{base_url} 连续 {consecutive} 次失败，已停止调用"),
-                    )
-                    .with_action("查看状态", "/agents"),
-                );
-            }
-            EventType::Custom(s) if s == "llm_backend_degraded" => {
-                let base_url = event
-                    .payload
-                    .get("base_url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let consecutive = event
-                    .payload
-                    .get("consecutive_failures")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                self.store.push(
-                    Notification::warning(
+                        format!(
+                            "{base_url} 连续 {consecutive} 次失败，已停止调用{err_line}"
+                        ),
+                    ),
+                    "llm_backend_degraded" => Notification::warning(
                         Category::Llm,
                         "LLM 后端降级",
-                        format!("{base_url} 连续 {consecutive} 次失败，处于降级状态"),
-                    )
-                    .with_action("查看状态", "/agents"),
-                );
-            }
-            EventType::Custom(s) if s == "llm_backend_recovered" => {
-                let base_url = event
-                    .payload
-                    .get("base_url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                self.store.push(
-                    Notification::info(
+                        format!(
+                            "{base_url} 连续 {consecutive} 次失败，处于降级状态{err_line}"
+                        ),
+                    ),
+                    _ => Notification::info(
                         Category::Gateway,
                         "LLM 后端已恢复",
                         format!("{base_url} 恢复正常"),
-                    )
-                    .with_action("查看状态", "/agents"),
-                );
+                    ),
+                }
+                .with_action("查看状态", "/agents");
+
+                self.store.push(notif);
             }
 
             // ── Agent cognitive state changes ────────────────────────

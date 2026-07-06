@@ -2,13 +2,11 @@
 name: plan
 category: agent
 description: >
-  Plan mode — when the task is complex, multi-stage, involves architecture
-  decisions, or is destructive, enter planning mode. Explore the codebase
-  (read-only), write a structured implementation plan via planner.create +
-  planner.set_tasks, do NOT execute any code changes. The Orchestrator will
-  automatically execute tasks after the plan is created. Use before any
-  non-trivial implementation task.
-version: 1.1.0
+  Orchestration router for complex tasks. Plan itself does NOT solve
+  problems — it routes to the right sub-skills (Brainstorm, Review,
+  subagent-driven-development) and guards constraints. Use when the task is
+  multi-stage, involves architecture decisions, or is destructive.
+version: 2.0.0
 triggers:
   - "plan"
   - "make a plan"
@@ -37,87 +35,89 @@ tags:
   - planning
   - architecture
   - design
-  - preparation
+  - orchestration
 metadata:
   hermes:
-    tags: [planning, architecture, design, preparation]
-    related_skills: [planner, writing-plans, subagent-driven-development, todo]
+    tags: [planning, architecture, design, orchestration]
+    related_skills: [brainstorm, review, planner, writing-plans, subagent-driven-development, todo]
 ---
 
 # Plan Mode
 
 ## Core Rule
 
-**You are in planning mode. You do NOT write implementation code. You do NOT modify project files (except the plan markdown). You do NOT execute destructive commands.**
+**Plan is an orchestrator, not a solver. Route to sub-skills. Guard constraints.**
 
-Your only job: understand the task, explore the codebase (read-only), and produce a detailed, executable plan.
+Plan's job: decide WHICH sub-skills to invoke, in WHAT order, and WHAT guard
+conditions apply. The actual thinking happens inside the sub-skills.
 
-## Constraints
+## When to Route to Which Sub-Skill
 
-- NO code writing — no `write`, `edit`, or `patch` tools for source files
-- NO file modification — except writing the plan markdown to `.aman/plans/`
-- NO destructive commands — no `rm`, `git reset --hard`, `DROP TABLE`, etc.
-- YES read-only exploration — read files, search code, inspect structure, run `git log`
-- YES running non-destructive queries — `cargo check`, `grep`, `find`, `git diff`
+```
+START
+  │
+  ├─ Situation unclear (vague request, missing goal)
+  │   → Ask clarifying questions FIRST, then re-evaluate
+  │
+  ├─ Knowledge gap (unfamiliar domain, don't know the codebase)
+  │   → Context Scout: read files, search code, inspect structure
+  │
+  ├─ Multiple possible directions (architecture choice, feature design)
+  │   → Brainstorm: generate 3-5 distinct options
+  │   → Review: evaluate options across Correctness/Safety/Performance/Cost
+  │   → User picks a direction (or you recommend if asked)
+  │
+  ├─ Clear direction, needs multi-step execution
+  │   → Write structured plan via planner tool
+  │   → Review: validate the plan before execution
+  │   → subagent-driven-development: execute task-by-task
+  │
+  └─ Experience=Apprehensive (EXP.md shows past failure on this)
+      → Brainstorm (force alternatives to the failed path)
+      → Review (validate new direction avoids the failure mode)
+      → Proceed with new plan
+```
 
-## Output
+## Constraint Guards (always active)
 
-### Structured plan (primary)
+Regardless of which sub-skills you invoke:
+
+- **NO** code writing for source files (read-only exploration only)
+- **NO** file modification except writing plan markdown to `.aman/plans/`
+- **NO** destructive commands (`rm`, `git reset --hard`, `DROP TABLE`)
+- **YES** read-only exploration: read files, search code, run `git log`
+- **YES** non-destructive queries: `cargo check`, `grep`, `find`
+
+## Structured Plan Output
 
 Use the `planner` tool to persist the plan as structured state:
 
-1. **`planner.create`** — initialize the plan with goal, milestones, and success criteria
-2. **`planner.set_tasks`** — write the decomposed task list with dependencies
+1. **`planner.create`** — goal, milestones, success criteria (from Brainstorm + Review output)
+2. **`planner.set_tasks`** — decomposed task list with dependencies
 
 After these two calls, the **Orchestrator** takes over automatically:
 - Picks unblocked tasks and spawns anonymous sub-agents
 - Detects stalls and pivots directions
 - Escalates to human if all directions are exhausted
 
-You do NOT need to manually call `planner.start`, `planner.complete`, or
-`planner.increment_stale`. Monitor progress with `planner.status`.
-
-See `planner` skill for the full operation reference and file format details.
-
-### Human-readable plan (supplementary)
-
-Optionally write a markdown plan to `.aman/plans/YYYY-MM-DD_HHMMSS-<slug>.md`
-for human review. This is a supplementary artifact — the structured plan from
-the `planner` tool is the authoritative state.
-
-## When to Use Plan Mode
-
-Trigger when ANY of these signals are present:
-
-1. **Multi-stage / multi-subsystem** — spans multiple crates, repos, or technology stacks
-2. **Architecture decisions** — trade-offs to discuss before coding (data models, API boundaries, abstraction levels)
-3. **Exploratory** — you don't know the full picture yet; need to spike/research first
-4. **User explicitly asks** — "make a plan", "design this", "how would you approach"
-5. **Destructive operations** — large refactors, database migrations, deletions, merges
+Monitor progress with `planner.status`. You do NOT need to manually call
+`planner.start`, `planner.complete`, or `planner.increment_stale`.
 
 ## When NOT to Use Plan Mode
 
-- "Check the price of X" — one web search
-- "Change line 32 of this file" — one edit
-- "Run the tests to see if they pass" — terminal command
-- "What does this function do?" — read + explain
-
-These are simple tasks; execute directly.
+- "Check the price of X" — one web search (execute directly)
+- "Change line 32 of this file" — one edit (execute directly)
+- "What does this function do?" — read + explain (execute directly)
 
 ## Quick Heuristic
 
-| Signal | Tendency |
-|--------|----------|
-| >5 tool calls needed | Plan (or at least todo) |
-| Need to read 3+ files to understand | Plan |
-| Creating/deleting/renaming multiple files | At least todo |
-| "If…then…else…" decision branches | Plan |
-| User says "refactor/migrate/implement feature" | Plan |
-| User says "check/search/run/look at" | Execute directly |
-
-## Core Principle
-
-When unsure, plan first. A plan costs 30 seconds of discussion. Guessing wrong can waste the entire session.
+| Signal | Route |
+|--------|-------|
+| Doesn't know what user wants | Clarify first |
+| Don't know the domain well | Context Scout → Brainstorm |
+| Architecture / design decision | Brainstorm → Review → Plan |
+| Clear multi-step execution | Plan → Review → Execute |
+| Past failure on this kind of task | Brainstorm (force alternatives) |
 
 ## Cross-Session Recovery
 
@@ -125,5 +125,7 @@ Plans persisted via the `planner` tool survive session restarts. To resume:
 1. Call `planner.resume` — returns full plan state + next task
 2. The Orchestrator detects the `plan:resumed` event and continues execution
 
-You do NOT need to manually replay tasks — the Orchestrator picks up where
-the previous session left off.
+## Core Principle
+
+> Plan is cheap. Guessing is expensive. When unsure which direction to take,
+> Brainstorm + Review before committing.

@@ -60,6 +60,12 @@
       ]
     },
     {
+      "name": "compound",
+      "files": [
+        "agent/compound/SKILL.md"
+      ]
+    },
+    {
       "name": "todo",
       "files": [
         "agent/todo/SKILL.md"

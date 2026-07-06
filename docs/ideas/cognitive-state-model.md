@@ -1,7 +1,9 @@
 # 认知状态模型：LLM 后端健康监控与 Agent 意识状态设计
 
-> 状态：设计方案（等待实现）
+> 状态：已实现（2026-07-06）
 > 调研日期：2026-07-02
+> 实现日期：2026-07-06
+> 实现位置：`kernel/gateway/src/runtime/cognitive_state.rs` + `kernel/gateway/src/runtime/agent_harness.rs`
 > 触发背景：每次 `QueueDrained` 触发 Reflection 时，所有 agent 在同一秒内
 > 同时报 `session_extract failed for agent X`，经查是 LLM 后端短暂不可用。
 > 现有系统没有任何"知悉 LLM 后端故障"的基础设施——每个 agent 独立 retry，互不感知。

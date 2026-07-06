@@ -41,6 +41,9 @@ cargo clippy --fix --workspace -- -D warnings
 # New cognitive engine crates
 cargo test -p cognitive-engine -p cognitive-llm
 
+# New experience crate
+cargo test -p experience
+
 # New analytics crate
 cargo test -p analytics
 
@@ -92,6 +95,7 @@ Workspace with ~40 crates:
 | `secret` | `kernel/secret` | Multi-backend secrets, AES-256-GCM cache, rotation |
 | `config` | `kernel/config` | 4-layer config loader, validation |
 | `context-manager` | `kernel/context-manager` | Token budgeting, context compression/rotation (LLM-specific) |
+| `experience` | `kernel/experience` | Agent experience: tool strategies, patterns, anti-patterns stored in `EXP.md`. Event-driven experience extraction from workflow completions. |
 | `gateway` | `kernel/gateway` | Agent gateway daemon — binary name `aman`. Built around `Agenverse` (agents universe), the top-level container that owns lifecycle, HTTP server, and `AgentRuntime`.
 | `cli` | `kernel/cli` | `aman-cli` CLI binary (HTTP REST / JSON-RPC / gRPC client to gateway) |
 | `sdk` | `kernel/sdk` | Pub re-export crate for external devs |
@@ -102,7 +106,7 @@ Workspace with ~40 crates:
 
 | Crate | Path | Purpose |
 |---|---|---|
-| `cognitive-engine` | `cognitive/engine` | **CognitiveEngine trait** — engine-agnostic abstraction: Observation → Decision. No LLM dependencies. |
+| `cognitive-engine` | `cognitive/engine` | **CognitiveEngine trait** — engine-agnostic abstraction: Observation → Decision. Includes: Experience translator (`EXP.md` strategy assessment), Grounding translator (Knowledge × Situation signals), Decision confidence tracking. No LLM dependencies. |
 | `cognitive-llm` | `cognitive/llm` | **LlmCognitiveEngine** — Full ReAct loop (LLM retry, tool execution, streaming, token tracking). Providers: `LlmOpenaiProvider`, `LlmAnthropicProvider`, `LlmLocalProvider`. Shared SSE/HTTP utilities in `shared.rs`. |
 | `cognitive-react` | `cognitive/react` | **Shared ReAct types** — ChatMessage, ReActTurn, TokenBudget, etc. Zero kernel dependencies (leaf crate). Both `kernel` and `cognitive-llm` depend on it. |
 
@@ -250,6 +254,19 @@ Set `llm.api_type` in config to choose the backend:
 
 The provider is resolved in `build_provider()` (`agent_runtime.rs`) and adapted
 via `wrap_cognitive_provider()` to bridge `kernel::LlmProvider` ↔ `cognitive_llm::LlmProvider`.
+
+### Cognitive Translation Layer
+
+Translates system signals into the agent's "subjective experience" — not UI metrics,
+but internal states that modulate behavior:
+
+| Translator | Input | Output | Behavior Modulation |
+|---|---|---|---|
+| **Consciousness** (`CognitiveState`) | LLM backend health | Lucid/Groggy/Catatonic/Coma | Catatonic/Coma → skip LLM; Groggy → reduce retries |
+| **Grounding** (`Grounding`) | Memory retrieval + user message | Knowledge × Situation (2-axis) | Vague → force clarification; Overloaded → compress first |
+| **Experience** (`EXP.md`) | Workflow completion events | Confident/Bootstrap/Untouched/Apprehensive | Confident → skip scout; Apprehensive → avoid tools |
+
+Design: `docs/cognitive-memory.md` (based on 彭超's Agentic 之道).
 
 ### Security (all layers now active)
 

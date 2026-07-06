@@ -42,9 +42,9 @@ steps:
     on_failure: escalate
     max_retries: 0
 
-  - id: compound
-    skill: compound
-    description: "Compound Loop — 回炉：把执行经验写入 EXP.md，让下次更聪明"
+  - id: extract-exp
+    skill: extract-exp
+    description: "回炉：提取经验写入 EXP.md，让下次更聪明"
     input_from: execute
     output_as: learnings
     on_failure: skip

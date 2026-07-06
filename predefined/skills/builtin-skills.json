@@ -60,9 +60,9 @@
       ]
     },
     {
-      "name": "compound",
+      "name": "extract-exp",
       "files": [
-        "agent/compound/SKILL.md"
+        "agent/extract-exp/SKILL.md"
       ]
     },
     {

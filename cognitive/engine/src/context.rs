@@ -35,6 +35,55 @@ pub struct CognitiveContext {
     /// For LLM engines this might contain model name, temperature, etc.
     /// For world-model engines this might contain latent dimension config.
     pub engine_config: Value,
+    /// Grounding assessment — how well-informed the agent is for this task.
+    ///
+    /// Computed by the gateway after memory retrieval, before engine processing.
+    /// The engine reads this to modulate behavior (e.g., skip scout phase when
+    /// both Knowledge and Situation are favorable).
+    #[serde(default)]
+    pub grounding: Grounding,
+}
+
+/// Grounding assessment — the agent's "information readiness" for a task.
+///
+/// Two independent dimensions:
+/// - **Knowledge**: Does the agent have relevant domain knowledge?
+/// - **Situation**: Is the user's request clear and well-formed?
+///
+/// These are orthogonal — an agent can know a lot but face a vague question,
+/// or face a clear question about an unknown domain.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Grounding {
+    /// Knowledge dimension — does the agent have relevant domain knowledge?
+    pub knowledge: KnowledgeSignal,
+    /// Situation dimension — is the user's request clear?
+    pub situation: SituationSignal,
+}
+
+/// Knowledge dimension of grounding.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeSignal {
+    /// Agent has relevant, fresh knowledge for this domain.
+    #[default]
+    Informed,
+    /// Agent lacks knowledge for this domain.
+    Uninformed,
+    /// Agent has knowledge but it may be stale.
+    Outdated,
+}
+
+/// Situation dimension of grounding.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SituationSignal {
+    /// User's request is clear and well-formed.
+    #[default]
+    Clear,
+    /// User's request is vague or ambiguous.
+    Vague,
+    /// Context is overloaded — too much information, goal unclear.
+    Overloaded,
 }
 
 /// Engine-agnostic agent identity.

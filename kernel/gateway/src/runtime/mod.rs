@@ -40,6 +40,7 @@ mod stdio;
 mod grpc;
 mod sse;
 mod emotion_evaluator;
+mod experience_extractor;
 
 pub use agent_registry::AgentRegistry;
 pub use backend_health::{BackendHealth, BackendHealthChanged, BackendStatus};

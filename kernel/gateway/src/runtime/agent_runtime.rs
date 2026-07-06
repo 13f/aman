@@ -518,6 +518,23 @@ impl AgentRuntimeBuilder {
             Box::new(notif_sub),
         ));
 
+        // ── Subscribe experience extractor ────────────────────────
+        // Subscribes to workflow::completed events globally. Each event updates
+        // the agent-level EXP.md based on workflow outcome.
+        let exp_extractor = super::experience_extractor::ExperienceExtractor::new(
+            "global",  // Global subscription — could be per-agent in future
+            Arc::clone(&workflow_engine),
+        );
+        let _ = pollster::block_on(bus.subscribe(
+            event_bus::SubscriptionFilter {
+                event_types: Some(vec![
+                    kernel::event::EventType::Custom("workflow::completed".to_owned()),
+                ]),
+                ..Default::default()
+            },
+            Box::new(exp_extractor),
+        ));
+
         // ── Agent registry ──────────────────────────────────────────
         let mut agent_registry_inner = super::AgentRegistry::new(Arc::clone(&bus));
         agent_registry_inner.set_skill_index(

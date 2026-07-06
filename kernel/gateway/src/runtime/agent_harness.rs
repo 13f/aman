@@ -290,6 +290,10 @@ impl AgentHarness {
 
         let flag = Arc::new(InterruptFlag::new()); self.register_interrupt(session_id, Arc::clone(&flag));
         let engine = self.build_cognitive_engine(agent_id, model, session_id, background, Some(Arc::clone(&flag)), &tb).await?;
+
+        // Compute grounding — how well-informed the agent is for this task
+        let grounding = self.compute_grounding(agent_id, user_text, &mem, &tb).await;
+
         let ctx = CognitiveContext {
             agent_id: agent_id.into(), session_id: session_id.into(),
             identity: CognitiveIdentity { name: soul_snapshot.name.clone(), identity: soul_snapshot.system_prompt.clone(), boundaries: soul_snapshot.boundaries.clone(), expertise: vec![], vibe: None, raw: soul_snapshot.system_prompt.clone() },
@@ -297,7 +301,16 @@ impl AgentHarness {
             memory_context: mem.map(|m| vec![cognitive_engine::MemoryItem { key: "retrieved".into(), content: m, importance: 0.5, timestamp: None }]).unwrap_or_default(),
             engine_config: json!({"model": model}),
             conversation_history: filter_conversation_history(&past_history),
+            grounding,
         };
+        // ── Consciousness check: skip processing if LLM is unavailable ──
+        let consciousness = self.registry.get_cognitive_state(agent_id).await
+            .unwrap_or(crate::runtime::CognitiveState::Lucid);
+        if let Some(msg) = consciousness.guard_check() {
+            tracing::warn!(%agent_id, %session_id, state = ?consciousness, "cognitive state prevents processing: {}", msg);
+            return Ok(msg.to_string());
+        }
+
         let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
         tracing::info!(%agent_id, %session_id, "process_message_v2: calling engine.process()");
         let result = engine.process(&ctx, obs).await;
@@ -1037,6 +1050,49 @@ impl AgentHarness {
             .map(|m| format!("- {} (tags: {})", m.content, m.tags.join(", ")))
             .collect();
         Some(mem_text.join("\n"))
+    }
+
+    /// Compute grounding — how well-informed the agent is for this task.
+    ///
+    /// Uses Knowledge (from memory retrieval) and Situation (from user message
+    /// clarity) to produce a Grounding assessment that the cognitive engine
+    /// can use for behavior modulation.
+    async fn compute_grounding(
+        &self,
+        _agent_id: &str,
+        user_text: &str,
+        mem: &Option<String>,
+        tb: &context_manager::TokenBudget,
+    ) -> cognitive_engine::Grounding {
+        // Knowledge dimension: estimate from memory retrieval results
+        let memory_input = cognitive_engine::KnowledgeInput {
+            memory_count: mem.as_ref().map(|m| m.lines().count()).unwrap_or(0),
+            avg_importance: if mem.is_some() { 0.5 } else { 0.0 },
+            avg_age_days: None, // would need per-record timestamps; None = skip staleness check
+            domain_count: 1,
+        };
+        let knowledge_signal = cognitive_engine::evaluate_knowledge(
+            &memory_input,
+            cognitive_engine::KnowledgeThresholds::default(),
+        );
+
+        // Situation dimension: from user message clarity and context fullness
+        let context_tokens = mem.as_ref().map(|m| m.len()).unwrap_or(0)
+            + user_text.len();
+        let situation_input = cognitive_engine::SituationInput {
+            user_text: user_text.to_string(),
+            context_tokens,
+            token_budget: tb.context_window,
+        };
+        let situation_signal = cognitive_engine::evaluate_situation(
+            &situation_input,
+            cognitive_engine::SituationThresholds::default(),
+        );
+
+        cognitive_engine::Grounding {
+            knowledge: knowledge_signal,
+            situation: situation_signal,
+        }
     }
 
     /// Build tool descriptors from the tool registry for the given agent.

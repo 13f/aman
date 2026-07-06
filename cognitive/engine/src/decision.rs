@@ -6,6 +6,27 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Confidence level the engine assigns to a decision.
+///
+/// `Low` is forced when Knowledge = Outdated (the agent's knowledge may be stale).
+/// Downstream systems (UI, audit log) can read this field to decide whether to
+/// append a verification prompt. This is a **structured signal**, not a prompt
+/// injection — the engine does not modify its own prompts based on this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceLevel {
+    /// Normal confidence — proceed as usual.
+    Normal,
+    /// Low confidence — knowledge may be outdated or context is weak.
+    Low,
+}
+
+impl Default for ConfidenceLevel {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
 /// A decision is the cognitive engine's response to observations.
 ///
 /// The gateway converts decisions into events and publishes them to the
@@ -18,6 +39,9 @@ pub struct Decision {
     pub session_id: String,
     /// What action to take.
     pub kind: DecisionKind,
+    /// Confidence level the engine assigns to this decision.
+    #[serde(default)]
+    pub confidence: ConfidenceLevel,
     /// Optional metadata (engine-specific hints, confidence scores, etc.).
     pub metadata: Value,
 }
@@ -85,6 +109,7 @@ impl Decision {
                 text: text.into(),
                 is_final: true,
             },
+            confidence: ConfidenceLevel::Normal,
             metadata: Value::Null,
         }
     }
@@ -102,6 +127,26 @@ impl Decision {
                 text: text.into(),
                 is_final: false,
             },
+            confidence: ConfidenceLevel::Normal,
+            metadata: Value::Null,
+        }
+    }
+
+    /// Create a final text reply with explicit confidence.
+    pub fn reply_with_confidence(
+        id: impl Into<String>,
+        session_id: impl Into<String>,
+        text: impl Into<String>,
+        confidence: ConfidenceLevel,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            session_id: session_id.into(),
+            kind: DecisionKind::Reply {
+                text: text.into(),
+                is_final: true,
+            },
+            confidence,
             metadata: Value::Null,
         }
     }
@@ -119,6 +164,7 @@ impl Decision {
                 calls,
                 block_on_completion: true,
             },
+            confidence: ConfidenceLevel::Normal,
             metadata: Value::Null,
         }
     }
@@ -129,6 +175,7 @@ impl Decision {
             id: id.into(),
             session_id: session_id.into(),
             kind: DecisionKind::NoOp,
+            confidence: ConfidenceLevel::Normal,
             metadata: Value::Null,
         }
     }

@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use cognitive_engine::{
     Capability, CapabilityType, CognitiveContext, CognitiveEngine, CognitiveError,
-    CognitiveEvent, CognitiveIdentity, CognitiveListener, DecisionKind,
+    CognitiveEvent, CognitiveIdentity, CognitiveListener, DecisionKind, Grounding,
     Observation, ObservationPayload,
 };
 use cognitive_llm::provider::{LlmChatRequest, LlmProvider, LlmResponse, StreamEvent};
@@ -193,6 +193,7 @@ fn make_context(session_id: &str) -> CognitiveContext {
         memory_context: vec![],
         conversation_history: vec![],
         engine_config: Value::Null,
+        grounding: Grounding::default(),
     }
 }
 

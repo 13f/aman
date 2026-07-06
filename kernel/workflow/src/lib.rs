@@ -1211,6 +1211,25 @@ impl WorkflowEngine {
             .lock()
             .expect("state change events lock")
             .push(event);
+
+        // Emit a custom event when workflow reaches a final state.
+        // Subscribers (e.g., experience extractor) use this to trigger post-processing.
+        if is_final {
+            let completed_event = Event::new(
+                "workflow:engine",
+                EventType::Custom("workflow::completed".to_owned()),
+                json!({
+                    "instance_id": instance.id,
+                    "workflow_name": instance.workflow_name,
+                    "to_state": normalize_token(to_state),
+                    "reason": format!("{reason:?}").to_lowercase(),
+                }),
+            );
+            self.state_change_events
+                .lock()
+                .expect("state change events lock")
+                .push(completed_event);
+        }
     }
 
     fn wait_inflight_pipeline_drained(&self, instance_id: &str) {

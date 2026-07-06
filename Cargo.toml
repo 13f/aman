@@ -54,6 +54,7 @@ members = [
   "kernel/skm-core-patched",
   "kernel/analytics",
   "kernel/eval",
+  "kernel/experience",
   "kernel/context-manager",
   "shared/i18n",
 ]

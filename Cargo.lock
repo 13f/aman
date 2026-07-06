@@ -2340,6 +2340,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "experience"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2719,6 +2729,7 @@ dependencies = [
  "daily-life",
  "eval",
  "event-bus",
+ "experience",
  "futures",
  "hook",
  "i18n",

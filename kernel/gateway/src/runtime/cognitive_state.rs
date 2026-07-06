@@ -60,6 +60,26 @@ impl CognitiveState {
             _ => Self::Lucid,
         }
     }
+
+    /// Check whether the current cognitive state allows LLM processing.
+    ///
+    /// Returns `None` if processing is allowed, or `Some(message)` with a
+    /// user-facing message explaining why processing was skipped.
+    ///
+    /// - Lucid/Groggy → allowed (retry logic handles degradation)
+    /// - Catatonic/Coma → blocked (LLM is unavailable)
+    pub fn guard_check(&self) -> Option<&'static str> {
+        match self {
+            Self::Lucid | Self::Groggy => None,
+            Self::Catatonic => Some("I can't think right now — my reasoning engine is unavailable. Please try again shortly."),
+            Self::Coma => Some("I'm unable to process requests right now. My reasoning engine has been down for a while — an operator has been notified."),
+        }
+    }
+
+    /// Whether the agent can call the LLM at all.
+    pub fn can_think(&self) -> bool {
+        matches!(self, Self::Lucid | Self::Groggy)
+    }
 }
 
 impl From<BackendStatus> for CognitiveState {

@@ -24,13 +24,26 @@
 
 pub mod context;
 pub mod decision;
+pub mod experience;
+pub mod grounding;
 pub mod observation;
 
 use async_trait::async_trait;
 use std::sync::Arc;
 
-pub use context::{Capability, CapabilityType, CognitiveContext, CognitiveError, CognitiveIdentity, MemoryItem};
-pub use decision::{Decision, DecisionKind, ToolCallRequest};
+pub use context::{
+    Capability, CapabilityType, CognitiveContext, CognitiveError, CognitiveIdentity,
+    Grounding, KnowledgeSignal, MemoryItem, SituationSignal,
+};
+pub use decision::{ConfidenceLevel, Decision, DecisionKind, ToolCallRequest};
+pub use experience::{
+    Experience, ExperienceEvidence, ExperienceFlags, ExperienceThresholds,
+    experience_to_confidence, translate_experience,
+};
+pub use grounding::{
+    evaluate_knowledge, evaluate_situation, KnowledgeInput, KnowledgeThresholds,
+    SituationInput, SituationThresholds,
+};
 pub use observation::{Observation, ObservationPayload};
 
 /// A listener for intermediate cognitive events.

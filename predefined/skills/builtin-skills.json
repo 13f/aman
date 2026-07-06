@@ -48,6 +48,18 @@
       ]
     },
     {
+      "name": "brainstorm",
+      "files": [
+        "agent/brainstorm/SKILL.md"
+      ]
+    },
+    {
+      "name": "review",
+      "files": [
+        "agent/review/SKILL.md"
+      ]
+    },
+    {
       "name": "todo",
       "files": [
         "agent/todo/SKILL.md"

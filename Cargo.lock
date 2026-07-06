@@ -5648,13 +5648,16 @@ name = "pipeline"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "criterion",
  "kernel",
  "pollster",
  "proptest",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

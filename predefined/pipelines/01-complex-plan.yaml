@@ -1,0 +1,51 @@
+# Complex Plan Pipeline — 彭超五步闭环的 Rust 驱动实现
+#
+# 此 YAML 定义编排流程，由 PipelineRunner 按序执行。
+# 每个 step 对应一个 SKILL.md，Rust 端负责调度（而非 LLM 自行调用）。
+name: complex-plan
+description: 复杂任务全闭环 — Context Scout → Brainstorm → Review → Execute → Compound Loop
+version: 1.0.0
+triggers:
+  - "complex plan"
+  - "设计一个功能"
+  - "架构方案"
+  - "refactor"
+steps:
+  - id: scout
+    skill: agent-flow-explorer
+    description: "Context Scout — 读文件、查结构、了解现状"
+    output_as: context
+    on_failure: stop
+    max_retries: 0
+
+  - id: brainstorm
+    skill: brainstorm
+    description: "Co-spark — 发散出 3-5 个方向"
+    input_from: scout
+    output_as: options
+    on_failure: stop
+    max_retries: 0
+
+  - id: lock
+    skill: review
+    description: "Multi-lens Lock — 多视角校验方案"
+    input_from: brainstorm
+    output_as: validated_plan
+    on_failure: brainstorm
+    max_retries: 1
+
+  - id: execute
+    skill: subagent-driven-development
+    description: "Guarded Flow — 带护栏执行"
+    input_from: lock
+    output_as: implementation
+    on_failure: escalate
+    max_retries: 0
+
+  - id: compound
+    skill: review
+    description: "Compound Loop — 产出经验写入 EXP.md"
+    input_from: execute
+    output_as: learnings
+    on_failure: skip
+    max_retries: 0

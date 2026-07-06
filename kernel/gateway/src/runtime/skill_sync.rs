@@ -50,6 +50,8 @@ pub(crate) struct GroupedHashes {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[serde(rename = "self")]
     pub(crate) self_files: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub(crate) pipelines: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +64,8 @@ include!(concat!(env!("OUT_DIR"), "/builtin_skills.rs"));
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn content_hash(content: &str) -> String {
+/// Compute blake3 hex hash of content.
+pub(crate) fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
 }
 

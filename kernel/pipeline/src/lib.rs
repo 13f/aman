@@ -3,6 +3,12 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+pub mod sync;
+
+pub use sync::{
+    aman_data_dir, content_hash, load_unified_manifest, save_unified_manifest,
+    sync_builtin_pipelines, sync_builtin_pipelines_to, BuiltinPipeline,
+};
 
 use kernel::context::{BaseContext, PipelineContext, ToolContext};
 use kernel::event::Event;

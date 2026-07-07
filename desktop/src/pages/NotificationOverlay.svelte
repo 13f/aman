@@ -49,9 +49,8 @@
   function acknowledge(notif: Notification) {
     dismiss(notif.id);
     invoke("notification_ack", { id: notif.id }).catch(() => {});
-    if (notif.action_route && onNavigate) {
-      onNavigate(notif.action_route);
-    }
+    // No action_route handling — notifications don't have meaningful
+    // in-app destinations, and routing to unknown pages yields a blank view.
   }
 
   async function handleNotificationUpdated() {
@@ -106,17 +105,12 @@
           <div class="notif-message">{notif.message}</div>
         </div>
         <div class="notif-actions">
-          {#if notif.action_label}
-            <button class="action-btn" onclick={() => acknowledge(notif)}>
-              {notif.action_label}
-            </button>
-          {:else if !notif.dismissible}
-            <button class="action-btn" onclick={() => acknowledge(notif)}>
-              确认
-            </button>
-          {/if}
           {#if notif.dismissible}
             <button class="dismiss-btn" onclick={() => dismiss(notif.id)}>✕</button>
+          {:else}
+            <button class="dismiss-text-btn" onclick={() => acknowledge(notif)}>
+              确认
+            </button>
           {/if}
         </div>
       </div>
@@ -200,7 +194,7 @@
     flex-shrink: 0;
   }
 
-  .action-btn {
+  .dismiss-text-btn {
     background: rgba(255, 255, 255, 0.2);
     border: 1px solid rgba(255, 255, 255, 0.3);
     color: inherit;
@@ -213,7 +207,7 @@
     transition: background 0.15s;
   }
 
-  .action-btn:hover {
+  .dismiss-text-btn:hover {
     background: rgba(255, 255, 255, 0.35);
   }
 

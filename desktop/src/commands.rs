@@ -786,6 +786,20 @@ pub async fn chat_stop_generation(
 }
 
 #[tauri::command]
+pub async fn chat_kill_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let t = translator(&state);
+    if session_id.trim().is_empty() {
+        return Err(t.translate(i18n::key::DESKTOP_ERROR_SESSION_ID_EMPTY).to_owned());
+    }
+    let client = require_gateway(&state).await?;
+    client.chat_kill_session(&session_id).await?;
+    Ok(session_id)
+}
+
+#[tauri::command]
 pub async fn chat_send_message(
     state: State<'_, AppState>,
     text: String,

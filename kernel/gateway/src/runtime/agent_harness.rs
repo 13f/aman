@@ -496,6 +496,28 @@ impl AgentHarness {
             .remove(session_id);
     }
 
+    /// Force-abort a running session's tokio task by session_id.
+    ///
+    /// Returns `true` if a task was found and aborted. The task future is
+    /// dropped immediately, interrupting even a mid-stream LLM HTTP call.
+    /// The caller is responsible for resetting agent state (status, system
+    /// state, activity) after aborting.
+    pub fn abort_task(&self, session_id: &str) -> bool {
+        let mut tasks = self.active_tasks.write().expect("active_tasks lock");
+        if let Some(handle) = tasks.remove(session_id) {
+            handle.abort();
+            tracing::info!(%session_id, "aborted agent task");
+            true
+        } else {
+            false
+        }
+    }
+
+    /// List session_ids of currently running tasks.
+    pub fn active_task_ids(&self) -> Vec<String> {
+        self.active_tasks.read().expect("active_tasks lock").keys().cloned().collect()
+    }
+
     /// Interrupt every currently active session.
     ///
     /// Called during gateway shutdown to signal all in-flight ReAct loops

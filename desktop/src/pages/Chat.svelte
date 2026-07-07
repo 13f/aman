@@ -1716,6 +1716,25 @@
     inputText = "";
   }
 
+  async function killSession(sessionId: string) {
+    try {
+      await invoke("chat_kill_session", { sessionId });
+    } catch (e) {
+      console.error("kill failed:", e);
+    }
+    updateSessionStatus(sessionId, "idle");
+    // Mark any streaming/pending messages in this session as interrupted
+    for (const m of messages) {
+      if (m.sessionId === sessionId && (m.status === "streaming" || m.status === "pending")) {
+        updateMessage(m.id, { status: "interrupted" });
+      }
+    }
+    isLoading = false;
+    if (sessionId === activeSessionId) inputText = "";
+  }
+
+  const killActiveSession = () => { killSession(activeSessionId); };
+
   async function sendMessage(text?: string) {
     text = (text ?? inputText).trim();
     if (!text) return;
@@ -1950,6 +1969,13 @@
                 {/if}
               </span>
             </button>
+            {#if session.status === "processing"}
+              <button
+                class="session-abort-btn"
+                title="Kill task"
+                onclick={(e) => { e.stopPropagation(); killSession(session.id); }}
+              >■</button>
+            {/if}
             <button
               class="session-delete-btn"
               title="Delete session"
@@ -2041,6 +2067,9 @@
         {/if}
       </h2>
       <div class="chat-header-end">
+        {#if isProcessing}
+          <button class="chat-abort-btn" title="Force-kill current task" onclick={killActiveSession}>■ Kill</button>
+        {/if}
         <span class="chat-status" class:loading={isProcessing}>
           {isProcessing ? "Processing..." : "Ready"}
         </span>
@@ -2545,6 +2574,44 @@
 
   .session-delete-btn:disabled {
     opacity: 0.3 !important;
+  }
+
+  .session-abort-btn {
+    width: 28px;
+    border: none;
+    background: transparent;
+    color: var(--chat-input-red, #e55555);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 0;
+    opacity: 0.8;
+    transition: opacity 0.15s, background 0.15s;
+  }
+
+  .session-abort-btn:hover {
+    opacity: 1 !important;
+    background: var(--chat-input-red-muted, rgba(229, 85, 85, 0.12));
+  }
+
+  .chat-abort-btn {
+    color: var(--chat-input-red, #e55555);
+    background: transparent;
+    border: 1px solid var(--chat-input-red, #e55555);
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    line-height: 1.4;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+
+  .chat-abort-btn:hover {
+    background: var(--chat-input-red-muted, rgba(229, 85, 85, 0.12));
   }
 
   .session-empty {

@@ -304,6 +304,7 @@ pub fn run() {
             commands::get_capabilities,
             commands::chat_send_message,
             commands::chat_stop_generation,
+            commands::chat_kill_session,
             commands::chat_session_list,
             commands::chat_session_list_db,
             commands::chat_session_create,

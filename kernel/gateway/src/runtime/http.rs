@@ -148,6 +148,7 @@ fn build_router(runtime: Arc<AgentRuntime>, plugin_routes: Vec<axum::Router<()>>
         .route("/chat/session/{id}/send", post(chat_session_send))
         .route("/chat/session/{id}/close", post(chat_session_close))
         .route("/chat/session/{id}/stop", post(chat_session_stop))
+        .route("/chat/session/{id}/kill", post(chat_session_kill))
         .route("/chat/session/{id}/retry", post(chat_session_retry))
         .route("/chat/session/{id}/edit", post(chat_session_edit))
         .route("/chat/session/{id}", delete(chat_session_delete))
@@ -3204,6 +3205,27 @@ async fn chat_session_stop(
         return ApiError::from(error).into_response();
     }
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+async fn chat_session_kill(
+    State(runtime): State<Arc<AgentRuntime>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
+    match runtime.kill_session(&id, &operator).await {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "status": "killed" })),
+        )
+            .into_response(),
+        Ok(false) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "status": "no_task" })),
+        )
+            .into_response(),
+        Err(e) => ApiError::from(e).into_response(),
+    }
 }
 
 async fn chat_session_retry(

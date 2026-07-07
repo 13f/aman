@@ -600,6 +600,15 @@ impl AgentRegistry {
         instances
     }
 
+    /// Find the agent_id that owns the given active session, if any.
+    pub async fn agent_id_for_session(&self, session_id: &str) -> Option<String> {
+        let agents = self.agents.read().await;
+        agents
+            .iter()
+            .find(|(_, inst)| inst.active_session_id.as_deref() == Some(session_id))
+            .map(|(id, _)| id.clone())
+    }
+
     /// 更新 Agent 的状态。
     pub async fn set_status(
         &self,

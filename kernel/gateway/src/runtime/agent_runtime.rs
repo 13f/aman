@@ -3910,6 +3910,46 @@ impl AgentRuntime {
         Arc::clone(&self.agent_harness)
     }
 
+    /// Force-kill a running session: set interrupt flag (graceful) + abort the
+    /// tokio task (immediate, even mid-HTTP-call) + reset agent state.
+    ///
+    /// Returns `Ok(true)` if a task was found and aborted, `Ok(false)` if no
+    /// running task existed for this session.
+    pub async fn kill_session(&self, session_id: &str, operator: &str) -> AmanResult<bool> {
+        // 1. Set interrupt flag (graceful — stops between ReAct turns)
+        self.agent_harness.interrupt_session(session_id);
+
+        // 2. Force-abort the tokio task (immediate — even mid-HTTP-call)
+        let aborted = self.agent_harness.abort_task(session_id);
+
+        // 3. Find the agent that owns this session and reset its state
+        let agent_id = self.agent_registry.agent_id_for_session(session_id).await;
+        if let Some(aid) = agent_id {
+            let _ = self.agent_registry.set_status(&aid, kernel::agent::AgentStatus::Idle).await;
+            let _ = self.agent_registry.set_system_state(&aid, kernel::agent::AgentSystemState::Idle).await;
+            let _ = self.agent_registry.set_activity(&aid, "").await;
+            let _ = self.agent_registry.set_active_session(&aid, None).await;
+        }
+
+        // 4. Audit log
+        self.audit().record(
+            operator,
+            "chat.session.kill",
+            format!("session:{session_id}"),
+            if aborted { "aborted" } else { "no_task_found" },
+            "",
+        );
+
+        // 5. Emit event so the frontend can update in real-time
+        let _ = self.bus.publish(Event::new(
+            "chat:control",
+            EventType::Custom("SESSION_KILLED".into()),
+            serde_json::json!({ "session_id": session_id, "operator": operator }),
+        )).await;
+
+        Ok(aborted)
+    }
+
     #[must_use]
     pub fn event_store(&self) -> Arc<EventStore> {
         Arc::clone(&self.event_store)

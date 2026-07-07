@@ -770,6 +770,20 @@ impl GatewayClient {
         }
     }
 
+    pub async fn chat_kill_session(&self, session_id: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/chat/session/{session_id}/kill")))
+            .send()
+            .await
+            .map_err(|e| format!("chat_kill_session: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(status_error("chat_kill_session", resp.status()).await)
+        }
+    }
+
     pub async fn chat_retry(&self, session_id: &str) -> Result<(), String> {
         let resp = self
             .client

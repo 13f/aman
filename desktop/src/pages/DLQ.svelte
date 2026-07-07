@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "../lib/i18n.svelte";
 
   interface DlqEntry {
     id: string;
@@ -70,7 +71,7 @@
       <input type="checkbox" checked={autoRefresh} onchange={toggleAuto} />
       Auto
     </label>
-    <button class="secondary" onclick={loadDlq} disabled={loading}>Refresh</button>
+    <button class="secondary" onclick={loadDlq} disabled={loading}>{t("maintenance.refresh")}</button>
   </div>
 </div>
 
@@ -98,7 +99,7 @@
             <td>{e.retry_count}</td>
             <td style="font-size:11px;color:var(--fg-dim);white-space:nowrap;">{fmtTime(e.enqueued_at_ms)}</td>
             <td>
-              <button style="margin-right:4px;" onclick={() => doRetry(e.id)}>Retry</button>
+              <button style="margin-right:4px;" onclick={() => doRetry(e.id)}>{t("common.retry")}</button>
               <button class="danger" onclick={() => doDiscard(e.id)}>Discard</button>
             </td>
           </tr>

@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   interface DebugEventEntry {
     timestamp: string;
@@ -119,9 +120,9 @@
       <header class="dp-header">
         <h3>&#x2699; Debug Panel</h3>
         <div class="dp-header-actions">
-          <button class="dp-btn" onclick={fetchDebugEvents} title="Backfill from EventStore">Refresh</button>
-          <button class="dp-btn" onclick={exportLog} title="Export as JSON">Export</button>
-          <button class="dp-btn" onclick={clearLog} title="Clear event log">Clear</button>
+          <button class="dp-btn" onclick={fetchDebugEvents} title="Backfill from EventStore">{t("maintenance.refresh")}</button>
+          <button class="dp-btn" onclick={exportLog} title="Export as JSON">{t("maintenance.export")}</button>
+          <button class="dp-btn" onclick={clearLog} title="Clear event log">{t("maintenance.clear")}</button>
           <button class="dp-btn dp-close" onclick={() => visible = false} title="Close">&times;</button>
         </div>
       </header>
@@ -130,7 +131,7 @@
         <!-- Event Bus Metrics -->
         <section class="dp-section">
           <button class="dp-section-header" onclick={() => showMetricsPanel = !showMetricsPanel}>
-            <span>{showMetricsPanel ? "&#9660;" : "&#9654;"} Event Bus</span>
+            <span>{showMetricsPanel ? "&#9660;" : "&#9654;"} {t("maintenance.event_bus")}</span>
           </button>
           {#if showMetricsPanel}
             <div class="dp-section-body">
@@ -165,7 +166,7 @@
                   </div>
                 </div>
               {:else}
-                <p class="dp-empty">Waiting for metrics...</p>
+                <p class="dp-empty">{t("maintenance.waiting_metrics")}</p>
               {/if}
             </div>
           {/if}
@@ -174,7 +175,7 @@
         <!-- Event Log -->
         <section class="dp-section">
           <button class="dp-section-header" onclick={() => showEventLog = !showEventLog}>
-            <span>{showEventLog ? "&#9660;" : "&#9654;"} Event Log <span class="dp-count">({eventLog.length})</span></span>
+            <span>{showEventLog ? "&#9660;" : "&#9654;"} {t("maintenance.event_log")} <span class="dp-count">({eventLog.length})</span></span>
           </button>
           {#if showEventLog}
             <div class="dp-event-log">

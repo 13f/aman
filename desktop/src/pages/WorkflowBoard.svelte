@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "../lib/i18n.svelte";
 
   interface WorkflowEntry {
     id: string;
@@ -128,13 +129,13 @@
 </script>
 
 <div class="card" style="display:flex;align-items:center;justify-content:space-between;">
-  <h2>Workflow Instances</h2>
+  <h2>{t("workflow.title")}</h2>
   <div style="display:flex;gap:8px;align-items:center;">
     <label style="font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer;">
       <input type="checkbox" checked={autoRefresh} onchange={toggleAuto} />
       Auto
     </label>
-    <button class="secondary" onclick={loadInstances} disabled={loading}>Refresh</button>
+    <button class="secondary" onclick={loadInstances} disabled={loading}>{t("workflow.refresh")}</button>
   </div>
 </div>
 
@@ -146,11 +147,11 @@
 
 <div class="card">
   {#if instances.length === 0}
-    <p style="color:var(--fg-dim);font-size:13px;">No workflow instances found. Click "Refresh" to check.</p>
+    <p style="color:var(--fg-dim);font-size:13px;">{t("workflow.no_instances")}</p>
   {:else}
     <table>
       <thead>
-        <tr><th>ID</th><th>Workflow</th><th>State</th><th>Status</th><th>Actions</th></tr>
+        <tr><th>{t("workflow.col_id")}</th><th>{t("workflow.col_workflow")}</th><th>{t("workflow.col_state")}</th><th>{t("workflow.col_status")}</th><th>{t("workflow.col_actions")}</th></tr>
       </thead>
       <tbody>
         {#each instances as inst}
@@ -166,9 +167,9 @@
             </td>
             <td><span class="badge {inst.status === 'running' ? 'ok' : 'warn'}">{inst.status}</span></td>
             <td>
-              <button style="margin-right:4px;font-size:11px;padding:2px 8px;" onclick={() => doRetry(inst.id)}>Retry</button>
-              <button class="danger" style="font-size:11px;padding:2px 8px;margin-right:4px;" onclick={() => doCancel(inst.id)}>Cancel</button>
-              <button class="secondary" style="font-size:11px;padding:2px 8px;" onclick={() => selectInstance(inst.id)}>Detail</button>
+              <button style="margin-right:4px;font-size:11px;padding:2px 8px;" onclick={() => doRetry(inst.id)}>{t("workflow.retry")}</button>
+              <button class="danger" style="font-size:11px;padding:2px 8px;margin-right:4px;" onclick={() => doCancel(inst.id)}>{t("workflow.cancel")}</button>
+              <button class="secondary" style="font-size:11px;padding:2px 8px;" onclick={() => selectInstance(inst.id)}>{t("workflow.detail")}</button>
             </td>
           </tr>
         {/each}
@@ -184,13 +185,13 @@
     {@const def = workflowDefs[inst.workflow_name]}
     <div class="card" style="margin-top:12px;">
       <div style="display:flex;align-items:center;justify-content:space-between;">
-        <h3 style="margin:0;">{inst.workflow_name} — Detail</h3>
-        <button class="secondary" style="font-size:11px;" onclick={() => { selectedInstance = null; }}>Close</button>
+        <h3 style="margin:0;">{t("workflow.instance_detail").replace("{name}", inst.workflow_name)}</h3>
+        <button class="secondary" style="font-size:11px;" onclick={() => { selectedInstance = null; }}>{t("workflow.close")}</button>
       </div>
       <p style="font-size:12px;color:var(--fg-dim);margin:8px 0;">
-        Instance: <span style="font-family:monospace;">{inst.id}</span>
-        &nbsp;|&nbsp; Current State: <strong>{inst.current_state}</strong>
-        &nbsp;|&nbsp; Status: <strong>{inst.status}</strong>
+        {t("workflow.instance_label")} <span style="font-family:monospace;">{inst.id}</span>
+        &nbsp;|&nbsp; {t("workflow.current_state")} <strong>{inst.current_state}</strong>
+        &nbsp;|&nbsp; {t("workflow.status")} <strong>{inst.status}</strong>
       </p>
 
       {#if def}
@@ -223,7 +224,7 @@
           <!-- Timeouts -->
           {#if def.state_timeouts.length > 0}
             <div style="margin-bottom:8px;">
-              <p style="font-size:12px;font-weight:bold;margin-bottom:4px;">⏱ State Timeouts</p>
+              <p style="font-size:12px;font-weight:bold;margin-bottom:4px;">{t("workflow.state_timeouts")}</p>
               {#each def.state_timeouts as st}
                 <span style="font-size:11px;display:inline-block;margin-right:8px;padding:2px 6px;background:var(--bg-darker, #f5f5f5);border-radius:3px;">
                   {st.state} → {st.on_timeout} ({(st.timeout_ms / 1000).toFixed(1)}s)
@@ -233,9 +234,9 @@
           {/if}
         </div>
       {:else if defLoading.has(inst.workflow_name)}
-        <p style="font-size:12px;color:var(--fg-dim);">Loading workflow definition…</p>
+        <p style="font-size:12px;color:var(--fg-dim);">{t("workflow.loading_definition")}</p>
       {:else}
-        <p style="font-size:12px;color:var(--fg-dim);">Workflow definition not available.</p>
+        <p style="font-size:12px;color:var(--fg-dim);">{t("workflow.definition_unavailable")}</p>
       {/if}
     </div>
   {/if}

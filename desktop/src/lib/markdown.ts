@@ -10,6 +10,7 @@
 
 import "highlight.js/styles/github-dark.css";
 import { marked } from "marked";
+import { t } from "./i18n.svelte";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import c from "highlight.js/lib/languages/c";
@@ -178,12 +179,12 @@ function postProcessCodeBlocks(html: string): string {
 <div class="code-block-wrapper">
   <div class="code-block-header">
     <span class="code-block-lang">${escapeHtml(label)}</span>
-    <button class="code-block-copy-btn" data-code-id="${blockId}" title="Copy code">
+    <button class="code-block-copy-btn" data-code-id="${blockId}" title={t("chat.copy")}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
       </svg>
-      <span>Copy</span>
+      <span>{t("chat.copy")}</span>
     </button>
   </div>
   <pre class="code-block-pre"><code class="language-${escapeHtml(lang || "")}">${highlighted}</code></pre>

@@ -14,6 +14,7 @@ async-trait.workspace = true
 axum.workspace = true
 blake3.workspace = true
 cognitive-react = { path = "../../cognitive/react" }
+i18n = { path = "../../shared/i18n" }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true

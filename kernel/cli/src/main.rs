@@ -11,9 +11,12 @@ use std::sync::Arc;
 use gateway::ai_signal::AmanSignalV1;
 use grpc_client::GrpcClient;
 use kernel::{safe_eprintln, safe_println};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+use i18n::{Locale, Translator};
 
 const DEFAULT_BIND_ADDR: &str = "127.0.0.1:8080";
 
@@ -33,6 +36,27 @@ fn arg(args: &[String], i: usize) -> Result<String, i32> {
         .map(String::as_str)
         .map(str::to_owned)
         .ok_or(2)
+}
+
+/// Create a translator for CLI output.
+/// Reads `AMAN_LOCALE` env var (e.g. `en`, `zhs`); defaults to English.
+fn cli_translator() -> Translator {
+    let locale = std::env::var("AMAN_LOCALE")
+        .ok()
+        .and_then(|s| Locale::from_code(&s))
+        .unwrap_or(Locale::En);
+    Translator::new(locale)
+}
+
+/// Translate a CLI message without placeholders.
+fn cli_t(key: &'static str) -> String {
+    cli_translator().translate(key).to_owned()
+}
+
+/// Translate a CLI message with placeholder pairs.
+fn cli_t_with(key: &'static str, pairs: &[(&str, &str)]) -> String {
+    let map: HashMap<&str, &str> = pairs.iter().copied().collect();
+    cli_translator().translate_with(key, &map)
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -120,7 +144,7 @@ async fn main() {
             }
         }
         "--version" | "-V" => {
-            safe_println!("aman v{} — AmanExistence", env!("CARGO_PKG_VERSION"));
+            safe_println!("{}", cli_t_with(i18n::key::CLI_VERSION, &[("version", env!("CARGO_PKG_VERSION"))]));
         }
         "--help" | "-h" => {
             print_usage();
@@ -242,7 +266,8 @@ async fn serve_cmd(args: &[String]) -> Result<(), i32> {
     serve_stdio(runtime)
         .await
         .map_err(|e| {
-            safe_eprintln!("stdio server error: {e}");
+            let e_str = e.to_string();
+            safe_eprintln!("{}", cli_t_with(i18n::key::CLI_STDIO_SERVER_ERROR, &[("e", &e_str)]));
             1
         })
 }
@@ -258,7 +283,7 @@ async fn health_cmd(args: &[String]) -> Result<(), i32> {
             if opts.use_grpc {
                 let mut client = connect_grpc(opts.addr).await?;
                 client.health_ready().await.map_err(|e| {
-                    safe_eprintln!("gRPC: {e}");
+                    safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())]));
                     1
                 })?;
                 Ok(())
@@ -319,7 +344,8 @@ fn build_client() -> Result<reqwest::Client, i32> {
 
 async fn connect_grpc(addr: SocketAddr) -> Result<GrpcClient, i32> {
     GrpcClient::connect(addr).await.map_err(|e| {
-        safe_eprintln!("gRPC connect error: {e}");
+        let e_str = e.to_string();
+        safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_CONNECT_ERROR, &[("e", &e_str)]));
         1
     })
 }
@@ -391,7 +417,7 @@ async fn agent_cmd(args: &[String]) -> Result<(), i32> {
             _ => return Err(2),
         }
         .map_err(|e| {
-            safe_eprintln!("gRPC: {e}");
+            safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())]));
             1
         })?;
         return Ok(());
@@ -429,7 +455,7 @@ async fn analyze_cmd(args: &[String]) -> Result<(), i32> {
     match sub {
         "trends" | "anomalies" => analyze_run(sub, &args[1..]).await,
         _ => {
-            safe_eprintln!("usage: aman analyze trends|anomalies [--from <iso>] [--to <iso>] [--agent <id>] [--addr <ip:port>] [--token <token>] [--grpc]");
+            safe_eprintln!("{}", cli_t(i18n::key::CLI_USAGE_ANALYZE));
             Err(2)
         }
     }
@@ -457,7 +483,7 @@ async fn analyze_run(sub: &str, args: &[String]) -> Result<(), i32> {
                 i += 2;
             }
             _ => {
-                safe_eprintln!("unknown flag: {}", rest[i]);
+                safe_eprintln!("{}", cli_t_with(i18n::key::CLI_UNKNOWN_FLAG, &[("flag", &rest[i])]));
                 return Err(2);
             }
         }
@@ -560,7 +586,7 @@ fn parse_time_shortcut(input: &str, now_ms: i64) -> Result<i64, i32> {
                 let ms = (days * 86_400 + hour * 3_600 + min * 60 + sec) * 1000;
                 Ok(ms)
             } else {
-                safe_eprintln!("invalid time: {other} (use ISO 8601, 'today', 'yesterday', or 'now')");
+                safe_eprintln!("{}", cli_t_with(i18n::key::CLI_INVALID_TIME, &[("other", other)]));
                 Err(2)
             }
         }
@@ -591,7 +617,7 @@ async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
             "--format" => {
                 let raw = rest.get(i + 1).ok_or(2)?;
                 if raw != "json" {
-                    safe_eprintln!("unsupported format: {raw} (only \"json\" is supported)");
+                    safe_eprintln!("{}", cli_t_with(i18n::key::CLI_UNSUPPORTED_FORMAT, &[("raw", raw)]));
                     return Err(2);
                 }
                 i += 2;
@@ -603,7 +629,7 @@ async fn metrics_cmd(args: &[String]) -> Result<(), i32> {
     if opts.use_grpc {
         let mut client = connect_grpc(opts.addr).await?;
         let json = client.get_metrics_json().await.map_err(|e| {
-            safe_eprintln!("gRPC: {e}");
+            safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())]));
             1
         })?;
         safe_println!("{json}");
@@ -673,7 +699,7 @@ async fn audit_log_cmd(args: &[String]) -> Result<(), i32> {
             .audit_log_json(action, operator, since_ms, until_ms, limit, offset)
             .await
             .map_err(|e| {
-                safe_eprintln!("gRPC: {e}");
+                safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())]));
                 1
             })?;
         safe_println!("{json}");
@@ -981,7 +1007,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .inject_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1032,12 +1058,12 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .push_event_json(source.ok_or(2)?, event_type.ok_or(2)?, payload_bytes, agent_id)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
         "types" => {
-            let types = client.event_types().await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+            let types = client.event_types().await.map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             let json = serde_json::to_string(&types).unwrap_or_default();
             safe_println!("{json}");
             Ok(())
@@ -1057,7 +1083,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .dump_event_json(id.ok_or(2)?)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1076,7 +1102,7 @@ async fn event_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .event_trace_json(trace_id.ok_or(2)?)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1241,7 +1267,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             let json = client
                 .dlq_list_json(reason, source, event_type, limit, offset)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1265,7 +1291,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             client
                 .dlq_retry(id.ok_or(2)?, reason)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         "discard" => {
             let mut id: Option<String> = None;
@@ -1282,7 +1308,7 @@ async fn dlq_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(),
             client
                 .dlq_discard(id.ok_or(2)?)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         _ => Err(2),
     }
@@ -1388,7 +1414,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             client
                 .pause_source(id.ok_or(2)?)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         "resume" => {
             let mut id: Option<String> = None;
@@ -1405,7 +1431,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             client
                 .resume_source(id.ok_or(2)?)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         "config" => {
             let mut id: Option<String> = None;
@@ -1431,7 +1457,7 @@ async fn source_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             client
                 .source_config(id.ok_or(2)?, config_bytes)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         _ => Err(2),
     }
@@ -1522,8 +1548,8 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
             let status = res.status();
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
-                let label = if approved { "approved" } else { "denied" };
-                safe_println!("plugin '{name}' {label}");
+                let key = if approved { i18n::key::CLI_PLUGIN_APPROVED } else { i18n::key::CLI_PLUGIN_DENIED };
+                safe_println!("{}", cli_t_with(key, &[("name", &name)]));
                 Ok(())
             } else {
                 safe_eprintln!("{text}");
@@ -1540,7 +1566,7 @@ async fn plugin_cmd(args: &[String]) -> Result<(), i32> {
             let text = res.text().await.map_err(|_| 1)?;
             if status.is_success() {
                 if text == "[]" || text == "null" {
-                    safe_println!("No pending plugin approvals.");
+                    safe_println!("{}", cli_t(i18n::key::CLI_NO_PENDING_APPROVALS));
                 } else {
                     safe_println!("{text}");
                 }
@@ -1597,7 +1623,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             let json = client
                 .list_plugins_json()
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1619,7 +1645,7 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
                 "disable" => client.disable_plugin(name).await,
                 _ => client.uninstall_plugin(name).await,
             }
-            .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+            .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         "install" => {
             let mut file: Option<PathBuf> = None;
@@ -1637,12 +1663,12 @@ async fn plugin_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<
             let json = client
                 .install_plugin_json(data)
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
         "approve" | "deny" | "pending" => {
-            safe_eprintln!("plugin approval commands are only available via HTTP REST (omit --grpc)");
+            safe_eprintln!("{}", cli_t(i18n::key::CLI_PLUGIN_GRPC_UNAVAILABLE));
             Err(2)
         }
         _ => Err(2),
@@ -1788,7 +1814,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .list_skills_json()
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1813,7 +1839,7 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
             let json = client
                 .search_skills_json(q.unwrap_or_default(), limit.unwrap_or(10))
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -1840,16 +1866,16 @@ async fn skill_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<(
                     let json = client
                         .get_skill_json(name)
                         .await
-                        .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                        .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
                     safe_println!("{json}");
                     Ok(())
                 }
-                "enable" => client.enable_skill(name).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
-                "disable" => client.disable_skill(name).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
-                "rollback" => client.rollback_skill(name, version.ok_or(2)?).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
+                "enable" => client.enable_skill(name).await.map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 }),
+                "disable" => client.disable_skill(name).await.map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 }),
+                "rollback" => client.rollback_skill(name, version.ok_or(2)?).await.map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 }),
                 "version" => {
                     // gRPC proto doesn't have a list_skill_versions endpoint yet
-                    safe_eprintln!("gRPC: skill version listing not yet available via gRPC");
+                    safe_eprintln!("{}", cli_t(i18n::key::CLI_SKILL_VERSION_GRPC));
                     Err(1)
                 }
                 _ => unreachable!(),
@@ -1870,7 +1896,7 @@ fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
     };
 
     if !root.exists() {
-        safe_eprintln!("skill directory not found: {}", root.display());
+        safe_eprintln!("{}", cli_t_with(i18n::key::CLI_SKILL_DIR_NOT_FOUND, &[("path", &root.display().to_string())]));
         return Err(1);
     }
 
@@ -1888,7 +1914,7 @@ fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
     };
 
     if report.findings.is_empty() {
-        safe_println!("✓ all skills passed validation");
+        safe_println!("{}", cli_t(i18n::key::CLI_SKILL_ALL_PASSED));
         Ok(())
     } else {
         for f in &report.findings {
@@ -1901,10 +1927,10 @@ fn skill_validate_cmd(args: &[String]) -> Result<(), i32> {
         let errors = report.error_count();
         let warnings = report.warning_count();
         if errors > 0 {
-            safe_eprintln!("{errors} error(s), {warnings} warning(s)");
+            safe_eprintln!("{}", cli_t_with(i18n::key::CLI_SKILL_ERROR_SUMMARY, &[("errors", &errors.to_string()), ("warnings", &warnings.to_string())]));
             Err(1)
         } else {
-            safe_println!("{warnings} warning(s), 0 errors");
+            safe_println!("{}", cli_t_with(i18n::key::CLI_SKILL_WARNINGS_ONLY, &[("warnings", &warnings.to_string())]));
             Ok(())
         }
     }
@@ -1915,7 +1941,7 @@ fn skill_export_cmd(args: &[String]) -> Result<(), i32> {
     let out_dir = match args.first() {
         Some(p) => std::path::PathBuf::from(p),
         None => {
-            safe_eprintln!("usage: aman skill export <out_dir>");
+            safe_eprintln!("{}", cli_t(i18n::key::CLI_SKILL_EXPORT_USAGE));
             return Err(2);
         }
     };
@@ -1924,7 +1950,7 @@ fn skill_export_cmd(args: &[String]) -> Result<(), i32> {
     let skills_root = std::path::PathBuf::from(home).join(".aman/skills");
 
     if !skills_root.exists() {
-        safe_eprintln!("skill directory not found: {}", skills_root.display());
+        safe_eprintln!("{}", cli_t_with(i18n::key::CLI_SKILL_DIR_NOT_FOUND, &[("path", &skills_root.display().to_string())]));
         return Err(1);
     }
 
@@ -1941,9 +1967,11 @@ fn skill_export_cmd(args: &[String]) -> Result<(), i32> {
     }
 
     safe_println!(
-        "exported {} skill(s) to {}",
-        report.exported.len(),
-        out_dir.display()
+        "{}",
+        cli_t_with(i18n::key::CLI_EXPORT_RESULT, &[
+            ("count", &report.exported.len().to_string()),
+            ("dir", &out_dir.display().to_string())
+        ])
     );
 
     if report.is_ok() {
@@ -2033,7 +2061,7 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
             let json = client
                 .list_workflow_instances_json()
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
             safe_println!("{json}");
             Ok(())
         }
@@ -2055,12 +2083,12 @@ async fn workflow_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Resul
                     let json = client
                         .get_workflow_instance_json(id)
                         .await
-                        .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })?;
+                        .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })?;
                     safe_println!("{json}");
                     Ok(())
                 }
-                "retry" => client.retry_workflow(id).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
-                _ => client.cancel_workflow(id).await.map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 }),
+                "retry" => client.retry_workflow(id).await.map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 }),
+                _ => client.cancel_workflow(id).await.map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 }),
             }
         }
         _ => Err(2),
@@ -2224,7 +2252,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             client
                 .add_cron(id.ok_or(2)?, expression.ok_or(2)?, agent_key.unwrap_or_default())
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         "update" => {
             let mut id: Option<String> = None;
@@ -2255,7 +2283,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             client
                 .update_cron(id.ok_or(2)?, patch_bytes, agent_key.unwrap_or_default())
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         "remove" => {
             let mut id: Option<String> = None;
@@ -2277,7 +2305,7 @@ async fn cron_cmd_grpc(sub: &str, opts: ApiOpts, rest: Vec<String>) -> Result<()
             client
                 .remove_cron(id.ok_or(2)?, agent_key.unwrap_or_default())
                 .await
-                .map_err(|e| { safe_eprintln!("gRPC: {e}"); 1 })
+                .map_err(|e| { safe_eprintln!("{}", cli_t_with(i18n::key::CLI_GRPC_ERROR, &[("e", &e.to_string())])); 1 })
         }
         _ => Err(2),
     }
@@ -2334,7 +2362,7 @@ async fn config_cmd(args: &[String]) -> Result<(), i32> {
             .map_err(|_| 1)?;
             if !loaded.warnings.is_empty() {
                 for w in loaded.warnings {
-                    safe_eprintln!("warning: {w}");
+                    safe_eprintln!("{}", cli_t_with(i18n::key::CLI_WARNING, &[("message", &w)]));
                 }
             }
             Ok(())
@@ -2362,9 +2390,7 @@ fn load_config(path: Option<&PathBuf>) -> Result<AgentConfig, kernel::Error> {
 }
 
 fn print_usage() {
-    safe_eprintln!(
-        "usage:\n  aman serve [--config <path>] [--soul <path>]\n  aman run [--config <path>] [--soul <path>] [--bind <ip:port>] [--token <token>]\n  aman health ready [--addr <ip:port>] [--token <token>]\n  aman agent start|shutdown [--addr <ip:port>] [--token <token>] [--operator <name>] [--confirm]\n  aman analyze trends|anomalies [--from <iso|today|yesterday>] [--to <iso|now>] [--agent <id>] [--addr <ip:port>] [--token <token>]\n  aman metrics [--addr <ip:port>] [--token <token>]\n  aman audit-log [--addr <ip:port>] [--token <token>] [--action <a>] [--operator <o>] [--since-ms <ms>] [--until-ms <ms>] [--limit <n>] [--offset <n>]\n  aman event inject --source <s> --type <t> --payload <json> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event push --source <s> --type <t> --payload <json>|--payload-stdin [--agent <id>] [--priority <p>] [--delivery <d>] [--ttl-ms <ms>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman event types [--addr <ip:port>] [--token <token>]\n  aman event dump --id <event_id> [--addr <ip:port>] [--token <token>]\n  aman event trace --trace-id <trace_id> [--addr <ip:port>] [--token <token>]\n  aman dlq list [--reason <r>] [--source <s>] [--event-type <t>] [--limit <n>] [--offset <n>] [--addr <ip:port>] [--token <token>]\n  aman dlq retry --id <id> [--reason <r>] [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman dlq discard --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source pause|resume --id <id> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman source config --id <id> --json <patch> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin list [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin pending [--addr <ip:port>] [--token <token>]\n  aman plugin approve|deny --name <name> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin enable|disable|uninstall --name <name> [--confirm] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman plugin install --file <path.tar.gz> [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron add --id <id> --expression <expr> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron update --id <id> --json <patch> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman cron remove --id <id> [--agent-key <key>] [--addr <ip:port>] [--token <token>] [--operator <name>]\n  aman config show|validate [--config <path>] [--override <path>]\n  aman config set --override <path> --json <partial_agent_config_json> [--config <path>]"
-    );
+    safe_eprintln!("{}", cli_t(i18n::key::CLI_USAGE));
 }
 
 #[cfg(test)]

@@ -107,6 +107,35 @@ impl Error {
             _ => None,
         }
     }
+
+    /// Return the i18n key for this error variant's user-facing description.
+    ///
+    /// The base `[AmanExistence]` prefix and structural variants (`Io`, `SerdeJson`)
+    /// return `None` since they either have a fixed prefix or are not user-facing.
+    /// Error variants that carry a user-visible message return the corresponding
+    /// `i18n::key::ERROR_*` constant so the caller can produce a localized message.
+    #[must_use]
+    pub fn i18n_key(&self) -> Option<&'static str> {
+        match self {
+            Self::BusFull => Some(i18n::key::ERROR_BUS_FULL),
+            Self::Timeout => Some(i18n::key::ERROR_TIMEOUT),
+            Self::VersionMismatch { .. } => Some(i18n::key::ERROR_VERSION_MISMATCH),
+            Self::CycleDetected { .. } => Some(i18n::key::ERROR_CYCLE_DETECTED),
+            Self::CompensationFailed { .. } => Some(i18n::key::ERROR_COMPENSATION_FAILED),
+            Self::Unrecoverable { .. } => Some(i18n::key::ERROR_UNRECOVERABLE),
+            Self::ConfigInvalid { .. } => Some(i18n::key::ERROR_CONFIG_INVALID),
+            Self::SecretUnresolved { .. } => Some(i18n::key::ERROR_SECRET_UNRESOLVED),
+            Self::InvalidRetryBackoff { .. } => Some(i18n::key::ERROR_INVALID_RETRY_BACKOFF),
+            Self::AlreadyExists { .. } => Some(i18n::key::ERROR_ALREADY_EXISTS),
+            Self::NotFound { .. } => Some(i18n::key::ERROR_NOT_FOUND),
+            Self::RateLimited { .. } => Some(i18n::key::ERROR_RATE_LIMITED),
+            Self::SecurityViolation { .. } => Some(i18n::key::ERROR_SECURITY_VIOLATION),
+            Self::SandboxError { .. } => Some(i18n::key::ERROR_SANDBOX),
+            // Structural variants (Io, SerdeJson) and MacroUsage/PermissionDenied/
+            // InvalidStateTransition do not have a dedicated user-facing message.
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

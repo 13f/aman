@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   interface ProviderEntry {
     key: string;
@@ -54,7 +55,7 @@
   }
 
   async function deleteProvider(key: string) {
-    if (!confirm(`删除 Provider "${key}"？`)) return;
+    if (!confirm(t("providers.confirm_delete").replace("{key}", key))) return;
     try {
       await invoke("delete_provider", { key });
       await loadProviders();
@@ -87,7 +88,7 @@
 <div class="page-header">
   <h2>Providers</h2>
   <button onclick={() => { showCreateForm = !showCreateForm; }}>
-    {showCreateForm ? "取消" : "+ 新增"}
+    {showCreateForm ? t("providers.cancel") : t("providers.create")}
   </button>
 </div>
 
@@ -97,32 +98,32 @@
 
 {#if showCreateForm}
   <div class="card form-card">
-    <h3>新增 Provider</h3>
+    <h3>{t("providers.create_new")}</h3>
     <div class="form-field">
-      <label for="new-key">Key</label>
+      <label for="new-key">{t("providers.form_key")}</label>
       <input id="new-key" type="text" placeholder="例如: openai" bind:value={newKey} />
     </div>
     <div class="form-field">
-      <label for="new-display">Display Name</label>
+      <label for="new-display">{t("providers.form_display")}</label>
       <input id="new-display" type="text" placeholder="例如: OpenAI" bind:value={newDisplayName} />
     </div>
     <div class="form-field">
-      <label for="new-url">Base URL</label>
+      <label for="new-url">{t("providers.form_base_url")}</label>
       <input id="new-url" type="text" placeholder="例如: https://api.openai.com/v1" bind:value={newBaseUrl} />
     </div>
     <div class="form-actions">
-      <button class="secondary" onclick={() => { showCreateForm = false; }}>取消</button>
-      <button onclick={createProvider} disabled={!newKey.trim() || !newDisplayName.trim() || !newBaseUrl.trim()}>创建</button>
+      <button class="secondary" onclick={() => { showCreateForm = false; }}>{t("providers.cancel")}</button>
+      <button onclick={createProvider} disabled={!newKey.trim() || !newDisplayName.trim() || !newBaseUrl.trim()}>{t("providers.confirm")}</button>
     </div>
   </div>
 {/if}
 
 {#if loading}
-  <p class="dim">加载中...</p>
+  <p class="dim">{t("providers.loading")}</p>
 {:else if providers.length === 0}
   <div class="card empty-state">
-    <p>还没有配置任何 Provider。</p>
-    <p class="dim">点击"新增"按钮添加 LLM Provider 以开始使用 Aman。</p>
+    <p>{t("providers.no_providers_empty")}</p>
+    <p class="dim">{t("providers.no_providers_hint")}</p>
   </div>
 {:else}
   <div class="provider-list">
@@ -138,18 +139,18 @@
         <div class="provider-detail">
           <span class="dim">API Key:</span>
           {#if provider.has_api_key}
-            <span class="badge ok">已配置</span>
+            <span class="badge ok">{t("providers.configured")}</span>
           {:else}
-            <span class="badge warn">未配置</span>
+            <span class="badge warn">{t("providers.not_configured")}</span>
           {/if}
         </div>
         <div class="provider-actions">
           {#if provider.has_api_key}
-            <button class="secondary" onclick={() => openEditKey(provider.key)}>更新 Key</button>
+            <button class="secondary" onclick={() => openEditKey(provider.key)}>{t("providers.update_key")}</button>
           {:else}
-            <button class="secondary" onclick={() => openEditKey(provider.key)}>设置 Key</button>
+            <button class="secondary" onclick={() => openEditKey(provider.key)}>{t("providers.set_key")}</button>
           {/if}
-          <button class="danger" onclick={() => deleteProvider(provider.key)}>删除</button>
+          <button class="danger" onclick={() => deleteProvider(provider.key)}>{t("common.delete")}</button>
         </div>
 
         {#if showEditKeyForm === provider.key}
@@ -159,8 +160,8 @@
               <input id="api-key-{provider.key}" type="password" placeholder="sk-..." bind:value={editApiKey} />
             </div>
             <div class="form-actions">
-              <button class="secondary" onclick={() => { showEditKeyForm = null; }}>取消</button>
-              <button onclick={() => setApiKey(provider.key)} disabled={!editApiKey.trim()}>保存</button>
+              <button class="secondary" onclick={() => { showEditKeyForm = null; }}>{t("providers.cancel")}</button>
+              <button onclick={() => setApiKey(provider.key)} disabled={!editApiKey.trim()}>{t("common.save")}</button>
             </div>
           </div>
         {/if}

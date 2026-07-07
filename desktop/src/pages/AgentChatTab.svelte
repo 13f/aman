@@ -5,6 +5,7 @@
   import { renderMarkdown } from "../lib/markdown";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
+  import { t } from "../lib/i18n.svelte";
 
   const { agentKey }: { agentKey: string } = $props();
 
@@ -268,9 +269,9 @@
         if (next) activeSessionId = next.id; else await createSession();
       }
       if (paginatedSessions.length === 0 && currentPage > 1) currentPage--;
-      showToast("success", "Session deleted");
+      showToast("success", t("chat.session_deleted"));
     } catch (e) {
-      showToast("error", `Failed to delete session: ${e}`);
+      showToast("error", t("chat.failed_delete_session").replace("{e}", String(e)));
     }
     deletingSessionId = null;
   }
@@ -487,7 +488,7 @@
   <aside class="sessions-panel">
     <div class="sessions-header">
       <span>Sessions</span>
-      <button class="new-session-btn" onclick={createSession} title="New chat">+</button>
+      <button class="new-session-btn" onclick={createSession} title={t("chat.new_chat_title")}>+</button>
     </div>
     <div class="sessions-list">
       {#each paginatedSessions as session (session.id)}
@@ -518,14 +519,14 @@
   <div class="chat-area">
     {#if !activeSessionId}
       <div class="chat-empty">
-        <p>Select a session or create a new chat.</p>
-        <button class="btn-primary" onclick={createSession}>New chat</button>
+        <p>{t("chat.select_session_hint")}</p>
+        <button class="btn-primary" onclick={createSession}>{t("chat.new_chat")}</button>
       </div>
     {:else}
       <div class="chat-header">
         <span class="chat-title">{sessions.find(s => s.id === activeSessionId)?.title ?? "Chat"}</span>
         {#if isProcessing}
-          <button class="btn-stop" onclick={stopGeneration}>Stop</button>
+          <button class="btn-stop" onclick={stopGeneration}>{t("chat.stop")}</button>
         {/if}
       </div>
 
@@ -545,7 +546,7 @@
       <div class="chat-input-zone">
         <chat-input
           bind:this={chatInputRef}
-          placeholder="Message… Send to chat, /stop to stop."
+          placeholder={t("chat.message_placeholder")}
           disabled={isProcessing && !activeSessionId}
         ></chat-input>
       </div>
@@ -557,10 +558,10 @@
 {#if deletingSessionId}
   <div class="dialog-overlay" onclick={() => deletingSessionId = null}>
     <div class="dialog" onclick={(e) => e.stopPropagation()}>
-      <p>Delete this session?</p>
+      <p>{t("chat.delete_session_confirm")}</p>
       <div class="dialog-actions">
-        <button class="btn-cancel" onclick={() => deletingSessionId = null}>Cancel</button>
-        <button class="btn-danger" onclick={() => deleteSession(deletingSessionId!)}>Delete</button>
+        <button class="btn-cancel" onclick={() => deletingSessionId = null}>{t("common.cancel")}</button>
+        <button class="btn-danger" onclick={() => deleteSession(deletingSessionId!)}>{t("chat.delete")}</button>
       </div>
     </div>
   </div>

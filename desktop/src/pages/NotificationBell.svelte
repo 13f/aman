@@ -2,6 +2,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, onDestroy } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   interface Notification {
     id: string;
@@ -96,7 +97,7 @@
 </script>
 
 <div class="bell-wrapper">
-  <button class="bell-btn" onclick={toggleDropdown} title="通知">
+  <button class="bell-btn" onclick={toggleDropdown} title={t("notifications.bell_title")}>
     <span class="bell-icon">🔔</span>
     {#if unreadCount > 0}
       <span class="badge severity-{notifications[0]?.severity ?? 'warning'}">
@@ -108,15 +109,15 @@
   {#if dropdownOpen}
     <div class="dropdown">
       <div class="dropdown-header">
-        <span class="dropdown-title">通知</span>
+        <span class="dropdown-title">{t("notifications.title")}</span>
         {#if unreadCount > 0}
-          <button class="dismiss-all-btn" onclick={handleDismissAll}>全部已读</button>
+          <button class="dismiss-all-btn" onclick={handleDismissAll}>{t("notifications.mark_all_read")}</button>
         {/if}
       </div>
 
       <div class="dropdown-list">
         {#if notifications.length === 0}
-          <div class="empty-state">暂无通知</div>
+          <div class="empty-state">{t("notifications.empty")}</div>
         {:else}
           {#each notifications as notif (notif.id)}
             <div class="notif-item severity-{notif.severity}">
@@ -138,14 +139,14 @@
                   {/if}
                   {#if notif.dismissible}
                     <button class="notif-dismiss-link" onclick={() => handleDismiss(notif.id)}>
-                      忽略
+                      {t("notifications.dismiss")}
                     </button>
                   {:else}
                     <button
                       class="notif-action-link"
                       onclick={() => handleAck(notif.id, notif.action_route)}
                     >
-                      确认
+                      {t("notifications.confirm")}
                     </button>
                   {/if}
                 </div>

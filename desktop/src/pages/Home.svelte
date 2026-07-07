@@ -8,6 +8,7 @@
   import type { AgentEntry, AgentIdleState, TiltState } from "./agent-viewer-types";
   import { COLORS, IDLE_EMOJI, MODE_ICON, STATE_EMOJI, SYSTEM_STATE_LABEL, SYSTEM_STATE_CLASS } from "./agent-viewer-types";
   import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
+  import { t } from "../lib/i18n.svelte";
   import type { EmotionsConfig } from "../lib/emotions";
   import {
     type CognitiveState,
@@ -317,7 +318,7 @@
         const items = v?.items as Array<{ name: string; description: string }> | undefined;
         llmSkills = (items || []).filter(s => s.name && s.description);
       } catch {
-        addSkillError = "无法加载技能列表，请确认 Gateway 已启动";
+        addSkillError = t("home.failed_load_skills");
       } finally {
         llmSkillsLoading = false;
       }
@@ -534,7 +535,7 @@
             <div class="finance-card-accent"></div>
             <span
               class="finance-card-remove"
-              title="移除卡片"
+              title={t("home.remove_card")}
               role="button"
               tabindex="0"
               onclick={(e) => { e.stopPropagation(); removeCard(card.skill_name); }}
@@ -554,8 +555,8 @@
         <button class="finance-card finance-card-add" onclick={openAddSkill}>
           <div class="finance-card-icon finance-card-add-icon"><span>+</span></div>
           <div class="finance-card-body">
-            <h3>添加技能卡片</h3>
-            <p class="dim">从可用技能列表中选择</p>
+            <h3>{t("home.add_skill_card")}</h3>
+            <p class="dim">{t("home.select_skill")}</p>
           </div>
         </button>
       </div>
@@ -569,7 +570,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
     <div class="modal-content" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="dialog" tabindex="-1">
       <div class="modal-header">
-        <h3>选择 Agent 执行 "{selectedSkillName}"</h3>
+        <h3>{t("home.select_agent_title").replace("{name}", selectedSkillName)}</h3>
         <button class="modal-close-btn" onclick={() => showAgentSelector = false}>✕</button>
       </div>
       {#if modalError}
@@ -602,7 +603,7 @@
         <input
           type="text"
           class="add-skill-search"
-          placeholder="搜索技能..."
+          placeholder={t("home.search_skills")}
           bind:value={addSkillSearch}
         />
         <div class="add-skill-list">
@@ -616,7 +617,7 @@
             </button>
           {:else}
             <p class="dim" style="text-align:center;padding:20px;">
-              {addSkillSearch ? "无匹配技能" : "没有可用的技能"}
+              {addSkillSearch ? t("home.no_matching_skills") : t("home.no_skills")}
             </p>
           {/each}
         </div>

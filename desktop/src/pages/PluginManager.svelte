@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "../lib/i18n.svelte";
 
   interface PluginEntry {
     name: string;
@@ -57,13 +58,13 @@
 </script>
 
 <div class="card" style="display:flex;align-items:center;justify-content:space-between;">
-  <h2>Plugins</h2>
+  <h2>{t("plugin.title")}</h2>
   <div style="display:flex;gap:8px;align-items:center;">
     <label style="font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer;">
       <input type="checkbox" checked={autoRefresh} onchange={toggleAuto} />
       Auto
     </label>
-    <button class="secondary" onclick={loadPlugins} disabled={loading}>Refresh</button>
+    <button class="secondary" onclick={loadPlugins} disabled={loading}>{t("maintenance.refresh")}</button>
   </div>
 </div>
 
@@ -87,7 +88,7 @@
             <td><strong>{p.name}</strong></td>
             <td>
               <span class="badge {p.enabled ? 'ok' : 'warn'}">
-                {p.enabled ? "Enabled" : "Disabled"}
+                {p.enabled ? t("common.enabled") : t("common.disabled")}
               </span>
               {#if p.state}
                 <span style="font-size:11px;color:var(--fg-dim);margin-left:8px;">({p.state})</span>

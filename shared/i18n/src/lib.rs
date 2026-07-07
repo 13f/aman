@@ -270,6 +270,60 @@ pub mod key {
     pub const GATEWAY_STOPPING: &str = "gateway.stopping";
     /// "Gateway shut down"
     pub const GATEWAY_STOPPED: &str = "gateway.stopped";
+    /// "Config load error: {e}"
+    pub const GATEWAY_CONFIG_ERROR: &str = "gateway.config_error";
+    /// "HTTP server error: {e}"
+    pub const GATEWAY_HTTP_ERROR: &str = "gateway.http_error";
+    /// "Runtime start error: {e}"
+    pub const GATEWAY_RUNTIME_ERROR: &str = "gateway.runtime_error";
+    /// "Runtime start timed out after {secs}s (phase={phase})"
+    pub const GATEWAY_RUNTIME_TIMEOUT: &str = "gateway.runtime_timeout";
+    /// "Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]"
+    pub const GATEWAY_USAGE: &str = "gateway.usage";
+
+    // ── CLI ─────────────────────────────────────────────────────
+    /// "aman v{version} — AmanExistence"
+    pub const CLI_VERSION: &str = "cli.version";
+    /// "usage: aman analyze trends|anomalies [--from <iso>] [--to <iso>] [--agent <id>] [--addr <ip:port>] [--token <token>] [--grpc]"
+    pub const CLI_USAGE_ANALYZE: &str = "cli.usage_analyze";
+    /// "invalid time: {other} (use ISO 8601, 'today', 'yesterday', or 'now')"
+    pub const CLI_INVALID_TIME: &str = "cli.invalid_time";
+    /// "unsupported format: {raw} (only \"json\" is supported)"
+    pub const CLI_UNSUPPORTED_FORMAT: &str = "cli.unsupported_format";
+    /// "plugin '{name}' approved"
+    pub const CLI_PLUGIN_APPROVED: &str = "cli.plugin_approved";
+    /// "plugin '{name}' denied"
+    pub const CLI_PLUGIN_DENIED: &str = "cli.plugin_denied";
+    /// "No pending plugin approvals."
+    pub const CLI_NO_PENDING_APPROVALS: &str = "cli.no_pending_approvals";
+    /// "plugin approval commands are only available via HTTP REST (omit --grpc)"
+    pub const CLI_PLUGIN_GRPC_UNAVAILABLE: &str = "cli.plugin_grpc_unavailable";
+    /// "gRPC: skill version listing not yet available via gRPC"
+    pub const CLI_SKILL_VERSION_GRPC: &str = "cli.skill_version_grpc";
+    /// "skill directory not found: {path}"
+    pub const CLI_SKILL_DIR_NOT_FOUND: &str = "cli.skill_dir_not_found";
+    /// "✓ all skills passed validation"
+    pub const CLI_SKILL_ALL_PASSED: &str = "cli.skill_all_passed";
+    /// "{errors} error(s), {warnings} warning(s)"
+    pub const CLI_SKILL_ERROR_SUMMARY: &str = "cli.skill_error_summary";
+    /// "{warnings} warning(s), 0 errors"
+    pub const CLI_SKILL_WARNINGS_ONLY: &str = "cli.skill_warnings_only";
+    /// "usage: aman skill export <out_dir>"
+    pub const CLI_SKILL_EXPORT_USAGE: &str = "cli.skill_export_usage";
+    /// "exported {count} skill(s) to {dir}"
+    pub const CLI_EXPORT_RESULT: &str = "cli.export_result";
+    /// "stdio server error: {e}"
+    pub const CLI_STDIO_SERVER_ERROR: &str = "cli.stdio_server_error";
+    /// "gRPC connect error: {e}"
+    pub const CLI_GRPC_CONNECT_ERROR: &str = "cli.grpc_connect_error";
+    /// "gRPC: {e}"
+    pub const CLI_GRPC_ERROR: &str = "cli.grpc_error";
+    /// "unknown flag: {flag}"
+    pub const CLI_UNKNOWN_FLAG: &str = "cli.unknown_flag";
+    /// "warning: {message}"
+    pub const CLI_WARNING: &str = "cli.warning";
+    /// "usage: aman ..."
+    pub const CLI_USAGE: &str = "cli.usage";
 
     // ── Agent ───────────────────────────────────────────────────
     /// "Agent is busy"
@@ -364,6 +418,36 @@ pub mod key {
     pub const TUI_ERROR_DENY_FAILED: &str = "tui.error.deny_failed";
     /// "No plugin selected"
     pub const TUI_ERROR_NO_PLUGIN_SELECTED: &str = "tui.error.no_plugin_selected";
+
+    // ── Kernel error descriptions (user-facing) ─────────────────
+    /// "Event bus is full — backpressure active"
+    pub const ERROR_BUS_FULL: &str = "kernel.error.bus_full";
+    /// "Operation timed out"
+    pub const ERROR_TIMEOUT: &str = "kernel.error.timeout";
+    /// "Version mismatch: expected {expected}, found {found}"
+    pub const ERROR_VERSION_MISMATCH: &str = "kernel.error.version_mismatch";
+    /// "Dependency cycle detected: {path}"
+    pub const ERROR_CYCLE_DETECTED: &str = "kernel.error.cycle_detected";
+    /// "Compensation failed: {message}"
+    pub const ERROR_COMPENSATION_FAILED: &str = "kernel.error.compensation_failed";
+    /// "Unrecoverable error: {message}"
+    pub const ERROR_UNRECOVERABLE: &str = "kernel.error.unrecoverable";
+    /// "Configuration error: {message}"
+    pub const ERROR_CONFIG_INVALID: &str = "kernel.error.config_invalid";
+    /// "Secret could not be resolved: {key}"
+    pub const ERROR_SECRET_UNRESOLVED: &str = "kernel.error.secret_unresolved";
+    /// "Invalid retry backoff: {value}"
+    pub const ERROR_INVALID_RETRY_BACKOFF: &str = "kernel.error.invalid_retry_backoff";
+    /// "Resource already exists: {name}"
+    pub const ERROR_ALREADY_EXISTS: &str = "kernel.error.already_exists";
+    /// "Resource not found: {name}"
+    pub const ERROR_NOT_FOUND: &str = "kernel.error.not_found";
+    /// "Rate limited: retry after {ms}ms"
+    pub const ERROR_RATE_LIMITED: &str = "kernel.error.rate_limited";
+    /// "Security violation: {message}"
+    pub const ERROR_SECURITY_VIOLATION: &str = "kernel.error.security_violation";
+    /// "Sandbox error: {message}"
+    pub const ERROR_SANDBOX: &str = "kernel.error.sandbox";
 
     // ── Desktop ─────────────────────────────────────────────────
     /// "Reload Skills"

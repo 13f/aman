@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import NotificationBell from "./NotificationBell.svelte";
+  import { t } from "../lib/i18n.svelte";
 
   let { onstatuschange = (_running: boolean) => {} } = $props();
 
@@ -143,7 +144,7 @@
 
 <div class="status-bar">
   <div class="status-info">
-    <h2>Gateway Status</h2>
+    <h2>{t("dashboard.gateway_status")}</h2>
     <p class="dim" style="margin-top:4px;">
       Phase: <strong>{status.phase}</strong>
       <span class="sep"></span>
@@ -156,14 +157,14 @@
     <NotificationBell />
     {#if !status.running}
       <button class="start-btn" onclick={startGateway} disabled={gatewayLoading}>
-        {gatewayLoading ? "连接中..." : "启动"}
+        {gatewayLoading ? t("dashboard.connecting") : t("dashboard.start")}
       </button>
     {:else}
       <button class="stop-btn" onclick={stopGateway} disabled={gatewayStopping}>
-        {gatewayStopping ? "停止中..." : "停止"}
+        {gatewayStopping ? t("dashboard.stopping") : t("dashboard.stop")}
       </button>
       <button class="restart-btn" onclick={restartGateway} disabled={gatewayStopping || gatewayLoading}>
-        重启
+        {t("dashboard.restart")}
       </button>
     {/if}
   </div>

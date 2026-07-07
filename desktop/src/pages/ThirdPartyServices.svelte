@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   interface Service {
     id: string;
@@ -87,7 +88,7 @@
 </script>
 
 <div class="page-header">
-  <h2>Third Party Services</h2>
+  <h2>{t("settings.third_party_services")}</h2>
 </div>
 
 {#if loading}

@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   // ── Debug Event Entry ──
   interface DebugEventEntry {
@@ -201,11 +202,11 @@
   <!-- ═══ Event Bus Metrics ═══ -->
   <section class="dp-section">
     <div class="dp-section-header" role="button" tabindex="0" onclick={() => showMetricsPanel = !showMetricsPanel} onkeydown={(e) => e.key === 'Enter' && (showMetricsPanel = !showMetricsPanel)}>
-      <span>{showMetricsPanel ? "▼" : "▶"} Event Bus</span>
+      <span>{showMetricsPanel ? "▼" : "▶"} {t("maintenance.event_bus")}</span>
       <span class="dp-header-right" onclick={(e) => e.stopPropagation()}>
-        <button class="dp-btn" onclick={fetchDebugEvents} title="Backfill from EventStore">Refresh</button>
-        <button class="dp-btn" onclick={exportLog} title="Export as JSON">Export</button>
-        <button class="dp-btn" onclick={clearLog} title="Clear event log">Clear</button>
+        <button class="dp-btn" onclick={fetchDebugEvents} title="Backfill from EventStore">{t("maintenance.refresh")}</button>
+        <button class="dp-btn" onclick={exportLog} title="Export as JSON">{t("maintenance.export")}</button>
+        <button class="dp-btn" onclick={clearLog} title="Clear event log">{t("maintenance.clear")}</button>
       </span>
     </div>
     {#if showMetricsPanel}
@@ -241,7 +242,7 @@
             </div>
           </div>
         {:else}
-          <p class="dp-empty">Waiting for metrics...</p>
+          <p class="dp-empty">{t("maintenance.waiting_metrics")}</p>
         {/if}
       </div>
     {/if}
@@ -250,12 +251,12 @@
   <!-- ═══ Event Log ═══ -->
   <section class="dp-section">
     <div class="dp-section-header" role="button" tabindex="0" onclick={() => showEventLog = !showEventLog} onkeydown={(e) => e.key === 'Enter' && (showEventLog = !showEventLog)}>
-      <span>{showEventLog ? "▼" : "▶"} Event Log <span class="dp-count">({eventLog.length})</span></span>
+      <span>{showEventLog ? "▼" : "▶"} {t("maintenance.event_log")} <span class="dp-count">({eventLog.length})</span></span>
     </div>
     {#if showEventLog}
       <div class="dp-event-log">
         {#if eventLog.length === 0}
-          <p class="dp-empty">No events yet. Start a chat or trigger an action to see events.</p>
+          <p class="dp-empty">{t("maintenance.no_events")}</p>
         {:else}
           {#each eventLog as entry, i}
             <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events -->

@@ -2,6 +2,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { invoke } from "@tauri-apps/api/core";
   import { onMount, onDestroy } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   interface Notification {
     id: string;
@@ -109,7 +110,7 @@
             <button class="dismiss-btn" onclick={() => dismiss(notif.id)}>✕</button>
           {:else}
             <button class="dismiss-text-btn" onclick={() => acknowledge(notif)}>
-              确认
+              {t("notifications.confirm")}
             </button>
           {/if}
         </div>

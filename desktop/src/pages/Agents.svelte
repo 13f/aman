@@ -3,6 +3,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
   import AgentSelector from "./AgentSelector.svelte";
+  import { t } from "../lib/i18n.svelte";
 
   let { onNavigate = (_page: string) => {} }: { onNavigate?: (page: string) => void } = $props();
 
@@ -165,7 +166,7 @@ I prefer concise and accurate responses.
   }
 
   async function deleteAgent(key: string) {
-    if (!confirm(`删除 Agent "${key}"？\n此操作会删除所有相关的 session 和记忆。`)) return;
+    if (!confirm(t("agents.confirm_delete").replace("{key}", key))) return;
     try {
       await invoke("delete_agent", { key });
       await loadData();
@@ -238,7 +239,7 @@ I prefer concise and accurate responses.
 <div class="page-header">
   <h2>Agents</h2>
   <button onclick={() => { showCreateForm = !showCreateForm; }} disabled={noProviders}>
-    {showCreateForm ? "取消" : "+ 新建 Agent"}
+    {showCreateForm ? t("agents.cancel") : t("agents.create")}
   </button>
 </div>
 
@@ -248,31 +249,31 @@ I prefer concise and accurate responses.
 
 {#if noProviders}
   <div class="card empty-state">
-    <p>请先配置 Provider 再创建 Agent。</p>
-    <p class="dim">前往 Providers 页面添加 LLM Provider。</p>
+    <p>{t("agents.no_providers")}</p>
+    <p class="dim">{t("agents.no_providers_hint")}</p>
   </div>
 {:else if showCreateForm}
   <div class="card form-card">
-    <h3>创建新 Agent</h3>
+    <h3>{t("agents.create_new")}</h3>
     <div class="form-field">
-      <label for="agent-key">Key</label>
+      <label for="agent-key">{t("agents.form_key")}</label>
       <input id="agent-key" type="text" placeholder="例如: cortana" bind:value={newKey} />
     </div>
     <div class="form-field">
-      <label for="agent-display">Display Name</label>
+      <label for="agent-display">{t("agents.form_display")}</label>
       <input id="agent-display" type="text" placeholder="例如: Cortana" bind:value={newDisplayName} />
     </div>
     <div class="form-field">
-      <label for="agent-provider">Provider</label>
+      <label for="agent-provider">{t("agents.form_provider")}</label>
       <select id="agent-provider" bind:value={newProvider} onchange={() => { newModelEntries = []; showNewModelDropdown = false; }}>
-        <option value="">-- 选择 Provider --</option>
+        <option value="">{t("agents.select_provider_placeholder")}</option>
         {#each providers as p}
           <option value={p.key}>{p.display_name}</option>
         {/each}
       </select>
     </div>
     <div class="form-field model-field">
-      <label for="agent-model">Model</label>
+      <label for="agent-model">{t("agents.form_model")}</label>
       <input
         id="agent-model"
         type="text"
@@ -282,7 +283,7 @@ I prefer concise and accurate responses.
         onblur={hideNewModelDropdown}
       />
       {#if isLoadingNewModels}
-        <div class="model-dropdown-loading">加载中...</div>
+        <div class="model-dropdown-loading">{t("agents.loading_models")}</div>
       {/if}
       {#if showNewModelDropdown && newModelEntries.length > 0}
         <div class="model-dropdown">
@@ -301,20 +302,20 @@ I prefer concise and accurate responses.
       {/if}
     </div>
     <div class="form-field">
-      <label for="agent-soul">SOUL.md 内容</label>
+      <label for="agent-soul">{t("agents.form_soul")}</label>
       <textarea id="agent-soul" rows="10" bind:value={newSoulContent}></textarea>
     </div>
     <div class="form-actions">
-      <button class="secondary" onclick={() => { showCreateForm = false; }}>取消</button>
-      <button onclick={createAgent} disabled={!newKey.trim() || !newDisplayName.trim() || !newProvider.trim() || !newModel.trim()}>创建</button>
+      <button class="secondary" onclick={() => { showCreateForm = false; }}>{t("agents.cancel")}</button>
+      <button onclick={createAgent} disabled={!newKey.trim() || !newDisplayName.trim() || !newProvider.trim() || !newModel.trim()}>{t("agents.confirm")}</button>
     </div>
   </div>
 {:else if loading}
-  <p class="dim">加载中...</p>
+  <p class="dim">{t("common.loading")}</p>
 {:else if agents.length === 0}
   <div class="card empty-state">
-    <p>还没有 Agent。</p>
-    <p class="dim">点击"新建 Agent"创建你的第一个 AI 助手。</p>
+    <p>{t("agents.no_agents_empty")}</p>
+    <p class="dim">{t("agents.no_agents_hint")}</p>
   </div>
 {:else}
   <AgentSelector

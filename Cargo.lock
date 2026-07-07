@@ -1055,6 +1055,7 @@ version = "0.1.0"
 dependencies = [
  "config",
  "gateway",
+ "i18n",
  "kernel",
  "prost",
  "reqwest 0.12.28",
@@ -3982,6 +3983,7 @@ dependencies = [
  "axum",
  "blake3",
  "cognitive-react",
+ "i18n",
  "insta",
  "pollster",
  "proptest",

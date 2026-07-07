@@ -15,7 +15,9 @@
 use config::ConfigLoader;
 use gateway::runtime::{serve, AgentRuntimeBuilder, Agenverse, HttpServerConfig, RedactWriter};
 use gateway::ai_signal::AmanSignalV1;
+use i18n::{Locale, Translator};
 use kernel::event::{Event, EventType};
+use std::collections::HashMap;
 use std::fs::File;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -39,6 +41,29 @@ static _AI_SIGNAL: () = {
 
 const DEFAULT_BIND: &str = "127.0.0.1:9999";
 const PID_FILE: &str = ".aman/aman.pid";
+
+/// Create a translator for startup errors.
+/// Startup errors happen before config is loaded, so locale is not yet available.
+/// Defaults to English; honors AMAN_LOCALE env var if set.
+fn startup_translator() -> Translator {
+    let locale = std::env::var("AMAN_LOCALE")
+        .ok()
+        .and_then(|s| Locale::from_code(&s))
+        .unwrap_or(Locale::En);
+    Translator::new(locale)
+}
+
+/// Translate a startup message with placeholder pairs.
+/// The `key` parameter must be `&'static str` (all i18n keys are string literals).
+fn startup_t(key: &'static str, pairs: &[(&str, &str)]) -> String {
+    let t = startup_translator();
+    if pairs.is_empty() {
+        t.translate(key).to_owned()
+    } else {
+        let map: HashMap<&str, &str> = pairs.iter().copied().collect();
+        t.translate_with(key, &map)
+    }
+}
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -112,7 +137,8 @@ async fn run() -> Result<(), i32> {
     // Load config from file or default path.
     let config = ConfigLoader::load(config_path.as_deref(), None)
         .map_err(|e| {
-            safe_eprintln!("Config load error: {e}");
+            let e_str = e.to_string();
+            safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_CONFIG_ERROR, &[("e", &e_str)]));
             1
         })?
         .config;
@@ -128,7 +154,8 @@ async fn run() -> Result<(), i32> {
     )
     .await
     .map_err(|e| {
-        safe_eprintln!("HTTP server error: {e}");
+        let e_str = e.to_string();
+        safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_HTTP_ERROR, &[("e", &e_str)]));
         1
     })?;
 
@@ -160,12 +187,13 @@ async fn run() -> Result<(), i32> {
                 match r {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        safe_eprintln!("Runtime start error: {e}");
+                        let e_str = e.to_string();
+                        safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_RUNTIME_ERROR, &[("e", &e_str)]));
                         return Err(1);
                     }
                     Err(_) => {
                         let phase = runtime.phase();
-                        safe_eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+                        safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_RUNTIME_TIMEOUT, &[("secs", "30"), ("phase", &format!("{phase:?}"))]));
                         return Err(1);
                     }
                 }
@@ -190,12 +218,13 @@ async fn run() -> Result<(), i32> {
                 match r {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        safe_eprintln!("Runtime start error: {e}");
+                        let e_str = e.to_string();
+                        safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_RUNTIME_ERROR, &[("e", &e_str)]));
                         return Err(1);
                     }
                     Err(_) => {
                         let phase = runtime.phase();
-                        safe_eprintln!("Runtime start timed out after 30s (phase={phase:?})");
+                        safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_RUNTIME_TIMEOUT, &[("secs", "30"), ("phase", &format!("{phase:?}"))]));
                         return Err(1);
                     }
                 }
@@ -378,7 +407,7 @@ fn parse_args(args: &[String]) -> Result<(Option<PathBuf>, SocketAddr, Option<St
                 i += 1;
             }
             _ => {
-                safe_eprintln!("Usage: aman [--config PATH] [--bind ADDR] [--token TOKEN] [--soul PATH] [--no-tui]");
+                safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_USAGE, &[]));
                 return Err(2);
             }
         }
@@ -410,7 +439,8 @@ async fn build_runtime(
     let agenverse_for_build = Arc::clone(&agenverse);
     let runtime = tokio::task::spawn_blocking(move || {
         builder.build(agenverse_for_build).map_err(|e| {
-            safe_eprintln!("Runtime build error: {e}");
+            let e_str = e.to_string();
+            safe_eprintln!("{}", startup_t(i18n::key::GATEWAY_RUNTIME_ERROR, &[("e", &e_str)]));
             1
         })
     })

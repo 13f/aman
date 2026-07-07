@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "../lib/i18n.svelte";
 
   interface AgentEntry {
     key: string;
@@ -140,8 +141,8 @@
 {#if variant === "full"}
   {#if agents.length === 0}
     <div class="card empty-state">
-      <p>还没有 Agent。</p>
-      <p class="dim">点击"新建 Agent"创建你的第一个 AI 助手。</p>
+      <p>{t("agents.no_agents_empty")}</p>
+      <p class="dim">{t("agents.no_agents_hint")}</p>
     </div>
   {:else}
     <div class="agent-list">
@@ -167,7 +168,7 @@
               <span class="dim">Provider:</span> {agent.provider}
               <span class="dim" style="margin-left:16px;">Model:</span> {agent.model}
             {:else}
-              <span class="needs-config-badge">⚡ 需要配置 Provider</span>
+              <span class="needs-config-badge">{t("common.need_configure")}</span>
             {/if}
           </div>
           {#if agent.soul_summary}
@@ -181,17 +182,17 @@
           </div>
           <div class="agent-actions">
             {#if !agent.provider}
-              <button class="primary" onclick={() => openEdit(agent)}>⚙ 配置 Provider</button>
-              <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-              <button class="danger" onclick={() => onDelete(agent.key)}>删除</button>
+              <button class="primary" onclick={() => openEdit(agent)}>{t("common.configure")}</button>
+              <button class="secondary" onclick={() => openEdit(agent)}>{t("common.edit")}</button>
+              <button class="danger" onclick={() => onDelete(agent.key)}>{t("common.delete")}</button>
             {:else if !agent.is_active}
-              <button onclick={() => onSelect(agent)}>选择并聊天</button>
-              <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-              <button class="danger" onclick={() => onDelete(agent.key)}>删除</button>
+              <button onclick={() => onSelect(agent)}>{t("common.select_and_chat")}</button>
+              <button class="secondary" onclick={() => openEdit(agent)}>{t("common.edit")}</button>
+              <button class="danger" onclick={() => onDelete(agent.key)}>{t("common.delete")}</button>
             {:else}
-              <button class="secondary" onclick={() => onNavigate("chat")}>去 Chat</button>
-              <button class="secondary" onclick={() => openEdit(agent)}>编辑</button>
-              <button class="danger" onclick={() => onDelete(agent.key)}>删除</button>
+              <button class="secondary" onclick={() => onNavigate("chat")}>{t("common.go_chat")}</button>
+              <button class="secondary" onclick={() => openEdit(agent)}>{t("common.edit")}</button>
+              <button class="danger" onclick={() => onDelete(agent.key)}>{t("common.delete")}</button>
             {/if}
           </div>
 
@@ -238,12 +239,12 @@
                 {/if}
               </div>
               <div class="form-field">
-                <label for="edit-soul-{agent.key}">SOUL.md (留空不修改)</label>
+                <label for="edit-soul-{agent.key}">{t("common.soul_no_modify")}</label>
                 <textarea id="edit-soul-{agent.key}" rows="8" bind:value={editSoulContent}></textarea>
               </div>
               <div class="form-actions">
-                <button class="secondary" onclick={() => { showEditForm = null; }}>取消</button>
-                <button onclick={() => onSaveEdit(agent.key, editDisplayName, editProvider, editModel, editSoulContent)}>保存</button>
+                <button class="secondary" onclick={() => { showEditForm = null; }}>{t("common.cancel")}</button>
+                <button onclick={() => onSaveEdit(agent.key, editDisplayName, editProvider, editModel, editSoulContent)}>{t("common.save")}</button>
               </div>
             </div>
           {/if}
@@ -254,7 +255,7 @@
 {:else}
   {#if agents.length === 0}
     <div class="empty-compact">
-      <p class="dim">还没有 Agent。在 Services &gt; Agents 中创建。</p>
+      <p class="dim">{t("agents.no_agents_in_services")}</p>
     </div>
   {:else}
     <div class="agent-grid-compact">
@@ -275,7 +276,7 @@
           {#if agent.provider}
             <div class="compact-detail">{agent.provider} / {agent.model}</div>
           {:else}
-            <span class="needs-config-badge">⚡ 需要配置</span>
+            <span class="needs-config-badge">{t("common.need_configure_short")}</span>
           {/if}
           {#if agent.soul_summary}
             <div class="compact-soul">{agent.soul_summary}</div>

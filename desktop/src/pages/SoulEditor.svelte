@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "../lib/i18n.svelte";
 
   interface SoulInfo {
     current_soul: string | null;
@@ -45,8 +46,8 @@
 </script>
 
 <div class="card" style="display:flex;align-items:center;justify-content:space-between;">
-  <h2>SOUL (System & Operating Utility Language)</h2>
-  <button class="secondary" onclick={loadSoul} disabled={loading}>Load</button>
+  <h2>{t("soul.title")}</h2>
+  <button class="secondary" onclick={loadSoul} disabled={loading}>{t("soul.load")}</button>
 </div>
 
 {#if result}
@@ -58,30 +59,30 @@
 {#if soulInfo?.current_soul}
   <div class="grid-2">
     <div class="card">
-      <h2>Edit SOUL</h2>
+      <h2>{t("soul.edit")}</h2>
       <div style="display:flex;flex-direction:column;gap:10px;">
         <textarea rows={20} bind:value={soulContent} style="font-family:monospace;font-size:12px;"></textarea>
-        <button onclick={saveSoul} disabled={saving}>Save & Reload</button>
+        <button onclick={saveSoul} disabled={saving}>{t("soul.save_reload")}</button>
       </div>
     </div>
     <div>
       <div class="card">
-        <h2>Soul Info</h2>
+        <h2>{t("soul.soul_info")}</h2>
         <table>
           <tbody>
-            <tr><td style="color:var(--fg-dim);width:120px;">Name</td><td><strong>{soulInfo.current_soul}</strong></td></tr>
-            <tr><td style="color:var(--fg-dim);width:120px;">Last Changed</td><td style="font-family:monospace;font-size:12px;">{soulInfo.last_changed ?? "N/A"}</td></tr>
+            <tr><td style="color:var(--fg-dim);width:120px;">{t("soul.name")}</td><td><strong>{soulInfo.current_soul}</strong></td></tr>
+            <tr><td style="color:var(--fg-dim);width:120px;">{t("soul.last_changed")}</td><td style="font-family:monospace;font-size:12px;">{soulInfo.last_changed ?? t("soul.n_a")}</td></tr>
           </tbody>
         </table>
       </div>
       <div class="card">
-        <h2>System Prompt Preview</h2>
+        <h2>{t("soul.system_prompt_preview")}</h2>
         <textarea rows={12} value={systemPrompt} readonly style="font-family:monospace;font-size:12px;color:var(--fg-dim);"></textarea>
       </div>
     </div>
   </div>
 {:else}
   <div class="card">
-    <p style="color:var(--fg-dim);font-size:13px;">No SOUL configured for this runtime. Start the runtime with a SOUL file to enable this section.</p>
+    <p style="color:var(--fg-dim);font-size:13px;">{t("soul.no_soul_configured")}</p>
   </div>
 {/if}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { t } from "../lib/i18n.svelte";
 
   interface McpServerEntry {
     name: string;
@@ -89,7 +90,7 @@
   }
 
   async function deleteServer(name: string, source: string) {
-    if (!confirm(`删除 MCP server "${name}"?`)) return;
+    if (!confirm(t("mcp.confirm_delete").replace("{name}", name))) return;
     const agentKey = source === "global" ? null : source;
     try {
       await invoke("delete_mcp_server", { name, agentKey });
@@ -131,7 +132,7 @@
 <div class="page-header">
   <h2>MCP Servers</h2>
   <button onclick={() => { showCreateForm = !showCreateForm; }}>
-    {showCreateForm ? "取消" : "+ 新增"}
+    {showCreateForm ? t("mcp.cancel") : t("mcp.create")}
   </button>
 </div>
 
@@ -142,44 +143,44 @@
 <!-- Create Form -->
 {#if showCreateForm}
   <div class="card form-card">
-    <h3>新增 MCP Server</h3>
+    <h3>{t("mcp.create_new")}</h3>
 
     <div class="form-field">
-      <label for="new-name">Name *</label>
+      <label for="new-name">{t("mcp.form_name")}</label>
       <input id="new-name" type="text" placeholder="例如: filesystem" bind:value={newName} />
     </div>
 
     <div class="form-field">
-      <label for="new-transport">Transport</label>
+      <label for="new-transport">{t("mcp.form_transport")}</label>
       <select id="new-transport" bind:value={newTransport}>
-        <option value="auto">auto (自动检测)</option>
-        <option value="stdio">stdio (本地子进程)</option>
-        <option value="streamable-http">streamable-http (远程 HTTP)</option>
+        <option value="auto">{t("mcp.transport_auto")}</option>
+        <option value="stdio">{t("mcp.transport_stdio")}</option>
+        <option value="streamable-http">{t("mcp.transport_http")}</option>
       </select>
-      <span class="form-hint dim">auto: 填写 Command 使用本地子进程，填写 URL 使用远程 HTTP</span>
+      <span class="form-hint dim">{t("mcp.transport_auto_hint")}</span>
     </div>
 
     <div class="form-field">
-      <label for="new-command">Command{#if newTransport === 'stdio'} *{/if}</label>
+      <label for="new-command">{#if newTransport === 'stdio'}{t("mcp.form_command_required")}{:else}{t("mcp.form_command")}{/if}</label>
       <input id="new-command" type="text" placeholder="例如: npx" bind:value={newCommand} />
     </div>
 
     {#if newTransport === "auto" || newTransport === "stdio"}
       <div class="form-field">
-        <label for="new-args">Args (逗号分隔)</label>
+        <label for="new-args">{t("mcp.form_args")}</label>
         <input id="new-args" type="text" placeholder="例如: -y,@modelcontextprotocol/server-filesystem,/path" bind:value={newArgsStr} />
       </div>
     {/if}
 
     <div class="form-field">
-      <label for="new-url">URL{#if newTransport === 'streamable-http'} *{/if}</label>
+      <label for="new-url">{t("mcp.form_url")}{#if newTransport === 'streamable-http'} *{/if}</label>
       <input id="new-url" type="text" placeholder="例如: http://localhost:8000/mcp" bind:value={newUrl} />
     </div>
 
     <div class="form-field">
-      <label for="new-agent">分配至</label>
+      <label for="new-agent">{t("mcp.assign_to")}</label>
       <select id="new-agent" bind:value={newAgentKey}>
-        <option value="">Global (所有 Agent 共享)</option>
+        <option value="">{t("mcp.assign_global")}</option>
         {#each agentKeys as key}
           <option value={key}>Agent: {key}</option>
         {/each}
@@ -189,15 +190,15 @@
     <div class="form-field">
       <label class="checkbox-label">
         <input type="checkbox" bind:checked={newAutoConnect} />
-        启动时自动连接
+        {t("mcp.auto_connect")}
       </label>
     </div>
 
     <div class="form-actions">
-      <button class="secondary" onclick={() => { showCreateForm = false; }}>取消</button>
+      <button class="secondary" onclick={() => { showCreateForm = false; }}>{t("mcp.cancel")}</button>
       <button onclick={createServer}
         disabled={!newName.trim() || (newTransport === "stdio" && !newCommand.trim()) || (newTransport === "streamable-http" && !newUrl.trim()) || (newTransport === "auto" && !newCommand.trim() && !newUrl.trim())}>
-        创建
+        {t("mcp.confirm")}
       </button>
     </div>
   </div>
@@ -205,12 +206,12 @@
 
 <!-- List -->
 {#if loading}
-  <p class="dim">加载中...</p>
+  <p class="dim">{t("mcp.loading")}</p>
 {:else if servers.length === 0}
   <div class="card empty-state">
-    <p>还没有配置任何 MCP Server。</p>
-    <p class="dim">点击"+ 新增"按钮添加 MCP Server，让 Agent 调用外部工具。</p>
-    <p class="dim">例如：连接 filesystem server 让 Agent 读写文件，或连接 postgres server 查询数据库。</p>
+    <p>{t("mcp.no_servers_empty")}</p>
+    <p class="dim">{t("mcp.no_servers_para1")}</p>
+    <p class="dim">{t("mcp.no_servers_para2")}</p>
   </div>
 {:else}
   <div class="server-list">
@@ -256,7 +257,7 @@
           {:else}
             <button onclick={() => connectServer(server.source, server.name)}>Connect</button>
           {/if}
-          <button class="danger" onclick={() => deleteServer(server.name, server.source)}>删除</button>
+          <button class="danger" onclick={() => deleteServer(server.name, server.source)}>{t("common.delete")}</button>
         </div>
       </div>
     {/each}

@@ -6,6 +6,7 @@
   import type { ToolCallData } from "./ToolCallCard.svelte";
   import { setCursorMode, resetCursor, setCursorFromEmotion } from "../lib/cursor-store";
   import { renderMarkdown } from "../lib/markdown";
+  import { t } from "../lib/i18n.svelte";
 
   let { prefillInput = "", prefillSeq = 0 }: { prefillInput?: string; prefillSeq?: number } = $props();
 
@@ -205,7 +206,7 @@
         handleAgentChange();
       }
     } catch (e) {
-      showToast("error", `Failed to load agents: ${e}`);
+      showToast("error", t("chat.failed_load_agents").replace("{e}", String(e)));
     }
   }
 
@@ -222,7 +223,7 @@
     if (!activeAgentKey) return;
     try {
       await invoke("select_agent", { key: activeAgentKey });
-      showToast("info", `Switched to agent: ${activeAgentKey}`);
+      showToast("info", t("chat.switched_agent").replace("{key}", activeAgentKey));
       activeSessionId = "";
       messages = [];
       await loadSessions();
@@ -231,7 +232,7 @@
         selectSession(sessions[0].id);
       }
     } catch (e) {
-      showToast("error", `Failed to select agent: ${e}`);
+      showToast("error", t("chat.failed_select_agent").replace("{e}", String(e)));
     }
   }
 
@@ -240,7 +241,7 @@
     activeAgentKey = key;
     try {
       await invoke("select_agent", { key });
-      showToast("info", `Switched to agent: ${key}`);
+      showToast("info", t("chat.switched_agent").replace("{key}", key));
       activeSessionId = "";
       messages = [];
       await loadSessions();
@@ -248,7 +249,7 @@
         selectSession(sessions[0].id);
       }
     } catch (e) {
-      showToast("error", `Failed to select agent: ${e}`);
+      showToast("error", t("chat.failed_select_agent").replace("{e}", String(e)));
     }
   }
 
@@ -513,7 +514,7 @@
       activeSessionId = result.session_id;
       currentPage = 1;
     } catch (e) {
-      showToast("error", `Explore failed: ${e}`);
+      showToast("error", t("chat.explore_failed").replace("{e}", String(e)));
     } finally {
       isExploring = false;
     }
@@ -532,13 +533,13 @@
       // Track as background session — don't switch activeSessionId or create local session
       backgroundIdleSessions.add(result.session_id);
       backgroundSessionTags.set(result.session_id, label);
-      showToast("info", `DailyLife ${label} started`, 4000);
+      showToast("info", t("chat.daily_life_started").replace("{label}", label), 4000);
     } catch (e) {
       const err = String(e);
-      if (err.includes("执行失败")) {
-        showToast("error", "执行失败，还没有实装有关的技能");
+      if (err.includes(t("chat.execute_failed"))) {
+        showToast("error", t("chat.execute_failed"));
       } else {
-        showToast("error", `${tag} run failed: ${err}`);
+        showToast("error", t("chat.tag_run_failed").replace("{tag}", tag).replace("{err}", err));
       }
       idleRunningTag = null;
     }
@@ -564,9 +565,9 @@
       if (paginatedSessions.length === 0 && currentPage > 1) {
         currentPage = currentPage - 1;
       }
-      showToast("success", "Session deleted");
+      showToast("success", t("chat.session_deleted"));
     } catch (e) {
-      showToast("error", `Failed to delete session: ${e}`);
+      showToast("error", t("chat.failed_delete_session").replace("{e}", String(e)));
     }
     deletingSessionId = null;
   }
@@ -633,8 +634,8 @@
       await navigator.clipboard.writeText(text);
       // Show "Copied!" feedback
       const span = btn.querySelector("span");
-      const originalText = span?.textContent ?? "Copy";
-      if (span) span.textContent = "Copied!";
+      const originalText = span?.textContent ?? t("chat.copy");
+      if (span) span.textContent = t("chat.copied");
       btn.classList.add("copied");
       setTimeout(() => {
         if (span) span.textContent = originalText;
@@ -950,7 +951,7 @@
       const cap: string = data?.capability ?? "";
       if (cap === "chat") {
         chatCapabilityAvailable = false;
-        showToast("warn", `Chat capability removed (plugin: ${data?.plugin ?? "unknown"})`);
+        showToast("warn", t("chat.capability_removed").replace("{plugin}", data?.plugin ?? "unknown"));
         // Phase 4.5: close active tabs, clear message buffer
         // but DON'T clear persistent state (history can be restored later)
         messages = messages.filter(m => m.sessionId !== activeSessionId);
@@ -962,7 +963,7 @@
           activeSessionId = "";
         }
       } else {
-        showToast("info", `Capability removed: ${cap}`);
+        showToast("info", t("chat.capability_removed_short").replace("{cap}", cap));
       }
       return;
     }
@@ -970,9 +971,9 @@
       const cap: string = data?.capability ?? "";
       if (cap === "chat") {
         chatCapabilityAvailable = true;
-        showToast("success", "Chat capability is now available");
+        showToast("success", t("chat.capability_available"));
       } else {
-        showToast("info", `New capability available: ${cap}`);
+        showToast("info", t("chat.capability_available_short").replace("{cap}", cap));
       }
       return;
     }
@@ -982,9 +983,9 @@
       const reason: string = data?.reason ?? "unknown";
       if (cap === "chat") {
         chatCapabilityAvailable = false;
-        showToast("error", `Chat capability degraded: ${reason}. Check plugin status and try restarting.`);
+        showToast("error", t("chat.capability_degraded").replace("{reason}", reason));
       } else {
-        showToast("warn", `Capability degraded: ${cap} (${reason})`);
+        showToast("warn", t("chat.capability_degraded_short").replace("{cap}", cap).replace("{reason}", reason));
       }
       return;
     }
@@ -994,9 +995,9 @@
       const wasAvailable = chatCapabilityAvailable;
       chatCapabilityAvailable = available.includes("chat");
       if (chatCapabilityAvailable && !wasAvailable) {
-        showToast("success", "Chat capability restored");
+        showToast("success", t("chat.capability_restored"));
       } else if (!chatCapabilityAvailable && wasAvailable) {
-        showToast("warn", "Chat capability no longer available");
+        showToast("warn", t("chat.capability_no_longer_available"));
       }
       return;
     }
@@ -1007,7 +1008,7 @@
     if (eventType === "soul_updated" || eventType === "SOUL_UPDATED") {
       if (data.soul_name) {
         currentSoulName = data.soul_name;
-        showToast("info", `SOUL switched to "${data.soul_name}"`);
+        showToast("info", t("chat.soul_switched").replace("{name}", data.soul_name));
       }
       return;
     }
@@ -1023,7 +1024,7 @@
       const rawTag: string = data.tag ?? "";
       const tagLabel = rawTag ? rawTag.charAt(0).toUpperCase() + rawTag.slice(1) : "Idle";
       backgroundSessionTags.set(data.session_id, tagLabel);
-      showToast("info", `DailyLife ${tagLabel} started`, 4000);
+      showToast("info", t("chat.daily_life_started").replace("{label}", tagLabel), 4000);
       return;
     }
 
@@ -1033,7 +1034,7 @@
       if (eventType === "agent:awaiting_detach") {
         // Detached process is running — session is still alive, do NOT mark as completed
         awaitingDetachSessions = new Set([...awaitingDetachSessions, data.session_id]);
-        showToast("info", `DailyLife ${tagLabel} running in background... (PID ${data.pid ?? "?"})`, 6000);
+        showToast("info", t("chat.daily_life_running").replace("{label}", tagLabel), 6000);
         return;
       }
       if (
@@ -1046,7 +1047,7 @@
         }
         backgroundIdleSessions.delete(data.session_id);
         backgroundSessionTags.delete(data.session_id);
-        showToast("success", `DailyLife ${tagLabel} completed`, 5000);
+        showToast("success", t("chat.daily_life_completed").replace("{label}", tagLabel), 5000);
         // Release the manual-trigger button if no other background runs active
         if (idleRunningTag && backgroundIdleSessions.size === 0) {
           idleRunningTag = null;
@@ -1059,7 +1060,7 @@
       ) {
         backgroundIdleSessions.delete(data.session_id);
         backgroundSessionTags.delete(data.session_id);
-        showToast("error", `DailyLife ${tagLabel} failed`, 5000);
+        showToast("error", t("chat.daily_life_failed").replace("{label}", tagLabel), 5000);
         if (idleRunningTag && backgroundIdleSessions.size === 0) {
           idleRunningTag = null;
         }
@@ -1947,7 +1948,7 @@
             {isExploring ? "⏳" : "🔍"}
           </button>
         </div>
-        <button class="new-btn" onclick={createSession} title="New chat">+</button>
+        <button class="new-btn" onclick={createSession} title={t("chat.new_chat")}>+</button>
       </div>
     </div>
       <div class="session-list">
@@ -1985,9 +1986,9 @@
           </div>
         {/each}
         {#if sessions.length === 0 && sessionsLoaded}
-          <div class="session-empty">No sessions yet</div>
+          <div class="session-empty">{t("chat.no_sessions")}</div>
         {:else if !sessionsLoaded}
-          <div class="session-empty">Loading...</div>
+          <div class="session-empty">{t("common.loading")}</div>
         {/if}
       </div>
       {#if totalPages > 1}
@@ -2010,10 +2011,10 @@
         <div class="confirm-overlay" onclick={() => deletingSessionId = null} onkeydown={() => {}} role="button" tabindex="0">
           <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
           <div class="confirm-dialog" onclick={(e) => e.stopPropagation()} onkeydown={() => {}} role="dialog" tabindex="-1">
-            <p>Delete this session?</p>
+            <p>{t("chat.delete_session_confirm")}</p>
             <div class="confirm-actions">
-              <button class="confirm-cancel" onclick={() => deletingSessionId = null}>Cancel</button>
-              <button class="confirm-delete" onclick={() => deleteSession(deletingSessionId!)}>Delete</button>
+              <button class="confirm-cancel" onclick={() => deletingSessionId = null}>{t("chat.cancel")}</button>
+              <button class="confirm-delete" onclick={() => deleteSession(deletingSessionId!)}>{t("chat.delete")}</button>
             </div>
           </div>
         </div>
@@ -2048,7 +2049,7 @@
             role="button"
             tabindex="0"
           >
-            {activeSession?.title ?? "Select a session"}
+            {activeSession?.title ?? t("chat.select_session_hint")}
           </span>
         {/if}
         {#if currentSoulName}
@@ -2061,17 +2062,17 @@
           <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
           <div class="soul-detail-popup" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
             <strong>{currentSoulName}</strong>
-            <p class="soul-desc">{soulDescription || "No description available."}</p>
+            <p class="soul-desc">{soulDescription || t("soul.n_a")}</p>
             <p class="soul-hint">Use <code>/soul info</code> for full details. <code>/soul switch &lt;name&gt;</code> to change.</p>
           </div>
         {/if}
       </h2>
       <div class="chat-header-end">
         {#if isProcessing}
-          <button class="chat-abort-btn" title="Force-kill current task" onclick={killActiveSession}>■ Kill</button>
+          <button class="chat-abort-btn" title="Force-kill current task" onclick={killActiveSession}>■ {t("chat.stop")}</button>
         {/if}
         <span class="chat-status" class:loading={isProcessing}>
-          {isProcessing ? "Processing..." : "Ready"}
+          {isProcessing ? t("chat.thinking") : "Ready"}
         </span>
       </div>
     </header>

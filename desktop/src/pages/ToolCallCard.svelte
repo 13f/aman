@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { t } from "../lib/i18n.svelte";
+
   export interface ToolCallData {
     callId: string;
     toolName: string;
@@ -53,18 +55,18 @@
   {#if expanded}
     <div class="tool-body">
       <div class="tool-section">
-        <span class="section-label">Arguments:</span>
+        <span class="section-label">{t("tool.arguments")}</span>
         <pre class="args-json">{formatArgs(tool.arguments)}</pre>
       </div>
       {#if tool.status === "success" && tool.result}
         <div class="tool-section">
-          <span class="section-label result-label">Result:</span>
+          <span class="section-label result-label">{t("tool.result")}</span>
           <pre class="result-text">{tool.result}</pre>
         </div>
       {/if}
       {#if tool.status === "failed" && tool.error}
         <div class="tool-section">
-          <span class="section-label error-label">Error:</span>
+          <span class="section-label error-label">{t("tool.error")}</span>
           <pre class="error-text">{tool.error}</pre>
         </div>
       {/if}

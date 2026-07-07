@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 base64 = "0.22"
+experience = { path = "../experience", version = "0.1.0" }
 kernel = { path = "../core", version = "0.1.0" }
 sandbox = { path = "../sandbox", version = "0.1.0" }
 regex = "1"

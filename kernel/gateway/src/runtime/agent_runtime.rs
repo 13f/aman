@@ -232,6 +232,10 @@ impl AgentRuntimeBuilder {
         }
         // Register code agent tools for available CLI coding tools (claude, codex, etc.)
         tool::install_code_agent_tools(&tools);
+        // Register cognitive tools (assess-grounding, experience-recall, etc.)
+        if let Err(e) = tool::install_cognitive_tools(&tools) {
+            tracing::warn!(error = %e, "failed to install cognitive tools");
+        }
         // Register skill_view tool so the LLM can load SKILL.md instructions on demand.
         // Store the Arc so we can wire agent_registry after its creation.
         let skill_view_tool = Arc::new(SkillViewTool {

@@ -6,6 +6,7 @@
 
 pub mod auth;
 pub mod code_agent;
+pub mod cognitive_tools;
 pub mod permission;
 pub mod fs_tools;
 pub mod planner;
@@ -15,6 +16,7 @@ pub mod web_search;
 
 pub use auth::AuthRegistry;
 pub use auth::PluginApprovalRegistry;
+pub use cognitive_tools::install_cognitive_tools;
 pub use planner::PlannerTool;
 pub use web_fetch::WebFetchTool;
 pub use web_search::WebSearchTool;

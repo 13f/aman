@@ -34,10 +34,18 @@ steps:
     on_failure: brainstorm
     max_retries: 1
 
+  - id: plan
+    skill: plan
+    description: "Plan — 将验证通过的方向拆成子任务"
+    input_from: lock
+    output_as: task_list
+    on_failure: stop
+    max_retries: 0
+
   - id: execute
     skill: subagent-driven-development
-    description: "Guarded Flow — 带护栏执行"
-    input_from: lock
+    description: "Guarded Flow — 带护栏执行子任务"
+    input_from: plan
     output_as: implementation
     on_failure: escalate
     max_retries: 0

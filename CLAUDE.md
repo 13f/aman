@@ -257,16 +257,42 @@ via `wrap_cognitive_provider()` to bridge `kernel::LlmProvider` ↔ `cognitive_l
 
 ### Cognitive Translation Layer
 
-Translates system signals into the agent's "subjective experience" — not UI metrics,
-but internal states that modulate behavior:
+Translates system signals into the agent's "subjective experience" — not UI
+metrics, but internal states that modulate behavior. Exposed as both
+infrastructure (gateway auto-wiring) and **Tools** (callable from any skill):
+
+#### Infrastructure (auto-wired at gateway startup)
 
 | Translator | Input | Output | Behavior Modulation |
 |---|---|---|---|
 | **Consciousness** (`CognitiveState`) | LLM backend health | Lucid/Groggy/Catatonic/Coma | Catatonic/Coma → skip LLM; Groggy → reduce retries |
 | **Grounding** (`Grounding`) | Memory retrieval + user message | Knowledge × Situation (2-axis) | Vague → force clarification; Overloaded → compress first |
-| **Experience** (`EXP.md`) | Workflow completion events | Confident/Bootstrap/Untouched/Apprehensive | Confident → skip scout; Apprehensive → avoid tools |
+| **Experience Extractor** (`ExperienceExtractor`) | workflow::completed events | Auto-write to EXP.md | Workflow outcomes → EXP entries |
+
+#### Tools (registered via `install_cognitive_tools`, callable from SKILL.md)
+
+| Tool | Function | When to Call |
+|---|---|---|
+| `assess-grounding` | Knowledge × Situation signal evaluation | Skill entry: decide if scout/clarify needed |
+| `experience-recall` | Query EXP.md by task tag | Skill entry: check for past strategies/gotchas |
+| `experience-record` | Write/update EXP.md entries | Skill exit: persist learnings |
+| `check-consciousness` | Read current Lucid/Groggy/Catatonic/Coma state | Optional: information display |
+
+#### Pipeline Orchestration
+
+Complex cognitive flows are defined as YAML in `predefined/pipelines/` and
+synced to `~/.aman/pipelines/` at startup (hash-based user modification
+preservation, same pattern as skills/SOUL.md):
+
+| Pipeline | Steps |
+|---|---|
+| `01-complex-plan.yaml` | scout → brainstorm → review → execute → extract-exp |
+
+New pipelines: drop a YAML into `predefined/pipelines/`, register in
+`kernel/pipeline/src/sync.rs`, rebuild.
 
 Design: `docs/cognitive-memory.md` (based on 彭超's Agentic 之道).
+Tools: `docs/dev-guide.md` §2.8.
 
 ### Security (all layers now active)
 

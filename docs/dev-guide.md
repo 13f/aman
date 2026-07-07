@@ -358,6 +358,167 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> amanResult<()> {
 
 Plugin 可以通过 `PluginExportRegistrar::register_tool()` 注册自定义工具，或通过 `Plugin::tools()` 声明。
 
+### 2.8 认知翻译层工具（Cognitive Translation Layer Tools）
+
+除了基础的文件/执行/数据工具外，aman 还注册了 4 个**认知翻译层工具**，用于让 Agent
+在执行 task 时评估自身状态、查询历史经验、记录新经验。
+
+注册方式：`tool::install_cognitive_tools(&tools)` 在 gateway 启动阶段调用。
+
+#### assess-grounding — 信息充足度评估
+
+输入 Agent 当前的记忆检索结果和用户请求，评估 Knowledge 和 Situation 两个维度。
+
+```json
+// Input
+{
+  "memory_count": 5,
+  "avg_importance": 0.6,
+  "avg_age_days": 10.0,
+  "user_text": "请帮我部署这个服务到 k8s 集群",
+  "context_tokens": 2000,
+  "token_budget": 8192
+}
+
+// Output
+{
+  "knowledge": "informed",    // informed | uninformed | outdated
+  "situation": "clear",       // clear | vague | overloaded
+  "recommendation": "信息充足，可直接执行"
+}
+```
+
+推荐用于 skill 的开头步骤：诊断是否需要先做 Context Scout 或先澄清需求。
+
+#### experience-recall — 查询历史经验
+
+按任务标签查询 `EXP.md`，返回匹配的策略/坑/反模式。
+
+```json
+// Input
+{
+  "agent_id": "deploy-agent",
+  "tag": "deploy"
+}
+
+// Output
+{
+  "found": true,
+  "entries": [
+    {
+      "category": "gotcha",
+      "description": "kind 不需要 port-forward",
+      "content": "kind 直接 nodeport，localhost 不需要转发",
+      "confidence": 0.85,
+      "uses": 12,
+      "successes": 10,
+      "pattern_score": 0.83
+    }
+  ]
+}
+```
+
+推荐用于 skill 执行前：检查是否有已知的策略可用，或已知的坑要避开。
+
+#### experience-record — 记录新经验
+
+将新发现写入 `EXP.md`，供未来任务查询。
+
+```json
+// Input
+{
+  "agent_id": "deploy-agent",
+  "tag": "deploy",
+  "category": "gotcha",           // tool_strategy | gotcha | anti_pattern | judgment_pattern
+  "description": "Helm rollback 需要 --wait 参数",
+  "content": "helm rollback 不加 --wait 会立即返回，实际还没回滚完",
+  "success": false                // 本次执行是否成功（用于置信度计算）
+}
+
+// Output
+{
+  "ok": true,
+  "message": "Experience recorded for tag 'deploy'",
+  "entry": {
+    "tag": "deploy",
+    "confidence": 0.0,
+    "uses": 1,
+    "successes": 0
+  }
+}
+```
+
+推荐用于 skill 的执行结束阶段：将新发现持久化，让下次更聪明。
+
+#### check-consciousness — LLM 可用性检查
+
+检查 Agent 当前认知状态（由 `CognitiveState` 驱动）。
+
+```json
+// Input: (none)
+
+// Output
+{
+  "state": "lucid",        // lucid | groggy | catatonic | coma
+  "can_think": true,
+  "message": "LLM backend is available. Agent can think."
+}
+```
+
+注意：Catatonic/Coma 状态在网关层就已经被 `guard_check()` 阻断（Agent 不会进入 LLM 推理），这个工具主要用于信息查询和前端展示。
+
+**EXP.md 文件格式：**
+
+```
+~/.aman/agents/<agent-id>/EXP.md
+
+# Experience
+
+## Tool Strategies
+### [deploy] 使用 helm --wait
+- **Strategy**: helm upgrade/rollback 加 --wait 确保真正完成
+- **confidence**: 0.85
+- **uses**: 12
+- **successes**: 11
+
+## Gotchas
+### [kind] Port forwarding
+- **Gotcha**: kind 不需要 port-forward 到 localhost，直接 nodeport
+- **confidence**: 0.92
+- **uses**: 47
+- **successes**: 43
+```
+
+**何时使用这些工具：**
+
+| 工具 | 触发时机 | 典型调用者 |
+|---|---|---|
+| assess-grounding | skill 开头，信息诊断 | extract-exp, plan 路由决策 |
+| experience-recall | 执行前查询 | brainstorm, review, 任意 skill 开头 |
+| experience-record | 执行后记录 | extract-exp, 任意 skill 结尾 |
+| check-consciousness | 可选的前置检查 | UI, 前端 dashboard |
+
+**作为 Skill 作者如何使用：**
+
+在 SKILL.md 中引导 LLM 调用这些工具（示例）：
+
+```markdown
+## 执行前
+先调用 experience-recall tool 查询是否有已知策略。
+如果 returned entries 中有 confidence > 0.7 的 strategy，直接使用。
+
+## 执行后
+无论成功失败，都必须调用 experience-record tool：
+- 成功 → 提取有效策略
+- 失败 → 提取 Gotcha（坑）和 Anti-Pattern
+```
+
+**EXP.md 的自动更新：**
+
+除了 LLM 通过 tool 手动写入 EXP.md，aman 还有自动机制：
+- 内部 `ExperienceExtractor` 订阅 `workflow::completed` 事件，自动更新 workflow 级别的策略
+- 手动 through `experience-record` tool 更灵活，支持 fine-grained 的 tag、category、description
+
 ---
 
 ## 3. Hook 系统——最简单的扩展方式

@@ -118,6 +118,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "config",
+ "dispatch",
  "futures",
  "i18n",
  "reqwest 0.12.28",
@@ -1983,6 +1984,12 @@ dependencies = [
  "redox_users 0.4.6",
  "winapi",
 ]
+
+[[package]]
+name = "dispatch"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd0c93bb4b0c6d9b77f4435b0ae98c24d17f1c45b2ff844c6151a07256ca923b"
 
 [[package]]
 name = "dispatch2"

@@ -12,7 +12,6 @@
   import Maintenance from "./pages/Maintenance.svelte";
   import WorkflowBoard from "./pages/WorkflowBoard.svelte";
   import PluginManager from "./pages/PluginManager.svelte";
-  import Chat from "./pages/Chat.svelte";
   import Providers from "./pages/Providers.svelte";
   import Agents from "./pages/Agents.svelte";
   import ActivityStateWidget from "./pages/ActivityStateWidget.svelte";
@@ -29,8 +28,6 @@
   let hasAgent = $state(false);
   let activeAgentName = $state("");
   let activeAgentKey = $state("");
-  let chatPrefill = $state("");
-  let chatPrefillSeq = $state(0);
   let sidebarCompact = $state(false);
   let pluginPages = $state<{ id: string; label: string }[]>([]);
   let gatewayPort = $state(9999);
@@ -58,7 +55,6 @@
       label: "Workspace",
       items: [
         { id: "home", label: "Home", short: "Ho" },
-        { id: "chat", label: "Chat", short: "Ch" },
       ],
     },
     {
@@ -198,12 +194,6 @@
     // content. Incrementing a key forces a fresh DOM element.
     if (pageId === "team" || pageId.startsWith("plugin:")) teamPageVersion++;
     handlePageVisited(pageId);
-  }
-
-  function navigateToChatWithPrefill(text: string) {
-    chatPrefill = text;
-    chatPrefillSeq++;
-    navigateTo("chat");
   }
 
   // ── Shutdown busy-agent confirmation ──────────────────────────
@@ -460,9 +450,6 @@
       {#if currentPage === "home"}
         <Home
           onNavigate={(p) => navigateTo(p)}
-          onNavigateChatWithSkill={async (_agentKey: string, skillName: string) => {
-            navigateToChatWithPrefill(`/skill ${skillName} `);
-          }}
         />
       {:else if currentPage === "dashboard"}
         <Dashboard onstatuschange={(r) => onRuntimeStatusChange(r)} />
@@ -478,8 +465,6 @@
         <Integration />
       {:else if currentPage === "agents"}
         <Agents onNavigate={(p) => navigateTo(p)} />
-      {:else if currentPage === "chat"}
-        <Chat prefillInput={chatPrefill} prefillSeq={chatPrefillSeq} />
       {:else if currentPage === "team"}
         {#key teamPageVersion}
           <iframe

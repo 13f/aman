@@ -73,6 +73,15 @@ pub fn run() {
         })
         .on_window_event(move |window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let is_main = window.label() == "main";
+
+                // Agent windows (`agent-{key}`) close immediately — they don't
+                // own the gateway lifecycle.  Only the main window triggers the
+                // full graceful shutdown sequence.
+                if !is_main {
+                    return;
+                }
+
                 // Guard: prevent re-entrant close from the background task's
                 // `window.close()` call. SHUTTING_DOWN is set at the start so
                 // the guard also prevents a second close attempt while the
@@ -390,6 +399,9 @@ pub fn run() {
             commands::connect_mcp_server,
             commands::disconnect_mcp_server,
             commands::list_agent_keys,
+            // Agent windows — multi-window management
+            commands::open_or_focus_agent_window,
+            commands::close_agent_window,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Set the window/dock icon explicitly for dev mode.

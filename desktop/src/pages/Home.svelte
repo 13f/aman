@@ -34,10 +34,8 @@
 
   let {
     onNavigate = (_page: string) => {},
-    onNavigateChatWithSkill = async (_agentKey: string, _skillName: string) => {},
   }: {
     onNavigate?: (page: string) => void;
-    onNavigateChatWithSkill?: (agentKey: string, skillName: string) => Promise<void>;
   } = $props();
 
 
@@ -235,8 +233,10 @@
       return;
     }
     try {
-      await invoke("select_agent", { key: agent.key });
-      onNavigate("chat");
+      await invoke("open_or_focus_agent_window", {
+        agentKey: agent.key,
+        displayName: agent.display_name,
+      });
     } catch {
       // silent
     }
@@ -266,9 +266,18 @@
       return;
     }
     try {
-      await invoke("select_agent", { key: agent.key });
       showAgentSelector = false;
-      await onNavigateChatWithSkill(agent.key, selectedSkillName);
+      // Open the agent window, then emit a prefill event so the chat tab
+      // creates a fresh session with the skill command already populated.
+      await invoke("open_or_focus_agent_window", {
+        agentKey: agent.key,
+        displayName: agent.display_name,
+      });
+      const { emit } = await import("@tauri-apps/api/event");
+      await emit("agent-window:prefill", {
+        agentKey: agent.key,
+        text: `/skill ${selectedSkillName} `,
+      });
     } catch (e) {
       modalError = String(e);
     }

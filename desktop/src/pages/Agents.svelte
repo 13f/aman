@@ -176,8 +176,9 @@ I prefer concise and accurate responses.
 
   async function selectAgent(key: string) {
     try {
-      await invoke("select_agent", { key });
-      onNavigate("chat");
+      const agent = agents.find(a => a.key === key);
+      const displayName = agent?.display_name ?? key;
+      await invoke("open_or_focus_agent_window", { agentKey: key, displayName });
     } catch (e) {
       error = String(e);
     }

@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capability for the aman desktop app",
-  "windows": ["main"],
+  "windows": ["main", "agent-*"],
   "permissions": [
     "core:default",
     "core:window:default",

@@ -14,7 +14,7 @@ use i18n::Translator;
 use secret::{KeychainBackend, SecretBackend};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 /// Create a translator from the app state's locale.
@@ -2911,4 +2911,85 @@ pub async fn disconnect_mcp_server(
 #[tauri::command]
 pub async fn list_agent_keys() -> Result<Vec<String>, String> {
     Ok(crate::agent_fs::list_agent_dirs())
+}
+
+// ---------------------------------------------------------------------------
+// Agent windows — multi-window management
+// ---------------------------------------------------------------------------
+
+/// Sanitize an agent key for use as a Tauri window label.
+/// Labels must match `^[a-zA-Z0-9-_:]+$`; replace anything else with `-`.
+fn sanitize_label(key: &str) -> String {
+    key.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ':' { c } else { '-' })
+        .collect()
+}
+
+/// Open a per-agent window, or focus it if it already exists.
+///
+/// Each agent gets a single OS window (`agent-{key}`) with a transparent
+/// background and a two-column layout (avatar | tabs).  Repeated calls with
+/// the same key bring the existing window to front instead of opening a
+/// duplicate.
+#[tauri::command]
+pub async fn open_or_focus_agent_window(
+    app: tauri::AppHandle,
+    agent_key: String,
+    display_name: String,
+) -> Result<(), String> {
+    let label = format!("agent-{}", sanitize_label(&agent_key));
+
+    // If the window already exists, focus it (unminimize + bring to front).
+    if let Some(window) = app.get_webview_window(&label) {
+        tracing::info!(window = %label, "focusing existing agent window");
+        window.unminimize().map_err(|e| format!("unminimize failed: {e}"))?;
+        window.set_focus().map_err(|e| format!("set_focus failed: {e}"))?;
+        return Ok(());
+    }
+
+    tracing::info!(window = %label, agent = %agent_key, "creating agent window");
+
+    // The window loads the default frontend (index.html). The agent key is
+    // encoded in the window label (`agent-{key}`) and read by the frontend
+    // via `getCurrentWindow().label` — no custom URL construction needed
+    // (Tauri's `WebviewUrl` enum is not publicly constructible).
+    // NOTE: We deliberately do NOT use `transparent(true)` or apply
+    // window_vibrancy here.  Vibrancy requires main-thread access, but
+    // Tauri commands run on a tokio worker thread.  dispatch_sync from a
+    // tokio thread deadlocks against Tauri's main run loop, and
+    // dispatch_async runs *after* the window is already visible (black
+    // title bar flash).  The main window works because its vibrancy is
+    // applied in `setup()` which runs on the main thread.
+    //
+    // Instead we let macOS draw its standard dark-mode title bar
+    // (unified toolbar appearance) and match our content background to
+    // it so the transition is seamless.
+    tauri::webview::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title(format!("{display_name}"))
+    .inner_size(880.0, 620.0)
+    .min_inner_size(600.0, 420.0)
+    .decorations(true)
+    .center()
+    .build()
+    .map_err(|e| format!("failed to create window: {e}"))?;
+
+    tracing::info!(window = %label, "agent window created");
+    Ok(())
+}
+
+/// Close a per-agent window (used by the agent page's own close button).
+#[tauri::command]
+pub async fn close_agent_window(
+    app: tauri::AppHandle,
+    agent_key: String,
+) -> Result<(), String> {
+    let label = format!("agent-{}", sanitize_label(&agent_key));
+    if let Some(window) = app.get_webview_window(&label) {
+        window.close().map_err(|e| format!("close failed: {e}"))?;
+    }
+    Ok(())
 }

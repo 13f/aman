@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use event_bus::{try_publish, EventBus};
 use kernel::agent::AgentSystemState;
+use kernel::event::{Event, EventType};
 use kernel::AmanResult;
 
 use kernel::deferred_task::{current_time_ms, DeferredTaskQueue};
@@ -150,6 +151,10 @@ impl AgentIdleManager {
             let mut cold_start_done = false;
             let mut cold_start_deadline: Option<Instant> = None;
             const COLD_START_DELAY_SECS: u64 = 5;
+            // 保证 cold_start_done 事件只触发一次（无论 busy→empty 还是 cold-start
+            // 路径先走）。与 cold_start_done 独立，因为后续的 busy→empty 仍需要
+            // 发 QueueDrained，但不应再发 cold_start_done。
+            let mut cold_start_done_published = false;
 
             loop {
                 if stop_token.is_cancelled() {
@@ -337,6 +342,13 @@ impl AgentIdleManager {
                         // Reset count after cooldown — next real event will also reset it
                     }
 
+                    // 冷启动完成（busy→empty 路径）：通知外部 Agent 已就绪。
+                    // 只在首次（cold_start_done 从 false 变 true 这一次）触发。
+                    if !cold_start_done_published {
+                        cold_start_done_published = true;
+                        publish_cold_start_done(&local_bus, &global_bus, &agent_id).await;
+                    }
+
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -382,6 +394,16 @@ impl AgentIdleManager {
                         // (same reasoning as the busy→empty QueueDrained
                         // path above — it races with the agent harness).
                     }
+
+                    // 通知外部（AgentRegistry）冷启动已完成：AgentStatus 应从
+                    // Preparing 切到 Idle。这是独立于 QueueDrained 的信号——
+                    // 即使 breaker 跳过了 QueueDrained，冷启动仍视为完成。
+                    // 只在首次触发（cold_start_done 从 false 变 true 这一次）。
+                    if !cold_start_done_published {
+                        cold_start_done_published = true;
+                        publish_cold_start_done(&local_bus, &global_bus, &agent_id).await;
+                    }
+
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -571,6 +593,28 @@ impl AgentIdleManager {
         self.coord.reset_idle_signal().await;
         self.stop().await;
         Ok(())
+    }
+}
+
+/// 冷启动完成事件的 EventType 标识。
+/// 订阅者（通常是 AgentRegistry）通过这个字符串过滤事件。
+pub const COLD_START_DONE_EVENT: &str = "agent:cold_start_done";
+
+/// 发布冷启动完成事件到 local_bus（和可选的 global_bus）。
+/// 在首次 QueueDrained（busy→empty 或 cold-start）发出后调用一次。
+async fn publish_cold_start_done(
+    local_bus: &Arc<dyn EventBus>,
+    global_bus: &Option<Arc<dyn EventBus>>,
+    agent_id: &str,
+) {
+    let event = Event::new(
+        "idle.manager",
+        EventType::Custom(COLD_START_DONE_EVENT.to_owned()),
+        serde_json::json!({ "agent_id": agent_id }),
+    );
+    try_publish(&**local_bus, event.clone()).await;
+    if let Some(global) = global_bus {
+        try_publish(&**global, event).await;
     }
 }
 

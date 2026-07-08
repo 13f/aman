@@ -644,6 +644,46 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// 标记 agent 冷启动完成：Preparing → Idle。
+    ///
+    /// 由 AgentIdleManager 在首次 QueueDrained（冷启动或 busy→empty）发出后调用。
+    /// 状态机守卫：只允许 Preparing → Idle 这一种转换，其它调用返回错误。
+    /// 这是内部 API，不对外暴露给 HTTP/gRPC/stdio。
+    pub async fn mark_cold_start_complete(&self, agent_id: &str) -> AmanResult<()> {
+        let old_status = {
+            let mut agents = self.agents.write().await;
+            let instance = agents.get_mut(agent_id).ok_or_else(|| {
+                kernel::Error::ConfigInvalid {
+                    message: format!("agent '{agent_id}' not found"),
+                }
+            })?;
+            if instance.status != AgentStatus::Preparing {
+                // 已经是 Idle / Busy / Error 等，说明冷启动已完成或被其它路径改变，
+                // 这是幂等的：不报错、不发布事件，直接返回成功。
+                return Ok(());
+            }
+            let old = instance.status;
+            instance.status = AgentStatus::Idle;
+            old
+        };
+
+        let _ = self
+            .bus
+            .publish(Event::new(
+                "runtime:agent_registry",
+                EventType::Custom("agent:status_changed".to_owned()),
+                json!({
+                    "agent_id": agent_id,
+                    "old_status": old_status,
+                    "new_status": AgentStatus::Idle,
+                }),
+            ))
+            .await;
+
+        tracing::info!(agent = %agent_id, "cold-start complete: Preparing → Idle");
+        Ok(())
+    }
+
     /// 设置 Agent 的活跃 session_id。
     pub async fn set_active_session(
         &self,

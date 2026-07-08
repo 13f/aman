@@ -914,6 +914,14 @@ impl AgentHarness {
             });
         }
 
+        // 冷启动 reflection 还没完成前，拒绝接 LLM 调用。
+        // idle loop 会通过 mark_cold_start_complete 把状态从 Preparing 切到 Idle。
+        if instance.status == AgentStatus::Preparing {
+            return Err(Error::ConfigInvalid {
+                message: format!("agent '{agent_id}' is still starting up, please wait a moment ..."),
+            });
+        }
+
         // 2. Update status to Busy
         self.registry
             .set_active_session(agent_id, Some(session_id.to_owned()))

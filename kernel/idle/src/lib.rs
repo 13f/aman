@@ -22,7 +22,7 @@ pub use types::{
     IdlePersonality, PressureMapping, QueueDrained, WorkPressureConfig, ArousalBehavior,
 };
 pub use coordination::{IdleCoordination, WakeUpSchedule};
-pub use manager::AgentIdleManager;
+pub use manager::{AgentIdleManager, COLD_START_DONE_EVENT};
 pub use boredom::BoredomActor;
 pub use deferred_memory::MemoryDeferredTaskQueue;
 pub use sleep::{SleepActor, SleepActorConfig, SleepHousekeeper, SleepPhaseOutput};

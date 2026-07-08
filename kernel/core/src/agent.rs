@@ -92,6 +92,8 @@ pub enum AgentSystemState {
 pub enum AgentStatus {
     /// 配置中禁用
     Disabled,
+    /// 冷启动中（idle loop 尚未完成首次 reflection），不能接 LLM 调用
+    Preparing,
     /// 已加载，无活跃会话
     Idle,
     /// 有活跃会话正在处理
@@ -122,7 +124,9 @@ impl AgentInstance {
     #[must_use]
     pub fn new(descriptor: AgentDescriptor) -> Self {
         let status = if descriptor.enabled {
-            AgentStatus::Idle
+            // 启用后先进入 Preparing：idle loop 会在冷启动 reflection 完成后
+            // 通过 AgentRegistry::mark_cold_start_complete 把它切到 Idle。
+            AgentStatus::Preparing
         } else {
             AgentStatus::Disabled
         };

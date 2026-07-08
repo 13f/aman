@@ -90,11 +90,24 @@
   let activeTab = $state<"agents" | "code" | "finance">("agents");
   let idleStates = $state<Record<string, AgentIdleState>>({});
   let systemStates = $state<Record<string, string>>({});
+  let agentStatuses = $state<Record<string, string>>({});
   let llmEmotionIds = $state<Record<string, string>>({});
   let emotionsConfigs = $state<Record<string, EmotionsConfig | null>>({});
   let cognitiveStates = $state<Record<string, CognitiveState>>({});
   let brainStates = $state<Record<string, string>>({});
   let observeTimers = $state<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+
+  // ── Local toast system (ephemeral info/warn/error/success banners) ──────
+  let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
+
+  function showToast(type: "info" | "warn" | "error" | "success", message: string, durationMs = 5000) {
+    const id = crypto.randomUUID();
+    const toast = { id, type, message, timeout: null as ReturnType<typeof setTimeout> | null };
+    toast.timeout = setTimeout(() => {
+      toasts = toasts.filter(t => t.id !== id);
+    }, durationMs);
+    toasts = [...toasts, toast];
+  }
 
   function defaultCognitiveState(): CognitiveState {
     return { phase: "idle", currentStep: "" };
@@ -229,6 +242,12 @@
   }
 
   async function selectAgent(agent: AgentEntry) {
+    // 冷启动（AgentStatus === "Preparing"）期间禁止打开 agent 窗口。
+    // 后端 idle loop 完成首次 reflection 后把状态切到 Idle，这时才允许交互。
+    if (agentStatuses[agent.key] === "Preparing") {
+      showToast("info", "Agent is loading, just wait a moment…");
+      return;
+    }
     if (!agent.provider) {
       onNavigate("agents");
       return;
@@ -261,6 +280,10 @@
   }
 
   async function handleFinanceAgentSelect(agent: AgentEntry) {
+    if (agentStatuses[agent.key] === "Preparing") {
+      showToast("info", "Agent is loading, just wait a moment…");
+      return;
+    }
     if (!agent.provider) {
       showAgentSelector = false;
       onNavigate("agents");
@@ -400,18 +423,22 @@
       const list: Array<{
         agent_id: string;
         system_state: string;
+        status?: string;
         emotion_id?: string;
         cognitive_state?: string;
       }> = e.payload?.agents ?? [];
       const nextStates: Record<string, string> = {};
+      const nextStatuses: Record<string, string> = {};
       const nextEmotions: Record<string, string> = {};
       const nextBrainStates: Record<string, string> = {};
       for (const a of list) {
         nextStates[a.agent_id] = a.system_state;
+        nextStatuses[a.agent_id] = a.status ?? "";
         nextEmotions[a.agent_id] = a.emotion_id ?? "";
         nextBrainStates[a.agent_id] = a.cognitive_state ?? "Lucid";
       }
       systemStates = nextStates;
+      agentStatuses = nextStatuses;
       llmEmotionIds = { ...llmEmotionIds, ...nextEmotions };
       brainStates = nextBrainStates;
     }));
@@ -626,6 +653,15 @@
   </div>
 {/if}
 
+<!-- Toasts (bottom-center, stacking) -->
+{#if toasts.length > 0}
+  <div class="toast-container">
+    {#each toasts as toast (toast.id)}
+      <div class="toast toast-{toast.type}">{toast.message}</div>
+    {/each}
+  </div>
+{/if}
+
 <style>
   .home-tabs {
     display: flex;
@@ -824,6 +860,37 @@
     border-radius: var(--radius-md);
     margin-bottom: 16px;
     font-size: 13px;
+  }
+
+  /* Toast container (fixed, bottom-center) */
+  .toast-container {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+    pointer-events: none;
+  }
+  .toast {
+    padding: 10px 18px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    background: var(--surface);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    animation: toastIn 0.2s ease-out;
+  }
+  .toast-info { border-color: var(--accent); color: var(--accent); }
+  .toast-warn { border-color: #f59e0b; color: #f59e0b; }
+  .toast-error { background: var(--red-muted); color: var(--red); border-color: var(--red); }
+  .toast-success { border-color: #10b981; color: #10b981; }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
   /* Code agents section */

@@ -1070,6 +1070,40 @@ impl AgentRuntimeBuilder {
             ));
         }
 
+        // Subscribe to cold-start-done events on the global bus.
+        // AgentIdleManager publishes this after its first QueueDrained (cold-start
+        // or busy→empty) — the signal that an agent's AgentStatus should flip
+        // from Preparing to Idle.
+        {
+            struct ColdStartDoneSub {
+                registry: Arc<super::agent_registry::AgentRegistry>,
+            }
+            #[async_trait::async_trait]
+            impl event_bus::EventHandler for ColdStartDoneSub {
+                async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+                    if let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str()) {
+                        if let Err(e) = self.registry.mark_cold_start_complete(agent_id).await {
+                            tracing::warn!(agent = %agent_id, error = %e, "mark_cold_start_complete failed");
+                        }
+                    }
+                    Ok(())
+                }
+            }
+            let _ = pollster::block_on(bus.subscribe(
+                event_bus::SubscriptionFilter {
+                    event_types: Some(vec![kernel::event::EventType::Custom(
+                        idle::COLD_START_DONE_EVENT.to_owned(),
+                    )]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(ColdStartDoneSub {
+                    registry: Arc::clone(&agent_registry),
+                }),
+            ));
+        }
+
         // ── Sleep actor (Idle kind=Sleep → cognitive housekeeping) ──────
         let sleep_cfg = aman_cfg
             .as_ref()

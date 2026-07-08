@@ -110,6 +110,13 @@
       ]
     },
     {
+      "key": "designer",
+      "display_name": "设计师",
+      "files": [
+        "agents/designer/SOUL.md"
+      ]
+    },
+    {
       "key": "writer",
       "display_name": "写作者",
       "files": [

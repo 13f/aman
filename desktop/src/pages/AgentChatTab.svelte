@@ -56,6 +56,9 @@
   let sessionsPerPage = 10;
   let currentPage = $state(1);
   let deletingSessionId = $state<string | null>(null);
+  // Title edit state for the active session header (click → input, Enter → save).
+  let editingTitle = $state(false);
+  let editTitleValue = $state("");
 
   const paginatedSessions = $derived(
     sessions.slice((currentPage - 1) * sessionsPerPage, currentPage * sessionsPerPage)
@@ -84,6 +87,13 @@
 
   function updateSession(id: string, patch: Partial<Session>) {
     sessions = sessions.map(s => (s.id === id ? { ...s, ...patch } : s));
+  }
+
+  // Update a single session's status ("idle" | "processing"). Used by the
+  // send/stop pipeline to reflect the agent's current activity in the session
+  // list.
+  function updateSessionStatus(id: string, status: "idle" | "processing") {
+    sessions = sessions.map(s => (s.id === id ? { ...s, status } : s));
   }
 
   function escapeMarkdown(text: string): string {
@@ -182,6 +192,22 @@
       sessions = sessions.map(s => s.id === sessionId ? { ...s, title } : s);
       invoke("chat_session_rename", { agentKey, sessionId, title }).catch(() => {});
     }
+  }
+
+  // ── Manual title rename (drives the click-to-edit header) ───────────────
+  async function renameActiveSession(title: string) {
+    if (!activeSessionId) return;
+    const trimmed = title.trim();
+    if (!trimmed) { editingTitle = false; return; }
+    sessions = sessions.map(s => s.id === activeSessionId ? { ...s, title: trimmed } : s);
+    editingTitle = false;
+    try { await invoke("chat_session_rename", { agentKey, sessionId: activeSessionId, title: trimmed }); } catch { /* non-fatal */ }
+  }
+  function startEditTitle() {
+    const cur = sessions.find(s => s.id === activeSessionId);
+    if (!cur) return;
+    editTitleValue = cur.title;
+    editingTitle = true;
   }
 
   // ── Session history ─────────────────────────────────────────────────────
@@ -404,15 +430,34 @@
   async function handleEventProcessed(e: any) {
     const payload = e.payload;
     if (!payload) return;
-    if (payload.agent_id && payload.agent_id !== agentKey) return;
 
+    // The SSE bridge emits the whole `kernel::Event` as the Tauri payload:
+    //   { id, source, event_type, payload: { agent_id, session_id, ... }, ... }
+    // So the *real* business data lives one level deeper — `payload.payload`.
+    // (ActivityStateWidget already reads this way; the previous code read the
+    // top-level fields and always saw `undefined`, silently dropping events.)
     const eventType: string = payload.event_type;
-    const data = payload.payload;
+    const data = payload.payload ?? {};
+
+    // Scope to this window's agent. The agent_id lives in the inner payload,
+    // or nested again at data.payload.agent_id for events that re-wrap it.
+    const eventAgentId: string | undefined =
+      data.agent_id ?? data.payload?.agent_id;
+    if (eventAgentId && eventAgentId !== agentKey) return;
 
     // Background idle-run session events — ignore (handled in Home tab)
     if (eventType === "MessageReceived" && data?.background === true) return;
 
-    if (!data?.session_id) return;
+    // The first event of a brand-new session (MessageReceived) may carry only
+    // `agent_id` and no `session_id` until the store has allocated one. Do not
+    // drop it — call sites below are tolerant of a missing session_id where it
+    // makes sense, and dropping it here was the root cause of "chat sends but
+    // nothing happens".
+    if (!data?.session_id && eventType === "MessageReceived") {
+      // fall through — handled below
+    } else if (!data?.session_id) {
+      return;
+    }
 
     switch (eventType) {
       case "agent:reply_stream_start":
@@ -524,7 +569,21 @@
       </div>
     {:else}
       <div class="chat-header">
-        <span class="chat-title">{sessions.find(s => s.id === activeSessionId)?.title ?? "Chat"}</span>
+        {#if editingTitle}
+          <input
+            class="chat-title-input"
+            type="text"
+            bind:value={editTitleValue}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); void renameActiveSession(editTitleValue); }
+              else if (e.key === 'Escape') { editingTitle = false; }
+            }}
+            onblur={() => void renameActiveSession(editTitleValue)}
+            autofocus
+          />
+        {:else}
+          <span class="chat-title" title={"Click to rename"} onclick={startEditTitle}>{sessions.find(s => s.id === activeSessionId)?.title ?? "Chat"}</span>
+        {/if}
         {#if isProcessing}
           <button class="btn-stop" onclick={stopGeneration}>{t("chat.stop")}</button>
         {/if}
@@ -547,7 +606,10 @@
         <chat-input
           bind:this={chatInputRef}
           placeholder={t("chat.message_placeholder")}
-          disabled={isProcessing && !activeSessionId}
+          buttontext={t("chat.send")}
+          stoptext={t("chat.stop")}
+          disabled={isProcessing || !activeSessionId}
+          processing={isProcessing ? "" : undefined}
         ></chat-input>
       </div>
     {/if}
@@ -598,10 +660,14 @@
   }
 
   .new-session-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 24px;
     height: 24px;
     font-size: 18px;
     line-height: 1;
+    padding: 0;
     border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
     border-radius: 6px;
     background: transparent;
@@ -711,7 +777,29 @@
     flex-shrink: 0;
   }
 
-  .chat-title { font-size: 14px; font-weight: 600; color: var(--fg, #e5e7eb); }
+  .chat-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg, #e5e7eb);
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 2px 6px;
+    margin: -2px -6px;
+  }
+  .chat-title:hover { background: rgba(255, 255, 255, 0.05); }
+  .chat-title-input {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg, #e5e7eb);
+    background: transparent;
+    border: 1px solid var(--accent, #5b73f5);
+    border-radius: 4px;
+    padding: 2px 6px;
+    margin: -2px -6px;
+    width: 100%;
+    max-width: 280px;
+    outline: none;
+  }
 
   .btn-stop {
     padding: 4px 14px;

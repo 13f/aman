@@ -22,6 +22,7 @@
     agents = [],
     idleStates = {} as Record<string, AgentIdleState>,
     systemStates = {} as Record<string, string>,
+    agentStatuses = {} as Record<string, string>,
     emotionsConfigs = {} as Record<string, EmotionsConfig | null>,
     cognitiveStates = {} as Record<string, CognitiveState>,
     // CognitiveState (LLM backend health): "Lucid" | "Groggy" | "Catatonic" | "Coma"
@@ -32,6 +33,7 @@
     agents: AgentEntry[];
     idleStates?: Record<string, AgentIdleState>;
     systemStates?: Record<string, string>;
+    agentStatuses?: Record<string, string>;
     emotionsConfigs?: Record<string, EmotionsConfig | null>;
     cognitiveStates?: Record<string, CognitiveState>;
     brainStates?: Record<string, string>;
@@ -82,6 +84,13 @@
     return systemStates[key] ?? "idle";
   }
 
+  // Cold-start lifecycle status (AgentStatus::Preparing). This is distinct from
+  // AgentSystemState — an agent mid cold-start is Preparing subsystem-wise but
+  // Idle system-wise. The status row should surface "Loading" in that window.
+  function isPreparing(key: string): boolean {
+    return agentStatuses[key] === "Preparing";
+  }
+
   function defaultCognitiveState(): CognitiveState {
     return { phase: "idle", currentStep: "" };
   }
@@ -129,6 +138,23 @@
               emoji={bs === "Groggy" ? "\u{1F97A}" : bs === "Catatonic" ? "\u{1F636}" : "\u{1F4A4}"}
               imageSrc={imgSrc}
               size={165}
+              active={true}
+            />
+          </div>
+        {:else if isPreparing(agent.key)}
+          <!-- Layer 1b: cold-start (Preparing) — processing ring with hourglass -->
+          {@const imgSrc = getEmotionImage(agent.key, "idle")}
+          <div transition:fade={{ duration: 300 }}>
+            <IdleRing
+              mode="processing"
+              outerPct={50}
+              innerPct={50}
+              emoji={"\u{23F3}"}
+              imageSrc={imgSrc}
+              ringColors={COLORS["processing"]}
+              size={165}
+              showLabel={false}
+              showInfo={false}
               active={true}
             />
           </div>
@@ -191,6 +217,11 @@
           <span class="agent-avatar-name">{agent.display_name}</span>
           {#if !agent.provider}
             <span class="badge warn" style="font-size:10px;">needs config</span>
+          {:else if isPreparing(agent.key)}
+            <span class="agent-status-row ss-loading">
+              <span class="agent-status-dot"></span>
+              {SYSTEM_STATE_LABEL["preparing"]}
+            </span>
           {:else}
             <span class="agent-status-row {SYSTEM_STATE_CLASS[ss] ?? 'ss-idle'}">
               <span class="agent-status-dot"></span>
@@ -305,6 +336,14 @@
     border-radius: 50%;
     flex-shrink: 0;
     transition: background 0.3s, box-shadow 0.3s;
+  }
+
+  .ss-loading .agent-status-dot,
+  .ss-loading { color: #f59e0b; }
+  .ss-loading .agent-status-dot {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+    animation: statusPulse 1.5s ease-in-out infinite;
   }
 
   .ss-idle .agent-status-dot,

@@ -455,6 +455,20 @@
         brainStates = { ...brainStates, [agentId]: state };
       }
     }));
+
+    // 实时监听 agent:status_changed 事件（冷启动 Preparing → Idle 是即时推送，
+    // 比 2s 快照更快）。确保首页卡片在首次加载时也能立刻反映 loading / idle。
+    unlisteners.push(await listen("event:processed", (e: any) => {
+      const p = e.payload;
+      const et: string | undefined = p?.event_type;
+      if (et !== "agent:status_changed") return;
+      const inner = p.payload ?? {};
+      const agentId: string | undefined = inner.agent_id;
+      const newStatus: string | undefined = inner.new_status;
+      if (agentId && newStatus) {
+        agentStatuses = { ...agentStatuses, [agentId]: newStatus };
+      }
+    }));
   });
 
   onDestroy(() => {
@@ -509,6 +523,7 @@
         {agents}
         {idleStates}
         {systemStates}
+        {agentStatuses}
         {emotionsConfigs}
         {cognitiveStates}
         {brainStates}

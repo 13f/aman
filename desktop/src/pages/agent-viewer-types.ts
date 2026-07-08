@@ -56,6 +56,7 @@ export const STATE_EMOJI: Record<string, string> = {
 
 export const SYSTEM_STATE_LABEL: Record<string, string> = {
   idle: "Idle",
+  preparing: "Loading",
   working: "Working",
   chatting: "Chatting",
   studying: "Studying",
@@ -66,6 +67,7 @@ export const SYSTEM_STATE_LABEL: Record<string, string> = {
 
 export const SYSTEM_STATE_CLASS: Record<string, string> = {
   idle: "ss-idle",
+  preparing: "ss-loading",
   working: "ss-working",
   chatting: "ss-chatting",
   studying: "ss-studying",

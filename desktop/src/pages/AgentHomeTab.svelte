@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { t } from "../lib/i18n.svelte";
 
   const { agentKey }: { agentKey: string } = $props();
 
@@ -26,12 +27,111 @@
   let loading = $state(true);
   let processingSessions = $state<Set<string>>(new Set());
   let abortingId = $state<string | null>(null);
+
+  // ── Skill quick-run (Daily Life) ──────────────────────────────
+  // Whether each skill tag is available for this agent (drives the
+  // disabled state on the empty-state buttons).
+  // Mirrors gateway `agents_idle_availability`: work needs the skill +
+  // team plugin running + pending work items; the rest just need the
+  // matching skill to exist. Defaults stay false until the first load
+  // lands so we never flash an enabled button for a missing skill.
+  let idleAvailability = $state<Record<string, boolean>>({
+    work: false, study: false, fun: false, prize: false,
+  });
+  // Becomes true after the first successful load. Until then every
+  // button stays disabled so we don't show "enabled" for a tag whose
+  // availability we don't yet know.
+  let availabilityReady = $state(false);
+  // Tag currently being launched/running — disables all run buttons.
+  let idleRunningTag = $state<string | null>(null);
+  // Background idle-run sessions we started, tracked for toast feedback.
+  let backgroundIdleSessions = $state<Set<string>>(new Set());
+  let backgroundSessionTags = $state<Map<string, string>>(new Map());
+  // Lightweight transient toast (mirrors <chat-input> pattern).
+  let runToast = $state<{ kind: "info" | "error" | "success"; msg: string } | null>(null);
+  let runToastTimer: ReturnType<typeof setTimeout> | null = null;
   // session_id → live detached child PIDs (e.g. exec(detach:true) scripts).
   // Fed by the agent_states:updated SSE snapshot's running_children.
   let pidsBySession = $state<Record<string, number[]>>({});
 
-  let unlisteners: (() => void) = [];
+  let unlisteners: Array<() => void> = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const SKILL_TAGS: Array<{ tag: string; icon: string; labelKey: string }> = [
+    { tag: "work",  icon: "💼", labelKey: "home.skill_work" },
+    { tag: "study", icon: "📚", labelKey: "home.skill_study" },
+    { tag: "fun",   icon: "🎲", labelKey: "home.skill_fun" },
+    { tag: "prize", icon: "🏆", labelKey: "home.skill_prize" },
+  ];
+
+  function skillLabel(tag: string): string {
+    const entry = SKILL_TAGS.find(s => s.tag === tag);
+    const key = entry?.labelKey ?? "";
+    const trad = t(key);
+    return trad === key ? tag.charAt(0).toUpperCase() + tag.slice(1) : trad;
+  }
+
+  async function loadIdleAvailability() {
+    try {
+      const v: any = await invoke("list_idle_availability");
+      const entry: Record<string, boolean> | undefined = v?.agents?.[agentKey];
+      if (entry) {
+        idleAvailability = {
+          work: !!entry.work,
+          study: !!entry.study,
+          fun: !!entry.fun,
+          prize: !!entry.prize,
+        };
+      }
+      // Even with no entry (agent not in payload) we mark ready so the
+      // buttons can reflect "all false" instead of staying in limbo.
+      availabilityReady = true;
+    } catch {
+      // Keep defaults (all false) — buttons stay disabled; backend errors
+      // surface on click. Still mark ready so we don't block the UI.
+      availabilityReady = true;
+    }
+  }
+
+  function flashRunToast(kind: "info" | "error" | "success", msg: string, ms = 5000) {
+    runToast = { kind, msg };
+    if (runToastTimer) clearTimeout(runToastTimer);
+    runToastTimer = setTimeout(() => { runToast = null; runToastTimer = null; }, ms);
+  }
+
+  async function runSkill(tag: string) {
+    if (idleRunningTag) return;
+    idleRunningTag = tag;
+    try {
+      const result = await invoke<{ session_id?: string; skill_name?: string; tag?: string }>(
+        "idle_run",
+        { tag, agentKey, background: true },
+      );
+      if (result?.session_id) {
+        backgroundIdleSessions = new Set([...backgroundIdleSessions, result.session_id]);
+        backgroundSessionTags = new Map(backgroundSessionTags).set(result.session_id, skillLabel(tag));
+        // Once it's running it will appear under "Active" via normal polling.
+        flashRunToast("info", t("home.skill_started").replace("{label}", skillLabel(tag)), 4000);
+      } else {
+        flashRunToast("error", t("home.skill_run_failed").replace("{tag}", tag).replace("{err}", "no session"));
+      }
+    } catch (e) {
+      const err = String(e);
+      if (err.includes(t("chat.execute_failed"))) {
+        flashRunToast("error", t("chat.execute_failed"));
+      } else {
+        flashRunToast("error", t("home.skill_run_failed").replace("{tag}", tag).replace("{err}", err));
+      }
+      idleRunningTag = null;
+    }
+  }
+
+  // Release the run buttons once all background idle-runs have settled.
+  function maybeReleaseRunButtons() {
+    if (idleRunningTag && backgroundIdleSessions.size === 0) {
+      idleRunningTag = null;
+    }
+  }
 
   async function loadSessions() {
     try {
@@ -104,19 +204,9 @@
       }
     } catch { /* ignore */ }
     await loadSessions();
-  }
-
-  async function abortSession(sessionId: string) {
-    abortingId = sessionId;
-    try {
-      // Kill the session process outright.  chat_stop_generation only
-      // aborts the *current LLM turn* and shows up as an extra "/stop"
-      // message for workflow-backed sessions; killing is the reliable
-      // "stop everything" action.
-      await invoke("chat_kill_session", { sessionId });
-    } catch { /* ignore */ }
-    abortingId = null;
-    await loadSessions();
+    // Refresh idle-run button availability on the same cadence so a change
+    // in work-item queue / skill install is reflected without reload.
+    await loadIdleAvailability();
   }
 
   async function killSession(sessionId: string) {
@@ -151,8 +241,38 @@
     if (!data) return;
     if (data.agent_id && data.agent_id !== agentKey) return;
 
-    // Refresh on any session-relevant event.
     const et = data.event_type ?? "";
+
+    // ── Background idle-run sessions (manual skill triggers) ────
+    // Unified path for skills launched from this Home tab: track their
+    // lifecycle and surface toast feedback without switching any view.
+    // Automatic boredom-driven runs also carry background: true.
+    if (et === "MessageReceived" && data?.background === true) {
+      backgroundIdleSessions = new Set([...backgroundIdleSessions, data.session_id]);
+      const rawTag: string = data.tag ?? "";
+      backgroundSessionTags = new Map(backgroundSessionTags).set(
+        data.session_id, rawTag ? skillLabel(rawTag) : "Idle",
+      );
+      flashRunToast("info", t("home.skill_started").replace("{label}", skillLabel(rawTag)), 4000);
+    }
+    if (backgroundIdleSessions.has(data.session_id)) {
+      const tagLabel = backgroundSessionTags.get(data.session_id) ?? "Idle";
+      if (et === "agent:awaiting_detach") {
+        flashRunToast("info", t("home.skill_running").replace("{label}", tagLabel), 6000);
+      } else if (et === "agent:reply_ready" || et === "agent:reply_interrupted") {
+        backgroundIdleSessions = new Set([...backgroundIdleSessions].filter(s => s !== data.session_id));
+        backgroundSessionTags = new Map([...backgroundSessionTags].filter(([s]) => s !== data.session_id));
+        flashRunToast("success", t("home.skill_completed").replace("{label}", tagLabel), 5000);
+        maybeReleaseRunButtons();
+      } else if (et === "agent:reply_stream_error" || et === "llm_error") {
+        backgroundIdleSessions = new Set([...backgroundIdleSessions].filter(s => s !== data.session_id));
+        backgroundSessionTags = new Map([...backgroundSessionTags].filter(([s]) => s !== data.session_id));
+        flashRunToast("error", t("home.skill_failed").replace("{label}", tagLabel), 5000);
+        maybeReleaseRunButtons();
+      }
+    }
+
+    // Refresh on any session-relevant event.
     if (
       et.startsWith("llm_") ||
       et.includes("tool:") ||
@@ -167,7 +287,7 @@
 
   onMount(async () => {
     loading = true;
-    await Promise.all([pollProcessingSessions(), loadWorkflows()]);
+    await Promise.all([pollProcessingSessions(), loadWorkflows(), loadIdleAvailability()]);
     loading = false;
 
     // Poll every 5 s to catch processing state changes the SSE might miss.
@@ -203,6 +323,7 @@
     for (const u of unlisteners) u();
     unlisteners = [];
     if (pollTimer) clearInterval(pollTimer);
+    if (runToastTimer) clearTimeout(runToastTimer);
   });
 
   // Stamp live child Pids onto each session so the template can render them
@@ -226,6 +347,24 @@
       <p class="empty-icon">✓</p>
       <p class="empty-title">No active tasks</p>
       <p class="empty-desc">{agentKey} is idle. Start a chat or trigger a workflow to see activity here.</p>
+      <div class="skill-quickrun">
+        <span class="skill-quickrun-label">{t("home.run_skill")}</span>
+        <div class="skill-buttons">
+          {#each SKILL_TAGS as skill (skill.tag)}
+            <button
+              class="skill-btn"
+              class:running={idleRunningTag === skill.tag}
+              onclick={() => runSkill(skill.tag)}
+              disabled={!availabilityReady || idleRunningTag !== null || !idleAvailability[skill.tag]}
+              title={t("home.run_skill_hint").replace("{agent}", agentKey)}
+            >
+              <span class="skill-ico">{skill.icon}</span>
+              <span class="skill-name">{skill.labelKey ? t(skill.labelKey) : skill.tag}</span>
+              {#if idleRunningTag === skill.tag}<span class="skill-spin"></span>{/if}
+            </button>
+          {/each}
+        </div>
+      </div>
     </div>
   {:else}
     {#if activeSessions.length > 0}
@@ -305,6 +444,12 @@
         </ul>
       </section>
     {/if}
+  {/if}
+
+  {#if runToast}
+    <div class="home-toast" class:info={runToast.kind === "info"} class:error={runToast.kind === "error"} class:success={runToast.kind === "success"}>
+      {runToast.msg}
+    </div>
   {/if}
 </div>
 
@@ -498,5 +643,123 @@
 
   .task-btn.kill:hover:not(:disabled) {
     background: rgba(239, 68, 68, 0.12);
+  }
+
+  /* ── Skill quick-run (idle empty-state) ──────────────────────── */
+
+  .skill-quickrun {
+    margin-top: 22px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .skill-quickrun-label {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-dim, #9ca3af);
+  }
+
+  .skill-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .skill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--fg, #e5e7eb);
+    background: var(--bg-card, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+    border-radius: 9px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.08s;
+  }
+
+  .skill-btn:hover:not(:disabled) {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+    border-color: var(--accent, #6366f1);
+  }
+
+  .skill-btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .skill-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .skill-btn.running {
+    border-color: var(--green, #22c55e);
+    background: color-mix(in srgb, var(--green, #22c55e) 10%, transparent);
+  }
+
+  .skill-ico {
+    font-size: 15px;
+    line-height: 1;
+  }
+
+  .skill-name {
+    white-space: nowrap;
+  }
+
+  .skill-spin {
+    width: 11px;
+    height: 11px;
+    margin-left: 2px;
+    border: 2px solid color-mix(in srgb, var(--green, #22c55e) 30%, transparent);
+    border-top-color: var(--green, #22c55e);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  /* ── Run toast ────────────────────────────────────────────────── */
+
+  .home-toast {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 10px;
+    background: var(--bg-card, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    color: var(--fg, #e5e7eb);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    z-index: 50;
+    max-width: 80vw;
+    text-align: center;
+    animation: toast-in 0.18s ease-out;
+  }
+
+  .home-toast.info {
+    border-color: color-mix(in srgb, var(--accent, #6366f1) 50%, transparent);
+  }
+
+  .home-toast.success {
+    border-color: color-mix(in srgb, var(--green, #22c55e) 50%, transparent);
+    color: var(--green, #22c55e);
+  }
+
+  .home-toast.error {
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #ef4444;
+  }
+
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
   }
 </style>

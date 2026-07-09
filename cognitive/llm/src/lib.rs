@@ -1531,16 +1531,12 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // ── Interrupt check (before LLM call) ──────────────────
-            if let Some(ref flag) = self.interrupt_flag
-                && flag.is_interrupted()
-            {
-                if let Some(ref sink) = self.event_sink {
-                    sink(kernel::event::Event::new(
-                        "cognitive-engine",
-                        kernel::event::EventType::Custom("agent:reply_interrupted".into()),
-                        serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
-                    ));
-                }
+            // Returns Err(Interrupted) so the harness error path can react.
+            // NOTE: we do NOT publish agent:reply_interrupted here — that
+            // event goes to the local bus (via event_sink) which has no
+            // subscribers that drive the session state machine. The harness
+            // error path publishes the event on the global bus instead.
+            if self.interrupt_flag.as_ref().map_or(false, |f| f.is_interrupted()) {
                 return Err(CognitiveError::Interrupted);
             }
 
@@ -1743,16 +1739,9 @@ impl CognitiveEngine for LlmCognitiveEngine {
             }
 
             // ── Interrupt check (after tool execution) ──────────────
-            if let Some(ref flag) = self.interrupt_flag
-                && flag.is_interrupted()
-            {
-                if let Some(ref sink) = self.event_sink {
-                    sink(kernel::event::Event::new(
-                        "cognitive-engine",
-                        kernel::event::EventType::Custom("agent:reply_interrupted".into()),
-                        serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn }),
-                    ));
-                }
+            // Same note as the pre-LLM check: the harness error path owns
+            // the agent:reply_interrupted publish on the global bus.
+            if self.interrupt_flag.as_ref().map_or(false, |f| f.is_interrupted()) {
                 return Err(CognitiveError::Interrupted);
             }
 

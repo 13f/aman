@@ -2275,6 +2275,8 @@ impl AgentRuntimeBuilder {
             soul_thread: Mutex::new(None),
             backpressure_stop: Arc::new(AtomicBool::new(false)),
             backpressure_task: Mutex::new(None),
+            timeout_poll_task: Mutex::new(None),
+            timeout_poll_notify: Arc::new(tokio::sync::Notify::new()),
             agenverse,
             inflight_pipelines,
             inflight_skills,
@@ -3582,6 +3584,11 @@ pub struct AgentRuntime {
     soul_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     backpressure_stop: Arc<AtomicBool>,
     backpressure_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Join handle + shutdown notify for the workflow timeout polling task.
+    /// The `Notify` is used to instantly wake the task on shutdown (instead
+    /// of a `yield_now` spin-wait that could delay exit by up to one tick).
+    timeout_poll_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    timeout_poll_notify: Arc<tokio::sync::Notify>,
     agenverse: Arc<Agenverse>,
     inflight_pipelines: Arc<AtomicUsize>,
     inflight_skills: Arc<AtomicUsize>,
@@ -3975,6 +3982,11 @@ impl AgentRuntime {
             let _ = self.agent_registry.set_system_state(&aid, kernel::agent::AgentSystemState::Idle).await;
             let _ = self.agent_registry.set_activity(&aid, "").await;
             let _ = self.agent_registry.set_active_session(&aid, None).await;
+            // Flip the session workflow state machine PROCESSING → IDLE so the
+            // session doesn't stay stuck in PROCESSING after being kill/abort.
+            // (kill/abort drop the task future directly, bypassing the harness
+            // error path that would otherwise publish agent:reply_interrupted.)
+            self.session_manager.handle_reply(session_id, &aid, "").await;
         }
 
         // 5. Audit log
@@ -4734,6 +4746,7 @@ impl AgentRuntime {
         self.ensure_soul_watching().await?;
         self.ensure_skill_watching().await?;
         self.ensure_backpressure_watching().await?;
+        self.ensure_timeout_polling().await?;
 
         tracing::info!("runtime start: Phase0");
         self.bump_phase(RuntimePhase::Phase0).await?;
@@ -4954,6 +4967,110 @@ impl AgentRuntime {
         }
     }
 
+    // ── Workflow timeout polling ────────────────────────────────────────
+    //
+    // The session workflow declares `PROCESSING` with a 120s timeout that
+    // transitions to `TIMEOUT`. Because `WorkflowEngine` is "lazy" (it only
+    // evaluates timeouts when `handle_timeouts()` is called), a poller is
+    // required for the timeout to actually fire in production. Without this,
+    // a session whose task was silently dropped (e.g. LLM provider hang with
+    // no stream timeout) would stay stuck in PROCESSING forever.
+
+    /// Spawn the background timeout-polling task (idempotent).
+    async fn ensure_timeout_polling(&self) -> AmanResult<()> {
+        let mut slot = self.timeout_poll_task.lock().await;
+        if slot.is_some() {
+            return Ok(());
+        }
+        let notify = Arc::clone(&self.timeout_poll_notify);
+        let workflow_engine = Arc::clone(&self.workflow_engine);
+        let join = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                // Wait for either the next tick or a shutdown notification.
+                // `tokio::select!` races both; if `notify.notified()` fires
+                // first we break immediately (no spin-wait).
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    _ = notify.notified() => break,
+                }
+                let now = kernel::types::Timestamp::now();
+                match workflow_engine.handle_timeouts(now).await {
+                    Ok(results) => {
+                        for r in &results {
+                            if r.transitioned
+                                && r.reason == workflow::TransitionReason::Timeout
+                            {
+                                tracing::info!(
+                                    instance_id = %r.instance_id,
+                                    from_state = %r.from_state,
+                                    to_state = %r.to_state,
+                                    "workflow timeout fired"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "workflow handle_timeouts failed");
+                    }
+                }
+            }
+        });
+        *slot = Some(join);
+        Ok(())
+    }
+
+    /// Stop the background timeout-polling task. Wakes the task instantly
+    /// (via `Notify`) so it does not wait for the next 10s tick to notice.
+    async fn stop_timeout_polling(&self) {
+        self.timeout_poll_notify.notify_one();
+        if let Some(join) = self.timeout_poll_task.lock().await.take() {
+            let _ = join.await;
+        }
+    }
+
+    /// Flush every PROCESSING session to IDLE before the process exits.
+    ///
+    /// Called after `abort_all_tasks()` during Phase5 shutdown. Force-aborted
+    /// tasks bypass the harness error path that would otherwise drive
+    /// `handle_reply()` (PROCESSING → IDLE + SQLite upsert). Without this,
+    /// their workflow instances would remain `PROCESSING` across a restart
+    /// even though no agent is actually processing them.
+    ///
+    /// We scan the workflow engine's live instances (not the SQLite session
+    /// store) because `sessions.state` is only ever written with the
+    /// post-transition value (IDLE/TIMEOUT/etc.) — it never holds the literal
+    /// `"PROCESSING"` string. The workflow engine is the source of truth for
+    /// the current state.
+    async fn flush_processing_sessions_on_shutdown(&self) {
+        let instances = self.workflow_engine.list_instances();
+        let mut flushed = 0;
+        for inst in &instances {
+            if inst.current_state == "PROCESSING" {
+                if let Some(aid) =
+                    self.agent_registry.agent_id_for_session(&inst.id).await
+                {
+                    self.session_manager.handle_reply(&inst.id, &aid, "").await;
+                    flushed += 1;
+                    tracing::debug!(
+                        session_id = %inst.id,
+                        agent_id = %aid,
+                        "flushed PROCESSING → IDLE on shutdown"
+                    );
+                }
+            }
+        }
+        if flushed > 0 {
+            tracing::info!(
+                flushed,
+                "shutdown: flushed PROCESSING → IDLE for {} session(s)",
+                flushed
+            );
+        }
+    }
+
     #[instrument(skip(self))]
     pub async fn shutdown(&self) -> AmanResult<()> {
         if self.agenverse.try_acquire_shutdown_gate().await.is_err() {
@@ -4971,6 +5088,7 @@ impl AgentRuntime {
         self.stop_soul_watching().await;
         self.stop_skill_watching().await;
         self.stop_backpressure_watching().await;
+        self.stop_timeout_polling().await;
 
         self.agenverse.mark_shutdown().await;
         Ok(())
@@ -5301,6 +5419,13 @@ impl AgentRuntime {
 
                 // Force-cancel any task that didn't respond to the interrupt.
                 self.agent_harness.abort_all_tasks();
+
+                // Flush any session still stuck in PROCESSING to IDLE before
+                // the process exits. Force-aborted tasks bypass the harness
+                // error path that would otherwise drive handle_reply(), so
+                // their SQLite records would otherwise remain PROCESSING
+                // across a restart.
+                self.flush_processing_sessions_on_shutdown().await;
 
                 // Kill every tool-spawned child process that is still running.
                 self.tools.kill_all_children();

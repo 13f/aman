@@ -30,8 +30,8 @@ use tool::ToolSecurityConfig;
 use super::event_consts::{
     SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY,
     EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_IDLE,
-    EVT_AGENT_REPLY_READY, EVT_AGENT_REPLY_STREAM_ERROR,
-    EVT_AGENT_CONFIG_WARNING,
+    EVT_AGENT_REPLY_INTERRUPTED, EVT_AGENT_REPLY_READY,
+    EVT_AGENT_REPLY_STREAM_ERROR, EVT_AGENT_CONFIG_WARNING,
 };
 use super::AgentRegistry;
 
@@ -350,6 +350,19 @@ impl AgentHarness {
             let _ = self.bus.publish(Event::new(
                 SOURCE_AGENT_HARNESS,
                 EventType::Custom(EVT_AGENT_REPLY_STREAM_ERROR.to_owned()),
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "error": err_msg,
+                }),
+            )).await;
+            // Transition the session workflow engine back to IDLE so the
+            // session doesn't stay stuck in PROCESSING forever. The
+            // SessionReplyHandler subscribes to reply_ready / reply_interrupted
+            // and drives session_manager.handle_reply() (PROCESSING → IDLE).
+            let _ = self.bus.publish(Event::new(
+                SOURCE_AGENT_HARNESS,
+                EventType::Custom(EVT_AGENT_REPLY_INTERRUPTED.to_owned()),
                 serde_json::json!({
                     "agent_id": agent_id,
                     "session_id": session_id,
@@ -725,6 +738,9 @@ impl AgentHarness {
                     error = %e, session_id = %session_id, agent_id = %agent_id,
                     "process_message failed"
                 );
+                // NOTE: we do NOT publish agent:reply_interrupted here — that
+                // is already done by the process_message_v2 error path (Fix 1).
+                // Publishing again would double-flip the session workflow.
                 // Reset agent state on error so it doesn't stay stuck.
                 harness.unregister_interrupt(&session_id);
                 let _ = harness.registry.set_active_session(&agent_id, None).await;
@@ -736,11 +752,18 @@ impl AgentHarness {
             // Remove the task handle — the session is done (success or error).
             harness.remove_task(&session_id);
         });
+        // Abort any existing task for this session before registering the new
+        // one. Without this guard, a fast double-send would overwrite the old
+        // task's abort handle in the map, turning it into a non-abortable
+        // "ghost" whose later remove_task() call would erase the *new* task's
+        // handle.
+        let mut tasks = self.active_tasks.write().expect("active_tasks lock");
+        if let Some(old) = tasks.remove(&sid) {
+            old.abort();
+            tracing::info!(session_id = %sid, "aborted previous task for session (new message received)");
+        }
         // Save the abort handle so shutdown can force-cancel lingering tasks.
-        self.active_tasks
-            .write()
-            .expect("active_tasks lock")
-            .insert(sid, handle.abort_handle());
+        tasks.insert(sid, handle.abort_handle());
         handle
     }
 

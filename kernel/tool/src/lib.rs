@@ -110,6 +110,17 @@ impl ChildProcessRegistry {
         }
     }
 
+    /// Read-only view: all child PIDs still running for `session_id`.
+    /// Used by the runtime snapshot (SSE `agent_states:updated`) so the UI
+    /// can show, per active session, which detached subprocesses are alive.
+    pub fn pids_for_session(&self, session_id: &str) -> Vec<u32> {
+        let pids = self.pids.lock().expect("child registry lock");
+        pids.iter()
+            .filter(|(_, sid)| sid.as_str() == session_id)
+            .map(|(&pid, _)| pid)
+            .collect()
+    }
+
     /// Number of currently registered child processes.
     #[allow(dead_code)]
     fn len(&self) -> usize {

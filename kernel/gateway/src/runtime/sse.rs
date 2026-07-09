@@ -234,6 +234,8 @@ async fn metrics_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
 async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
     let instances = runtime.agent_registry().list().await;
     let registry = runtime.agent_registry();
+    // Shared across all agents: resolves active_session_id → live child PIDs.
+    let child_reg = runtime.tools().child_process_registry();
     let mut agents: Vec<serde_json::Value> = Vec::with_capacity(instances.len());
 
     for inst in instances {
@@ -247,6 +249,15 @@ async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
             .map(|s| format!("{:?}", s))
             .unwrap_or_else(|| "Lucid".to_owned());
 
+        // Live detached subprocess PIDs belonging to this agent's active
+        // session (e.g. an idle-run `exec(detach:true)` Python script). Lets
+        // the UI show "PID 41124" on the running session card.
+        let active_session_id = inst.active_session_id.clone();
+        let running_children = active_session_id
+            .as_deref()
+            .map(|sid| child_reg.pids_for_session(sid))
+            .unwrap_or_default();
+
         let mut entry = serde_json::json!({
             "agent_id": agent_id,
             "system_state": serde_json::to_value(inst.system_state)
@@ -258,6 +269,8 @@ async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
                 .and_then(|v| v.as_str().map(String::from))
                 .unwrap_or_default(),
             "cognitive_state": cognitive_state,
+            "active_session_id": active_session_id,
+            "running_children": running_children,
         });
 
         if let Some(ref emo) = emotion_id {

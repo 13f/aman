@@ -26,6 +26,9 @@
   let loading = $state(true);
   let processingSessions = $state<Set<string>>(new Set());
   let abortingId = $state<string | null>(null);
+  // session_id → live detached child PIDs (e.g. exec(detach:true) scripts).
+  // Fed by the agent_states:updated SSE snapshot's running_children.
+  let pidsBySession = $state<Record<string, number[]>>({});
 
   let unlisteners: (() => void) = [];
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -175,6 +178,25 @@
 
     const unlisten = await listen("event:processed", handleEventProcessed);
     unlisteners.push(unlisten);
+
+    // Live child-PID map per session, from the 2s agent_states snapshot.
+    // running_children is only populated for the agent's active session, so
+    // this stays small. Clear stale entries for sessions we no longer see.
+    unlisteners.push(await listen("agent_states:updated", (e: any) => {
+      const list: Array<{
+        agent_id: string;
+        active_session_id?: string | null;
+        running_children?: number[];
+      }> = e.payload?.agents ?? [];
+      const next: Record<string, number[]> = {};
+      for (const a of list) {
+        if (a.agent_id !== agentKey) continue;
+        if (a.active_session_id && a.running_children?.length) {
+          next[a.active_session_id] = a.running_children;
+        }
+      }
+      pidsBySession = next;
+    }));
   });
 
   onDestroy(() => {
@@ -183,8 +205,13 @@
     if (pollTimer) clearInterval(pollTimer);
   });
 
-  const activeSessions = $derived(sessions.filter(s => s.isProcessing));
-  const idleSessions = $derived(sessions.filter(s => !s.isProcessing));
+  // Stamp live child Pids onto each session so the template can render them
+  // without extra lookups. Recomputed whenever either source changes.
+  const sessionsWithPids = $derived(
+    sessions.map(s => ({ ...s, pids: pidsBySession[s.id] }))
+  );
+  const activeSessions = $derived(sessionsWithPids.filter(s => s.isProcessing));
+  const idleSessions = $derived(sessionsWithPids.filter(s => !s.isProcessing));
   const hasContent = $derived(activeSessions.length > 0 || workflows.length > 0);
 </script>
 
@@ -213,6 +240,9 @@
                   <span class="task-name">{session.title}</span>
                   <span class="task-meta">
                     Processing · {session.messageCount} msgs · {timestampLabel(session.lastActiveAt)}
+                    {#if session.pids?.length}
+                      <span class="task-pids" title="Detached child processes">· PID {session.pids.join(', ')}</span>
+                    {/if}
                   </span>
                 </div>
               </div>
@@ -421,6 +451,12 @@
   .task-meta {
     font-size: 11px;
     color: var(--fg-dim, #9ca3af);
+  }
+
+  .task-pids {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    color: #f59e0b;
+    opacity: 0.9;
   }
 
   .task-actions {

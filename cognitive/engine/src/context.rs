@@ -86,6 +86,135 @@ pub enum SituationSignal {
     Overloaded,
 }
 
+/// Cognitive state — the agent's capacity to reason right now.
+///
+/// Driven by `BackendHealth` in the gateway; engines read this to
+/// gracefully short-circuit the ReAct loop when the LLM backend is
+/// unavailable.
+///
+/// | Variant      | Meaning                                              |
+/// |--------------|------------------------------------------------------|
+/// | `Lucid`      | Healthy — LLM backend nominal.                       |
+/// | `Groggy`     | Degraded — high latency / elevated error rate.       |
+/// | `Catatonic`  | Down — agent perceives events but cannot invoke LLM. |
+/// | `Coma`       | Prolonged downtime — even perception is throttled.   |
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitiveState {
+    /// LLM backend is healthy; agent may reason freely.
+    #[default]
+    Lucid = 0,
+    /// LLM backend degraded — can still attempt calls (retries absorb).
+    Groggy = 1,
+    /// LLM backend down — cannot invoke the reasoning engine.
+    Catatonic = 2,
+    /// Prolonged downtime — operator has been notified.
+    Coma = 3,
+}
+
+impl CognitiveState {
+    /// Convert a raw `u8` (e.g. from an `AtomicU8`) to a `CognitiveState`.
+    ///
+    /// Unknown values fall back to `Lucid` (fail-safe default).
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Lucid,
+            1 => Self::Groggy,
+            2 => Self::Catatonic,
+            3 => Self::Coma,
+            _ => Self::Lucid,
+        }
+    }
+
+    /// Check whether the current cognitive state allows LLM processing.
+    ///
+    /// Returns `None` if processing is allowed, or `Some(message)` with a
+    /// user-facing message explaining why processing was skipped.
+    ///
+    /// - `Lucid` / `Groggy` → allowed (retry logic handles degradation).
+    /// - `Catatonic` / `Coma` → blocked (LLM is unavailable).
+    pub fn guard_check(&self) -> Option<&'static str> {
+        match self {
+            Self::Lucid | Self::Groggy => None,
+            Self::Catatonic => Some(
+                "I can't think right now — my reasoning engine is unavailable. Please try again shortly.",
+            ),
+            Self::Coma => Some(
+                "I'm unable to process requests right now. My reasoning engine has been down for a while — an operator has been notified.",
+            ),
+        }
+    }
+
+    /// Whether the agent can invoke the LLM at all.
+    pub fn can_think(&self) -> bool {
+        matches!(self, Self::Lucid | Self::Groggy)
+    }
+}
+
+/// Source of truth for an agent's [`CognitiveState`].
+///
+/// Engines call [`Self::state()`] inside [`CognitiveEngine::process()`] to
+/// decide whether to enter the ReAct loop or short-circuit with a graceful
+/// "unavailable" reply.
+///
+/// The gateway implements this against its internal `CognitiveStateMachine`;
+/// tests use [`FixedConsciousness`].
+pub trait ConsciousnessProvider: Send + Sync {
+    /// Returns the current cognitive state for this agent.
+    fn state(&self) -> CognitiveState;
+}
+
+/// Test / placeholder provider — always returns a fixed [`CognitiveState`].
+#[derive(Debug, Clone, Copy)]
+pub struct FixedConsciousness(pub CognitiveState);
+
+impl ConsciousnessProvider for FixedConsciousness {
+    fn state(&self) -> CognitiveState {
+        self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_check_mapping() {
+        use CognitiveState::*;
+        assert_eq!(Lucid.guard_check(), None);
+        assert_eq!(Groggy.guard_check(), None);
+        assert!(Catatonic.guard_check().unwrap().contains("can't think"));
+        assert!(Coma.guard_check().unwrap().contains("operator"));
+    }
+
+    #[test]
+    fn can_think_boundary() {
+        use CognitiveState::*;
+        assert!(Lucid.can_think());
+        assert!(Groggy.can_think());
+        assert!(!Catatonic.can_think());
+        assert!(!Coma.can_think());
+    }
+
+    #[test]
+    fn from_u8_roundtrip() {
+        use CognitiveState::*;
+        for v in [Lucid, Groggy, Catatonic, Coma] {
+            assert_eq!(CognitiveState::from_u8(v as u8), v);
+        }
+        // Unknown → Lucid (fail-safe).
+        assert_eq!(CognitiveState::from_u8(99), Lucid);
+    }
+
+    #[test]
+    fn fixed_consciousness_provider() {
+        let p = FixedConsciousness(CognitiveState::Catatonic);
+        assert_eq!(p.state(), CognitiveState::Catatonic);
+        assert!(p.state().guard_check().is_some());
+    }
+}
+
 /// Engine-agnostic agent identity.
 ///
 /// Derived from the agent's SOUL.md but rendered in an engine-neutral form.

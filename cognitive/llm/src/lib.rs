@@ -140,6 +140,9 @@ pub struct LlmCognitiveEngine {
     tool_security: Option<tool::ToolSecurityConfig>,
     /// Optional interrupt flag for external /stop during ReAct loop.
     interrupt_flag: Option<Arc<cognitive_react::InterruptFlag>>,
+    /// Optional consciousness provider — gates the ReAct loop when the
+    /// LLM backend is unavailable (Catatonic / Coma).
+    consciousness: Option<Arc<dyn cognitive_engine::ConsciousnessProvider>>,
 }
 
 impl LlmCognitiveEngine {
@@ -159,6 +162,7 @@ impl LlmCognitiveEngine {
             tool_timeout_ms: 30_000,
             tool_security: None,
             interrupt_flag: None,
+            consciousness: None,
         }
     }
 
@@ -179,6 +183,7 @@ impl LlmCognitiveEngine {
             tool_timeout_ms: 30_000,
             tool_security: None,
             interrupt_flag: None,
+            consciousness: None,
         }
     }
 
@@ -221,6 +226,24 @@ impl LlmCognitiveEngine {
     #[must_use]
     pub fn with_interrupt_flag(mut self, flag: Arc<cognitive_react::InterruptFlag>) -> Self {
         self.interrupt_flag = Some(flag);
+        self
+    }
+
+    /// Set a consciousness provider that gates the ReAct loop.
+    ///
+    /// When the agent's cognitive state is [`CognitiveState::Catatonic`] or
+    /// [`CognitiveState::Coma`], [`CognitiveEngine::process()`] returns a
+    /// graceful "unavailable" reply **without** invoking the LLM. This avoids
+    /// wasted calls and cascading failures when the backend is down.
+    ///
+    /// When `None` (the default), the engine behaves as before — callers
+    /// remain responsible for any health gating.
+    #[must_use]
+    pub fn with_consciousness_provider(
+        mut self,
+        provider: Arc<dyn cognitive_engine::ConsciousnessProvider>,
+    ) -> Self {
+        self.consciousness = Some(provider);
         self
     }
 
@@ -1346,6 +1369,27 @@ impl CognitiveEngine for LlmCognitiveEngine {
     ) -> Result<Vec<Decision>, CognitiveError> {
         if observations.is_empty() {
             return Ok(vec![]);
+        }
+
+        // ── Consciousness guard: backend unavailable → graceful short-circuit ──
+        // The gateway already checks this at the harness layer; the engine
+        // checks again here as defence-in-depth so *any* caller (anonymous
+        // messages, idle loops, direct engine users, tests) is covered.
+        if let Some(ref provider) = self.consciousness {
+            let state = provider.state();
+            if let Some(msg) = state.guard_check() {
+                tracing::warn!(
+                    agent_id = %ctx.agent_id,
+                    session_id = %ctx.session_id,
+                    ?state,
+                    "cognitive state blocks processing: {msg}"
+                );
+                return Ok(vec![Decision::reply(
+                    Self::new_decision_id(),
+                    &ctx.session_id,
+                    msg.to_string(),
+                )]);
+            }
         }
 
         let session_id = ctx.session_id.clone();

@@ -224,6 +224,19 @@ impl AgentHarness {
         if let Some(flag) = interrupt_flag {
             engine = engine.with_interrupt_flag(flag);
         }
+        // Wire a consciousness provider so the engine self-gates when the
+        // backend is Catatonic/Coma. The harness-level guard (further below)
+        // remains as a first-pass shortcut that avoids even building the
+        // engine under full downtime.
+        if let Some(machine) = self.registry.get_cognitive_state_machine(agent_id).await {
+            struct GatewayConsciousness(std::sync::Arc<super::CognitiveStateMachine>);
+            impl cognitive_engine::ConsciousnessProvider for GatewayConsciousness {
+                fn state(&self) -> cognitive_engine::CognitiveState {
+                    self.0.state()
+                }
+            }
+            engine = engine.with_consciousness_provider(Arc::new(GatewayConsciousness(machine)));
+        }
         let lb: Arc<dyn EventBus> = self.registry.get_local_bus(agent_id).await.unwrap_or_else(|| Arc::clone(&self.bus));
         // Use an mpsc channel so streaming chunks are published in
         // order.  tokio::spawn does NOT guarantee FIFO scheduling

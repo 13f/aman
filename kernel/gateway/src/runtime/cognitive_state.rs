@@ -12,6 +12,13 @@
 //! - `CognitiveState` 是患者的主观体验
 //! - `BackendStatus::Down` 持续一段时间才会把 `CognitiveState` 从 Catatonic 推到 Coma
 //!   ——给 Agent "缓刑期"，避免短暂抖动就深度昏迷
+//!
+//! # 状态枚举的归属
+//!
+//! `CognitiveState` 的 **canonical 定义** 在
+//! [`cognitive_engine::context::CognitiveState`]（cognitive-engine trait crate）。
+//! 本模块 re-export 它，以便 gateway 内其他模块继续通过
+//! `crate::runtime::CognitiveState` 访问。
 
 #![forbid(unsafe_code)]
 
@@ -20,68 +27,13 @@ use tokio::sync::watch;
 
 use super::backend_health::BackendStatus;
 
-/// Agent 的认知能力状态——"大脑还能不能转"。
-///
-/// 与 `AgentSystemState`（谁在干活）正交：
-/// - `AgentSystemState::Working` + `CognitiveState::Lucid` = 正常工作中
-/// - `AgentSystemState::Idle` + `CognitiveState::Lucid` = 清醒待命
-/// - `AgentSystemState::Idle` + `CognitiveState::Catatonic` = 木僵（大脑离线，身体在呼吸）
-/// - `AgentSystemState::Idle` + `CognitiveState::Coma` = 昏迷（完全无感知）
-///
-/// # 拟人化类比
-///
-/// | 状态 | 类比 |
-/// |------|------|
-/// | `Lucid` | 清醒、健康 |
-/// | `Groggy` | 发烧 39°C——能听到但思维模糊 |
-/// | `Catatonic` | 闭锁综合征——清醒但无法行动 |
-/// | `Coma` | 深度麻醉——无感知无反应 |
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-#[repr(u8)]
-pub enum CognitiveState {
-    /// 清醒——LLM 后端正常，Agent 可以思考。
-    Lucid = 0,
-    /// 迷糊——LLM 后端 Degraded，偶尔能响应但延迟高、错误多。
-    Groggy = 1,
-    /// 木僵——LLM 后端 Down，能感知事件流但无法调用 CognitiveEngine。
-    Catatonic = 2,
-    /// 昏迷——LLM 后端长时间不可用，连"感知"都关闭。
-    Coma = 3,
-}
+// Re-export the canonical CognitiveState (defined in cognitive-engine).
+// Keeps `crate::runtime::CognitiveState` working for all downstream users.
+pub use cognitive_engine::context::CognitiveState;
 
-impl CognitiveState {
-    /// 从 u8 转换为 CognitiveState。
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            0 => Self::Lucid,
-            1 => Self::Groggy,
-            2 => Self::Catatonic,
-            3 => Self::Coma,
-            _ => Self::Lucid,
-        }
-    }
-
-    /// Check whether the current cognitive state allows LLM processing.
-    ///
-    /// Returns `None` if processing is allowed, or `Some(message)` with a
-    /// user-facing message explaining why processing was skipped.
-    ///
-    /// - Lucid/Groggy → allowed (retry logic handles degradation)
-    /// - Catatonic/Coma → blocked (LLM is unavailable)
-    pub fn guard_check(&self) -> Option<&'static str> {
-        match self {
-            Self::Lucid | Self::Groggy => None,
-            Self::Catatonic => Some("I can't think right now — my reasoning engine is unavailable. Please try again shortly."),
-            Self::Coma => Some("I'm unable to process requests right now. My reasoning engine has been down for a while — an operator has been notified."),
-        }
-    }
-
-    /// Whether the agent can call the LLM at all.
-    pub fn can_think(&self) -> bool {
-        matches!(self, Self::Lucid | Self::Groggy)
-    }
-}
-
+// Gateway-local mapping from the infrastructure-layer diagnostic
+// (`BackendStatus`) to the agent's subjective state. `BackendStatus` lives
+// in this crate, so the `impl` stays here rather than in cognitive-engine.
 impl From<BackendStatus> for CognitiveState {
     fn from(s: BackendStatus) -> Self {
         match s {

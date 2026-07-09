@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use cognitive_engine::{
     Capability, CapabilityType, CognitiveContext, CognitiveEngine, CognitiveError,
-    CognitiveEvent, CognitiveIdentity, CognitiveListener, DecisionKind, Grounding,
-    Observation, ObservationPayload,
+    CognitiveEvent, CognitiveIdentity, CognitiveListener, CognitiveState,
+    DecisionKind, FixedConsciousness, Grounding, Observation, ObservationPayload,
 };
 use cognitive_llm::provider::{LlmChatRequest, LlmProvider, LlmResponse, StreamEvent};
 use cognitive_llm::{LlmCognitiveEngine, LlmEngineConfig};
@@ -627,4 +627,133 @@ fn _reference_tool_completed_payload() -> ObservationPayload {
         success: true,
         duration_ms: 1,
     }
+}
+
+// ── Consciousness guard contract tests ─────────────────────────────────
+
+/// Catatonic state must short-circuit the ReAct loop with a graceful reply
+/// and must NOT invoke the LLM provider.
+#[tokio::test]
+async fn consciousness_catanonic_returns_graceful_reply_without_calling_llm() {
+    let stub = Arc::new(StubLlmProvider::new(vec![Ok(make_response_with_content(
+        "should-not-be-used",
+    ))]));
+    let engine = LlmCognitiveEngine::new(stub.clone(), LlmEngineConfig::default())
+        .with_consciousness_provider(Arc::new(FixedConsciousness(CognitiveState::Catatonic)));
+
+    let decisions = engine
+        .process(&make_context("catatonic"), vec![make_user_message("catatonic", "hi")])
+        .await
+        .expect("catatonic should return Ok, not Err");
+
+    assert_eq!(decisions.len(), 1, "expected exactly one graceful-reply decision");
+    match &decisions[0].kind {
+        DecisionKind::Reply { text, is_final } => {
+            assert!(is_final);
+            assert!(
+                text.contains("can't think") || text.contains("unavailable"),
+                "reply should explain unavailability, got: {text}"
+            );
+        }
+        other => panic!("expected Reply, got {other:?}"),
+    }
+    assert_eq!(
+        stub.call_count(),
+        0,
+        "LLM must NOT be called when Catatonic"
+    );
+}
+
+/// Coma state must short-circuit with a longer message mentioning the operator.
+#[tokio::test]
+async fn consciousness_coma_returns_operator_message() {
+    let stub = Arc::new(StubLlmProvider::new(vec![Ok(make_response_with_content(
+        "should-not-be-used",
+    ))]));
+    let engine = LlmCognitiveEngine::new(stub.clone(), LlmEngineConfig::default())
+        .with_consciousness_provider(Arc::new(FixedConsciousness(CognitiveState::Coma)));
+
+    let decisions = engine
+        .process(&make_context("coma"), vec![make_user_message("coma", "hi")])
+        .await
+        .expect("coma should return Ok, not Err");
+
+    assert_eq!(decisions.len(), 1);
+    match &decisions[0].kind {
+        DecisionKind::Reply { text, .. } => {
+            assert!(
+                text.contains("operator"),
+                "Coma reply should mention operator notification, got: {text}"
+            );
+        }
+        other => panic!("expected Reply, got {other:?}"),
+    }
+    assert_eq!(stub.call_count(), 0, "LLM must NOT be called when Coma");
+}
+
+/// Lucid state must allow the ReAct loop to proceed and call the LLM.
+#[tokio::test]
+async fn consciousness_lucid_allows_llm_call() {
+    let stub = Arc::new(StubLlmProvider::new(vec![Ok(make_response_with_content(
+        "Hello from Lucid!",
+    ))]));
+    let engine = LlmCognitiveEngine::new(stub.clone(), LlmEngineConfig::default())
+        .with_consciousness_provider(Arc::new(FixedConsciousness(CognitiveState::Lucid)));
+
+    let decisions = engine
+        .process(&make_context("lucid"), vec![make_user_message("lucid", "hi")])
+        .await
+        .expect("lucid should succeed");
+
+    assert_eq!(decisions.len(), 1);
+    match &decisions[0].kind {
+        DecisionKind::Reply { text, .. } => assert_eq!(text, "Hello from Lucid!"),
+        other => panic!("expected Reply, got {other:?}"),
+    }
+    assert_eq!(stub.call_count(), 1, "LLM should be called exactly once when Lucid");
+}
+
+/// Groggy state must also allow the ReAct loop (retries absorb degradation).
+#[tokio::test]
+async fn consciousness_groggy_allows_llm_call() {
+    let stub = Arc::new(StubLlmProvider::new(vec![Ok(make_response_with_content(
+        "Still functional!",
+    ))]));
+    let engine = LlmCognitiveEngine::new(stub.clone(), LlmEngineConfig::default())
+        .with_consciousness_provider(Arc::new(FixedConsciousness(CognitiveState::Groggy)));
+
+    let decisions = engine
+        .process(&make_context("groggy"), vec![make_user_message("groggy", "hi")])
+        .await
+        .expect("groggy should succeed");
+
+    assert_eq!(decisions.len(), 1);
+    match &decisions[0].kind {
+        DecisionKind::Reply { text, .. } => assert_eq!(text, "Still functional!"),
+        other => panic!("expected Reply, got {other:?}"),
+    }
+    assert_eq!(stub.call_count(), 1, "LLM should be called when Groggy");
+}
+
+/// No consciousness provider (None) preserves backward compatibility —
+/// the engine proceeds as before, with no health gating.
+#[tokio::test]
+async fn consciousness_none_preserves_backward_compat() {
+    let stub = Arc::new(StubLlmProvider::new(vec![Ok(make_response_with_content(
+        "No gate!",
+    ))]));
+    // No with_consciousness_provider call — field defaults to None.
+    let engine = LlmCognitiveEngine::new(stub.clone(), LlmEngineConfig::default());
+
+    let decisions = engine
+        .process(&make_context("no-gate"), vec![make_user_message("no-gate", "hi")])
+        .await
+        .expect("no-gate should succeed");
+
+    assert_eq!(decisions.len(), 1);
+    match &decisions[0].kind {
+        DecisionKind::Reply { text, .. } => assert_eq!(text, "No gate!"),
+        other => panic!("expected Reply, got {other:?}"),
+    }
+    assert_eq!(stub.call_count(), 1, "LLM should be called when no provider");
 }

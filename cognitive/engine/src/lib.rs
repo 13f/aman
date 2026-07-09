@@ -33,7 +33,8 @@ use std::sync::Arc;
 
 pub use context::{
     Capability, CapabilityType, CognitiveContext, CognitiveError, CognitiveIdentity,
-    Grounding, KnowledgeSignal, MemoryItem, SituationSignal,
+    CognitiveState, ConsciousnessProvider, FixedConsciousness, Grounding,
+    KnowledgeSignal, MemoryItem, SituationSignal,
 };
 pub use decision::{ConfidenceLevel, Decision, DecisionKind, ToolCallRequest};
 pub use experience::{

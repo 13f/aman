@@ -479,6 +479,12 @@ async fn execute_one_with_retry(
 
         let mut ctx = kernel::context::ToolContext::default();
         ctx.base.timeout_ms = Some(timeout_ms);
+        // Propagate session_id so stateful tools (e.g. exec detach → child
+        // registry) can tag spawned processes with their owning session and
+        // kill them when the session ends.
+        ctx.base
+            .extensions
+            .insert("session_id".to_string(), serde_json::json!(session_id));
 
         let result = tool.execute(call.args.clone(), ctx).await;
         let duration_ms = start.elapsed().as_millis() as u64;

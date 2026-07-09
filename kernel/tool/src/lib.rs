@@ -49,52 +49,65 @@ use uuid::Uuid;
 /// still-registered PID.
 #[derive(Default)]
 pub struct ChildProcessRegistry {
-    pids: std::sync::Mutex<Vec<u32>>,
+    /// pid → session_id. A global map keyed by pid gives O(1) unregister and
+    /// lets us recover the owning session even after the session's task map
+    /// has been cleared, so a killed session can reclaim its own detached
+    /// subprocesses without disturbing other sessions' processes.
+    pids: std::sync::Mutex<HashMap<u32, String>>,
 }
 
 impl ChildProcessRegistry {
-    /// Register a child process PID for shutdown cleanup.
-    pub fn register(&self, pid: u32) {
-        self.pids.lock().expect("child registry lock").push(pid);
+    /// Register a child process PID under the owning `session_id`, for both
+    /// per-session cleanup and shutdown cleanup.
+    pub fn register(&self, pid: u32, session_id: impl Into<String>) {
+        self.pids
+            .lock()
+            .expect("child registry lock")
+            .insert(pid, session_id.into());
     }
 
     /// Remove a PID that has exited normally (or was killed by timeout).
     pub fn unregister(&self, pid: u32) {
-        let mut pids = self.pids.lock().expect("child registry lock");
-        pids.retain(|&p| p != pid);
+        self.pids.lock().expect("child registry lock").remove(&pid);
     }
 
-    /// Kill every registered child process.
+    /// Kill every child process belonging to `session_id` and remove them from
+    /// the registry. Best-effort: a kill may fail if the process already
+    /// exited, which is harmless. Returns the number of processes killed.
+    pub fn kill_children_for(&self, session_id: &str) -> usize {
+        let mut pids = self.pids.lock().expect("child registry lock");
+        // Collect the pids owned by this session, then remove them so a
+        // concurrent natural exit doesn't double-handle them.
+        let owned: Vec<u32> = pids
+            .iter()
+            .filter(|(_, sid)| sid.as_str() == session_id)
+            .map(|(&pid, _)| pid)
+            .collect();
+        for pid in &owned {
+            pids.remove(pid);
+        }
+        // Drop the lock before issuing blocking syscalls.
+        drop(pids);
+        for pid in &owned {
+            kill_pid(*pid);
+        }
+        owned.len()
+    }
+
+    /// Kill every registered child process (for gateway shutdown).
     ///
     /// Sends SIGKILL on Unix, `taskkill /F` on Windows. Each kill is
     /// best-effort — failures are silently ignored because the process
     /// may have already exited.
     pub fn kill_all(&self) {
         let mut pids = self.pids.lock().expect("child registry lock");
-        for &pid in pids.iter() {
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .arg("/F")
-                    .arg("/PID")
-                    .arg(pid.to_string())
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-            }
-        }
+        let all: Vec<u32> = pids.keys().copied().collect();
         pids.clear();
+        // Drop the lock before issuing blocking syscalls.
+        drop(pids);
+        for pid in &all {
+            kill_pid(*pid);
+        }
     }
 
     /// Number of currently registered child processes.
@@ -104,11 +117,38 @@ impl ChildProcessRegistry {
     }
 }
 
+/// Best-effort SIGKILL (Unix) / `taskkill /F` (Windows) for a single pid.
+/// Failures are silently ignored because the process may have already exited.
+fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .arg("/F")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
 impl std::fmt::Debug for ChildProcessRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let count = self.pids.lock().expect("child registry lock").len();
+        let pids = self.pids.lock().expect("child registry lock");
         f.debug_struct("ChildProcessRegistry")
-            .field("pids", &count)
+            .field("count", &pids.len())
+            .field("pids", &*pids)
             .finish()
     }
 }
@@ -150,7 +190,15 @@ impl ToolRegistry {
     ///
     /// Called during gateway shutdown to clean up orphaned subprocesses.
     pub fn kill_all_children(&self) {
-        self.children.kill_all();
+        self.children.kill_all()
+    }
+
+    /// Kill every child process belonging to `session_id` (per-session
+    /// cleanup). Returns the number of processes killed. Used by
+    /// `kill_session` to reclaim detached subprocesses so they don't outlive
+    /// their session (e.g. idle-run `exec(detach:true)` background scripts).
+    pub fn kill_children_for(&self, session_id: &str) -> usize {
+        self.children.kill_children_for(session_id)
     }
 
     pub fn register(&self, tool: Arc<dyn Tool>) -> AmanResult<()> {
@@ -227,6 +275,11 @@ pub struct SandboxConfig {
     /// When set, spawned children are registered so they can be killed
     /// during gateway shutdown if they haven't exited yet.
     pub child_registry: Option<Arc<ChildProcessRegistry>>,
+    /// Owning session_id for per-session subprocess cleanup. When set, every
+    /// child registered via `child_registry` is tagged with this session so
+    /// that killing the session can reclaim its own subprocesses. `None`
+    /// tags the child under a fallback bucket (kept alive until shutdown).
+    pub session_id: Option<String>,
 }
 
 impl Default for SandboxConfig {
@@ -236,8 +289,21 @@ impl Default for SandboxConfig {
             network_allowed: false,
             max_memory_bytes: 256 * 1024 * 1024,
             child_registry: None,
+            session_id: None,
         }
     }
+}
+
+/// Read the owning session_id a tool was dispatched with, from the
+/// `session_id` extension the harness injects into every ToolContext. Returns
+/// `None` if the extension is absent or not a string (e.g. tools invoked
+/// outside a session, like startup validators).
+pub fn tool_session_id(ctx: &ToolContext) -> Option<String> {
+    ctx.base
+        .extensions
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
 }
 
 #[derive(Debug, Clone)]
@@ -539,7 +605,12 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     registry.register(Arc::new(DbTool))?;
     registry.register(Arc::new(WebSearchTool))?;
     registry.register(Arc::new(WebFetchTool))?;
-    registry.register(Arc::new(PlannerTool))
+    registry.register(Arc::new(PlannerTool))?;
+    // Internal-only: reclaim detached subprocesses when a session is killed.
+    // Not LLM-exposed — called from kill_session / operator cleanup.
+    registry.register(Arc::new(KillChildrenTool {
+        child_registry: Some(registry.child_process_registry()),
+    }))
 }
 
 /// Register all code agent CLI tools that are available on PATH.
@@ -732,10 +803,14 @@ impl SubprocessSandbox {
         })?;
 
         let pid = child.id();
-        // Register for shutdown cleanup so the gateway can kill this
-        // subprocess if it is still running when the gateway exits.
+        // Register for both shutdown cleanup and per-session cleanup. The
+        // owning session_id (if any) lets kill_session reclaim its own
+        // subprocesses without disturbing others.
         if let Some(ref reg) = self.config.child_registry {
-            reg.register(pid);
+            match &self.config.session_id {
+                Some(sid) => reg.register(pid, sid.as_str()),
+                None => reg.register(pid, "_no_session_"),
+            }
         }
 
         let started = Instant::now();
@@ -873,6 +948,92 @@ fn shell_split(input: &str) -> Vec<String> {
 
 struct ExecTool {
     child_registry: Option<Arc<ChildProcessRegistry>>,
+}
+
+/// Internal tool: kill the detached subprocesses spawned by a session.
+///
+/// Reclaims resources that would otherwise leak when a session is killed,
+/// because the detached child's `std::process::Child` handle lives inside a
+/// fire-and-forget monitor thread that the ReAct task abort cannot reach.
+///
+/// - `session_id` set  → kill only that session's children (used by
+///   `kill_session` so it doesn't disturb other sessions).
+/// - `session_id` unset → kill every registered child (emergency / operator
+///   cleanup).
+///
+/// Not exposed to the LLM — registered as a Local/internal tool callable only
+/// from the gateway runtime.
+struct KillChildrenTool {
+    child_registry: Option<Arc<ChildProcessRegistry>>,
+}
+
+#[async_trait::async_trait]
+impl Tool for KillChildrenTool {
+    fn name(&self) -> &str {
+        "kill_children"
+    }
+
+    fn mode(&self) -> ToolMode {
+        ToolMode::Local
+    }
+
+    fn description(&self) -> &str {
+        "Kill detached subprocesses spawned by a session. Internal use only; not LLM-exposed."
+    }
+
+    fn parameters(&self) -> &JsonSchema {
+        static PARAMS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(json!({
+                "type": "object",
+                "required": [],
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Owning session. Omit to kill every registered child."
+                    }
+                }
+            }))
+        });
+        &PARAMS
+    }
+
+    fn returns(&self) -> &JsonSchema {
+        static RETURNS: LazyLock<JsonSchema> = LazyLock::new(|| {
+            JsonSchema::from(json!({
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "killed": {"type": "integer", "description": "Number of processes killed"}
+                }
+            }))
+        });
+        &RETURNS
+    }
+
+    async fn execute(&self, params: Value, ctx: ToolContext) -> AmanResult<Value> {
+        let session_id = params
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(String::from)
+            .or_else(|| tool_session_id(&ctx));
+        let killed = match &self.child_registry {
+            Some(reg) => match session_id {
+                Some(ref sid) => reg.kill_children_for(sid),
+                None => {
+                    let n = reg.len();
+                    reg.kill_all();
+                    n
+                }
+            },
+            None => 0,
+        };
+        if let Some(sid) = &session_id {
+            tracing::info!(session = %sid, killed, "kill_children: reclaimed detached subprocesses");
+        } else {
+            tracing::info!(killed, "kill_children: reclaimed all detached subprocesses");
+        }
+        Ok(json!({ "ok": true, "killed": killed }))
+    }
 }
 
 /// Background monitor for a detached child process.
@@ -1134,11 +1295,18 @@ impl Tool for ExecTool {
                 message: format!("failed to spawn command: {error}"),
             })?;
             let pid = child.id();
+            // Owning session for per-session cleanup. Tools invoked outside a
+            // session (e.g. startup validators) fall back to a shared bucket
+            // that only shutdown reclaims.
+            let session_id = tool_session_id(&ctx);
 
-            // Register for shutdown cleanup before moving the child into
-            // the background monitor thread.
+            // Register for both shutdown cleanup and per-session cleanup before
+            // moving the child into the background monitor thread.
             if let Some(ref reg) = self.child_registry {
-                reg.register(pid);
+                match &session_id {
+                    Some(sid) => reg.register(pid, sid.as_str()),
+                    None => reg.register(pid, "_no_session_"),
+                }
             }
 
             // If an event bus is available, spawn a background monitor so the
@@ -1185,6 +1353,7 @@ impl Tool for ExecTool {
             network_allowed: false,
             max_memory_bytes: 256 * 1024 * 1024,
             child_registry: self.child_registry.clone(),
+            session_id: tool_session_id(&ctx),
         });
         let outcome = sandbox.execute_command(&command, &args, cwd.as_deref(), timeout_ms)?;
         if outcome.timed_out {
@@ -1933,5 +2102,72 @@ mod tests {
         );
         assert_eq!(cmd, "python3");
         assert_eq!(args, vec!["-c", "hi"]);
+    }
+
+    // ── ChildProcessRegistry session-keyed behavior ─────────────────────
+
+    #[test]
+    fn registry_tracks_children_per_session() {
+        let reg = super::ChildProcessRegistry::default();
+        // Two sessions each spawn detached children.
+        reg.register(1001, "session-a");
+        reg.register(1002, "session-a");
+        reg.register(2001, "session-b");
+        assert_eq!(reg.len(), 3);
+
+        // Killing session-a reclaims only its own children.
+        let killed = reg.kill_children_for("session-a");
+        assert_eq!(killed, 2);
+        assert_eq!(reg.len(), 1);
+
+        // session-b's child survives — critical: per-session kill must not
+        // disturb other sessions.
+        let killed_b = reg.kill_children_for("session-b");
+        assert_eq!(killed_b, 1);
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn registry_kill_children_for_unknown_session_is_noop() {
+        let reg = super::ChildProcessRegistry::default();
+        reg.register(9999, "session-a");
+        assert_eq!(reg.kill_children_for("no-such-session"), 0);
+        assert_eq!(reg.len(), 1);
+    }
+
+    #[test]
+    fn registry_kill_all_reclaims_everything() {
+        let reg = super::ChildProcessRegistry::default();
+        reg.register(1001, "session-a");
+        reg.register(2001, "session-b");
+        reg.register(3001, "_no_session_");
+        assert_eq!(reg.len(), 3);
+        reg.kill_all();
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn registry_unregister_after_natural_exit() {
+        let reg = super::ChildProcessRegistry::default();
+        reg.register(1001, "session-a");
+        reg.register(1002, "session-a");
+        // One child exits naturally; monitor thread unregisters it.
+        reg.unregister(1001);
+        assert_eq!(reg.len(), 1);
+        // Killing the session reclaims the survivor, not the exited one.
+        let killed = reg.kill_children_for("session-a");
+        assert_eq!(killed, 1);
+        assert_eq!(reg.len(), 0);
+    }
+
+    #[test]
+    fn registry_register_overwrites_duplicate_pid() {
+        let reg = super::ChildProcessRegistry::default();
+        reg.register(1001, "session-a");
+        // Same pid re-spawned (pid reuse): latest session wins.
+        reg.register(1001, "session-b");
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.kill_children_for("session-b"), 1);
+        assert_eq!(reg.len(), 0);
     }
 }

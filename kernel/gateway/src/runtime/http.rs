@@ -3018,20 +3018,13 @@ async fn chat_session_send(
         payload["skill_context"] = sc;
     }
 
-    // Transition workflow: ACTIVE → PROCESSING (or IDLE → PROCESSING).
-    // Must happen before publishing the message event so the session
-    // is in PROCESSING state when LLM_REPLY_READY arrives later.
-    let transition_event = Event::new(
-        "session:control",
-        EventType::Custom("MESSAGE_RECEIVED".to_owned()),
-        json!({
-            "session_id": id,
-            "agent_id": chat_agent_id,
-        }),
-    );
-    if let Err(e) = runtime.workflow_engine().handle_event(&id, transition_event).await {
-        tracing::warn!(session_id = %id, error = %e, "failed to transition session workflow on MESSAGE_RECEIVED");
-    }
+    // Do NOT transition the workflow here. The session workflow
+    // (ACTIVE→PROCESSING on MESSAGE_RECEIVED) is owned centrally by the
+    // `MessageReceivedHandler` in agent_runtime.rs, which fires when this
+    // event is delivered from the bus. Transitioning here too causes a
+    // deterministic InvalidStateTransition on every message: the first
+    // transition (here) wins, then the handler's identical transition fails
+    // because the session is already PROCESSING.
 
     // Publish the message event.
     let event = Event::new(

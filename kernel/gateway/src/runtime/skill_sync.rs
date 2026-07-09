@@ -92,6 +92,11 @@ pub(crate) fn save_unified_manifest(path: &Path, manifest: &UnifiedManifest) -> 
 
 /// Returns the aman user data directory (`~/.aman`).
 pub fn aman_data_dir() -> PathBuf {
+    // Allow overriding the data dir via env so tests (and multi-instance
+    // deployments) can point at an isolated directory instead of ~/.aman.
+    if let Ok(dir) = std::env::var("AMAN_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| "/tmp".to_owned());

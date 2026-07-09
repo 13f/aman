@@ -1497,7 +1497,14 @@ mod tests {
         assert!(got.is_some(), "expected agent to be found after register");
         let instance = got.unwrap();
         assert_eq!(instance.descriptor.agent_id, "test-agent");
-        assert_eq!(instance.status, AgentStatus::Idle);
+        // A freshly registered, enabled agent starts in Preparing: the idle
+        // loop flips it to Idle once cold-start reflection completes.
+        assert_eq!(instance.status, AgentStatus::Preparing);
+
+        // After cold-start completes the state machine moves Preparing → Idle.
+        reg.mark_cold_start_complete("test-agent").await.unwrap();
+        let idle = reg.get("test-agent").await.unwrap();
+        assert_eq!(idle.status, AgentStatus::Idle);
     }
 
     #[tokio::test]

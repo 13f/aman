@@ -22,7 +22,7 @@ use kernel::Error;
 use kernel::security::{ApprovedCapabilities, CapabilitySet};
 use notification::{Notification as NotificationModel, Severity};
 use persistence::{DeadLetterEntry, DeadLetterQueue, DlqFilter};
-use plugin::{PluginCandidate, PluginLifecycleState, PluginManifest};
+use plugin::{PluginCandidate, PluginManifest};
 use serde::{Deserialize, Serialize};
 use rand::Rng;
 use serde_json::{json, Value};
@@ -3720,10 +3720,12 @@ struct AgentAvailability {
 
 /// Return per-agent work/study/fun button availability.
 ///
-/// Three-step check:
+/// Two-step check:
 /// 1. Any skill with `idle_run` tag + requested tag exists? (global, all tags)
-/// 2. Only for "work": is the "team" plugin loaded and running?
-/// 3. Only for "work": does the agent have pending work items?
+/// 2. Only for "work": does the agent have pending work items?
+///    (WorkSystem is per-agent and independent of any plugin, so no plugin
+///    gate is needed — the kanban-worker/startup-worker skills themselves
+///    are the only prerequisite.)
 async fn agents_idle_availability(
     State(runtime): State<Arc<AgentRuntime>>,
 ) -> Response {
@@ -3738,16 +3740,7 @@ async fn agents_idle_availability(
     let has_fun_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "fun"));
     let has_prize_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "prize"));
 
-    // -- Step 2 (global, "work" only): is the team plugin running? --
-
-    let team_running = runtime
-        .plugin_loader()
-        .await
-        .state_of("team")
-        .map(|state| state == PluginLifecycleState::Running)
-        .unwrap_or(false);
-
-    // -- Step 3 (per-agent, "work" only): pending work items? --
+    // -- Step 2 (per-agent, "work" only): pending work items? --
 
     let agents = runtime.agent_registry().list().await;
 
@@ -3756,8 +3749,8 @@ async fn agents_idle_availability(
     for agent in &agents {
         let agent_id = &agent.descriptor.agent_id;
 
-        // work: requires all three steps
-        let work = if has_work_skills && team_running {
+        // work: requires the tagged skill to exist AND pending work items.
+        let work = if has_work_skills {
             match runtime.agent_registry().get_work_system(agent_id).await {
                 Some(ws) => {
                     let snap = ws.snapshot().await;

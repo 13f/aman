@@ -49,6 +49,7 @@
   let streamingContent = "";
   let messageAreaEl: HTMLDivElement | undefined = $state();
   let chatInputRef: HTMLElement | null = $state(null);
+  let titleInputRef: HTMLInputElement | null = $state(null);
   let autoScroll = $state(true);
   let sessionsLoaded = $state(false);
   let toasts = $state<Array<{ id: string; type: "info"|"warn"|"error"|"success"; message: string; timeout: ReturnType<typeof setTimeout>|null }>>([]);
@@ -209,6 +210,11 @@
     editTitleValue = cur.title;
     editingTitle = true;
   }
+
+  // Focus the rename input once it mounts (replaces `autofocus` for a11y).
+  $effect(() => {
+    if (editingTitle) titleInputRef?.focus();
+  });
 
   // ── Session history ─────────────────────────────────────────────────────
   async function loadSessionHistory(sessionId: string) {
@@ -537,18 +543,21 @@
     </div>
     <div class="sessions-list">
       {#each paginatedSessions as session (session.id)}
-        <button
+        <div
           class="session-item"
           class:active={session.id === activeSessionId}
           class:processing={session.status === "processing"}
+          role="button"
+          tabindex="0"
           onclick={() => selectSession(session.id)}
+          onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectSession(session.id); } }}
         >
           <span class="session-title">{session.title}</span>
           <span class="session-meta">{session.messageCount}m</span>
           {#if session.id === activeSessionId}
             <button class="session-del" onclick={(e) => { e.stopPropagation(); deletingSessionId = session.id; }} title="Delete">×</button>
           {/if}
-        </button>
+        </div>
       {/each}
     </div>
     {#if totalPages > 1}
@@ -579,10 +588,10 @@
               else if (e.key === 'Escape') { editingTitle = false; }
             }}
             onblur={() => void renameActiveSession(editTitleValue)}
-            autofocus
+            bind:this={titleInputRef}
           />
         {:else}
-          <span class="chat-title" title={"Click to rename"} onclick={startEditTitle}>{sessions.find(s => s.id === activeSessionId)?.title ?? "Chat"}</span>
+          <span class="chat-title" title={"Click to rename"} role="button" tabindex="0" onclick={startEditTitle} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); startEditTitle(); } }}>{sessions.find(s => s.id === activeSessionId)?.title ?? "Chat"}</span>
         {/if}
         {#if isProcessing}
           <button class="btn-stop" onclick={stopGeneration}>{t("chat.stop")}</button>
@@ -618,8 +627,8 @@
 
 <!-- Delete confirmation dialog -->
 {#if deletingSessionId}
-  <div class="dialog-overlay" onclick={() => deletingSessionId = null}>
-    <div class="dialog" onclick={(e) => e.stopPropagation()}>
+  <div class="dialog-overlay" role="button" tabindex="-1" aria-label={t("common.cancel")} onclick={(e) => { if (e.target === e.currentTarget) deletingSessionId = null; }} onkeydown={(e) => { if (e.key === "Escape" || e.key === "Enter" || e.key === " ") deletingSessionId = null; }}>
+    <div class="dialog" role="dialog" aria-modal="true">
       <p>{t("chat.delete_session_confirm")}</p>
       <div class="dialog-actions">
         <button class="btn-cancel" onclick={() => deletingSessionId = null}>{t("common.cancel")}</button>

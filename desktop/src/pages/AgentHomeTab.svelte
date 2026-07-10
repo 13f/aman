@@ -626,16 +626,6 @@
     cursor: default;
   }
 
-  .task-btn.stop {
-    background: transparent;
-    border-color: var(--yellow, #f0a020);
-    color: var(--yellow, #f0a020);
-  }
-
-  .task-btn.stop:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--yellow, #f0a020) 12%, transparent);
-  }
-
   .task-btn.kill {
     background: transparent;
     border-color: #ef4444;

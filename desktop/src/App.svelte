@@ -5,7 +5,6 @@
   import { cubicOut, cubicIn } from "svelte/easing";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { getCurrentWindow } from "@tauri-apps/api/window";
   import * as i18n from "./lib/i18n.svelte";
   import Home from "./pages/Home.svelte";
   import Dashboard from "./pages/Dashboard.svelte";
@@ -35,8 +34,10 @@
   let mcpEnabled = $state(false);
   let uiStyle = $state<string>("frosted-glass");
   let teamPageVersion = $state(0);
-  // NOT $state — postMessage updates must not trigger iframe src reload.
-  // The path is read at render time (when teamPageVersion changes).
+  // Plain let (not $state): postMessage updates must not trigger iframe src
+  // reload. The path is read at render time, inside the {#key teamPageVersion}
+  // block, so it is applied only when the user navigates back to the team page.
+  // svelte-ignore non_reactive_update
   let teamIframePath = "/api/v1/team";
 
   // Page transition direction: 1 = forward (slide from right), -1 = back (slide from left)
@@ -167,10 +168,6 @@
     if (pageId === "providers" || pageId === "agents") {
       checkOnboarding();
     }
-  }
-
-  function startWindowDrag() {
-    getCurrentWindow().startDragging();
   }
 
   function navigateTo(pageId: string) {
@@ -381,9 +378,9 @@
      mousedown events in the title bar zone and initiates a native
      window drag via startDragging(). Traffic-light buttons are
      rendered by the OS above the WebView, so they still work. -->
-<div class="titlebar-drag-strip" onmousedown={startWindowDrag}></div>
+<div class="titlebar-drag-strip" data-tauri-drag-region></div>
 
-<nav class="sidebar" class:compact={sidebarCompact} onmousedown={startWindowDrag}>
+<nav class="sidebar" class:compact={sidebarCompact} data-tauri-drag-region>
   {#if sidebarCompact}
     <!-- Compact mode: flat icon-only items -->
     {#each sidebarGroups as group}

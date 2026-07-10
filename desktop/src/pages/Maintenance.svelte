@@ -201,9 +201,9 @@
 <div class="maintenance">
   <!-- ═══ Event Bus Metrics ═══ -->
   <section class="dp-section">
-    <div class="dp-section-header" role="button" tabindex="0" onclick={() => showMetricsPanel = !showMetricsPanel} onkeydown={(e) => e.key === 'Enter' && (showMetricsPanel = !showMetricsPanel)}>
+    <div class="dp-section-header" role="button" tabindex="0" onclick={(e) => { if ((e.target as HTMLElement).closest(".dp-header-right")) return; showMetricsPanel = !showMetricsPanel; }} onkeydown={(e) => e.key === 'Enter' && (showMetricsPanel = !showMetricsPanel)}>
       <span>{showMetricsPanel ? "▼" : "▶"} {t("maintenance.event_bus")}</span>
-      <span class="dp-header-right" onclick={(e) => e.stopPropagation()}>
+      <span class="dp-header-right">
         <button class="dp-btn" onclick={fetchDebugEvents} title="Backfill from EventStore">{t("maintenance.refresh")}</button>
         <button class="dp-btn" onclick={exportLog} title="Export as JSON">{t("maintenance.export")}</button>
         <button class="dp-btn" onclick={clearLog} title="Clear event log">{t("maintenance.clear")}</button>
@@ -328,9 +328,9 @@
 
   <!-- ═══ DLQ (was DLQ.svelte) ═══ -->
   <section class="dp-section">
-    <div class="dp-section-header" role="button" tabindex="0" onclick={() => showDlqPanel = !showDlqPanel} onkeydown={(e) => e.key === 'Enter' && (showDlqPanel = !showDlqPanel)}>
+    <div class="dp-section-header" role="button" tabindex="0" onclick={(e) => { if ((e.target as HTMLElement).closest(".dp-header-right")) return; showDlqPanel = !showDlqPanel; }} onkeydown={(e) => e.key === 'Enter' && (showDlqPanel = !showDlqPanel)}>
       <span>{showDlqPanel ? "▼" : "▶"} Dead Letter Queue <span class="dp-count">({dlqEntries.length})</span></span>
-      <span class="dp-header-right" role="button" onclick={(e) => e.stopPropagation()}>
+      <span class="dp-header-right">
         <button class="dp-btn" onclick={loadDlq} disabled={dlqLoading}>Refresh</button>
       </span>
     </div>

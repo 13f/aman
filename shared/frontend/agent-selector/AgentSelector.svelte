@@ -19,7 +19,7 @@
     selected = $bindable(""),
   }: Props = $props();
 
-  const baseUrl = gatewayUrl || (typeof window !== "undefined" ? window.location.origin : "http://localhost:9999");
+  let baseUrl = $derived(gatewayUrl || (typeof window !== "undefined" ? window.location.origin : "http://localhost:9999"));
 
   let open = $state(false);
   let agents = $state<AgentInfo[]>([]);

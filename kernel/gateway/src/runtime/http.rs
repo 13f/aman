@@ -3720,12 +3720,16 @@ struct AgentAvailability {
 
 /// Return per-agent work/study/fun button availability.
 ///
-/// Two-step check:
-/// 1. Any skill with `idle_run` tag + requested tag exists? (global, all tags)
-/// 2. Only for "work": does the agent have pending work items?
-///    (WorkSystem is per-agent and independent of any plugin, so no plugin
-///    gate is needed — the kanban-worker/startup-worker skills themselves
-///    are the only prerequisite.)
+/// One-step check per tag: does a skill with both the `idle_run` tag and the
+/// requested tag exist? (global, all tags)
+///
+/// Work is intentionally NOT gated on a non-empty WorkSystem queue. The
+/// kanban-worker / startup-worker skills are discovery skills — they query the
+/// kanban board themselves to find assigned items (and correctly report idle
+/// if nothing is assigned). Gating the button on queued items would create a
+/// chicken-and-egg deadlock: you couldn't click Work to discover work, because
+/// the button would stay disabled until work was already queued. Skill
+/// existence is the only prerequisite, identical to study/fun/prize.
 async fn agents_idle_availability(
     State(runtime): State<Arc<AgentRuntime>>,
 ) -> Response {
@@ -3740,7 +3744,8 @@ async fn agents_idle_availability(
     let has_fun_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "fun"));
     let has_prize_skills = idle_run_skills.iter().any(|s| s.tags.iter().any(|t| t == "prize"));
 
-    // -- Step 2 (per-agent, "work" only): pending work items? --
+    // All four tags: enabled iff the matching idle_run skill exists. The skill
+    // itself handles empty-queue / not-assigned cases.
 
     let agents = runtime.agent_registry().list().await;
 
@@ -3749,26 +3754,9 @@ async fn agents_idle_availability(
     for agent in &agents {
         let agent_id = &agent.descriptor.agent_id;
 
-        // work: requires the tagged skill to exist AND pending work items.
-        let work = if has_work_skills {
-            match runtime.agent_registry().get_work_system(agent_id).await {
-                Some(ws) => {
-                    let snap = ws.snapshot().await;
-                    snap.queue_len() > 0 || snap.current().is_some()
-                }
-                None => false,
-            }
-        } else {
-            false
-        };
-
-        // study: step 1 only
+        let work = has_work_skills;
         let study = has_study_skills;
-
-        // fun: step 1 only
         let fun = has_fun_skills;
-
-        // prize: step 1 only
         let prize = has_prize_skills;
 
         availabilities.insert(

@@ -31,9 +31,10 @@
   // ── Skill quick-run (Daily Life) ──────────────────────────────
   // Whether each skill tag is available for this agent (drives the
   // disabled state on the empty-state buttons).
-  // Mirrors gateway `agents_idle_availability`: work needs the skill +
-  // team plugin running + pending work items; the rest just need the
-  // matching skill to exist. Defaults stay false until the first load
+  // Mirrors gateway `agents_idle_availability`: a tag is available iff an
+  // idle_run skill with that tag exists. (Work skills are discovery skills
+  // that query the kanban themselves, so skill existence is the only gate —
+  // NOT a non-empty work queue.) Defaults stay false until the first load
   // lands so we never flash an enabled button for a missing skill.
   let idleAvailability = $state<Record<string, boolean>>({
     work: false, study: false, fun: false, prize: false,

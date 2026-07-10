@@ -52,6 +52,7 @@ fn clone_llm_result(r: &Result<LlmResponse, String>) -> Result<LlmResponse, Stri
             finish_reason: resp.finish_reason.clone(),
             tool_calls: resp.tool_calls.clone(),
             reasoning_content: resp.reasoning_content.clone(),
+            usage: resp.usage.clone(),
         }),
         Err(e) => Err(e.clone()),
     }
@@ -218,6 +219,7 @@ fn make_response_with_content(content: &str) -> LlmResponse {
         finish_reason: "stop".to_owned(),
         tool_calls: vec![],
         reasoning_content: String::new(),
+        usage: None,
     }
 }
 
@@ -231,6 +233,7 @@ fn make_response_with_tool_call(tool_name: &str, args: Value) -> LlmResponse {
             args,
         }],
         reasoning_content: String::new(),
+        usage: None,
     }
 }
 

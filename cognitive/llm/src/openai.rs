@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::LazyLock;
 
-use crate::provider::{LlmChatRequest, LlmProvider, LlmResponse, ResponseFormat, StreamEvent};
+use crate::provider::{
+    LlmChatRequest, LlmProvider, LlmResponse, ResponseFormat, StreamEvent, TokenUsage,
+};
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 use crate::shared::{self, SseParser};
 
@@ -127,6 +129,9 @@ impl LlmOpenaiProvider {
             "messages": request_messages,
             "stream": true,
             "temperature": DEFAULT_TEMPERATURE,
+            // Request usage in the final streaming chunk so we can report
+            // real token counts instead of the byte-length heuristic.
+            "stream_options": {"include_usage": true},
         });
         if req.max_output_tokens > 0 {
             request_body["max_tokens"] = json!(req.max_output_tokens);
@@ -173,6 +178,7 @@ impl LlmOpenaiProvider {
         let mut reasoning_content = String::new();
         let mut finish_reason = "stop".to_owned();
         let mut tool_call_acc: HashMap<usize, Value> = HashMap::new();
+        let mut current_usage: Option<TokenUsage> = None;
         let mut sse_parser = SseParser::new();
 
         cb(StreamEvent::Start);
@@ -185,6 +191,15 @@ impl LlmOpenaiProvider {
                 let Ok(sse) = serde_json::from_str::<Value>(&data) else {
                     continue;
                 };
+
+                // OpenAI sends a final chunk with `usage` but no `choices`
+                // when stream_options.include_usage is set.
+                if let Some(usage_val) = sse.get("usage")
+                    && let Ok(u) = serde_json::from_value::<TokenUsage>(usage_val.clone())
+                {
+                    current_usage = Some(u);
+                }
+
                 let Some(choices) = sse.get("choices").and_then(|c| c.as_array()) else {
                     continue;
                 };
@@ -274,6 +289,7 @@ impl LlmOpenaiProvider {
             finish_reason,
             tool_calls,
             reasoning_content,
+            usage: current_usage,
         })
     }
 
@@ -378,11 +394,16 @@ impl LlmOpenaiProvider {
             })
             .unwrap_or_default();
 
+        let usage = response_body
+            .get("usage")
+            .and_then(|u| serde_json::from_value::<TokenUsage>(u.clone()).ok());
+
         Ok(LlmResponse {
             content,
             finish_reason,
             tool_calls,
             reasoning_content,
+            usage,
         })
     }
 }

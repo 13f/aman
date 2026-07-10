@@ -3978,10 +3978,7 @@ impl AgentRuntime {
         // 4. Find the agent that owns this session and reset its state
         let agent_id = self.agent_registry.agent_id_for_session(session_id).await;
         if let Some(aid) = agent_id {
-            let _ = self.agent_registry.set_status(&aid, kernel::agent::AgentStatus::Idle).await;
-            let _ = self.agent_registry.set_system_state(&aid, kernel::agent::AgentSystemState::Idle).await;
-            let _ = self.agent_registry.set_activity(&aid, "").await;
-            let _ = self.agent_registry.set_active_session(&aid, None).await;
+            reset_agent_status(&self.agent_registry, &aid).await;
             // Flip the session workflow state machine PROCESSING → IDLE so the
             // session doesn't stay stuck in PROCESSING after being kill/abort.
             // (kill/abort drop the task future directly, bypassing the harness
@@ -4007,7 +4004,45 @@ impl AgentRuntime {
 
         Ok(aborted)
     }
+}
 
+// ---------------------------------------------------------------------------
+// Free functions — helpers shared between kill_session, the timeout poller, and
+// the shutdown flush. Kept outside the impl so the spawned timeout-polling task
+// (which does not have access to &self) can call them.
+// ---------------------------------------------------------------------------
+
+/// Resolve the agent owning a session.
+///
+/// Prefers the workflow instance's `data["agent_id"]` (always set at creation)
+/// over the registry's `active_session_id` reverse lookup, which can return
+/// None if the harness has already cleared it (e.g. on the success path).
+async fn resolve_agent_for_session(
+    workflow_engine: &workflow::WorkflowEngine,
+    registry: &super::AgentRegistry,
+    session_id: &str,
+) -> Option<String> {
+    if let Some(inst) = workflow_engine.get_instance(session_id)
+        && let Some(id) = inst.data.get("agent_id").and_then(|v| v.as_str())
+    {
+        return Some(id.to_owned());
+    }
+    registry.agent_id_for_session(session_id).await
+}
+
+/// Reset a single agent's registry status back to idle — the canonical reset
+/// used by kill_session, the PROCESSING-timeout poller, and the shutdown flush
+/// so all three paths stay in sync.
+async fn reset_agent_status(registry: &super::AgentRegistry, agent_id: &str) {
+    let _ = registry
+        .set_status(agent_id, kernel::agent::AgentStatus::Idle)
+        .await;
+    registry.set_system_state(agent_id, kernel::agent::AgentSystemState::Idle).await;
+    registry.set_activity(agent_id, "").await;
+    let _ = registry.set_active_session(agent_id, None).await;
+}
+
+impl AgentRuntime {
     #[must_use]
     pub fn event_store(&self) -> Arc<EventStore> {
         Arc::clone(&self.event_store)
@@ -4984,6 +5019,8 @@ impl AgentRuntime {
         }
         let notify = Arc::clone(&self.timeout_poll_notify);
         let workflow_engine = Arc::clone(&self.workflow_engine);
+        let registry = Arc::clone(&self.agent_registry);
+        let session_manager = Arc::clone(&self.session_manager);
         let join = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(10));
@@ -5009,6 +5046,39 @@ impl AgentRuntime {
                                     to_state = %r.to_state,
                                     "workflow timeout fired"
                                 );
+                                // A timed-out session that was in PROCESSING means
+                                // the agent's async task likely hung or was dropped
+                                // without triggering the harness's status-reset path.
+                                // Reset the owning agent's registry state so the UI
+                                // does not permanently show `chatting:processing`.
+                                if r.from_state == "PROCESSING" {
+                                    let agent_id = resolve_agent_for_session(
+                                        &workflow_engine,
+                                        &registry,
+                                        &r.instance_id,
+                                    )
+                                    .await;
+                                    if let Some(aid) = agent_id {
+                                        reset_agent_status(&registry, &aid).await;
+                                        // Flip PROCESSING → IDLE in the session
+                                        // workflow state machine so the session no
+                                        // longer shows as active-processing.
+                                        session_manager
+                                            .handle_reply(&r.instance_id, &aid, "")
+                                            .await;
+                                        tracing::info!(
+                                            agent_id = %aid,
+                                            session_id = %r.instance_id,
+                                            "reset agent status after session PROCESSING timeout"
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            session_id = %r.instance_id,
+                                            "PROCESSING timeout fired but no agent resolved; \
+                                             registry status may be stale"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -5049,15 +5119,25 @@ impl AgentRuntime {
         let mut flushed = 0;
         for inst in &instances {
             if inst.current_state == "PROCESSING" {
-                if let Some(aid) =
-                    self.agent_registry.agent_id_for_session(&inst.id).await
-                {
+                // Prefer the workflow instance's agent_id (always set); fall
+                // back to the registry reverse lookup.
+                let agent_id = resolve_agent_for_session(
+                    &self.workflow_engine,
+                    &self.agent_registry,
+                    &inst.id,
+                )
+                .await;
+                if let Some(aid) = agent_id {
+                    // Reset the owning agent's registry status so the UI does
+                    // not permanently show `chatting:processing` after restart.
+                    reset_agent_status(&self.agent_registry, &aid).await;
+                    // Flip the session workflow state PROCESSING → IDLE.
                     self.session_manager.handle_reply(&inst.id, &aid, "").await;
                     flushed += 1;
                     tracing::debug!(
                         session_id = %inst.id,
                         agent_id = %aid,
-                        "flushed PROCESSING → IDLE on shutdown"
+                        "flushed PROCESSING → IDLE + reset agent status on shutdown"
                     );
                 }
             }
@@ -6844,6 +6924,9 @@ impl cognitive_llm::provider::LlmProvider for KernelLlmProviderAdapter {
                 })
                 .collect(),
             reasoning_content: resp.reasoning_content,
+            // The old kernel::llm::LlmResponse carries no usage data;
+            // the emit site falls back to the byte heuristic.
+            usage: None,
         })
     }
 }
@@ -6952,6 +7035,7 @@ mod cognitive_adapter_tests {
                 finish_reason: "stop".to_owned(),
                 tool_calls: vec![],
                 reasoning_content: String::new(),
+                usage: None,
             })
         }
     }

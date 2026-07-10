@@ -15,7 +15,9 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
-use crate::provider::{LlmChatRequest, LlmProvider, LlmResponse, ResponseFormat, StreamEvent};
+use crate::provider::{
+    LlmChatRequest, LlmProvider, LlmResponse, ResponseFormat, StreamEvent, TokenUsage,
+};
 use crate::react::{ChatMessage, ParsedToolCall, ToolDescriptor};
 use crate::shared::{self, SseParser};
 
@@ -358,11 +360,23 @@ impl LlmAnthropicProvider {
         let (content, reasoning_content, tool_calls) =
             Self::parse_content_blocks(content_blocks);
 
+        // Anthropic's usage schema: { input_tokens, output_tokens }
+        let usage = response_body.get("usage").and_then(|u| {
+            let input = u.get("input_tokens")?.as_u64()?;
+            let output = u.get("output_tokens")?.as_u64()?;
+            Some(TokenUsage {
+                prompt_tokens: input,
+                completion_tokens: output,
+                total_tokens: input + output,
+            })
+        });
+
         Ok(LlmResponse {
             content,
             finish_reason,
             tool_calls,
             reasoning_content,
+            usage,
         })
     }
 
@@ -405,6 +419,7 @@ impl LlmAnthropicProvider {
         let mut active_block_index: usize = 0;
         let mut _text_block_count: usize = 0;
         let mut finish_reason = "end_turn".to_owned();
+        let mut current_usage: Option<TokenUsage> = None;
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| format!("stream error: {e}"))?;
@@ -524,8 +539,18 @@ impl LlmAnthropicProvider {
                         {
                             finish_reason = sr.to_owned();
                         }
-                        if let Some(usage) = event.get("usage") {
-                            let _ = usage; // usage info available but not surfaced yet
+                        // Anthropic streams usage in the message_delta event.
+                        if let Some(usage) = event.get("usage")
+                            && let (Some(input), Some(output)) = (
+                                usage.get("input_tokens").and_then(|v| v.as_u64()),
+                                usage.get("output_tokens").and_then(|v| v.as_u64()),
+                            )
+                        {
+                            current_usage = Some(TokenUsage {
+                                prompt_tokens: input,
+                                completion_tokens: output,
+                                total_tokens: input + output,
+                            });
                         }
                     }
 
@@ -564,6 +589,7 @@ impl LlmAnthropicProvider {
             finish_reason: map_stop_reason(&finish_reason),
             tool_calls,
             reasoning_content: reasoning,
+            usage: current_usage,
         })
     }
 }

@@ -1671,12 +1671,30 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 }
             };
 
-            // Token event
+            // Token event — report real usage from the provider when available,
+            // falling back to the byte-length heuristic for providers/modes
+            // that don't surface usage data (some local models, older streaming).
+            //
+            // Read the value *now* (before `response` is partially moved below)
+            // and keep it as a plain u64 so we don't hold a borrow across the
+            // response.tool_calls move.
+            let tokens = match response.usage {
+                Some(ref u) => u.total_tokens,
+                None => {
+                    tracing::debug!(
+                        agent_id = %agent_id,
+                        session_id = %session_id,
+                        turn,
+                        "agent:token_used falling back to byte heuristic (no provider usage)"
+                    );
+                    (content.len() / 4) as u64
+                }
+            };
             if let Some(ref sink) = self.event_sink {
                 sink(kernel::event::Event::new(
                     "cognitive-engine",
                     kernel::event::EventType::Custom("agent:token_used".into()),
-                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "tokens": (content.len() / 4) as u64 }),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "tokens": tokens }),
                 ));
             }
 

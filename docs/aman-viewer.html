@@ -344,6 +344,7 @@ async function renderMermaid(code, name) {
 
     setTimeout(() => { const h = document.getElementById('hint'); if (h) h.style.opacity = '0'; }, 4000);
   } catch (err) {
+    console.error('[Aman Viewer] Mermaid 渲染失败:', err);
     alert('Mermaid 渲染失败:\n' + err.message);
   }
 }
@@ -377,6 +378,7 @@ document.querySelectorAll('.diagram-switcher button').forEach(btn => {
       document.title = '#' + (idx + 1) + ' ' + currentName + ' — Aman Viewer';
       fit();
     } catch (err) {
+      console.error('[Aman Viewer] 渲染图 #' + (idx + 1) + ' 失败:', err);
       alert('渲染图 #' + (idx + 1) + ' 失败:\n' + err.message);
     }
   };

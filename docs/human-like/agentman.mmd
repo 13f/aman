@@ -1,0 +1,338 @@
+graph TB
+    %% ══════════════════════════════════════════════════════════════
+    %% AGENTMAN — Human-Like Agent Architecture (拟人化智能体架构)
+    %% Source: docs/human-like/ (identity, consciousness, emotion,
+    %%   cognitive-translators, idle-boredom, experience, reflection,
+    %%   motivation, daily-rhythm, personality-config, index)
+    %% ══════════════════════════════════════════════════════════════
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  STYLE CLASSES                                          │
+    %% └─────────────────────────────────────────────────────────┘
+    classDef identity fill:#1a1a2e,stroke:#e94560,color:#eee,stroke-width:2px
+    classDef cognitive fill:#16213e,stroke:#00b4d8,color:#eee,stroke-width:2px
+    classDef idle fill:#2d2d44,stroke:#f77f00,color:#eee,stroke-width:2px
+    classDef motivation fill:#2d2d44,stroke:#e07a5f,color:#eee,stroke-width:2px
+    classDef eventbus fill:#0f3460,stroke:#533483,color:#eee,stroke-width:2px
+    classDef emotion fill:#1a1a2e,stroke:#06d6a0,color:#eee,stroke-width:2px
+    classDef consciousness fill:#1a1a2e,stroke:#ef476f,color:#eee,stroke-width:2px
+    classDef rhythm fill:#2d2d44,stroke:#fcbf49,color:#eee,stroke-width:2px
+    classDef infra fill:#1a1a2e,stroke:#adb5bd,color:#eee,stroke-width:1px
+    classDef knowledge fill:#2d2d44,stroke:#b5838d,color:#eee,stroke-width:2px
+    classDef ironlaw fill:#3d0000,stroke:#ff0000,color:#ff6666,stroke-width:3px,stroke-dasharray: 5 5
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 1: THREE KNOWLEDGE ASSETS (知识资产 · 持久层)     │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph KNOWLEDGE["💎 Three Knowledge Assets (三知识资产 · 按生命周期分离)"]
+        direction LR
+        SOULAsset["🦴 SOUL.md — Identity 骨骼<br/>name · identity · core · expertise<br/>vibe · preferences · boundaries<br/>✦ Near-immutable ✦ No decay ✦ Manual"]
+        EXPAsset["💪 EXP.md — Experience 肌肉<br/>Tool Strategies · Judgment Patterns<br/>Anti-Patterns · Gotchas<br/>✦ Grows ✦ Event-updated ✦ Never downgraded"]
+        MEMAsset["🩸 yantrikdb — Memory 血液<br/>Episodic · Semantic storage<br/>✦ Continuous write ✦ 30-day half-life ✦ Self-forgetting"]
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 2: IDENTITY LAYER (身份层)                         │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph IDENTITY["🦍 Identity Layer (身份层 · 我是谁 · 几乎不可变)"]
+        direction TB
+        SoulSOUL["<b>SOUL.md</b><br/>6-section Markdown template<br/>Name · Identity · Core · Expertise<br/>Vibe · Preferences · Boundaries"]
+        SoulRuntime["<b>SoulRuntime</b><br/>· to_system_prompt() → LLM slot<br/>· inject_base_context()<br/>· inject_skill_context()<br/>· check_boundary(text) → PermissionDenied"]
+        HotReloader["<b>SoulHotReloadManager</b><br/>notify crate → file watch<br/>re-parse → Arc::swap (atomic)<br/>→ publish <i>soul_changed</i> event"]
+        Boundary["<b>Boundary Check</b><br/>before tool execution<br/>hard-coded refusal<br/>NOT prompt obedience"]
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 3: COGNITIVE TRANSLATION LAYER (认知翻译层)        │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph COGNITIVE["🧠 Cognitive Translation Layer (认知翻译层 · 系统信号→主观认知→硬编码行为)"]
+        direction TB
+
+        subgraph CONSCIOUS["<b>Consciousness 意识水平</b>\n(Lucid / Groggy / Catatonic / Coma)"]
+            direction LR
+            BH["BackendHealth<br/>(lab report)<br/>Ok→Degraded[3 fails]<br/>Degraded→Down[6 fails]<br/>any Ok→Ok<br/>half-probe /models"]
+            CSM["CognitiveState FSM<br/>Lucid→Groggy→Catatonic→Coma<br/>Catatonic→Coma[15min]<br/>any Ok/probe→Lucid"]
+            WU["WakeUp Ouroboros<br/>Recovery / Reanimation<br/>/ Resurrection<br/>self_check → active"]
+        end
+
+        subgraph GROUNDING["<b>Grounding 信息充足度</b>\n(Two independent dimensions, NEVER compressed)"]
+            direction LR
+            KNOW["Knowledge 维度<br/>Informed (cov>0.6, fresh>0.5)<br/>Uninformed (cov<0.3)<br/>Outdated (fresh<0.3)"]
+            SIT["Situation 维度<br/>Clear (verb+constraints)<br/>Vague (no verb/too short)<br/>→ force clarify<br/>Overloaded (>70% budget)<br/>→ compress to 50%"]
+        end
+
+        subgraph EXPERIENCE["<b>Experience 经验模式</b>\n(from EXP.md task_tag matching)"]
+            direction LR
+            EXPLEVEL["Confident (score>0.7, ≥3)<br/>Bootstrap (EXP empty)<br/>Untouched (no match)<br/>Apprehensive (score<0.3, ≥2)"]
+            EXPMOD["skip_scout / remove_tool<br/>trigger_extraction<br/>pivot on stall<br/>Decision::confidence=Low"]
+        end
+
+        subgraph CROSSRULE["<b>Cross-Translator Rules</b>\n(hardcoded, enumarable, unit-testable)"]
+            direction LR
+            R1["effective_experience(exp, consc)"]
+            R2["effective_knowledge(know, consc)"]
+            R3["effective_max_turns(3-axis<br/>30%/50%/70%/100%)"]
+            R4["should_continue(level, consc)"]
+        end
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 4: IDLE / INTROSPECTION LAYER (空闲与内省层)       │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph IDLE["😴 Idle / Introspection Layer (空闲与内省层 · 9状态深度驱动)"]
+        direction TB
+
+        subgraph IDLEKINDS["<b>9 IdleKinds — Idle FSM</b>\n(depth-driven state machine)"]
+            direction LR
+            DAZE["① Daze (0–4)<br/>~0–20s · daydreaming<br/><i>Passive</i>"]
+            BOREDOM["② Boredom (5–19)<br/>~25–95s · find something<br/><i>Passive</i>"]
+            SLEEP["③ Sleep (20–49)<br/>~100–245s · consolidate<br/><i>Engaged ×0.5</i><br/>cooldown 3600s"]
+            EXPLORE["④ Exploration (50–99)<br/>~250–495s · curious<br/><i>Engaged ×0.0</i>"]
+            MEDITATE["⑤ Meditation (100–199)<br/>~500–995s · deep thought<br/><i>Engaged ×0.0</i>"]
+            INCUBATE["⑥ Incubation (200+)<br/>~1000s+ · subconscious<br/><i>Engaged ×0.1</i>"]
+            AWAKE["⑦ WakeUp (Ouroboros)<br/>60s quiet → progressive<br/>depth→0, arousal→1.0"]
+        end
+
+        Arousal["<b>ArousalTracker</b> (arousal·唤醒度)<br/>half_life 900s (15min) exponential decay<br/>· boost(+0.3 on MessageReceived)<br/>· decay(kind_multiplier)<br/>· reset (Catatonic→0.05, Coma→0.0)<br/>Dual-axis: depth=max unlockable<br/>arousal=picker within unlocked"]
+
+        Boredom["<b>BoredomActor</b> (无聊行为体)<br/>trigger_poll consecutive → weighted-random<br/>tag work/study/fun/idle<br/><b>Work-Pressure Closed Loop:</b><br/>q=0→1×, 5→2.5×, 10→4×, 30+→10×<br/>backlog↑→agent bored→works→balance↓"]
+
+        Reflection["<b>Reflection Pipeline & Breaker</b><br/>QueueDrained → select! race:<br/>[reflection.run() vs wait_for_event()]<br/>· L1: log trace (user-corr, errors, latency)<br/>· L2: knowledge consolidation (dedup, audit)<br/>· L3: behavior-pattern analysis<br/><b>Breaker:</b> count&lt;5 all, 5–10 skip lessons,<br/>≥10 skip all + cooldown 30s"]
+
+        Persona["<b>IdlePersonality</b> (per-agent config)<br/>enabled_kinds · depth_schedule<br/>poll_interval.linear{base, multiplier}<br/>chat_mode{allowed_kinds, grace_period}<br/>boredom{trigger_poll, activities, work_pressure}"]
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 5: EMOTION LAYER (情绪层)                          │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph EMOTION["💝 Emotion Layer (情绪层 · 不是装饰是信号)"]
+        direction TB
+
+        EmotionActive["<b>EmotionEvaluator</b> (主动 · LLM选择)<br/>per-agent tokio task<br/>sleep(interval±jitter, default 300s)<br/>→ collect context (last 10 msgs + 5 traces + arousal)<br/>→ LLM call (15s timeout, retry 2×)<br/>→ publish <i>emotion:evaluated</i>{id, reasoning}"]
+
+        EmotionPassive["<b>Passive Emotion</b> (被动 · 硬编码状态映射)<br/>LLM-down → state→emoji:<br/>Groggy→😵‍💫 Catatonic→😶 Coma→💤<br/>System-state→emoji:<br/>Idle→🪹 Working→💻 Chatting→💬<br/>IdleKind→emoji:<br/>Daze→😐 Boredom→🪹 Sleep→😴<br/>Exploration→🔭 Meditation→🧘<br/>Incubation→💡 WakeUp→🌅"]
+
+        EmotionConsumers["<b>Consumers of emotion:evaluated</b><br/>· NotificationSubscriber → push<br/>· SSE → UI emoji render<br/>· LifecycleEngine → IdleSignal feedback<br/>· ArousalTracker.feed<br/>(excited/curious +0.2; bored -0.3)"]
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 6: MOTIVATION LAYER (动机层)                       │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph MOTIVATION["🔥 Motivation Layer (动机层 · Maslow + Ikigai + 5D Desire)"]
+        direction TB
+
+        subgraph MASLOW["<b>Maslow Hierarchy → Aman Mapping</b>"]
+            direction LR
+            MASLOW1["Physiological<br/>→ Health module<br/>steps · sleep · mood"]
+            MASLOW2["Safety<br/>→ Startup eval · Market scan<br/>venture · investment"]
+            MASLOW3["Belonging<br/>→ Team plugin · @mention<br/>· shared context · shared goals"]
+            MASLOW4["Esteem<br/>→ Work kanban · Quality reviews<br/>capability tags"]
+            MASLOW5["Self-actualization<br/>→ Ikigai<br/>meaning alignment · burnout warn"]
+        end
+
+        subgraph IKIGAI["<b>Ikigai — Reason for Being</b>\n(四圆交集)"]
+            direction LR
+            IKI1["❤ Passion<br/>(love)"]
+            IKI2["🎯 Profession<br/>(good at)"]
+            IKI3["🌍 Mission<br/>(world needs)"]
+            IKI4["💰 Vocation<br/>(paid for)"]
+            IKI5["⋂ = Ikigai<br/>Trigger: venture eval / pivot<br/>/ quarterly / burnout signal"]
+        end
+
+        subgraph DDESIRE["<b>5-Dimension Desire Model</b>"]
+            direction LR
+            D1["Survival (Phys+Safety)<br/>health · security"]
+            D2["Status (Esteem)<br/>appearance · winning"]
+            D3["Belonging (Love)<br/>community · connection"]
+            D4["Control (SDT)<br/>autonomy · chaos↓"]
+            D5["Curiosity (Self-act)<br/>learn · discover"]
+        end
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 7: DAILY RHYTHM (日常节律层)                       │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph DAILY["🌅 Daily Rhythm Layer (日常节律层 · 生命周期引擎)"]
+        direction TB
+
+        subgraph LIFECYCLE["<b>LifecycleEngine&lt;DailySpec&gt;</b>"]
+            direction LR
+            LCE["Generic engine<br/>Idle ↔ Busy AUTO transitions<br/>· on_enter_busy()<br/>· on_exit_busy()"]
+            DSPEC["DailySpec adapter<br/>decompose()→routines by TimeWindow<br/>collect_result()"]
+        end
+
+        subgraph TIMEWINDOWS["<b>TimeWindows → Routine Chains</b>"]
+            direction LR
+            TW_M["Morning 06–12<br/>CheckCalendar → CheckWeather<br/>→ CheckHabits → DailyBrief"]
+            TW_D["Midday 12–14<br/>CheckHabits → CheckHealth"]
+            TW_E["Evening 18–21<br/>CheckHabits → CheckHealth"]
+            TW_N["Night 21–06<br/>GuideReflection → GenerateTomorrowPlan"]
+        end
+
+        HabitEsc["<b>Habit Escalation</b><br/>Day1→Gentle &quot;remember~&quot;<br/>Day2→Friendly &quot;don't forget&quot;<br/>Day3→Firm &quot;3 days straight&quot;<br/>Day7→Concerned &quot;drop to 1min?&quot;"]
+
+        Health["<b>Health Integration</b><br/>sleep&lt;6h / steps&lt;3000<br/>/ 3-day mood&lt;3<br/>→ HealthAnomaly → Notification"]
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 8: EXPERIENCE / REFLECTION (经验与自省层)          │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph EXPEREFLECT["✨ Experience & Reflection Layer (经验与自省层 · 元认知)"]
+        direction TB
+
+        subgraph EXPSYS["<b>Experience Extraction</b>\n(event-driven, NO LLM)"]
+            direction LR
+            EXT["workflow::completed<br/>→ ExperienceExtractor<br/>tool-combo + result<br/>match existing → bump confidence<br/>no-match → new entry (0.5)<br/>→ publish <i>experience:extracted</i>"]
+            CONF["Confidence delta:<br/>success +0.05<br/>failure -0.10<br/>&gt;90d unused → 'needs verification'<br/>'conflicting' → flag human review"]
+        end
+
+        subgraph EXPEREF["<b>Experience Think / Consolidate</b>\n(idle-triggered, parallel to yantrik.think)"]
+            direction LR
+            EThink["yantrik.think() ← Memory org<br/>experience.consolidate()<br/>└ pattern_score recalc<br/>+ flag stale<br/>+ mark conflicts"]
+        end
+
+        subgraph BIAS["<b>Bias Mitigation</b>\n(agent is biased → external anchors)"]
+            direction LR
+            B1["① User correction<br/>(highest weight)"]
+            B2["② Log anomaly patterns<br/>(medium)"]
+            B3["③ Historical comparison<br/>(low)"]
+        end
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  LAYER 9: EVENT BUS (事件总线 · 中枢神经系统)              │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph EVENTBUS["⚡ Event Bus — Central Nervous System (事件总线 · 中枢神经)"]
+        direction TB
+
+        EB["InMemoryBus<br/>7 Levels: Normal→L1→L2→L3→L4A→L4B→Critical<br/>Trust-level enforcement<br/>Per-source rate limiter<br/>Dedup: Bloom + LRU cache"]
+
+        subgraph TRIGGERS["<b>Core Trigger Contracts</b>\nEverything is an event; response is behavior"]
+            direction LR
+            T1["MessageReceived<br/>arousal.boost(+0.3)<br/>'someone is here!'"]
+            T2["QueueDrained<br/>→ Reflection trigger"]
+            T3["IdleEvent(Boredom, depth=5)<br/>→ 'scan kanban'"]
+            T4["BackendStatus→Degraded<br/>'brain sluggish…'"]
+            T5["LLM 6 fails<br/>→ Catatonic<br/>'can see, cannot move'"]
+            T6["Backend recovers<br/>WakeUp: Recovery/Reanimation<br/>/Resurrection"]
+            T7["EmotionEvalTick<br/>'pick best emoji'"]
+            T8["Soul file edit<br/>→ soul_changed"]
+            T9["workflow::completed<br/>→ experience:extracted"]
+            T10["Cron tick<br/>→ DailyItemAssigned"]
+            T11["CognitiveState change<br/>→ broadcast watch::channel"]
+        end
+    end
+
+    %% ┌─────────────────────────────────────────────────────────┐
+    %% │  IRON LAW (铁律 · 行为调制必须是硬编码)                    │
+    %% └─────────────────────────────────────────────────────────┘
+    subgraph IRONLAW["⚖️ THE IRON LAW — 铁律: Behavior Modulation = HARDCODED (行为调制必须硬编码!)"]
+        direction LR
+        FORBIDDEN["🚫 <b>FORBIDDEN</b> (LM不可用于决策)<br/>'want to skip brain?'<br/>'this tool bit you, your call'<br/>'you could ask if unclear'<br/>'knowledge may be stale'<br/>'are you sure?'"]
+        ALLOWED["✅ <b>ALLOWED</b> (LLM仅用于识别)<br/>classify task_tag<br/>pick emoji (recognition)<br/>routing judgment<br/>pattern matching"]
+    end
+
+    %% ═══════════════════════════════════════════════════════════
+    %% CONNECTIONS — RELATIONSHIPS & DATA FLOWS
+    %% ═══════════════════════════════════════════════════════════
+
+    %% ── Knowledge Assets → Subsystems ──
+    SOULAsset -.->|"identity · boundaries"| SoulRuntime
+    SOULAsset -.->|"task_tag · strategy · gotchas"| EXPLEVEL
+    EXPAsset -.->|"patterns · ant-patterns · confidence"| EXPLEVEL
+    MEMAsset -.->|"episodic recall (30-day decay)"| CSM
+
+    %% ── Identity Layer wiring ──
+    SoulSOUL --> SoulRuntime
+    SoulRuntime -->|"soul.system_prompt"| COGNITIVE
+    SoulRuntime -->|"inject context"| EMOTION
+    SoulRuntime --> Boundary
+    HotReloader -->|"soul_changed → watch"| SOULAsset
+    HotReloader -->|"soul_changed event"| EVENTBUS
+
+    %% ── Consciousness wiring ──
+    BH --> CSM
+    CSM --> WU
+    CSM -->|"cognitive_state_changed → watch"| EVENTBUS
+    CSM -->|"hijack → force Sleep"| Arousal
+    CSM -->|"modulates体验可靠性"| R1
+    CSM -->|"modulates知识可靠性"| R2
+    CSM -->|"max_turns scaling (30-100%)"| R3
+    CSM -->|"should_continue gate"| R4
+
+    %% Grounding ──
+    KNOW -->|"Knowledge level<br/>Outdated→confidence=Low"| R3
+    SIT -->|"Situation gate<br/>Vague→force clarify<br/>Overloaded→compress"| R4
+
+    %% Experience ──
+    EXPLEVEL -->|"Experience mode<br/>Confident→skip_scout<br/>Apprehensive→remove_tool"| IRONLAW
+
+    %% Cross-rules fan-out ──
+    R1 -->|"effective_experience"| CROSSRULE
+    R2 -->|"effective_knowledge"| CROSSRULE
+    R3 -->|"final max_turns"| CROSSRULE
+    R4 -->|"continue?"| CROSSRULE
+    CROSSRULE -->|"behavior modulation (hardcoded)"| EVENTBUS
+
+    %% ── Event Bus → All layers (the central nervous system) ──
+    EVENTBUS -->|"MessageReceived"| IDLE
+    EVENTBUS -->|"cognitive_state_changed → wake chain"| EMOTION
+    EVENTBUS -->|"emotion:evaluated fan-out"| EMOTION
+    EVENTBUS -->|"DailyItemAssigned"| TW_M
+    EVENTBUS -->|"QueueDrained"| Reflection
+    EVENTBUS -->|"workflow::completed"| EXT
+
+    %% ── Idle Layer internal ──
+    DAZE -->|"depth progression"| BOREDOM
+    BOREDOM -->|"depth progression"| SLEEP
+    SLEEP -->|"depth progression"| EXPLORE
+    EXPLORE -->|"depth progression"| MEDITATE
+    MEDITATE -->|"depth progression"| INCUBATE
+    Arousal -.->|"decay × kind_mult"| DAZE
+    Arousal -.->|"decay × kind_mult"| BOREDOM
+    Arousal -.->|"decay ×0.5"| SLEEP
+    Arousal -.->|"decay ×0.0"| EXPLORE
+    Arousal -.->|"decay ×0.0"| MEDITATE
+    Arousal -.->|"decay ×0.1"| INCUBATE
+    BOREDOM -->|"trigger_poll threshold"| Boredom
+    Boredom -->|"weighted tag pick<br/>(+ work_pressure scaling)"| EVENTBUS
+    INCUBATE -->|"60s quiet"| AWAKE
+    AWAKE -->|"depth→0, arousal→1.0<br/>linear interp"| EVENTBUS
+    Reflection -.->|"QueueDrained → select! race"| EVENTBUS
+    Reflection -.->|"extract patterns"| EXT
+    Persona -->|"configures"| DAZE
+    Persona -->|"configures"| Boredom
+
+    %% ── Idle ↔ Consciousness ──
+    CSM -.->|"≠Lucid → force Sleep<br/>(does NOT modify idle state)"| SLEEP
+    Boredom -.->|"work_pressure feedback"| MOTIVATION
+
+    %% ── Emotion ↔ Arousal ──
+    EmotionActive -->|"emotion:evaluated"| Arousal
+    EmotionConsumers -->|"excit+0.2, bored-0.3"| Arousal
+    EmotionPassive -->|"fixed emoji → UI"| EVENTBUS
+
+    %% ── Motivation ──
+    MASLOW1 -->|"health data"| Health
+    MASLOW5 -->|"meaning alignment"| IKI5
+    IKI5 -->|"contradiction detection<br/>'chase fintech, love edtech'"| EVENTBUS
+    DDESIRE -->|"weak-desire flag (no≥3)"| IRONLAW
+
+    %% ── Daily Rhythm ──
+    EVENTBUS -->|"Cron → DailyItemAssigned"| TW_M
+    TW_M -->|"routine chain"| LCE
+    TW_E -->|"routine chain"| LCE
+    TW_N -->|"routine chain"| LCE
+    LCE -->|"Idle↔Busy auto"| DSPEC
+    HabitEsc -.->|"progressive reminder tone"| EVENTBUS
+    HEALTH -->|"HealthAnomaly → Notification"| EVENTBUS
+
+    %% ├── Experience & Reflection ──
+    EXT -.->|"update EXP.md"| EXPAsset
+    EThink -.->|"consolidate patterns"| EXPAsset
+    BIAS -.->|"external anchors"| EXT
+
+    %% ── Iron Law enforcement ──
+    IRONLAW -.->|"hardcoded rules"| SoulRuntime
+    IRONLAW -.->|"hardcoded rules"| Persona
+    IRONLAW -.->|"hardcoded rules"| CROSSRULE

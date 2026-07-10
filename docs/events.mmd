@@ -103,6 +103,24 @@ mindmap
         team.work_tick
       Idle_System_["Idle System (Local Bus)"]
         idle.system
+        idle.cycle_completed
+        idle.inspiration
+        agent:cold_start_done
+      Cognitive_["Consciousness & Emotion (Global Bus)"]
+        cognitive_state_changed
+        emotion:evaluated
+      LLM_Health_["LLM Backend Health (Global Bus)"]
+        llm_backend_down
+        llm_backend_recovered
+        llm_backend_connected
+      Plan_["Planner (Local Bus)"]
+        plan:created
+        plan:resumed
+      Auto_Continue["Auto-Continue (Global Bus)"]
+        agent:auto_continue
+        agent:auto_continue_stopped
+      Agent_Reload["Agent Reload (Global Bus)"]
+        agent:reloaded
 
 %% ============================================================================
 %% 2. Dual-Layer Event Bus Architecture
@@ -144,7 +162,7 @@ flowchart TB
             LA3["agent:reply_stream_*<br/>agent:reply_chunk"]:::local
             LA4["agent:token_used<br/>agent:history_compressed"]:::local
             LA5["WorkSystem<br/>work.* internal events"]:::local
-            LA6["AgentIdleManager<br/>idle.system events"]:::local
+            LA6["AgentIdleManager<br/>idle.system + idle.cycle_completed<br/>idle.inspiration + agent:cold_start_done"]:::local
             LA --> LA1
             LA --> LA2
             LA --> LA3
@@ -159,7 +177,7 @@ flowchart TB
             LB3["agent:reply_stream_*<br/>agent:reply_chunk"]:::local
             LB4["agent:token_used<br/>agent:history_compressed"]:::local
             LB5["WorkSystem<br/>work.* internal events"]:::local
-            LB6["AgentIdleManager<br/>idle.system events"]:::local
+            LB6["AgentIdleManager<br/>idle.system + idle.cycle_completed<br/>idle.inspiration + agent:cold_start_done"]:::local
             LB --> LB1
             LB --> LB2
             LB --> LB3
@@ -209,7 +227,7 @@ sequenceDiagram
     participant Store as StoreAllEvents<br/>Handler → EventStore
     participant Skill as SkillEvent<br/>Dispatcher
     participant Harness as AgentHarness<br/>(ReAct Loop)
-    participant Engine as LlmReActEngine
+    participant Engine as LlmCognitiveEngine
     participant Executor as ToolExecutor
     participant Frontend as Frontend<br/>(Tauri / HTTP)
 
@@ -299,7 +317,13 @@ flowchart TD
     Q1 -->|"🔒 Token tracking<br/>(agent:token_used)"| LOCAL
     Q1 -->|"🔒 ReAct internals<br/>(agent:got_tool_calls, history_compressed, etc.)"| LOCAL
     Q1 -->|"🔒 Work internal<br/>(work.start_check, work.execute_step, work.*)"| LOCAL
-    Q1 -->|"🔒 Idle system<br/>(idle.system)"| LOCAL
+    Q1 -->|"🔒 Idle system<br/>(idle.system, idle.cycle_completed, idle.inspiration)"| LOCAL
+
+    Q1 -->|"🌐 Consciousness<br/>(cognitive_state_changed, emotion:evaluated)"| GLOBAL
+    Q1 -->|"🌐 LLM health<br/>(llm_backend_down/recovered/connected)"| GLOBAL
+    Q1 -->|"🌐 Auto-continue<br/>(agent:auto_continue, agent:auto_continue_stopped)"| GLOBAL
+    Q1 -->|"🌐 Agent reload<br/>(agent:reloaded)"| GLOBAL
+    Q1 -->|"🔒 Planning<br/>(plan:created, plan:resumed)"| LOCAL
 
     GLOBAL["🌐 Global Bus"]:::globalNode
     LOCAL["🔒 Local Bus"]:::localNode
@@ -526,7 +550,7 @@ flowchart LR
 %% ============================================================================
 
 block-beta
-  columns 4
+  columns 5
   block:Global_lifecycle:1
     columns 1
     GLO("🌐 Global — Lifecycle")
@@ -568,7 +592,18 @@ block-beta
     LC7("agent:tool_results_fed_back")
     LC8("agent:history_compressed")
     LC9("work.* (state machine)")
-    LC10("idle.system (idle events)")
+    LC10("idle.* (idle.system, cycle_completed, inspiration)")
+    LC11("plan:created/resumed")
+  end
+  block:Global_cognitive:1
+    columns 1
+    GCG("🌐 Global — Cognitive & Health")
+    GC1("cognitive_state_changed")
+    GC2("emotion:evaluated")
+    GC3("llm_backend_down/recovered/connected")
+    GC4("agent:auto_continue/stopped")
+    GC5("agent:reloaded")
+    GC6("agent:cold_start_done")
   end
 
 %% ============================================================================

@@ -168,7 +168,7 @@ Responsible for low-throughput, globally-visible infrastructure events:
 
 | Category | Event Types |
 |----------|-------------|
-| Gateway lifecycle | `gateway:starting`, `gateway:ready`, `gateway:stopping` |
+| Gateway lifecycle | `gateway:starting`, `gateway:ready` (from `main.rs`); `gateway:stopping` (from `Agenverse::shutdown()`) |
 | File system | `FileCreated`, `FileChanged`, `FileDeleted` |
 | Timer/Cron | `TimerTick`, `CronTick`, `Heartbeat` |
 | External input | `WebhookReceived`, `SystemSignal` |
@@ -176,9 +176,13 @@ Responsible for low-throughput, globally-visible infrastructure events:
 | Agent response | `agent:reply_ready`, `agent:reply_interrupted` (final response to frontend) |
 | Cross-agent | `agent:message` (routed by `to_agent` in payload) |
 | Config/Skill | `ConfigChanged`, `SkillReloaded`, `soul_changed` |
-| Session | `session:started`, `session:closed` |
+| Session | `session:started` (from `session/mod.rs`), `session:closed` (from `http.rs`) |
 | Message dispatch | `message:dispatch`, `message:completed` |
 | Capability | `capability_available`, `capability_removed`, `capability_registry_updated` |
+| Cognitive | `cognitive_state_changed` (ConsciousnessTranslator) |
+| LLM health | `llm_backend_down`, `llm_backend_recovered`, `llm_backend_connected` |
+| Agent lifecycle | `agent:reloaded` (distinct from `agent:registered`) |
+| Auto-continue | `agent:auto_continue`, `agent:auto_continue_stopped` |
 
 ### Local Bus (one per agent)
 
@@ -191,9 +195,8 @@ Responsible for high-throughput, agent-internal events:
 | Tool execution | `tool:dispatched`, `tool:completed`, `tool:failed`, `tool:security_denied` |
 | Token tracking | `agent:token_used` |
 | ReAct internal | `agent:got_tool_calls`, `agent:tool_results_fed_back`, `agent:history_compressed`, `agent:config_warning` |
-| Interrupt (internal) | `agent:reply_interrupted` (within `react_loop`) |
 | **Work System** | `work.start_check`, `work.claim_task`, `work.claim_response`, `work.execute_step`, `work.step_complete`, `work.step_failed`, `work.review_task`, `work.review_complete`, `work.submit_result`, `work.cycle_done`, `work.delayed_work_tick`, `work.interrupt` |
-| **Idle System** | `idle.system` (idle events from AgentIdleManager) |
+| **Idle System** | `idle.system` (idle events from AgentIdleManager), `idle.cycle_completed` (exploration/meditation/incubation cycles), `idle.inspiration` (incubation insight), `agent:cold_start_done` (idle manager initialization complete) |
 
 ### Why Two Layers?
 
@@ -217,16 +220,21 @@ In single-agent configurations where no per-agent local bus is configured, all e
 
 ### Configuration
 
-Each agent can override its Local Bus config in `aman.yaml`:
+The top-level Global Bus config uses `EventBusConfig` (`kernel/config/src/lib.rs:97`) with fields: `max_queue_size`, `mode` (`Persistent` default), `persistence`, `stream_forwarder_capacity` (default 8192), plus the full backpressure and dedup settings.
+
+Each agent can override its Local Bus config via `PartialEventBusConfig` (`kernel/config/src/lib.rs:850`) in `aman.yaml`:
 
 ```yaml
+event_bus:
+  max_queue_size: 10000   # Global Bus queue (default)
+  mode: Persistent
 agents:
   cortana:
     display_name: Cortana
     provider: openai
     model: gpt-5.4-flash
     event_bus:
-      max_queue_size: 2000   # override default (1000)
+      max_queue_size: 2000   # override default Local Bus (1000)
   coder:
     display_name: Coder
     provider: deepseek
@@ -238,13 +246,12 @@ agents:
 
 | Component | File | Role |
 |-----------|------|------|
-| `AgentRegistry::set_local_bus()` | `kernel/gateway/src/runtime/agent_registry.rs:251` | Stores per-agent Local Bus |
-| `AgentRegistry::get_local_bus()` | `kernel/gateway/src/runtime/agent_registry.rs:257` | Lookup Local Bus by agent_id |
-| `AgentRegistry::load_from_config()` | `kernel/gateway/src/runtime/agent_registry.rs:95-110` | Creates Local Bus for each agent at startup |
-| `AgentEntryConfig::event_bus` | `kernel/config/src/lib.rs:422` | Per-agent `PartialEventBusConfig` |
-| `ToolExecutor::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs:114` | Tool events → Local Bus |
-| `LlmCognitiveEngine::publish_to_agent_bus()` | `cognitive/llm/src/lib.rs` | LLM events → Local Bus |
-| `AgentHarness::publish_to_agent_bus()` | `kernel/gateway/src/runtime/agent_harness.rs` | Stream/harness events → Local Bus |
+| `AgentRegistry::set_local_bus()` | `kernel/gateway/src/runtime/agent_registry.rs:850` | Stores per-agent Local Bus |
+| `AgentRegistry::get_local_bus()` | `kernel/gateway/src/runtime/agent_registry.rs:856` | Lookup Local Bus by agent_id |
+| `AgentRegistry::load_from_config()` | `kernel/gateway/src/runtime/agent_registry.rs:119` | Creates Local Bus for each agent at startup |
+| `AgentEntryConfig::event_bus` | `kernel/config/src/lib.rs:850` | `Option<PartialEventBusConfig>` per-agent override |
+| `LlmCognitiveEngine` tool publishers | `cognitive/llm/src/lib.rs` (521+) | Tool events → agent Local Bus |
+| `AgentHarness` bus publishers | `kernel/gateway/src/runtime/agent_harness.rs` | Stream/harness events → Local Bus |
 
 ---
 
@@ -262,7 +269,7 @@ agents:
 - Custom lifecycle events are published directly by runtime components:
   - **Gateway daemon** (`main.rs`): `gateway:starting`/`gateway:ready`/`gateway:stopping` at startup/shutdown boundaries → Global Bus
   - **HTTP handlers** (`http.rs`): `session:started`/`session:closed` on session create/close → Global Bus
-  - **PipelineEngine** (via `ToolEventSink`): `tool:invoke`/`tool:completed`/`tool:failed` around tool execution → Global Bus
+  - **BusToolEventSink** (in `agent_runtime.rs`): `tool:invoke`/`tool:completed`/`tool:failed` around Pipeline execution (currently not wired in production); production tool events published by `LlmCognitiveEngine` to Local Bus
 - The `EventStore` supports trace chain tracking via `trace_id` and `trace_prev` linking.
 - Events that fail delivery go to the **Dead Letter Queue (DLQ)** for manual retry/discard.
 
@@ -274,9 +281,9 @@ agents:
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `FileCreated` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `kernel/source/src/file_watch.rs:81,315` |
-| `FileChanged` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `kernel/source/src/file_watch.rs:82,324` |
-| `FileDeleted` | `file_watch:{path}` | `{"path":"..."}` | `kernel/source/src/file_watch.rs:83,318` |
+| `FileCreated` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `kernel/source/src/file_watch.rs:83,317` |
+| `FileChanged` | `file_watch:{path}` | `{"path":"...", "file_type":"file\|dir"}` | `kernel/source/src/file_watch.rs:84,327` |
+| `FileDeleted` | `file_watch:{path}` | `{"path":"..."}` | `kernel/source/src/file_watch.rs:85,318` |
 
 Produced by `source::file_watch::FileWatchSource`. Uses `notify` crate to watch filesystem directories. Each file event carries the affected path and file type.
 
@@ -284,8 +291,8 @@ Produced by `source::file_watch::FileWatchSource`. Uses `notify` crate to watch 
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `TimerTick` | `timer:{name}` | depends on timer config | `kernel/source/src/timer.rs:113,122` |
-| `Heartbeat` | `timer:{name}` | `{"heartbeat":true}` | `kernel/source/src/timer.rs:113` |
+| `TimerTick` | `timer:{name}` | depends on timer config | `kernel/source/src/timer.rs:118` |
+| `Heartbeat` | `timer:{name}` | `{"heartbeat":true}` | `kernel/source/src/timer.rs:116` |
 
 Produced by `source::timer::TimerSource`. Configurable interval. When `interval_ms >= 60000`, produces `Heartbeat`; otherwise `TimerTick`.
 
@@ -293,7 +300,7 @@ Produced by `source::timer::TimerSource`. Configurable interval. When `interval_
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `CronTick` | `cron:{id}` | depends on cron config | `kernel/source/src/cron.rs:119` |
+| `CronTick` | `cron:{id}` | depends on cron config | `kernel/source/src/cron.rs:136` |
 
 Produced by `source::cron::CronSource`. Uses cron expressions (5 or 6 fields). Managed through `SourceRegistry` as a standard `EventSource` — scheduling is driven by the registry's background `poll_loop`.
 
@@ -301,16 +308,16 @@ Produced by `source::cron::CronSource`. Uses cron expressions (5 or 6 fields). M
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `MessageReceived` | `chat-platform:tauri-desktop` | `{"session_id":"...", "text":"...", "channel":"tauri_desktop", "message_id":"...", "client_timestamp":...}` | `kernel/plugins/chat-source/src/lib.rs:147` |
-| `MessageReceived` | `socket:{name}` | depends on socket protocol | `kernel/source/src/socket.rs:116,147,184` |
+| `MessageReceived` | `gateway:http` | `{"session_id":"...", "text":"...", "channel":"tauri_desktop", "message_id":"...", "client_timestamp":...}` | `kernel/gateway/src/runtime/http.rs:3030` |
+| `MessageReceived` | `socket:{name}` | depends on socket protocol | `kernel/source/src/socket.rs:117,148,185` |
 
-Produced by the chat-platform source (from Tauri IPC) or socket source (TCP/UDP connections). The chat-platform source validates messages for length (max 4096 chars) and empty content.
+Produced by the HTTP handler (from Tauri desktop via REST) or socket source (TCP/UDP connections). The desktop channel validates messages for length (max 4096 chars) and empty content. There is no `chat-source` plugin crate; HTTP-sourced `MessageReceived` events have SourceId `"gateway:http"`.
 
 ### Webhook Events
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `WebhookReceived` | `webhook:{name}` | from HTTP request body | `kernel/source/src/webhook.rs:35` |
+| `WebhookReceived` | `webhook:{name}` | from HTTP request body | `kernel/source/src/webhook.rs:38` |
 
 Produced by `source::webhook::WebhookSource`. Receives HTTP POST requests and converts the body (JSON) into the event payload.
 
@@ -318,7 +325,7 @@ Produced by `source::webhook::WebhookSource`. Receives HTTP POST requests and co
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `SystemSignal` | `signal:{name}` | `{"signal":"SIGINT\|SIGTERM\|SIGHUP\|SIGUSR1\|SIGUSR2"}` | `kernel/source/src/signal.rs:93,100` |
+| `SystemSignal` | `signal:{name}` | `{"signal":"SIGINT\|SIGTERM\|SIGHUP\|SIGUSR1\|SIGUSR2"}` | `kernel/source/src/signal.rs:94,101` |
 
 Produced by `source::signal::SignalSource`. Listens for OS signals. Each signal produces one event. SIGUSR1/SIGUSR2 also produce a second event with the signal name.
 
@@ -326,7 +333,7 @@ Produced by `source::signal::SignalSource`. Listens for OS signals. Each signal 
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `WorkflowStateChanged` | `workflow:engine` | `{"instance_id":"...", "workflow_name":"...", "from_state":"...", "to_state":"...", "reason":"...", "is_final":bool}` | `kernel/workflow/src/lib.rs:1114` |
+| `WorkflowStateChanged` | `workflow:engine` | `{"instance_id":"...", "workflow_name":"...", "from_state":"...", "to_state":"...", "reason":"...", "is_final":bool}` | `kernel/workflow/src/lib.rs:1201` |
 
 Produced by the `WorkflowEngine` on every state transition. Records the workflow instance, old and new states, and the transition reason (Event, Timeout, ActionFailed, GuardRejected, RetryExceeded).
 
@@ -334,7 +341,7 @@ Produced by the `WorkflowEngine` on every state transition. Records the workflow
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `SkillReloaded` | `skill:hot_reload` | `{"inserted":[...], "updated_same_version":[...], "updated_new_version":[...], "removed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:982` |
+| `SkillReloaded` | `skill:hot_reload` | `{"inserted":[...], "updated_same_version":[...], "updated_new_version":[...], "removed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:4888` |
 
 Auto-published by the runtime's skill hot-reload watcher when skill files change on disk. Contains lists of skills that were inserted, updated, or removed.
 
@@ -342,7 +349,7 @@ Auto-published by the runtime's skill hot-reload watcher when skill files change
 
 | Type | Source | Payload | Producer File:Line |
 |------|--------|---------|-------------------|
-| `ConfigChanged` | `config` | `{"changed_fields":["path.to.field",...], "meta":{"loaded_at_ms":..., "source_chain":[...]}}` | `kernel/config/src/lib.rs:718` |
+| `ConfigChanged` | `config` | `{"changed_fields":["path.to.field",...], "meta":{"loaded_at_ms":..., "source_chain":[...]}}` | `kernel/config/src/lib.rs:1657` |
 
 Produced by the config loader when config is modified. Lists the exact fields that changed and the config source chain.
 
@@ -359,18 +366,53 @@ These were previously reserved but are now published in production:
 - `AgentMessage` — **now published** by the a2a (agent-to-agent) session system. See [Agent-to-Agent Events](#agent-to-agent-a2a-events) below.
 - `EvaluationCompleted` — **now published** by `EvalHook` after each successful evaluation run. See [Evaluation Events](#evaluation-events) below.
 
+### Cognitive & Emotion Events
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `cognitive_state_changed` | **Global** | Consciousness state transition | `{"from":"...","to":"..."}` (Lucid/Groggy/Catatonic/Coma) | `ConsciousnessTranslator` |
+| `emotion:evaluated` | **Global** / Local | Emotion assessment result | `{"emotion":"...","valence":...,"arousal":...}` | Eval/emotion system |
+
+### LLM Backend Health Events
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `llm_backend_down` | **Global** | LLM provider unreachable | `{"provider":"...","error":"..."}` | Consciousness/circuit-breaker |
+| `llm_backend_recovered` | **Global** | LLM provider recovered | `{"provider":"..."}` | Consciousness/circuit-breaker |
+| `llm_backend_connected` | **Global** | LLM provider connected | `{"provider":"..."}` | Connection establishment |
+
+### Plan Events
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `plan:created` | **Local** | Execution plan created | `{"plan_id":"...","steps":[...]}` | Planner tool |
+| `plan:resumed` | **Local** | Execution plan resumed | `{"plan_id":"...","from_step":N}` | Planner tool |
+
+### Auto-Continue Events
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `agent:auto_continue` | **Global** | Agent initiated auto-continue | `{"agent_id":"...","session_id":"...","reason":"..."}` | AgentHarness |
+| `agent:auto_continue_stopped` | **Global** | Auto-continue halted | `{"agent_id":"...","session_id":"...","reason":"..."}` | AgentHarness |
+
+### Agent Reload Event
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `agent:reloaded` | **Global** | Agent configuration/hot-reload applied | `{"agent_id":"..."}` | Runtime reload path |
+
 ---
 
-## Custom Event Types
+## Custom Event Types (Reserved Constants)
 
 ### Chat Session Control Events
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `SESSION_CLOSE_CMD` | HTTP handler `chat_session_close` | Close a chat session | `{"session_id":"...", "operator":"...", "reason":...}` | `kernel/gateway/src/runtime/http.rs:1965` |
-| `STOP_GENERATION` | HTTP handler `chat_session_stop` | Stop LLM generation | `{"session_id":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2013` |
-| `RETRY_CMD` | HTTP handler `chat_session_retry` | Retry last message | `{"session_id":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2033` |
-| `MESSAGE_EDITED` | HTTP handler `chat_session_edit` | Message edited | `{"session_id":"...", "message_event_id":"...", "new_text":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2134` |
+| `SESSION_CLOSE_CMD` | HTTP handler `chat_session_close` | Close a chat session | `{"session_id":"...", "operator":"...", "reason":...}` | `kernel/gateway/src/runtime/http.rs:3110` |
+| `STOP_GENERATION` | HTTP handler `chat_session_stop` | Stop LLM generation | `{"session_id":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:3191` |
+| `RETRY_CMD` | HTTP handler `chat_session_retry` | Retry last message | `{"session_id":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:3232` |
+| `MESSAGE_EDITED` | HTTP handler `chat_session_edit` | Message edited | `{"session_id":"...", "message_event_id":"...", "new_text":"...", "operator":"..."}` | `kernel/gateway/src/runtime/http.rs:3314` |
 
 These control events drive the chat-session workflow state machine. They are published via `workflow_engine.handle_event()` (for close/retry) or `runtime.publish_event()` (for stop/edit).
 
@@ -378,13 +420,13 @@ These control events drive the chat-session workflow state machine. They are pub
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `session:started` | `http.rs::chat_session_create()` | Chat session created | `{"session_id":"...","session_type":"...","operator":"..."}` | `kernel/gateway/src/runtime/http.rs:1665` |
-| `session:closed` | `http.rs::chat_session_close()` | Chat session closed | `{"session_id":"...","operator":"..."}` | `kernel/gateway/src/runtime/http.rs:2003` |
-| `gateway:starting` | `main.rs` | Gateway daemon starting | `{"bind":"..."}` | `kernel/gateway/src/main.rs:119-123` |
-| `gateway:ready` | `main.rs` | Gateway ready to serve | `{"bind":"...","addr":"..."}` | `kernel/gateway/src/main.rs:134-138` |
-| `gateway:stopping` | `main.rs` | Gateway shutting down | `{}` | `kernel/gateway/src/main.rs:162-166` |
+| `session:started` | `session::SessionManager` | Chat session created | `{"session_id":"...","session_type":"...","operator":"..."}` | `kernel/gateway/src/runtime/session/mod.rs:493` |
+| `session:closed` | `http.rs::chat_session_close()` | Chat session closed | `{"session_id":"...","operator":"..."}` | `kernel/gateway/src/runtime/http.rs:3137` |
+| `gateway:starting` | `main.rs` | Gateway daemon starting | `{"bind":"..."}` | `kernel/gateway/src/main.rs:168-172` |
+| `gateway:ready` | `main.rs` | Gateway ready to serve | `{"bind":"...","addr":"..."}` | `kernel/gateway/src/main.rs:243-247` |
+| `gateway:stopping` | `Agenverse::shutdown()` | Gateway shutting down | `{}` | `kernel/gateway/src/runtime/agenverse.rs:249` |
 
-Published by the gateway daemon at lifecycle boundaries: before starting the runtime, after start succeeds, and before graceful shutdown. `session:started`/`session:closed` are published from HTTP handler endpoints and carry the `session_id` for trace chain correlation.
+Published at lifecycle boundaries: `gateway:starting`/`gateway:ready` from `main.rs` at startup, `gateway:stopping` from `Agenverse::shutdown()` during graceful shutdown. `session:started` is published by the `SessionManager` on session creation; `session:closed` is published from the HTTP handler. Both carry the `session_id` for trace chain correlation.
 
 > `session:timeout` is reserved in the milestone plan but deferred — production currently lacks a timeout polling loop for workflow instances.
 
@@ -397,16 +439,16 @@ Published by the gateway daemon at lifecycle boundaries: before starting the run
 | `llm_error` | **Local** | LLM call error | `{"agent_id":"...","session_id":"...","turn":N,"error":"..."}` | `LlmCognitiveEngine` / `AgentHarness` |
 | `agent:token_used` | **Local** | Token usage estimate | `{"agent_id":"...","session_id":"...","turn":N,"tokens":N}` | `LlmCognitiveEngine` |
 | `agent:reply_ready` | **Global** | Agent response ready | `{"agent_id":"...","session_id":"...","reply":"...","turns_processed":N}` | `AgentHarness` |
-| `agent:reply_interrupted` | **Global** | User stopped generation | `{"agent_id":"...","session_id":"..."}` | `AgentHarness` |
+| `agent:reply_interrupted` | **Global** | User stopped generation | `{"agent_id":"...","session_id":"...","error":"..."}` | `AgentHarness` (`agent_harness.rs:363`) |
 | `agent:idle` | **Global** | Agent returned to idle state (post-processing cleanup) | `{"agent_id":"...","session_id":"..."}` | `AgentHarness` |
 | `agent:reply_stream_start` | **Local** | Streaming response started | `{"agent_id":"...","session_id":"...","turn":N,"extra":{}}` | `AgentHarness` (stream forwarder) |
 | `agent:reply_chunk` | **Local** | Streaming response delta | `{"agent_id":"...","session_id":"...","turn":N,"extra":{"delta":"..."}}` | `AgentHarness` (stream forwarder) |
 | `agent:reply_stream_done` | **Local** | Streaming response complete | `{"agent_id":"...","session_id":"...","turn":N,"extra":{"finish_reason":"..."}}` | `AgentHarness` (stream forwarder) |
 | `agent:reply_stream_error` | **Local** | Streaming error | `{"agent_id":"...","session_id":"...","error":"..."}` | `AgentHarness` (stream forwarder) |
-| `tool:dispatched` | **Local** | Tool call dispatched | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","args":{...}}` | `ToolExecutor` |
-| `tool:completed` | **Local** | Tool call succeeded | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","success":true,"duration_ms":N,"output":"..."}` | `ToolExecutor` |
-| `tool:failed` | **Local** | Tool call failed | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","success":false,"duration_ms":N,"output":"..."}` | `ToolExecutor` |
-| `tool:security_denied` | **Local** | Tool blocked by security | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","block_type":"hardline\|path_denied","reason":"..."}` | `ToolExecutor` |
+| `tool:dispatched` | **Local** | Tool call dispatched | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","args":{...}}` | `LlmCognitiveEngine` (ReAct loop) |
+| `tool:completed` | **Local** | Tool call succeeded | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","success":true,"duration_ms":N,"output":"..."}` | `cognitive/llm/src/lib.rs:521` (ReAct tool executor) |
+| `tool:failed` | **Local** | Tool call failed | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","success":false,"duration_ms":N,"output":"..."}` | `LlmCognitiveEngine` (ReAct loop) |
+| `tool:security_denied` | **Local** | Tool blocked by security | `{"agent_id":"...","session_id":"...","tool_call_id":"...","tool_name":"...","block_type":"hardline\|path_denied","reason":"..."}` | `kernel/tool/src/lib.rs` (ToolExecutor / PermissionReviewer) |
 | `agent:got_tool_calls` | **Local** | LLM requested tool calls | `{"agent_id":"...","session_id":"...","turn":N,"tool_calls":[...]}` | `AgentHarness` |
 | `agent:tool_results_fed_back` | **Local** | Tool results fed to LLM | `{"agent_id":"...","session_id":"...","turn":N,"result_count":N}` | `AgentHarness` |
 | `agent:history_compressed` | **Local** | Context window trimmed | `{"agent_id":"...","session_id":"...","turn":N,"messages_removed":N,"tokens_saved":N,"strategy":"truncate\|summarize"}` | `AgentHarness` |
@@ -423,8 +465,8 @@ Published by `AgentHarness` and `LlmCognitiveEngine` to track the ReAct loop lif
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `message:dispatch` | `SkillEventDispatcher` | Event routed to skill(s) for processing | `{"trace_id":"...","event_id":"...","event_type":"...","source":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:422` |
-| `message:completed` | `SkillEventDispatcher` | Skill(s) finished processing | `{"trace_id":"...","executed":[...],"failed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:433` |
+| `message:dispatch` | `SkillEventDispatcher` | Event routed to skill(s) for processing | `{"trace_id":"...","event_id":"...","event_type":"...","source":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:464` |
+| `message:completed` | `SkillEventDispatcher` | Skill(s) finished processing | `{"trace_id":"...","executed":[...],"failed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:471` |
 
 Published by the `SkillEventDispatcher` — a catch-all EventBus subscriber registered in the runtime builder. On every incoming event, `message:dispatch` fires before routing to matching skills and `message:completed` fires after all matching skills have executed (success or failure).
 
@@ -432,21 +474,21 @@ Published by the `SkillEventDispatcher` — a catch-all EventBus subscriber regi
 
 | Literal Value | Producer | Purpose | Payload | File:Line |
 |---|---|---|---|---|
-| `tool:invoke` | `PipelineEngine` | Tool execution started | `{"tool_name":"...","pipeline_id":"...","instance_id":"..."}` | `kernel/pipeline/src/lib.rs:591` |
-| `tool:completed` | `PipelineEngine` | Tool execution succeeded | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","duration_ms":N}` | `kernel/pipeline/src/lib.rs:599` |
-| `tool:failed` | `PipelineEngine` | Tool execution failed | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","error":"..."}` | `kernel/pipeline/src/lib.rs:605,612` |
+| `tool:invoke` | `pipeline:tool` | Tool execution started | `{"tool_name":"...","pipeline_id":"...","instance_id":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:2321` |
+| `tool:completed` | `pipeline:tool` / `cognitive-engine` | Tool execution succeeded | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","duration_ms":N}` | `agent_runtime.rs:2333` (Pipeline) / `cognitive/llm/src/lib.rs:521` (production) |
+| `tool:failed` | `pipeline:tool` | Tool execution failed | `{"tool_name":"...","pipeline_id":"...","instance_id":"...","error":"..."}` | `agent_runtime.rs:2346` |
 
-Defined via the `ToolEventSink` trait and wired into `PipelineEngine::execute_tool_with_retry()`. The `BusToolEventSink` implementation in the gateway crate (`kernel/gateway/src/runtime/agent_runtime.rs:518-550`) converts these sink callbacks into EventBus publishes.
+Defined via the `ToolEventSink` trait (in `kernel/pipeline/src/lib.rs`) and wired into `PipelineEngine::execute_tool_with_retry()`. The `BusToolEventSink` implementation in the gateway crate (`kernel/gateway/src/runtime/agent_runtime.rs:2319-2357`) converts these sink callbacks into EventBus publishes.
 
-> **Architecture note**: `PipelineEngine` is currently not in the production chat flow (the LLM plugin calls the provider directly via `rig::agent::prompt()`). Tool events fire from the `PipelineEngine` path used in tests and the dispatcher crate. Production tool events will be added when `PipelineEngine` or `ToolRunner` is wired into the production path.
+> **Architecture note**: `BusToolEventSink` is currently not wired in production (marked `#[allow(dead_code)]`); it is infrastructure for when `PipelineEngine` is adopted in the production tool path. The **live** production `tool:completed` publisher is `cognitive/llm/src/lib.rs:521` (source `"cognitive-engine"`) — the ReAct loop's tool executor publishes tool results directly to the agent's Local Bus.
 
 ### Capability Events
 
 | Literal Value | Purpose | Payload | File:Line |
 |---|---|---|---|
-| `capability_available` | New capability registered | `{"capability":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:833` |
-| `capability_removed` | Capability unregistered | `{"capability":"...","reason":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:833` |
-| `capability_registry_updated` | Full capability registry refresh | `{"available":[...], "added":[...], "removed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:807` |
+| `capability_available` | New capability registered | `{"capability":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:4676` |
+| `capability_removed` | Capability unregistered | `{"capability":"...","reason":"..."}` | `kernel/gateway/src/runtime/agent_runtime.rs:4683` |
+| `capability_registry_updated` | Full capability registry refresh | `{"available":[...], "added":[...], "removed":[...]}` | `kernel/gateway/src/runtime/agent_runtime.rs:4690` |
 
 Published by the capability registry during startup and plugin hot-load/unload. The `registry_updated` event is a summary and does not enter the WAL.
 
@@ -462,11 +504,23 @@ Published by the SOUL hot-reload manager when the SOUL.md file changes. Contains
 
 | Literal Value | Purpose | Payload | File:Line |
 |---|---|---|---|
-| `eval:evaluation_completed` | Eval system completed an evaluation | `{"target_kind":"...","target_id":"...","rule_id":"...","strategy":"...","aggregate_score":...,"threshold":...,"outcome":"...","dimensions":{...},"hook_point":"..."}` | `kernel/eval/src/hook.rs:103-126` |
+| `eval:evaluation_completed` | Eval system completed an evaluation | `{"target_kind":"...","target_id":"...","rule_id":"...","strategy":"...","aggregate_score":...,"threshold":...,"outcome":"...","dimensions":{...},"hook_point":"..."}` | `kernel/eval/src/hook.rs:127` |
 
 Published by `EvalHook` (implements the `Hook` trait) when triggered at registered `HookPoint`s (e.g., `SkillExecuted`, `AgentReady`). Each evaluation result produces one `EvaluationCompleted` event. Results are also stored in-memory in the `EvalEngine` and accessible via the `eval_get_results` tool.
 
 **Configuration:** The `EvalHook` accepts an optional `EvalEventPublisher` callback — wired to the event bus at gateway startup via `EvalHook::with_event_publisher()`. Without a publisher, evaluation results are stored in-memory only (no events emitted).
+
+### Idle System Events
+
+The Idle System produces several custom events not covered by the `EventType::Idle` enum variant (which is produced by `idle.system` in `kernel/idle/src/types.rs:109`).
+
+| Literal Value | Bus | Purpose | Payload | Producer |
+|---|---|---|---|---|
+| `idle.cycle_completed` | **Local** | Exploration/meditation/incubation cycle finished | `{"cycle_type":"...","duration_ms":N,"output":{...}}` | Exploration (`runtime/exploration.rs:449`), Meditation (`runtime/meditation.rs:426`), Incubation (`runtime/incubation_runner.rs:500`) |
+| `idle.inspiration` | **Local** | Incubation insight discovered | `{"prompt":"...","inspiration":"..."}` | Incubation (`runtime/incubation_runner.rs:389`) |
+| `agent:cold_start_done` | **Global** + Local | Idle manager initialization complete | `{"agent_id":"..."}` | `kernel/idle/src/manager.rs:610` |
+
+> **Note on naming**: `IdleKind` variants (`Daze`, `Boredom`, `Sleep`, `Exploration`, `Meditation`, `Incubation`, `WakeUp`) are **not** separate event strings. They are serialized inside the `IdleEvent.kind` payload of the single `idle.system` event.
 
 ### Agent-to-Agent (A2A) Events
 
@@ -519,9 +573,9 @@ Published after message processing completes (or errors), signaling the Idle Sys
 
 | Literal Value | Purpose | Payload | Producer File:Line |
 |---|---|---|---|
-| `retry` | Manual retry of errored workflow | `{"operator":"..."}` | `kernel/gateway/src/runtime/http.rs:636` |
-| `cancel` | Cancel pending retry | `{"operator":"..."}` | `kernel/gateway/src/runtime/http.rs:694` |
-| `retry` | Auto-retry by workflow engine | `{"auto_retry":true, "attempt":N}` | `kernel/workflow/src/lib.rs:1027` |
+| `retry` | Manual retry of errored workflow | `{"operator":"..."}` | `kernel/gateway/src/runtime/http.rs:682` |
+| `cancel` | Cancel pending retry | `{"operator":"..."}` | `kernel/gateway/src/runtime/http.rs:725` |
+| `retry` | Auto-retry by workflow engine | `{"auto_retry":true, "attempt":N}` | `kernel/workflow/src/lib.rs:1111` |
 
 Published by HTTP handlers and the workflow engine's auto-retry mechanism.
 
@@ -812,7 +866,7 @@ Key implementation details:
 `AgentRegistry` (`kernel/gateway/src/runtime/agent_registry.rs`) stores per-agent Local Buses in a `RwLock<HashMap<String, Arc<dyn EventBus>>>`:
 
 - `set_local_bus(agent_id, bus)` — called during `load_from_config()` to create each agent's Local Bus
-- `get_local_bus(agent_id) -> Option<Arc<dyn EventBus>>` — called by `ToolExecutor`, `LlmReActEngine`, and `AgentHarness` to resolve the correct bus for each agent's internal events
+- `get_local_bus(agent_id) -> Option<Arc<dyn EventBus>>` — called by `LlmCognitiveEngine` and `AgentHarness` to resolve the correct bus for each agent's internal events
 - `clear()` — removes all Local Buses alongside agent instances during shutdown
 
 ---
@@ -828,7 +882,7 @@ Defined in `kernel/gateway/src/runtime/event_store.rs`:
 - **`trace_chain(trace_id)`**: BFS traversal of trace ancestors + descendants
 - **`recent(count)`**: Most recent N events by insertion order
 
-The `StoreAllEventsHandler` (`kernel/gateway/src/runtime/agent_runtime.rs:903-907`) is a catch-all subscriber that records every published event into the EventStore.
+The `StoreAllEventsHandler` (`kernel/gateway/src/runtime/agent_runtime.rs:5707`) is a catch-all subscriber that records every published event into the EventStore.
 
 ---
 
@@ -852,7 +906,7 @@ Events enter DLQ primarily through the pipeline engine when a step fails and com
 
 `kernel/gateway/src/runtime/audit.rs` — `AuditLogger`:
 
-- Ring buffer of `AuditRecord` with fields: `operator`, `action`, `target`, `outcome`, `detail`, `timestamp`
-- Default capacity: 2000 records
+- Ring buffer of `AuditRecord` with fields: `id`, `operator`, `action`, `target`, `outcome`, `detail`, `timestamp`
+- Capacity set at call site (typically 2000 records)
 - Recorded at ~100+ call sites across HTTP handlers and the runtime
 - Queryable via `GET /audit-log` with filters: `action`, `operator`, `since_ms`, `until_ms`, `limit`, `offset`

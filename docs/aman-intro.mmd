@@ -1,64 +1,99 @@
 graph TB
-    %% ═══════════════════════════════════════════
+    %% ══════════════════════════════════════════════════════════
     %% STYLES
-    %% ═══════════════════════════════════════════
-    classDef external fill:#1a1a2e,stroke:#e94560,color:#eee,stroke-width:2px,rx:12,ry:12
-    classDef harness  fill:#16213e,stroke:#533483,color:#eee,stroke-width:3px,rx:12,ry:12
-    classDef llm      fill:#0f3460,stroke:#06d6a0,color:#eee,stroke-width:2px,rx:12,ry:12
-    classDef human    fill:#2d2d44,stroke:#f77f00,color:#eee,stroke-width:2px
-    classDef idle     fill:#2d2d44,stroke:#fcbf49,color:#eee,stroke-width:2px
-    classDef event    fill:#1a1a2e,stroke:#00b4d8,color:#eee,stroke-width:2px,rx:12,ry:12
+    %% ══════════════════════════════════════════════════════════
+    classDef external fill:#1a1a2e,stroke:#e94560,color:#eee,stroke-width:2px,rx:10,ry:10
+    classDef gateway  fill:#16213e,stroke:#0f3460,color:#eee,stroke-width:3px,rx:10,ry:10
+    classDef cogn      fill:#0f3460,stroke:#06d6a0,color:#eee,stroke-width:2px,rx:10,ry:10
+    classDef human     fill:#2d2d44,stroke:#f77f00,color:#eee,stroke-width:2px
+    classDef event     fill:#1a1a2e,stroke:#00b4d8,color:#eee,stroke-width:2px,rx:10,ry:10
+    classDef cap       fill:#2d2d44,stroke:#adb5bd,color:#eee,stroke-width:1px
 
-    %% ═══════════════════════════════════════════
-    %% NODES
-    %% ═══════════════════════════════════════════
-
-    INPUT["🌐 外部输入
-    IM Channels · Chat · Cron · Webhook · FileWatch"]:::external
-
-    HARNESS["🏗 Agent Harness
-    智能体运行时
-    ReAct 推理循环 · 工具执行 · 会话管理"]:::harness
-
-    LLM["🤖 LLM Client
-    大模型抽象层 · 多 Provider 可插拔"]:::llm
-
-    EVENTS["⚡ Event Bus · 底层 — 事件驱动基础
-    发布订阅 · 背压控制 · WAL 持久化"]:::event
-
-    %% ── 拟人系统子图 ──
-    subgraph ANTHRO["🧠 拟人机制 · 核心 — Anthropomorphic Core"]
-        direction TB
-        IDLE["😴 Idle System
-        空闲感知 · 主动观察 · 无聊触发"]:::idle
-        LIFECYCLE["🔄 Lifecycle System
-        生命周期执行引擎"]:::human
-        WORK["💼 Work
-        工作执行"]:::human
-        STUDY["📚 Study
-        学习成长"]:::human
-        DAILY["🌅 Daily Life
-        日常节律"]:::human
-
-        LIFECYCLE --> WORK
-        LIFECYCLE --> STUDY
-        LIFECYCLE --> DAILY
-        IDLE -.->|"空闲时触发"| LIFECYCLE
+    %% ══════════════════════════════════════════════════════════
+    %% EXTERNAL — 用户与外部接口
+    %% ══════════════════════════════════════════════════════════
+    subgraph EXTERNAL["🌐 外部接口层"]
+        direction LR
+        CHAT["💬 Chat<br/>Tauri · IM · HTTP API"]
+        CRON["⏰ Sources<br/>Timer · Cron · FileWatch<br/>Webhook · Signal · Socket"]
+        DESKTOP["🖥 Desktop<br/>Tauri v2 · Svelte"]
     end
 
-    %% ═══════════════════════════════════════════
-    %% CONNECTIONS
-    %% ═══════════════════════════════════════════
+    %% ══════════════════════════════════════════════════════════
+    %% GATEWAY — 网关守护进程 (aman binary)
+    %% ══════════════════════════════════════════════════════════
+    GATEWAY["🏗 Gateway Daemon · 网关守护进程<br/>aman binary<br/>Agent Runtime · Session Manager<br/>HTTP/gRPC/SSE · Plugin Loader<br/>46 Crates · 35 kernel + 3 cognitive"]:::gateway
 
-    INPUT --> HARNESS
-    HARNESS -->|"chat_completion"| LLM
-    LLM -->|"response"| HARNESS
+    %% ══════════════════════════════════════════════════════════
+    %% COGNITIVE — 认知引擎
+    %% ══════════════════════════════════════════════════════════
+    subgraph COGNITIVE["🧠 认知引擎层 — Cognitive Engine"]
+        direction LR
+        CTRAIT["Cognitive Engine Trait<br/>引擎无关抽象<br/>Observation → Decision"]
+        COGIMPL["LlmCognitiveEngine<br/>ReAct 循环 (内部化)<br/>LLM 重试 · 工具执行 · 流式<br/>多 Provider: OpenAI/Anthropic/Local"]
+    end
 
-    HARNESS -->|"发布事件"| EVENTS
+    %% ══════════════════════════════════════════════════════════
+    %% LIFESTYLE — 拟人系统
+    %% ══════════════════════════════════════════════════════════
+    subgraph LIFESTYLE["🎭 拟人机制层 — Agent Lifestyle"]
+        direction LR
+        IDLE["😴 Idle · 空闲内省<br/>9 状态 FSM<br/>无聊 → 自主探索"]
+        WORK["💼 Work · 工作<br/>IDLE→CLAIM→EXEC→REVIEW"]
+        STUDY["📚 Study · 学习<br/>知识获取 · 间隔重复"]
+        DAILY["🌅 Daily · 日常<br/>晨午晚 · 作息节律"]
+        MEM["🩸 Memory · 记忆<br/>情节/语义 · 30 天半衰期"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %% CAPABILITY — 能力层
+    %% ══════════════════════════════════════════════════════════
+    subgraph CAPABILITY["⚙️ 能力层 · 可复用基础"]
+        direction LR
+        SOUL["🦴 Soul · 身份<br/>SOUL.md 人格 · 边界"]
+        SKILL["📜 Skills · 技能<br/>YAML/SKILL.md + Tantivy"]
+        TOOL["🔧 Tools · 工具<br/>file/http/exec/db"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %% EVENT — 事件系统 (中枢神经系统)
+    %% ══════════════════════════════════════════════════════════
+    EVENTS["⚡ Event Bus · 事件驱动中枢<br/>双总线: Global 10000 + Per-Agent 1000<br/>7 级背压 · WAL 持久化 · 去重重试<br/>一切皆事件 · 响应即行为"]:::event
+
+    %% ══════════════════════════════════════════════════════════
+    %% CONNECTIONS — 数据流
+    %% ══════════════════════════════════════════════════════════
+
+    %% 外部 → 网关
+    CHAT -->|"MessageReceived"| GATEWAY
+    CRON -->|"source events"| EVENTS
+    DESKTOP -->|"REST/SSE"| GATEWAY
+
+    %% 网关内部
+    GATEWAY -->|"加载"| CAPABILITY
+    GATEWAY -->|"调用"| COGIMPL
+    COGIMPL -->|"决策: 回复 OR 工具"| GATEWAY
+    GATEWAY -->|"manage"| LIFESTYLE
+
+    %% 认知 ↔ 能力
+    COGIMPL -->|"system_prompt"| SOUL
+    COGIMPL -.->|"experience/skill 注入"| SKILL
+
+    %% 网关 → 事件
+    GATEWAY -->|"publish"| EVENTS
+
+    %% 事件 → 拟人系统驱动
     EVENTS -->|"驱动"| IDLE
-    EVENTS -->|"驱动"| LIFECYCLE
+    EVENTS -->|"驱动"| WORK
+    EVENTS -->|"驱动"| STUDY
+    EVENTS -->|"驱动"| DAILY
+    EVENTS -->|"读写"| MEM
 
-    IDLE -->|"空闲信号反馈"| EVENTS
-    WORK -->|"完成/失败事件"| EVENTS
-    STUDY -->|"完成/失败事件"| EVENTS
-    DAILY -->|"完成/失败事件"| EVENTS
+    %% 拟人系统 ↔ 事件反馈
+    IDLE -.->|"空闲信号"| EVENTS
+    WORK -.->|"item_completed/failed"| EVENTS
+    STUDY -.->|"item_completed"| EVENTS
+    DAILY -.->|"daily_routine"| EVENTS
+
+    %% 空闲触发工作流
+    IDLE -.->|"无聊 → 触发"| WORK

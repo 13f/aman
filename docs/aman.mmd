@@ -51,7 +51,8 @@ graph TB
         Phase0 → Phase5 (startup)
         Phase5 → Phase0 (shutdown)"]
         REGISTRY["AgentRegistry
-        Per-agent state / providers"]
+        Per-agent state / providers
+        Per-agent Local Bus resolution"]
         SM["SessionManager
         Chat sessions & history"]
         ES["EventStore
@@ -68,9 +69,9 @@ graph TB
     subgraph HARNESS["🧠 Agent Harness — ReAct Loop"]
         direction TB
         AH["AgentHarness
-        handle_message() → ReAct loop"]
-        RE["ReActEngine
-        LLM ⇄ Tool loop"]
+        process_message_v2() → CognitiveEngine"]
+        RE["LlmCognitiveEngine
+        LLM ⇄ Tool loop (ReAct internalized)"]
         TE["ToolExecutor
         Permission checks + detach mode"]
         SOUL["SoulRuntime
@@ -90,7 +91,7 @@ graph TB
         EB["InMemoryBus
         publish / subscribe / dequeue"]
         BP["BackpressureController
-        6 Levels: L1→L2→L3→L4A→L4B→Critical
+        7 Levels: Normal→L1→L2→L3→L4A→L4B→Critical
         Overflow-to-disk at L4A"]
         DEDUP["DedupWindow
         Bloom filter + LRU cache"]
@@ -100,7 +101,9 @@ graph TB
         Per-source FIFO + priority heap"]
         EVTYPES["Event Types
         MessageReceived / Idle / QueueDrained
-        AgentMessage / FileCreated / WebhookReceived"]
+        AgentMessage / FileCreated / WebhookReceived
+        + cognitive_state_changed / emotion:evaluated
+        + idle.cycle_completed / idle.inspiration"]
     end
 
     %% ═══════════════════════════════════════════
@@ -265,7 +268,7 @@ graph TB
     CRON -->|"scheduled events"| EB
     WEBHOOK -->|"WebhookReceived"| EB
     FILEWATCH -->|"FileCreated"| EB
-    SIGNAL -->|"SignalReceived"| EB
+    SIGNAL -->|"SystemSignal"| EB
     SOCKET -->|"data"| EB
     CLI -->|"HTTP/JSON-RPC/gRPC"| HTTP
     CLI -->|"gRPC"| GRPC
@@ -340,7 +343,8 @@ graph TB
     IC -->|"shared state"| DISP
     BA -->|"random skill"| SKILL
     BA -->|"publish MessageReceived"| EB
-    ID -->|"idle events"| EB
+    ID -->|"idle.system / idle.cycle_completed
+    idle.inspiration / agent:cold_start_done"| EB
 
     %% Lifecycle Engine → Work/Study/Daily
     LE --> WS

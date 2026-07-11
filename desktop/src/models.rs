@@ -163,6 +163,12 @@ pub struct ChatSessionInfo {
     /// Agent that owns this session.
     #[serde(default)]
     pub agent_id: String,
+    /// True if the session can be safely deleted: it has no messages, or its
+    /// agent replies match low-value patterns (idle signals, no-result batch
+    /// jobs, etc.) per `is_low_value_reply`. Used by the UI to show/hide a
+    /// per-session delete button.
+    #[serde(default)]
+    pub deletable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

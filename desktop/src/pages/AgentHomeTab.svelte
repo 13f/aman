@@ -13,6 +13,7 @@
     messageCount: number;
     lastActiveAt: number;
     isProcessing: boolean;
+    deletable: boolean;
   }
 
   interface WorkflowInstance {
@@ -27,6 +28,7 @@
   let loading = $state(true);
   let processingSessions = $state<Set<string>>(new Set());
   let abortingId = $state<string | null>(null);
+  let deletingSessionId = $state<string | null>(null);
 
   // ── Skill quick-run (Daily Life) ──────────────────────────────
   // Whether each skill tag is available for this agent (drives the
@@ -139,7 +141,7 @@
       const list = await invoke<Array<{
         id: string; state: string; message_count: number;
         created_at: number; last_active_at: number | null;
-        title?: string;
+        title?: string; deletable?: boolean;
       }>>("chat_session_list_db", { agentKey });
 
       sessions = list.map((s, i) => ({
@@ -149,6 +151,7 @@
         messageCount: s.message_count,
         lastActiveAt: s.last_active_at ?? s.created_at,
         isProcessing: processingSessions.has(s.id) || s.state === "processing",
+        deletable: s.deletable ?? false,
       }));
     } catch {
       // Fallback to gateway API
@@ -156,7 +159,7 @@
         const list = await invoke<Array<{
           id: string; state: string; message_count: number;
           created_at: number; last_active_at: number | null;
-          title?: string;
+          title?: string; deletable?: boolean;
         }>>("chat_session_list", { agentKey });
         sessions = list.map((s, i) => ({
           id: s.id,
@@ -165,6 +168,7 @@
           messageCount: s.message_count,
           lastActiveAt: s.last_active_at ?? s.created_at,
           isProcessing: processingSessions.has(s.id) || s.state === "processing",
+          deletable: s.deletable ?? false,
         }));
       } catch {
         sessions = [];
@@ -217,6 +221,18 @@
     } catch { /* ignore */ }
     abortingId = null;
     await loadSessions();
+  }
+
+  async function deleteSession(sessionId: string) {
+    deletingSessionId = sessionId;
+    try {
+      await invoke("chat_session_delete", { sessionId });
+      sessions = sessions.filter(s => s.id !== sessionId);
+      flashRunToast("success", t("chat.session_deleted"));
+    } catch (e) {
+      flashRunToast("error", t("chat.failed_delete_session").replace("{e}", String(e)));
+    }
+    deletingSessionId = null;
   }
 
   async function cancelWorkflow(id: string) {
@@ -334,7 +350,7 @@
   );
   const activeSessions = $derived(sessionsWithPids.filter(s => s.isProcessing));
   const idleSessions = $derived(sessionsWithPids.filter(s => !s.isProcessing));
-  const hasContent = $derived(activeSessions.length > 0 || workflows.length > 0);
+  const hasContent = $derived(activeSessions.length > 0 || workflows.length > 0 || idleSessions.length > 0);
 </script>
 
 <div class="home-tab">
@@ -440,6 +456,18 @@
                 <span class="task-name muted">{session.title}</span>
                 <span class="task-meta">{session.messageCount} msgs · {timestampLabel(session.lastActiveAt)}</span>
               </div>
+              {#if session.deletable}
+                <div class="task-actions">
+                  <button
+                    class="task-btn kill"
+                    disabled={deletingSessionId === session.id}
+                    onclick={() => deleteSession(session.id)}
+                    title={t("chat.delete")}
+                  >
+                    {deletingSessionId === session.id ? "…" : t("chat.delete")}
+                  </button>
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>

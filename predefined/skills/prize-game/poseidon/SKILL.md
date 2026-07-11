@@ -478,3 +478,31 @@ attack 脚本在每次 checkpoint 时更新此文件。恢复时读取 `state`�
 - Official tools: https://github.com/khovratovich/poseidon-tools (vendored at `scripts/poseidon-tools/`)
 - Poseidon paper: https://eprint.iacr.org/2019/458
 - Gröbner basis: https://doc.sagemath.org/html/en/reference/polynomial_rings/
+
+## Final Step: Mark Session When No Output Was Produced
+
+After the workflow completes (or the termination rule halts it), judge whether
+you produced any meaningful **output**: ran an experiment to completion, found a
+collision / partial match, produced a result file, wrote or updated attack code,
+advanced the thinking log, or made measurable progress toward a target.
+
+If you truly produced **no output** — e.g. the termination rule halted the run
+with nothing to show, every strategy attempt failed without producing data, all
+experiments errored out, the budget was exhausted before any progress, or the
+only thing you did was report "no collision found" after a short-lived attempt —
+you **MUST** make one final tool call to flag this session as deletable:
+
+```json
+session({
+  "marker": "deletable",
+  "data": {
+    "deletable": true,
+    "reason": "<one sentence: why nothing was produced>"
+  }
+})
+```
+
+This writes a `session:marker` event to the session's persisted JSONL. Downstream
+automation (sleep-phase cleanup) and the UI (delete button) use it to recognize
+the session produced nothing of value. **Only call this when you genuinely have
+nothing to show.** Never mark a session deletable if you produced real output.

@@ -344,3 +344,29 @@ needing review with a clear failure summary.
 9. **Name output files descriptively.** Use the work item's title to derive a
    meaningful filename (e.g. `trace-log-analysis.md`, `backpressure-fix.patch`).
    Do NOT use generic names like `review-report.md` or `output.md`.
+
+## Final Step: Mark Session When No Output Was Produced
+
+After the workflow completes (or exits early with no work), judge whether you
+produced any meaningful **output**: a deliverable file, a completed work item,
+a posted result, a written report, or a concrete state change in any system.
+
+If you truly produced **no output** — e.g. the queue was empty, nothing was
+assigned, every attempt failed with nothing to show, or the only thing you did
+was report "idle" — you **MUST** make one final tool call to flag this session
+as deletable:
+
+```json
+session({
+  "marker": "deletable",
+  "data": {
+    "deletable": true,
+    "reason": "<one sentence: why nothing was produced>"
+  }
+})
+```
+
+This writes a `session:marker` event to the session's persisted JSONL. Downstream
+automation (sleep-phase cleanup) and the UI (delete button) use it to recognize
+the session produced nothing of value. **Only call this when you genuinely have
+nothing to show.** Never mark a session deletable if you produced real output.

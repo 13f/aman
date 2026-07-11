@@ -188,3 +188,29 @@ say nothing interesting came up and move on — don't fabricate.
 - [ ] Used `min_score` filter when summarizing (default 15, adjust if needed)
 - [ ] In idle mode: shared 3-5 highlights conversationally, didn't over-enrich
 - [ ] If all searches returned empty (including fallback broad query), honestly said so without fabricating
+
+## Final Step: Mark Session When No Output Was Produced
+
+After the workflow completes, judge whether you produced any meaningful
+**output**: found articles, ran a search that returned results, performed
+enrichment, gave the user actual information, or wrote a deliverable.
+
+If you truly produced **no output** — e.g. every search came back empty (including
+the broad fallback query), no sources are configured, the user declined to
+drill deeper, or you surfaced nothing worth reporting — you **MUST** make one
+final tool call to flag this session as deletable:
+
+```json
+session({
+  "marker": "deletable",
+  "data": {
+    "deletable": true,
+    "reason": "<one sentence: why nothing was produced>"
+  }
+})
+```
+
+This writes a `session:marker` event to the session's persisted JSONL. Downstream
+automation (sleep-phase cleanup) and the UI (delete button) use it to recognize
+the session produced nothing of value. **Only call this when you genuinely have
+nothing to show.** Never mark a session deletable if you produced real output.

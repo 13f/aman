@@ -459,7 +459,15 @@ impl SessionStore {
                 }
             }
 
-            if total_reply_chars < min_reply_chars || Self::is_low_value_reply(&all_reply_text) {
+            let marker_deletable = events.iter().any(|e| {
+                e["event_type"].as_str().map_or(false, |et| et.contains("session:marker"))
+                    && e["payload"]["data"]["deletable"].as_bool() == Some(true)
+            });
+
+            if marker_deletable
+                || total_reply_chars < min_reply_chars
+                || Self::is_low_value_reply(&all_reply_text)
+            {
                 to_delete.push(id.clone());
             }
         }

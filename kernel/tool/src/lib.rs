@@ -11,6 +11,7 @@ pub mod permission;
 pub mod fs_tools;
 pub mod planner;
 pub mod security;
+pub mod session_tools;
 pub mod web_fetch;
 pub mod web_search;
 
@@ -621,7 +622,10 @@ pub fn install_builtin_tools(registry: &ToolRegistry) -> AmanResult<()> {
     // Not LLM-exposed — called from kill_session / operator cleanup.
     registry.register(Arc::new(KillChildrenTool {
         child_registry: Some(registry.child_process_registry()),
-    }))
+    }))?;
+    // Session marker tool — agent annotates its own session JSONL with
+    // structured signals (e.g. "deletable") for downstream automation.
+    registry.register(Arc::new(session_tools::SessionTool))
 }
 
 /// Register all code agent CLI tools that are available on PATH.

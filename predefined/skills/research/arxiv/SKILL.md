@@ -313,3 +313,29 @@ Format:
 - [ ] Results presented with title, authors, categories, date, URL, and abstract snippet
 - [ ] Links are clickable (https://arxiv.org/abs/...)
 - [ ] When user asks for more detail on a paper, fetched the paper page or abstract
+
+## Final Step: Mark Session When No Output Was Produced
+
+After the workflow completes, judge whether you produced any meaningful
+**output**: found real papers (non-empty `papers` array), presented results to the
+user, fetched paper details, or ran a search that returned actionable data.
+
+If you truly produced **no output** — e.g. every search returned empty (no papers
+matched), the tag wasn't recognized so no query could be built, the API errored
+out without returning data, or you surfaced nothing worth reporting — you
+**MUST** make one final tool call to flag this session as deletable:
+
+```json
+session({
+  "marker": "deletable",
+  "data": {
+    "deletable": true,
+    "reason": "<one sentence: why nothing was produced>"
+  }
+})
+```
+
+This writes a `session:marker` event to the session's persisted JSONL. Downstream
+automation (sleep-phase cleanup) and the UI (delete button) use it to recognize
+the session produced nothing of value. **Only call this when you genuinely have
+nothing to show.** Never mark a session deletable if you produced real output.

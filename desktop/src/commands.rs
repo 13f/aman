@@ -857,6 +857,10 @@ pub async fn chat_session_list(
             branch_message_id: item["branch_message_id"].as_str().map(String::from),
             version: item["version"].as_u64().unwrap_or(0),
             agent_id: item["agent_id"].as_str().unwrap_or("").to_owned(),
+            // Gateway API path: no direct JSONL access, so only mark
+            // zero-message sessions as deletable here. The local-DB path
+            // (chat_session_list_db) applies the full low-value check.
+            deletable: item["message_count"].as_u64().unwrap_or(0) == 0,
         }).collect::<Vec<_>>()
     }).unwrap_or_default();
     Ok(items)
@@ -942,6 +946,108 @@ pub async fn chat_session_list_db(
         None
     }
 
+    /// Concatenate all agent reply text for a session's JSONL, searching
+    /// across all agent directories. Mirrors the gateway's
+    /// `SessionStore::load_session_events` + reply extraction used by
+    /// `delete_stale_low_value_sessions`.
+    fn jsonl_agent_reply_text(agents_root: &std::path::Path, session_id: &str) -> String {
+        let entries = match std::fs::read_dir(agents_root) {
+            Ok(e) => e,
+            Err(_) => return String::new(),
+        };
+        let mut all = String::new();
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let path = entry.path().join("sessions").join(format!("{session_id}.jsonl"));
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            for line in content.lines() {
+                let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Some(et) = evt["event_type"].as_str() else { continue };
+                if !et.contains("reply_ready") && et != "llm_reply_ready" {
+                    continue;
+                }
+                let payload = &evt["payload"];
+                if let Some(reply) = payload["reply"]
+                    .as_str()
+                    .or_else(|| payload["full_text"].as_str())
+                {
+                    all.push_str(reply);
+                    all.push('\n');
+                }
+            }
+        }
+        all
+    }
+
+    /// Returns true if concatenated agent reply text matches patterns that
+    /// indicate a session produced no useful content. Mirrors the gateway's
+    /// `SessionStore::is_low_value_reply` so the UI's "deletable" flag uses
+    /// the same keyword/regex rules as the automated sleep-phase cleanup.
+    fn is_low_value_reply(reply_text: &str) -> bool {
+        let normalized = reply_text.to_lowercase();
+
+        // ── Category 1: Idle / no-work signals ──
+        let idle_signals = [
+            "agent is idle",
+            "no work items",
+            "nothing to do",
+            "no tasks assigned",
+            "no pending work",
+            "currently idle",
+            "没有工作项目",
+            "无任务分配",
+            "agent idle",
+            "no active work",
+        ];
+        if idle_signals.iter().any(|s| normalized.contains(s)) {
+            return true;
+        }
+
+        // ── Category 2: No-result batch/compute tasks ──
+        let no_result_signals = [
+            "no match found",
+            "no collision found",
+            "no results",
+            "result: ❌",
+            "nothing found",
+            "0 matches",
+            "no match",
+            "未找到匹配",
+            "无碰撞",
+            "no wallet was cracked",
+        ];
+        let has_no_result = no_result_signals.iter().any(|s| normalized.contains(s));
+        if !has_no_result {
+            return false;
+        }
+
+        // Require corroborating signals that this was a batch compute task,
+        // not a legitimate search that happened to find nothing.
+        let batch_signals = [
+            "keys checked",
+            "workers",
+            "duration",
+            "elapsed",
+            "average rate",
+            "search space",
+            "keys/sec",
+            "probability",
+            "expected time",
+        ];
+        let batch_hits = batch_signals
+            .iter()
+            .filter(|s| normalized.contains(*s))
+            .count();
+
+        // At least 3 batch signals + a no-result signal → low-value batch job
+        batch_hits >= 3
+    }
+
     let db = rusqlite::Connection::open(&db_path)
         .map_err(|e| format!("open sessions.db: {e}"))?;
     // Enable WAL mode so concurrent reads aren't blocked by gateway writes.
@@ -966,6 +1072,7 @@ pub async fn chat_session_list_db(
             parent_session_id: None,
             branch_message_id: None,
             version: 0,
+            deletable: false,
         })
     })
     .map_err(|e| format!("read sessions.db: {e}"))?;
@@ -984,9 +1091,54 @@ pub async fn chat_session_list_db(
         if item.title.is_none() {
             item.title = jsonl_session_title(&agents_root, &item.id);
         }
+        // A session is deletable if: it has zero messages, OR its agent replies
+        // match low-value patterns (idle signals, no-result batch jobs, …), OR
+        // a `session:marker` event with `data.deletable=true` is present
+        // (written by the LLM `session` tool when it produced no useful output).
+        item.deletable =
+            item.message_count == 0 ||
+            jsonl_has_deletable_marker(&agents_root, &item.id) ||
+            is_low_value_reply(&jsonl_agent_reply_text(&agents_root, &item.id));
         items.push(item);
     }
     Ok(items)
+}
+
+/// True if any `session:marker` event in the session JSONL carries
+/// `data.deletable=true`. Mirrors the gateway
+/// `delete_stale_low_value_sessions` marker detection so the UI and the
+/// sleep cleanup agree on what's deletable.
+fn jsonl_has_deletable_marker(agents_root: &std::path::Path, session_id: &str) -> bool {
+    let entries = match std::fs::read_dir(agents_root) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let path = entry
+            .path()
+            .join("sessions")
+            .join(format!("{session_id}.jsonl"));
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for line in content.lines() {
+            let Ok(evt) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            if !evt["event_type"]
+                .as_str()
+                .map_or(false, |et| et.contains("session:marker"))
+            {
+                continue;
+            }
+            if evt["payload"]["data"]["deletable"].as_bool() == Some(true) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[tauri::command]

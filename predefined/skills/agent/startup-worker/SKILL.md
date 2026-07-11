@@ -130,3 +130,30 @@ is marked complete.
 3. **One status check is enough.** Don't poll repeatedly — the plugin handles its own progress.
 4. **Idle is valid.** No pending startup tasks? Report it and exit.
 5. **API errors are not blockers.** If the startup API is unreachable, report it and exit.
+
+## Final Step: Mark Session When No Output Was Produced
+
+After the workflow completes (or exits early with no pending tasks), judge
+whether you produced any meaningful **output**: a status report with actual
+validation data, a detected task, a triggered action, or a concrete state
+change in any system.
+
+If you truly produced **no output** — e.g. no startup tasks were pending, the
+API was unreachable so no data could be reported, or the only thing you did was
+report "no work" — you **MUST** make one final tool call to flag this session
+as deletable:
+
+```json
+session({
+  "marker": "deletable",
+  "data": {
+    "deletable": true,
+    "reason": "<one sentence: why nothing was produced>"
+  }
+})
+```
+
+This writes a `session:marker` event to the session's persisted JSONL. Downstream
+automation (sleep-phase cleanup) and the UI (delete button) use it to recognize
+the session produced nothing of value. **Only call this when you genuinely have
+nothing to show.** Never mark a session deletable if you produced real output.

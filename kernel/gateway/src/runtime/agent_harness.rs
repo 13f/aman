@@ -275,14 +275,39 @@ impl AgentHarness {
     pub async fn process_message_v2(
         self: &Arc<Self>, agent_id: &str, session_id: &str, user_text: &str,
         model: &str, soul_snapshot: SoulSnapshot, skill_name: Option<&str>,
-        background: bool,
+        background: bool, continuation_mode: ContinuationMode,
     ) -> AmanResult<String> {
         let inst = self.prepare_agent_session(agent_id, session_id, background).await?;
         if let Some(c) = self.registry.get_idle_coordination(agent_id).await { c.reset_idle_signal().await; c.arousal.boost(0.3); }
         let tools = self.build_tool_descriptors(agent_id).await;
         // Get past conversation history (without current message — it will be
         // passed as an Observation below, avoiding duplication).
-        let past_history = self.session_history.get(session_id);
+        let mut past_history = self.session_history.get(session_id);
+
+        // Continue ("继续") mode: the user is picking up a prior task.  The
+        // in-memory session_history may be empty if the previous task was
+        // aborted (e.g. workflow timeout) or the gateway restarted.  Lazily
+        // reconstruct the history from the persisted JSONL so the agent can
+        // resume meaningfully — then compress it into a structured summary
+        // via `build_continuation_context`.
+        //
+        // We deliberately do this BEFORE the content-filter / consciousness
+        // checks so the "继续" intent is recognised even when past_history
+        // would otherwise be empty.
+        let continuation_summary = if continuation_mode == ContinuationMode::Continue {
+            if past_history.is_empty() {
+                self.restore_session_history_from_jsonl(session_id, agent_id).await;
+                past_history = self.session_history.get(session_id);
+            }
+            if !past_history.is_empty() {
+                Some(build_continuation_context(&past_history))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &past_history, &tools).await;
         let mem = self.retrieve_relevant_memories(agent_id, user_text).await;
 
@@ -307,13 +332,21 @@ impl AgentHarness {
         // Compute grounding — how well-informed the agent is for this task
         let grounding = self.compute_grounding(agent_id, user_text, &mem, &tb).await;
 
+        // Build the conversation history that the LLM sees:
+        // - Continue ("继续") mode — inject the compressed session summary as
+        //   a leading system message so the agent knows what it was doing.
+        // - Fresh / Replay — the standard user↔assistant dialogue strip.
+        let conversation_history = match continuation_summary {
+            Some(ref summary) => summary.clone(),
+            None => filter_conversation_history(&past_history),
+        };
         let ctx = CognitiveContext {
             agent_id: agent_id.into(), session_id: session_id.into(),
             identity: CognitiveIdentity { name: soul_snapshot.name.clone(), identity: soul_snapshot.system_prompt.clone(), boundaries: soul_snapshot.boundaries.clone(), expertise: vec![], vibe: None, raw: soul_snapshot.system_prompt.clone() },
             capabilities: tools.iter().map(|t| cognitive_engine::Capability { name: t.name.clone(), description: t.description.clone(), parameters: t.parameters.clone(), cap_type: cognitive_engine::CapabilityType::Tool }).collect(),
             memory_context: mem.map(|m| vec![cognitive_engine::MemoryItem { key: "retrieved".into(), content: m, importance: 0.5, timestamp: None }]).unwrap_or_default(),
             engine_config: json!({"model": model}),
-            conversation_history: filter_conversation_history(&past_history),
+            conversation_history,
             grounding,
         };
         // ── Consciousness check: skip processing if LLM is unavailable ──
@@ -633,6 +666,38 @@ impl AgentHarness {
         }
     }
 
+    /// Lazily rebuild in-memory session history from the persisted JSONL
+    /// file — but only if it is currently empty.
+    ///
+    /// Used by the "继续" (continue) path: when the previous task was
+    /// aborted (e.g. workflow timeout) or the gateway restarted, the
+    /// in-memory `session_history` is empty even though the JSONL still
+    /// holds the full conversation.  This bridges the gap so the agent can
+    /// resume with real context.
+    async fn restore_session_history_from_jsonl(&self, session_id: &str, agent_id: &str) {
+        if !self.session_history.get(session_id).is_empty() {
+            return; // already populated — nothing to do
+        }
+        // Resolve the owning agent: prefer the explicit agent_id, but fall
+        // back to scanning all stores (handles events published before
+        // agent resolution, e.g. MessageReceived).
+        let store = self.registry.get_session_store(agent_id).await
+            .or_else(|| {
+                // Synchronous poll of all stores — acceptable because this
+                // only runs on the cold "继续" path, not the hot loop.
+                let stores = pollster::block_on(self.registry.all_session_stores());
+                stores.into_iter().find(|s| s.has_session(session_id))
+            });
+        if let Some(store) = store {
+            let events = store.load_session_events(session_id);
+            if !events.is_empty() {
+                self.restore_session_history(session_id, &events);
+                tracing::info!(%agent_id, %session_id, events = events.len(),
+                    "restored session history from JSONL for continue");
+            }
+        }
+    }
+
     /// Get a copy of the current conversation history for a session.
     pub fn get_session_history(&self, session_id: &str) -> Vec<ChatMessage> {
         self.session_history.get(session_id)
@@ -886,8 +951,10 @@ impl AgentHarness {
                 json!({"agent_id": agent_id, "session_id": session_id, "skill_name": skill_name}),
             )).await;
         }
-        let _ = (&react_mode, &continuation_mode);
-        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, skill_name, background).await
+        // `react_mode` (skill execution mode) drives skill-level behaviour
+        // via the soul/skill prompt — nothing to do here at the harness layer.
+        let _ = react_mode;
+        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, skill_name, background, continuation_mode).await
     }
 
     /// Process a message through the ReAct loop for an anonymous agent.
@@ -906,7 +973,7 @@ impl AgentHarness {
         soul_snapshot: SoulSnapshot,
         background: bool,
     ) -> AmanResult<String> {
-        self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, None, background).await
+        self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, None, background, ContinuationMode::Fresh).await
     }
 
     // ── process_message helpers ──────────────────────────────────────
@@ -1323,7 +1390,6 @@ impl AgentHarness {
 /// Status: <complete | incomplete | collision_found | stuck>
 /// Last actions: <what was happening when the session paused>
 /// ```
-#[allow(dead_code)]
 fn build_continuation_context(history: &[ChatMessage]) -> Vec<ChatMessage> {
     use std::collections::BTreeMap;
 
@@ -1687,5 +1753,48 @@ mod tests {
         assert_eq!(filtered.len(), 2, "should keep only real user question and answer");
         assert_eq!(filtered[0].content, "Real question");
         assert_eq!(filtered[1].content, "Real answer");
+    }
+
+    // ── Continue-mode summary behaviour (Bug C) ──────────────────────────
+
+    #[test]
+    fn build_continuation_context_skips_bare_continue_marker() {
+        // A user who previously asked something, then sent "继续" to resume.
+        // The summary must reflect the *prior* task, not the marker itself.
+        let history = vec![
+            ChatMessage::user("Write a bip32 script"),
+            ChatMessage::assistant("Working on it..."),
+            ChatMessage::user("继续"),
+        ];
+        let ctx = build_continuation_context(&history);
+        assert_eq!(ctx.len(), 1);
+        let summary = &ctx[0].content;
+        // The actual task is captured as the goal...
+        assert!(
+            summary.contains("Goal: Write a bip32 script"),
+            "summary should capture prior task as Goal, got: {summary}"
+        );
+        // ...and the bare continuation marker is filtered out of user_messages.
+        assert!(
+            !summary.contains("Goal: 继续"),
+            "bare marker must NOT become the Goal, got: {summary}"
+        );
+    }
+
+    #[test]
+    fn build_continuation_context_marks_prior_task_when_aborted_mid_reply() {
+        // Mirrors the real bug scenario: the user asked something and the
+        // agent started replying but never finished (LLM call hung, got
+        // aborted).  Restoration must still capture the goal and mark the
+        // session as incomplete.
+        let history = vec![
+            ChatMessage::user("Write a python script for bip32"),
+            ChatMessage::assistant("I'll create the script now."),
+        ];
+        let ctx = build_continuation_context(&history);
+        let summary = &ctx[0].content;
+        assert!(summary.contains("Goal: Write a python script for bip32"));
+        assert!(summary.contains("Status: incomplete"));
+        assert!(summary.contains("Last action: I'll create the script now."));
     }
 }

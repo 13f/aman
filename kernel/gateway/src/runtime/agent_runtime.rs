@@ -1321,6 +1321,15 @@ impl AgentRuntimeBuilder {
                 let agent_id = agent.descriptor.agent_id.clone();
                 let model = agent.descriptor.model.clone();
 
+                // Resolve the continuation mode the HTTP handler detected.
+                // "continue" => user is resuming a prior task — the cognitive
+                // engine should inject a structured session summary instead of
+                // appending a fresh turn.
+                let continuation_mode = match event.payload.get("continuation_mode").and_then(|v| v.as_str()) {
+                    Some("continue") => super::agent_harness::ContinuationMode::Continue,
+                    _ => super::agent_harness::ContinuationMode::Fresh,
+                };
+
                 // Ensure a session record exists for this message.
                 // Background/boredom sessions may not have been created yet
                 // through the normal create_session path.
@@ -1514,13 +1523,12 @@ impl AgentRuntimeBuilder {
                 }
 
                 // Spawn async ReAct processing — do not block the bus drain loop.
-                // ContinuationMode::Fresh — auto-detection inside process_message
-                // will upgrade to Continue if the last assistant message is a
-                // max-turns-reached marker.
+                // `continuation_mode` already reflects the HTTP-layer intent
+                // (Continue for "继续" / "continue" / /continue; Fresh otherwise).
                 self.agent_harness.spawn_process_message(
                     agent_id, session_id, text, model, soul_snapshot,
                     skill_name, react_mode, background,
-                    super::agent_harness::ContinuationMode::Fresh,
+                    continuation_mode,
                 );
 
                 Ok(())
@@ -2137,7 +2145,7 @@ impl AgentRuntimeBuilder {
 
                 tokio::spawn(async move {
                     let sid = format!("a2a:{}", session_id);
-                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, None, false).await {
+                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, None, false, super::agent_harness::ContinuationMode::Fresh).await {
                         Ok(reply) => {
                             if !is_original {
                                 // Message was a reply — process but don't auto-respond.

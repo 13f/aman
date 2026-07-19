@@ -30,6 +30,8 @@ use crate::detector::IdleDetector;
 use crate::incubation::IncubationManager;
 use crate::types::{IdleContext, IdleEvent, IdleKind, IdlePersonality, QueueDrained};
 
+use rand::Rng;
+
 /// Manages the full idle lifecycle for a single agent.
 ///
 /// Spawns a background task that:
@@ -144,17 +146,23 @@ impl AgentIdleManager {
             let mut reflection_count: u32 = 0;
             // Circuit breaker: skip QueueDrained when count exceeds threshold.
             const BREAKER_THRESHOLD: u32 = 20;
-            // Cold-start: produce a QueueDrained if the bus stays empty for this
-            // long after startup with no prior QueueDrained (see idle-design.md §4.1).
-            // Permanently disabled after any QueueDrained is produced (cold-start
-            // or busy→empty), since subsequent transitions are handled normally.
-            let mut cold_start_done = false;
-            let mut cold_start_deadline: Option<Instant> = None;
-            const COLD_START_DELAY_SECS: u64 = 5;
-            // 保证 cold_start_done 事件只触发一次（无论 busy→empty 还是 cold-start
-            // 路径先走）。与 cold_start_done 独立，因为后续的 busy→empty 仍需要
-            // 发 QueueDrained，但不应再发 cold_start_done。
-            let mut cold_start_done_published = false;
+            // 在首次忙→空转换前，agent 不会产生 QueueDrained，因此也不会
+            // 触发 reflection（session 提取 + memory.store → embed）。
+            // 这避免了冷启动时多余的 reflection 争抢 embed_lock，
+            // 从而防止与新到达的用户消息竞争导致的长时间 hang。
+            // 注：曾经有冷启动合成 QueueDrained（bus 空 5 秒后触发），
+            // 现已移除——agent 只需在真正忙过后再 reflection。
+
+            // 随机化启动延迟(0.5~3 秒): 7 个 agent 不会完全同步启动,
+            // 避免在接第一批消息时产生 embed 竞争的"惊群"效应。
+            // 这个延迟发生在发 cold_start_done 之前,延迟 Preparing→Idle,
+            // 让 system 有短暂窗口完成初始化,但不影响用户体验(远小于 5 秒)。
+            let startup_delay_ms: u64 = rand::thread_rng().gen_range(500..=3000);
+            sleep(Duration::from_millis(startup_delay_ms)).await;
+
+            // 在循环开始前通知外部冷启动已完成，使 AgentStatus Preparing → Idle。
+            // 与 QueueDrained/reflection 解耦：状态转换不应依赖 reflection 触发。
+            publish_cold_start_done(&local_bus, &global_bus, &agent_id).await;
 
             loop {
                 if stop_token.is_cancelled() {
@@ -298,7 +306,6 @@ impl AgentIdleManager {
                 // Bus is empty. If we were previously busy, produce QueueDrained.
                 if was_busy {
                     was_busy = false;
-                    cold_start_done = true; // no longer need cold-start QD
                     detector.idle_depth = 0;
                     detector.last_poll = Some(Instant::now());
 
@@ -340,68 +347,6 @@ impl AgentIdleManager {
                             "QueueDrained circuit breaker: cooldown (skip)"
                         );
                         // Reset count after cooldown — next real event will also reset it
-                    }
-
-                    // 冷启动完成（busy→empty 路径）：通知外部 Agent 已就绪。
-                    // 只在首次（cold_start_done 从 false 变 true 这一次）触发。
-                    if !cold_start_done_published {
-                        cold_start_done_published = true;
-                        publish_cold_start_done(&local_bus, &global_bus, &agent_id).await;
-                    }
-
-                    sleep(Duration::from_millis(100)).await;
-                    continue;
-                }
-
-                // ── Cold-start QueueDrained ──────────────────────────────
-                // If the agent starts with an empty queue (no prior busy→empty
-                // transition), wait up to COLD_START_DELAY_SECS then produce a
-                // synthetic QueueDrained so Reflection runs at least once before
-                // entering the idle depth sequence. After the first QueueDrained
-                // (cold-start or busy→empty), this branch is permanently disabled.
-                if !cold_start_done {
-                    let deadline = *cold_start_deadline.get_or_insert_with(|| {
-                        Instant::now() + Duration::from_secs(COLD_START_DELAY_SECS)
-                    });
-                    if Instant::now() < deadline {
-                        sleep(Duration::from_millis(500)).await;
-                        continue;
-                    }
-                    // Deadline reached — produce cold-start QueueDrained.
-                    cold_start_done = true;
-                    cold_start_deadline = None;
-                    if reflection_count < BREAKER_THRESHOLD {
-                        let qd = QueueDrained {
-                            last_event_type: String::new(),
-                            last_trace_id: String::new(),
-                            last_result_summary: String::new(),
-                            arousal_level: coord.arousal.current(),
-                            reflection_consecutive_count: reflection_count,
-                            agent_id: Some(agent_id.clone()),
-                        };
-                        reflection_count += 1;
-                        let qd_event: kernel::event::Event = qd.into();
-                        info!(
-                            agent_id = %agent_id,
-                            "Cold-start QueueDrained (bus empty for {}s)",
-                            COLD_START_DELAY_SECS
-                        );
-                        try_publish(&*local_bus, qd_event.clone()).await;
-                        if let Some(ref global) = global_bus {
-                            try_publish(&**global, qd_event).await;
-                        }
-                        // NOTE: Do NOT write AgentSystemState::Idle here
-                        // (same reasoning as the busy→empty QueueDrained
-                        // path above — it races with the agent harness).
-                    }
-
-                    // 通知外部（AgentRegistry）冷启动已完成：AgentStatus 应从
-                    // Preparing 切到 Idle。这是独立于 QueueDrained 的信号——
-                    // 即使 breaker 跳过了 QueueDrained，冷启动仍视为完成。
-                    // 只在首次触发（cold_start_done 从 false 变 true 这一次）。
-                    if !cold_start_done_published {
-                        cold_start_done_published = true;
-                        publish_cold_start_done(&local_bus, &global_bus, &agent_id).await;
                     }
 
                     sleep(Duration::from_millis(100)).await;
@@ -601,7 +546,8 @@ impl AgentIdleManager {
 pub const COLD_START_DONE_EVENT: &str = "agent:cold_start_done";
 
 /// 发布冷启动完成事件到 local_bus（和可选的 global_bus）。
-/// 在首次 QueueDrained（busy→empty 或 cold-start）发出后调用一次。
+/// 在 AgentIdleManager 启动时调用一次，驱动 AgentStatus Preparing → Idle。
+/// 与 QueueDrained/reflection 解耦：状态转换不应依赖 reflection 触发。
 async fn publish_cold_start_done(
     local_bus: &Arc<dyn EventBus>,
     global_bus: &Option<Arc<dyn EventBus>>,
@@ -615,6 +561,104 @@ async fn publish_cold_start_done(
     try_publish(&**local_bus, event.clone()).await;
     if let Some(global) = global_bus {
         try_publish(&**global, event).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use event_bus::SubscriptionFilter;
+    use kernel::event::Event;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    /// Adapter: 把 `Fn(Event)` 包装出 EventHandler(走 channel)。
+    struct ChanHandler<T: Fn(Event) + Send + Sync>(T);
+    #[async_trait::async_trait]
+    impl<T: Fn(Event) + Send + Sync> event_bus::EventHandler for ChanHandler<T> {
+        async fn handle(&self, event: Event) -> AmanResult<()> {
+            (self.0)(event);
+            Ok(())
+        }
+    }
+
+    /// 测试:冷启动后 AgentIdleManager 立即发布 `agent:cold_start_done`,
+    /// 但在 agent 真正 busy→empty 之前,**不**产生 QueueDrained。
+    /// 这是 Bug B 的回归测试:冷启动时不应触发 reflection(会争抢 embed_lock)。
+    #[tokio::test]
+    async fn cold_start_publishes_done_without_queue_drained() {
+        let bus: Arc<dyn EventBus> = Arc::new(event_bus::InMemoryBus::new(
+            Default::default(),
+        ));
+
+        // 订阅 QueueDrained 和 cold_start_done — 用 channel 收集
+        let (qd_tx, mut qd_rx) = mpsc::unbounded_channel::<Event>();
+        let (done_tx, mut done_rx) = mpsc::unbounded_channel::<Event>();
+
+        let _id = bus
+            .subscribe(
+                SubscriptionFilter {
+                    event_types: Some(vec![EventType::QueueDrained]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(ChanHandler(move |e: Event| {
+                    let _ = qd_tx.send(e);
+                })),
+            )
+            .await
+            .expect("subscribe qd");
+        let _id2 = bus
+            .subscribe(
+                SubscriptionFilter {
+                    event_types: Some(vec![EventType::Custom(
+                        COLD_START_DONE_EVENT.to_owned(),
+                    )]),
+                    sources: None,
+                    priorities: None,
+                    payload_match: None,
+                },
+                Box::new(ChanHandler(move |e: Event| {
+                    let _ = done_tx.send(e);
+                })),
+            )
+            .await
+            .expect("subscribe done");
+        let _ = (_id, _id2);
+
+        // 启动 idle manager (bus 持续空 — 模拟冷启动)
+        let manager = AgentIdleManager::new(
+            "test-agent",
+            Arc::clone(&bus),
+            None,
+            IdlePersonality::default(),
+            1.0,
+            60.0,
+            None,
+            None,
+            None,
+        );
+        manager.start().await;
+
+        // 等待足够让随机启动延迟(0.5~3 秒)+ cold_start_done 发出
+        // 用 4 秒上限,覆盖随机延迟的最大值。
+        tokio::time::sleep(Duration::from_millis(4000)).await;
+
+        // cold_start_done 应该已发布
+        let done_published = done_rx.try_recv().is_ok();
+        assert!(
+            done_published,
+            "cold_start_done should be published on startup"
+        );
+        // QueueDrained **不应**在冷启动时产生(只在 busy→empty 后)
+        let qd_received = qd_rx.try_recv().is_ok();
+        assert!(
+            !qd_received,
+            "QueueDrained must NOT be produced during cold start (Bug B regression)"
+        );
+
+        manager.stop().await;
     }
 }
 

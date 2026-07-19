@@ -14,6 +14,7 @@
 //! history survives gateway restarts.
 
 use kernel::AmanResult;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
@@ -42,6 +43,15 @@ pub struct SessionStore {
     db: std::sync::Mutex<rusqlite::Connection>,
     /// e.g. `~/.aman/agents/{agent_key}/sessions`
     sessions_dir: std::path::PathBuf,
+    /// In-memory set of `event_id`s already persisted to JSONL files.
+    ///
+    /// Guards against duplicate appends when multiple event-bus handlers
+    /// (`MessageReceivedHandler` eager-append + `StoreAllEventsHandler`
+    /// catch-all) process the same event.  Lazily populated from the
+    /// on-disk JSONL via [`Self::ensure_event_ids_loaded`] the first time
+    /// it is needed — so the common case is an O(1) HashSet lookup instead
+    /// of scanning the file on every append.
+    event_ids: std::sync::Mutex<HashSet<String>>,
 }
 
 impl SessionStore {
@@ -73,7 +83,11 @@ impl SessionStore {
         let _ = db.execute("ALTER TABLE sessions ADD COLUMN reflected_at INTEGER", []);
         // Migration: add agent_id column (ignore error if already exists)
         let _ = db.execute("ALTER TABLE sessions ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''", []);
-        Ok(Self { db: std::sync::Mutex::new(db), sessions_dir: sessions_dir.to_owned() })
+        Ok(Self {
+            db: std::sync::Mutex::new(db),
+            sessions_dir: sessions_dir.to_owned(),
+            event_ids: std::sync::Mutex::new(HashSet::new()),
+        })
     }
 
     /// Insert or update a session record.
@@ -522,11 +536,60 @@ impl SessionStore {
         self.sessions_dir.join(format!("{session_id}.jsonl"))
     }
 
-    /// Append a single event to the session's JSONL file.
+    /// Ensure the in-memory `event_id` set reflects what is on disk for this
+    /// session.  Idempotent within a single lock hold: subsequent calls are a
+    /// no-op because the set is already populated.  This implements the
+    /// "scan the JSONL, then decide" semantics without paying the scan cost
+    /// on every append.
+    fn ensure_event_ids_loaded(&self, session_id: &str) {
+        let mut ids = self.event_ids.lock().expect("event_ids lock");
+        if !ids.is_empty() {
+            return;
+        }
+        // Populate from disk.  We ignore malformed lines — they neither
+        // match a future event_id nor block appends.
+        for event in self.load_session_events(session_id) {
+            if let Some(eid) = event["event_id"].as_str() {
+                ids.insert(eid.to_owned());
+            }
+        }
+    }
+
+    /// Append a single event to the session's JSONL file — **only if its
+    /// `event_id` is not already present**.
+    ///
+    /// Multiple event-bus handlers (`MessageReceivedHandler` eager-append +
+    /// `StoreAllEventsHandler` catch-all) both persist the same event.  A
+    /// naive append would write the same event twice; this method dedupes by
+    /// `event_id` so each event is written exactly once.
     ///
     /// Each line is a JSON object with the fields needed for conversation
     /// history display: `event_type`, `timestamp_ms`, `payload`, etc.
     pub fn append_session_event(&self, session_id: &str, event: &serde_json::Value) -> AmanResult<()> {
+        // Fast path: events without an event_id (legacy / malformed) are
+        // written unconditionally — we cannot dedup what we cannot identify.
+        let event_id = match event["event_id"].as_str() {
+            Some(id) => id,
+            None => {
+                return self.append_raw(session_id, event);
+            }
+        };
+
+        self.ensure_event_ids_loaded(session_id);
+        let mut ids = self.event_ids.lock().expect("event_ids lock");
+        if !ids.insert(event_id.to_owned()) {
+            // Already seen — skip the write to avoid a duplicate line.
+            return Ok(());
+        }
+        // Release the lock before doing I/O so concurrent appends to other
+        // sessions are not serialized behind this write.
+        drop(ids);
+        self.append_raw(session_id, event)
+    }
+
+    /// Unconditional physical write of the JSON line — the dedup decision
+    /// already made by [`Self::append_session_event`].
+    fn append_raw(&self, session_id: &str, event: &serde_json::Value) -> AmanResult<()> {
         let path = self.jsonl_path(session_id);
         let line = serde_json::to_string(event)
             .map_err(|e| kernel::Error::ConfigInvalid {
@@ -585,5 +648,92 @@ impl SessionStore {
             }
         }
         recent.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionStore;
+    use std::path::PathBuf;
+
+    fn tmp_store() -> (SessionStore, PathBuf) {
+        // Unique per-test directory so parallel tests don't share (and lock)
+        // the same SQLite database.
+        let dir = std::env::temp_dir().join(format!(
+            "aman-session-store-test-{}-{}",
+            std::process::id(),
+            rand_suffix(),
+        ));
+        let sessions_dir = dir.join("sessions");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&sessions_dir);
+        let db_path = dir.join("sessions.db");
+        let store = SessionStore::open(&db_path, &sessions_dir).expect("open store");
+        (store, dir)
+    }
+
+    fn rand_suffix() -> String {
+        // Avoid pulling in a randomness crate: derive uniqueness from the
+        // address of a freshly-allocated value, which varies per call.
+        let probe: usize = Box::leak(Box::new(0)) as *const _ as usize;
+        format!("{:x}", probe)
+    }
+
+    fn event(event_id: &str, event_type: &str, text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "event_id": event_id,
+            "event_type": event_type,
+            "source": "gateway:http",
+            "timestamp_ms": 1,
+            "payload": { "text": text, "session_id": "s1", "agent_id": "coder" },
+        })
+    }
+
+    #[test]
+    fn append_same_event_id_twice_is_deduped() {
+        let (store, _dir) = tmp_store();
+        let eid = "019f79e6-0050-76d3-a337-ef0f087212d7";
+        let ev1 = event(eid, "MessageReceived", "hello");
+        let ev2 = event(eid, "MessageReceived", "hello"); // identical event_id
+        store.append_session_event("s1", &ev1).expect("first append");
+        store.append_session_event("s1", &ev2).expect("second append (duplicate id)");
+        let loaded = store.load_session_events("s1");
+        assert_eq!(loaded.len(), 1, "duplicate event_id must be appended only once");
+        assert_eq!(loaded[0]["event_id"].as_str(), Some(eid));
+    }
+
+    #[test]
+    fn append_distinct_event_ids_both_written() {
+        let (store, _dir) = tmp_store();
+        store.append_session_event("s1", &event("id-1", "MessageReceived", "a")).unwrap();
+        store.append_session_event("s1", &event("id-2", "MessageReceived", "b")).unwrap();
+        assert_eq!(store.load_session_events("s1").len(), 2);
+    }
+
+    #[test]
+    fn append_event_without_event_id_is_written() {
+        // Legacy / malformed events without event_id cannot be deduped —
+        // they should still be persisted.
+        let (store, _dir) = tmp_store();
+        let ev = serde_json::json!({ "event_type": "Orphan", "payload": {} });
+        store.append_session_event("s1", &ev).unwrap();
+        assert_eq!(store.load_session_events("s1").len(), 1);
+    }
+
+    #[test]
+    fn dedup_survives_across_fresh_store_instance() {
+        // Simulates a second code path (e.g. StoreAllEventsHandler) that
+        // handles the *same* event but looks it up in a freshly-opened
+        // SessionStore whose in-memory set is empty.  The lazy disk-reload
+        // inside `append_session_event` must still recognise the event_id.
+        let (store, dir) = tmp_store();
+        let eid = "cross-instance-id";
+        let sessions_dir = dir.join("sessions");
+        let db_path = dir.join("sessions.db");
+        store.append_session_event("s1", &event(eid, "MessageReceived", "x")).unwrap();
+        // Reopen a brand-new SessionStore over the same SQLite + JSONL.
+        let store2 = SessionStore::open(&db_path, &sessions_dir).expect("reopen");
+        store2.append_session_event("s1", &event(eid, "MessageReceived", "x")).unwrap();
+        assert_eq!(store2.load_session_events("s1").len(), 1);
     }
 }

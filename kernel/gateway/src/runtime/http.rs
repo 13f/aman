@@ -2899,6 +2899,26 @@ async fn chat_session_send(
         );
     }
 
+    // Detect "继续" / "continue" — user wants to resume a prior task rather
+    // than start a fresh turn.  We record the intent here so the downstream
+    // MessageReceivedHandler (agent_runtime.rs) can tell the cognitive
+    // engine to inject a structured session summary instead of a blank
+    // conversation history.
+    //
+    // The textual content ("继续") is preserved verbatim — the harness reads
+    // `continuation_mode` from the payload, not by re-parsing `text`.
+    let continuation_mode = {
+        let t = text.trim();
+        if t == "继续" || t == "continue" || t == "/continue" {
+            "continue"
+        } else {
+            "fresh"
+        }
+    };
+    // Stash it before `text` moves into effective_text, so the payload
+    // can carry it regardless of skill rewrites.
+    let continuation_mode_for_payload = continuation_mode;
+
     // Detect slash-command skill invocation (e.g. "/btc-bottom-model should I buy?").
     // When a skill is invoked directly by the user, load the full SKILL.md body and
     // inject it into the message so the LLM can follow the methodology immediately
@@ -3013,6 +3033,7 @@ async fn chat_session_send(
         "sender": operator,
         "source": "tauri-desktop",
         "soul_system_prompt": combined_prompt,
+        "continuation_mode": continuation_mode_for_payload,
     });
     if let Some(sc) = skill_context {
         payload["skill_context"] = sc;

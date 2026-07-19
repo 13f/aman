@@ -179,6 +179,33 @@ impl SessionManager {
                     to: TransitionTo::Specific("IDLE".to_owned()),
                     guard: None, on_fail: None, action: None, on_action_failure: None,
                 },
+                // ── CLOSED resurrection ──────────────────────────────────────
+                // A session can be pushed into CLOSED either by:
+                //   - ABANDON_TIMEOUT from ERROR (user gave up),
+                //   - SESSION_END after TIMEOUT (the 120s TIMEOUT→CLOSED timer).
+                // Once CLOSED, the session is a dead end: any further
+                // MESSAGE_RECEIVED fails ("no transition from CLOSED on
+                // MESSAGE_RECEIVED"), so the harness still runs the LLM but
+                // the resulting LLM_REPLY_READY also fails ("no transition
+                // from CLOSED on LLM_REPLY_READY") → the reply is silently
+                // dropped and the session is permanently stuck.
+                //
+                // Re-opening CLOSED on MESSAGE_REEST → IDLE lets a resuming
+                // user restart the normal message flow. The IDLE window is
+                // re-checked on the next tick (10m), and the subsequent
+                // MESSAGE_RECEIVED drives IDLE → PROCESSING as usual.
+                //
+                // LLM_REPLY_READY is intentionally NOT allowed from CLOSED:
+                // a reply that arrives after close belongs to the now-abandoned
+                // previous task; it is dropped by SessionReplyHandler (which
+                // checks for CLOSED). This avoids a reply from a dead task
+                // poisoning a freshly reopened session.
+                Transition {
+                    from: TransitionFrom::Specific("CLOSED".to_owned()),
+                    event: "MESSAGE_RECEIVED".to_owned(),
+                    to: TransitionTo::Specific("IDLE".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
             ],
             state_timeouts: vec![
                 StateTimeout {

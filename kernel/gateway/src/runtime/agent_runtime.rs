@@ -1363,6 +1363,53 @@ impl AgentRuntimeBuilder {
                     );
                 }
 
+                // ── CLOSED / TIMEOUT resurrection: drive IDLE → PROCESSING ──
+                // A session that was CLOSED (or is still in TIMEOUT) by the
+                // time a new message arrives only advances to IDLE on the first
+                // MESSAGE_RECEIVED (CLOSED → IDLE, TIMEOUT → IDLE).  The
+                // harness then spawns engine.process() and later publishes
+                // LLM_REPLY_READY, which expects the session to be in
+                // PROCESSING — without a second transition the reply would
+                // fail ("no transition from IDLE on LLM_REPLY_READY") and
+                // the reply would be silently dropped.
+                //
+                // If the first transition landed us in IDLE, fire a second
+                // MESSAGE_RECEIVED synchronously so the session is in
+                // PROCESSING before the async task runs.  This is a tight
+                // synchronous sequence (no await between the two) so the
+                // timeout poller cannot interleave a TIMEOUT → CLOSED in
+                // between.  A parallel second message racing us here is
+                // harmless: it would either (a) also drive IDLE → PROCESSING
+                // (no-op, already there) or (b) arrive after we're already
+                // in PROCESSING (its MESSAGE_RECEIVED fails, logs a warn,
+                // but the in-flight task keeps running).
+                if self.session_manager.workflow_engine()
+                    .get_instance(&session_id)
+                    .map(|inst| inst.current_state == "IDLE")
+                    .unwrap_or(false)
+                {
+                    let transition_event_2 = Event::new(
+                        "session:control",
+                        EventType::Custom("MESSAGE_RECEIVED".to_owned()),
+                        json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                        }),
+                    );
+                    if let Err(e) = self.session_manager
+                        .workflow_engine()
+                        .handle_event(&session_id, transition_event_2)
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id = %session_id,
+                            agent_id = %agent_id,
+                            error = %e,
+                            "MessageReceivedHandler: failed to drive resurrected session IDLE → PROCESSING"
+                        );
+                    }
+                }
+
                 // Persist the incoming message to the session JSONL eagerly.
                 // This guards against any gap in the StoreAllEventsHandler path
                 // (e.g. race between ensure_session and StoreAllEvents dispatch)
@@ -1522,6 +1569,27 @@ impl AgentRuntimeBuilder {
                             "SessionReplyHandler: skipping handle_reply — no workflow instance"
                         );
                         return Ok(());
+                    }
+                    // Skip if the session is already CLOSED.  A reply arriving
+                    // after the session has been closed belongs to the previous
+                    // (now-abandoned) task — delivering it would either fail
+                    // ("no transition from CLOSED on LLM_REPLY_READY",
+                    // before the DAG change above) or poison a newly reopened
+                    // session (PROCESSING→IDLE flipping the fresh session to
+                    // IDLE before it even processes anything).  The CLOSED
+                    // session is re-opened by the *next* incoming message, not
+                    // by a stale reply.
+                    if let Some(inst) = self.session_manager.workflow_engine()
+                        .get_instance(session_id)
+                    {
+                        if inst.current_state == "CLOSED" {
+                            tracing::warn!(
+                                session_id,
+                                agent_id,
+                                "SessionReplyHandler: dropping reply for CLOSED session"
+                            );
+                            return Ok(());
+                        }
                     }
                     self.session_manager.handle_reply(session_id, agent_id, reply).await;
                 }

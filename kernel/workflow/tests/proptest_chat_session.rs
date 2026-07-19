@@ -128,6 +128,16 @@ fn chat_session_workflow() -> WorkflowDef {
                 to: TransitionTo::Specific("IDLE".to_owned()),
                 guard: None, on_fail: None, action: None, on_action_failure: None,
             },
+            // CLOSED + MESSAGE_RECEIVED → IDLE (mirrors production DAG in
+            // kernel/gateway/src/runtime/session/mod.rs). Lets a timed-out /
+            // abandoned session be re-opened by a new message. LLM_REPLY_READY
+            // remains illegal from CLOSED (see closed_rejects_all_events_except_message_received).
+            Transition {
+                from: TransitionFrom::Specific("CLOSED".to_owned()),
+                event: "MESSAGE_RECEIVED".to_owned(),
+                to: TransitionTo::Specific("IDLE".to_owned()),
+                guard: None, on_fail: None, action: None, on_action_failure: None,
+            },
         ],
         state_timeouts: vec![
             StateTimeout {
@@ -255,7 +265,11 @@ impl ChatEvent {
             "ERROR" => vec![Self::RetryCmd, Self::SessionEnd, Self::AbandonTimeout],
             "RETRYING" => vec![Self::RetryStarted, Self::RetryFailed],
             "TIMEOUT" => vec![Self::SessionEnd, Self::MessageReceived],
-            "CLOSED" => vec![],
+            // CLOSED no longer a hard terminal: a new message re-opens the session
+            // to IDLE (it then progresses to PROCESSING via the normal path).
+            // LLM_REPLY_READY is intentionally not legal from CLOSED — a reply
+            // from a dead task must not be delivered to the reopened session.
+            "CLOSED" => vec![Self::MessageReceived],
             _ => vec![],
         }
     }
@@ -312,13 +326,27 @@ fn illegal_transition_rejected() {
     });
 }
 
-/// CLOSED state rejects ALL events.
+/// CLOSED state rejects every event *except* MESSAGE_RECEIVED.
+///
+/// CLOSED + MESSAGE_RECEIVED → IDLE is now legal (it re-opens a dead session),
+/// but all other events from CLOSED must still be rejected so a stale
+/// LLM_REPLY_READY / LLM_STREAM_DONE / etc. from the previous (now-abandoned)
+/// task cannot be applied to the freshly reopened session.
 #[test]
-fn closed_rejects_all_events() {
+fn closed_rejects_all_events_except_message_received() {
     let wf = chat_session_workflow();
     for event in ChatEvent::all() {
         let result = wf.find_transition("CLOSED", event.as_str());
-        assert!(result.is_none(), "CLOSED should reject event: {}", event);
+        if event == ChatEvent::MessageReceived {
+            assert!(result.is_some(), "CLOSED should accept MESSAGE_RECEIVED");
+            // find_transition returns a `Transition`.  The `to` field should
+            // be `TransitionTo::Specific("IDLE")`.
+            let t = result.unwrap();
+            assert!(matches!(&t.to, TransitionTo::Specific(s) if s == "IDLE"),
+                "CLOSED + MESSAGE_RECEIVED should go to IDLE, got {:?}", t.to);
+        } else {
+            assert!(result.is_none(), "CLOSED should reject event: {}", event);
+        }
     }
 }
 

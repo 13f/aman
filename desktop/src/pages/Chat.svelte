@@ -6,7 +6,13 @@
   import type { ToolCallData } from "./ToolCallCard.svelte";
   import { setCursorMode, resetCursor, setCursorFromEmotion } from "../lib/cursor-store";
   import { renderMarkdown } from "../lib/markdown";
-  import { t } from "../lib/i18n.svelte";
+  import { t, locale } from "../lib/i18n.svelte";
+  import {
+    dayKey,
+    formatMessageTime,
+    formatMessageDateLabel,
+    formatMessageFull,
+  } from "../lib/format-time";
 
   let { prefillInput = "", prefillSeq = 0 }: { prefillInput?: string; prefillSeq?: number } = $props();
 
@@ -165,6 +171,24 @@
 
   const activeSession = $derived(sessions.find(s => s.id === activeSessionId));
   const activeMessages = $derived(messages.filter(m => m.sessionId === activeSessionId));
+  // Date-divided message list ("Today / Yesterday / Jul 19") for readable history.
+  type RenderItem =
+    | { kind: "divider"; key: string; label: string; }
+    | { kind: "msg"; msg: Message; };
+  const renderItems = $derived.by(() => {
+    const tag = locale().code;
+    const items: RenderItem[] = [];
+    let lastDay = "";
+    for (const msg of activeMessages) {
+      const day = dayKey(msg.timestamp, tag);
+      if (day !== lastDay) {
+        items.push({ kind: "divider", key: `d-${msg.id}`, label: formatMessageDateLabel(msg.timestamp, tag) });
+        lastDay = day;
+      }
+      items.push({ kind: "msg", msg });
+    }
+    return items;
+  });
   const isProcessing = $derived(
     isLoading || messages.some(m => m.sessionId === activeSessionId && (m.status === "pending" || m.status === "streaming"))
   );
@@ -2090,26 +2114,70 @@
           {/if}
         </div>
       {:else}
-        {#each activeMessages as msg (msg.id)}
-          {@const isUser = msg.type.startsWith("user")}
-          {@const isAssistant = msg.type.startsWith("assistant") && !(msg.type === "assistant_tool_call" || msg.type === "assistant_tool_result")}
-          {@const isSystem = msg.type.startsWith("system") || msg.type.startsWith("security")}
-          {@const isToolCall = msg.type === "assistant_tool_call"}
-          {@const isArchived = msg.archived === true || archivedMsgIds.has(msg.id)}
-          <div
-            class="message"
-            class:user={isUser}
-            class:assistant={isAssistant}
-            class:system={isSystem}
-            class:tool-call={isToolCall}
-            class:interrupted={msg.status === "interrupted"}
-            class:archived={isArchived}
-          >
-            {#if isAssistant}
-              <div class="msg-meta">
-                <span class="msg-label">{agentList.find(a => a.key === activeAgentKey)?.display_name ?? "Assistant"}</span>
-                <span class="msg-time">
-                  {msg.timestamp.slice(11, 19)}
+        {#each renderItems as item (item.kind === "divider" ? item.key : item.msg.id)}
+          {#if item.kind === "divider"}
+            <div class="date-divider"><span>{item.label}</span></div>
+          {:else}
+            {@const msg = item.msg}
+            {@const isUser = msg.type.startsWith("user")}
+            {@const isAssistant = msg.type.startsWith("assistant") && !(msg.type === "assistant_tool_call" || msg.type === "assistant_tool_result")}
+            {@const isSystem = msg.type.startsWith("system") || msg.type.startsWith("security")}
+            {@const isToolCall = msg.type === "assistant_tool_call"}
+            {@const isArchived = msg.archived === true || archivedMsgIds.has(msg.id)}
+            {@const timeStr = formatMessageTime(msg.timestamp, locale().code)}
+            <div
+              class="message"
+              class:user={isUser}
+              class:assistant={isAssistant}
+              class:system={isSystem}
+              class:tool-call={isToolCall}
+              class:interrupted={msg.status === "interrupted"}
+              class:archived={isArchived}
+            >
+              {#if isAssistant}
+                <div class="msg-meta">
+                  <span class="msg-label">{agentList.find(a => a.key === activeAgentKey)?.display_name ?? "Assistant"}</span>
+                  <span class="msg-time" title={formatMessageFull(msg.timestamp, locale().code)}>
+                    {timeStr}
+                    {#if msg.channelType}
+                      <span class="channel-tag">{msg.channelType}</span>
+                    {/if}
+                    {#if isArchived}
+                      <span class="archived-label">archived</span>
+                    {/if}
+                    {#if msg.status === "pending"}
+                      <span class="msg-status pending">sending...</span>
+                    {:else if msg.status === "error"}
+                      <span class="msg-status error">failed</span>
+                    {/if}
+                    {#if msg.traceId}
+                      <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
+                    {/if}
+                  </span>
+                </div>
+              {/if}
+              {#if isToolCall && msg.toolCall}
+                <ToolCallCard tool={msg.toolCall} />
+              {:else}
+                <div
+                  class="msg-bubble"
+                  class:streaming={msg.type === "assistant_streaming"}
+                  class:status-error={msg.status === "error"}
+                >
+                  {#if isAssistant}
+                    <div class="markdown-body" use:safeMarkdownHtml={msg.content}>
+                      {#if msg.type === "assistant_streaming"}
+                        <span class="cursor"></span>
+                      {/if}
+                    </div>
+                  {:else}
+                    <p>{msg.content}</p>
+                  {/if}
+                </div>
+              {/if}
+              {#if !isAssistant}
+                <span class="msg-time" title={formatMessageFull(msg.timestamp, locale().code)}>
+                  {timeStr}
                   {#if msg.channelType}
                     <span class="channel-tag">{msg.channelType}</span>
                   {/if}
@@ -2125,47 +2193,9 @@
                     <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
                   {/if}
                 </span>
-              </div>
-            {/if}
-            {#if isToolCall && msg.toolCall}
-              <ToolCallCard tool={msg.toolCall} />
-            {:else}
-              <div
-                class="msg-bubble"
-                class:streaming={msg.type === "assistant_streaming"}
-                class:status-error={msg.status === "error"}
-              >
-                {#if isAssistant}
-                  <div class="markdown-body" use:safeMarkdownHtml={msg.content}>
-                    {#if msg.type === "assistant_streaming"}
-                      <span class="cursor"></span>
-                    {/if}
-                  </div>
-                {:else}
-                  <p>{msg.content}</p>
-                {/if}
-              </div>
-            {/if}
-            {#if !isAssistant}
-              <span class="msg-time">
-                {msg.timestamp.slice(11, 19)}
-                {#if msg.channelType}
-                  <span class="channel-tag">{msg.channelType}</span>
-                {/if}
-                {#if isArchived}
-                  <span class="archived-label">archived</span>
-                {/if}
-                {#if msg.status === "pending"}
-                  <span class="msg-status pending">sending...</span>
-                {:else if msg.status === "error"}
-                  <span class="msg-status error">failed</span>
-                {/if}
-                {#if msg.traceId}
-                  <span class="trace-tag" title="trace_id: {msg.traceId}">#{msg.traceId.slice(0, 8)}</span>
-                {/if}
-              </span>
-            {/if}
-          </div>
+              {/if}
+            </div>
+          {/if}
         {/each}
       {/if}
     </div>
@@ -2902,6 +2932,28 @@
     gap: 4px;
     align-items: center;
     flex-shrink: 0;
+  }
+
+  .date-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 14px 0 6px;
+    color: var(--fg-dim, #9ca3af);
+    font-size: 11px;
+  }
+  .date-divider::before,
+  .date-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border, rgba(255, 255, 255, 0.06));
+  }
+  .date-divider span {
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--fg-dim) 8%, transparent);
+    white-space: nowrap;
   }
 
   .msg-label {

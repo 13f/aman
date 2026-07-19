@@ -121,6 +121,10 @@ const EN: Bundle = {
   "chat.capability_available_short": "New capability available: {cap}",
   "chat.capability_degraded_short": "Capability degraded: {cap} ({reason})",
   "chat.capability_restored_short": "Chat capability restored",
+  "chat.today": "Today",
+  "chat.yesterday": "Yesterday",
+  "chat.role_user": "You",
+  "chat.role_assistant": "Assistant",
 
   // Agents
   "agents.title": "Agents",
@@ -388,6 +392,10 @@ const ZHS: Bundle = {
   "chat.capability_available_short": "新能力可用: {cap}",
   "chat.capability_degraded_short": "能力已降级: {cap} ({reason})",
   "chat.capability_restored_short": "聊天能力已恢复",
+  "chat.today": "今天",
+  "chat.yesterday": "昨天",
+  "chat.role_user": "你",
+  "chat.role_assistant": "助手",
 
   // Agents
   "agents.title": "智能体",

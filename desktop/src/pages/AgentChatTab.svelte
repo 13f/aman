@@ -5,7 +5,13 @@
   import { renderMarkdown } from "../lib/markdown";
   import ToolCallCard from "./ToolCallCard.svelte";
   import type { ToolCallData } from "./ToolCallCard.svelte";
-  import { t } from "../lib/i18n.svelte";
+  import { t, locale } from "../lib/i18n.svelte";
+  import {
+    dayKey,
+    formatMessageTime,
+    formatMessageDateLabel,
+    formatMessageFull,
+  } from "../lib/format-time";
 
   const { agentKey }: { agentKey: string } = $props();
 
@@ -69,6 +75,28 @@
   const isProcessing = $derived(
     isLoading || messages.some(m => m.sessionId === activeSessionId && (m.status === "pending" || m.status === "streaming"))
   );
+
+  // ── Date-divided message list ──────────────────────────────────────
+  // Each entry is either a date divider or a message, so history reads like
+  // a real chat Timeline ("Today / Yesterday / Jul 19").
+  type RenderItem =
+    | { kind: "divider"; key: string; label: string; }
+    | { kind: "msg"; message: Message };
+
+  const renderItems = $derived.by(() => {
+    const tag = locale().code;
+    const items: RenderItem[] = [];
+    let lastDay = "";
+    for (const message of activeMessages) {
+      const day = dayKey(message.timestamp, tag);
+      if (day !== lastDay) {
+        items.push({ kind: "divider", key: `d-${message.id}`, label: formatMessageDateLabel(message.timestamp, tag) });
+        lastDay = day;
+      }
+      items.push({ kind: "msg", message });
+    }
+    return items;
+  });
 
   let unlisteners: (() => void) = [];
 
@@ -599,14 +627,29 @@
       </div>
 
       <div class="messages" bind:this={messageAreaEl} onscroll={handleScroll}>
-        {#each activeMessages as message (message.id)}
-          <div class="msg" class:user={message.type === "user_text"} class:assistant={message.type.startsWith("assistant")} class:system={message.type === "system_event"}>
-            {#if message.type === "assistant_tool_call" && message.toolCall}
-              <ToolCallCard data={message.toolCall} />
-            {:else if message.content}
-              <div class="msg-body" use:safeMarkdownHtml={message.content}></div>
-            {/if}
-          </div>
+        {#each renderItems as item (item.kind === "divider" ? item.key : item.message.id)}
+          {#if item.kind === "divider"}
+            <div class="date-divider"><span>{item.label}</span></div>
+          {:else}
+            {@const message = item.message}
+            {@const isUser = message.type === "user_text"}
+            {@const isAssistant = message.type.startsWith("assistant")}
+            {@const isSystem = message.type === "system_event"}
+            {@const timeLabel = formatMessageTime(message.timestamp, locale().code)}
+            <div class="msg" class:user={isUser} class:assistant={isAssistant} class:system={isSystem}>
+              {#if !isSystem}
+                <div class="msg-meta">
+                  <span class="msg-role">{isUser ? t("chat.role_user") : t("chat.role_assistant")}</span>
+                  <span class="msg-time" title={formatMessageFull(message.timestamp, locale().code)}>{timeLabel}</span>
+                </div>
+              {/if}
+              {#if message.type === "assistant_tool_call" && message.toolCall}
+                <ToolCallCard data={message.toolCall} />
+              {:else if message.content}
+                <div class="msg-body" use:safeMarkdownHtml={message.content}></div>
+              {/if}
+            </div>
+          {/if}
         {/each}
       </div>
 
@@ -861,6 +904,44 @@
   }
 
   .msg-body { word-break: break-word; }
+
+  .msg-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    color: var(--fg-dim, #9ca3af);
+  }
+
+  .msg-role { font-weight: 600; }
+
+  .msg.user .msg-meta { justify-content: flex-end; }
+
+  .msg-time { opacity: 0.7; font-variant-numeric: tabular-nums; }
+
+  .date-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 14px 0 6px;
+    color: var(--fg-dim, #9ca3af);
+    font-size: 11px;
+  }
+  .date-divider::before,
+  .date-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border, rgba(255, 255, 255, 0.06));
+  }
+  .date-divider span {
+    padding: 2px 10px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--fg-dim) 8%, transparent);
+    white-space: nowrap;
+  }
 
   .chat-input-zone {
     padding: 12px 16px;

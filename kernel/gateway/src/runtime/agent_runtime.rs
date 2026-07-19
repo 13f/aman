@@ -5096,7 +5096,6 @@ impl AgentRuntime {
         let notify = Arc::clone(&self.timeout_poll_notify);
         let workflow_engine = Arc::clone(&self.workflow_engine);
         let registry = Arc::clone(&self.agent_registry);
-        let session_manager = Arc::clone(&self.session_manager);
         let join = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(10));
@@ -5136,16 +5135,38 @@ impl AgentRuntime {
                                     .await;
                                     if let Some(aid) = agent_id {
                                         reset_agent_status(&registry, &aid).await;
-                                        // Flip PROCESSING → IDLE in the session
-                                        // workflow state machine so the session no
-                                        // longer shows as active-processing.
-                                        session_manager
-                                            .handle_reply(&r.instance_id, &aid, "")
-                                            .await;
+                                        // Recover the session from TIMEOUT back to
+                                        // IDLE so it can accept new messages.  The
+                                        // timeout already moved it PROCESSING →
+                                        // TIMEOUT; firing SESSION_RESET drives the
+                                        // TIMEOUT → IDLE transition.  (We must NOT
+                                        // call session_manager.handle_reply() here —
+                                        // that fires LLM_REPLY_READY, which has no
+                                        // transition from TIMEOUT and would only
+                                        // emit a spurious WARN.)
+                                        let reset_event = Event::new(
+                                            "session:control",
+                                            EventType::Custom("SESSION_RESET".to_owned()),
+                                            json!({
+                                                "session_id": &r.instance_id,
+                                                "agent_id": &aid,
+                                            }),
+                                        );
+                                        if let Err(e) = workflow_engine
+                                            .handle_event(&r.instance_id, reset_event)
+                                            .await
+                                        {
+                                            tracing::warn!(
+                                                agent_id = %aid,
+                                                session_id = %r.instance_id,
+                                                error = %e,
+                                                "failed to reset session from TIMEOUT to IDLE"
+                                            );
+                                        }
                                         tracing::info!(
                                             agent_id = %aid,
                                             session_id = %r.instance_id,
-                                            "reset agent status after session PROCESSING timeout"
+                                            "reset agent + session status after PROCESSING timeout"
                                         );
                                     } else {
                                         tracing::warn!(

@@ -179,6 +179,19 @@ impl SessionManager {
                     to: TransitionTo::Specific("IDLE".to_owned()),
                     guard: None, on_fail: None, action: None, on_action_failure: None,
                 },
+                // ── Timeout recovery ─────────────────────────────────────────
+                // When a PROCESSING session times out (120s) the workflow moves
+                // it to TIMEOUT.  The timeout poller then fires SESSION_RESET
+                // to bring the session back to IDLE so it can accept new
+                // messages — without this, the poller's old handle_reply()
+                // call would fire LLM_REPLY_READY, which has no transition
+                // from TIMEOUT and only produced a spurious WARN.
+                Transition {
+                    from: TransitionFrom::Specific("TIMEOUT".to_owned()),
+                    event: "SESSION_RESET".to_owned(),
+                    to: TransitionTo::Specific("IDLE".to_owned()),
+                    guard: None, on_fail: None, action: None, on_action_failure: None,
+                },
                 // ── CLOSED resurrection ──────────────────────────────────────
                 // A session can be pushed into CLOSED either by:
                 //   - ABANDON_TIMEOUT from ERROR (user gave up),

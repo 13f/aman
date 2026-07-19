@@ -38,6 +38,18 @@ use super::AgentRegistry;
 /// Default maximum ReAct loop iterations.
 const DEFAULT_MAX_REACT_TURNS: u32 = 64;
 
+/// Hard timeout for a single `engine.process()` call.
+///
+/// Must be **strictly less** than the `PROCESSING` timeout declared by the
+/// `message-session` workflow (120s, see `session/mod.rs`).  When the engine
+/// exceeds this budget we treat the call as hung, trigger its interrupt flag
+/// and return an error so the harness's normal error path runs — rather than
+/// letting the (potentially 600s) streaming-client timeout be the only guard.
+/// Keeping it under the workflow timeout is what guarantees the session is
+/// still in `PROCESSING` when the error path's `LLM_REPLY_READY` fires, so
+/// the session transitions cleanly back to `IDLE` (see Bug 2).
+const ENGINE_PROCESS_TIMEOUT_SECS: u64 = 90;
+
 /// Default agent router — selects the first enabled agent.
 pub struct FirstEnabledAgentRouter;
 
@@ -359,7 +371,34 @@ impl AgentHarness {
 
         let obs = vec![Observation::user_message(uuid::Uuid::now_v7().to_string(), session_id, user_text)];
         tracing::info!(%agent_id, %session_id, "process_message_v2: calling engine.process()");
-        let result = engine.process(&ctx, obs).await;
+        // Bound the engine call so a hung LLM provider (no stream timeout of
+        // its own for the first byte) cannot block this task indefinitely.
+        // On timeout we trigger the interrupt flag — the engine checks it
+        // between ReAct turns — and surface an error so the harness error
+        // path below drives the session back to IDLE.
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(ENGINE_PROCESS_TIMEOUT_SECS),
+            engine.process(&ctx, obs),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!(
+                    %agent_id,
+                    %session_id,
+                    limit = ENGINE_PROCESS_TIMEOUT_SECS,
+                    "process_message_v2: engine.process() timed out — triggering interrupt"
+                );
+                self.interrupt_session(session_id);
+                Err(cognitive_engine::CognitiveError::EngineError {
+                    engine_name: "LlmCognitiveEngine".into(),
+                    message: format!(
+                        "engine.process() timed out after {ENGINE_PROCESS_TIMEOUT_SECS}s"
+                    ),
+                })
+            }
+        };
         tracing::info!(%agent_id, %session_id, success = result.is_ok(), "process_message_v2: engine.process() completed");
 
         // Report LLM call result to BackendHealth for cognitive state tracking.

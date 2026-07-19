@@ -346,22 +346,62 @@ async fn run_tui_mode(
 
     tracing::info!(%addr, "gateway ready (TUI mode)");
 
-    // Run the TUI on the current (main) thread. This blocks until the user
-    // presses `q`. Worker threads continue running the tokio runtime.
+    // Run the TUI on a dedicated OS thread. We keep the JoinHandle (rather
+    // than `.await`-ing it directly, as before) so we can race it against
+    // signals here on the async thread. With the old code an in-flight
+    // SIGINT/SIGTERM fell through to the default handler, which would reap
+    // the process WITHOUT letting `run_tui` restore the terminal — leaving
+    // the user's shell stuck in raw mode ("Ctrl+C does nothing").
     let tui_agenverse = Arc::clone(&agenverse);
     let tui_log_buffer = Arc::clone(&log_buffer);
-
-    // Spawn the TUI on a dedicated thread (since the main thread is the tokio
-    // runtime thread and we need it responsive for signal handling).
-    let tui_result = tokio::task::spawn_blocking(move || {
+    let mut tui_join = tokio::task::spawn_blocking(move || {
         gateway::tui::run_tui(tui_log_buffer, tui_agenverse)
-    })
-    .await;
+    });
 
-    match tui_result {
-        Ok(Ok(())) => tracing::info!("TUI exited normally"),
-        Ok(Err(e)) => tracing::error!(error = %e, "TUI error"),
-        Err(e) => tracing::error!(error = %e, "TUI spawn_blocking error"),
+    // The startup phase above owned a process-wide `ctrl_c()` listener. Tokio
+    // only permits one at a time, so the startup select must have returned
+    // (dropping its listener) before we install our steady-state watchers.
+    //
+    // SIGTERM watcher. On platforms without a meaningful `sigterm`, this is
+    // `None` and the corresponding select arm is simply never ready.
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    #[cfg(not(unix))]
+    let mut sigterm: Option<()> = None;
+
+    // Loop until the TUI task actually finishes. On Ctrl+C/SIGTERM we don't
+    // exit immediately: we set the exit flag the TUI polls (~every 200 ms),
+    // then keep looping. `run_tui`'s `TtyGuard` then restores the terminal
+    // (disable_raw_mode + LeaveAlternateScreen) so the shell is left usable
+    // before we run the slower runtime shutdown below. This closes the
+    // SIGTERM-raw-mode-leak that made Ctrl+C appear dead.
+    loop {
+        tokio::select! {
+            res = &mut tui_join => {
+                // TUI exited on its own (q / Ctrl+C key / external shutdown).
+                match res {
+                    Ok(Ok(())) => tracing::info!("TUI exited normally"),
+                    Ok(Err(e)) => tracing::error!(error = %e, "TUI error"),
+                    Err(e) => tracing::error!(error = %e, "TUI task cancelled"),
+                }
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("received SIGINT while TUI running — requesting TUI exit");
+                agenverse.request_tui_exit();
+                // Stay in the loop; wait for `run_tui` to actually unwind.
+            }
+            Some(()) = async {
+                match sigterm.as_mut() {
+                    Some(s) => s.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                tracing::info!("received SIGTERM while TUI running — requesting TUI exit");
+                agenverse.request_tui_exit();
+                // Stay in the loop; wait for `run_tui` to actually unwind.
+            }
+        }
     }
 
     tracing::info!("shutting down (TUI exited)");

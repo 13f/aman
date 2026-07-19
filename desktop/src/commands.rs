@@ -186,12 +186,40 @@ pub async fn start_runtime(
 
     let bin_path = gateway_bin_path()?;
 
-    // Spawn the installed gateway binary
-    let mut child = tokio::process::Command::new(&bin_path)
+    // Spawn the installed gateway binary.
+    //
+    // `--no-tui`: the gateway's *default* mode launches an interactive
+    // terminal UI (ratatui) that calls `enable_raw_mode()` on the inherited
+    // controlling tty — and that disables the kernel ISIG flag, so Ctrl+C
+    // stops producing SIGINT for the shell's whole foreground process group.
+    // A GUI has no business running a TUI, so force plain stdout logging.
+    //
+    // `process_group(0)`: get the child into its own process group. Without
+    // this the gateway shares the shell's foreground group, so a Ctrl+C typed
+    // at the shell (or an installer that execs us) raises SIGINT in *both*
+    // the gateway and the shell, and — more importantly — raw-mode setup in
+    // the child can leak back into the parent shell. A fresh process group
+    // keeps the gateway's terminal state and signal delivery isolated.
+    // Unix-only: Windows uses job objects instead (see the escalate_kill
+    // logic below for the equivalent lifetime management).
+    let mut command = tokio::process::Command::new(&bin_path);
+    command
+        .arg("--no-tui")
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    // Isolate the child into its own process group so its terminal state
+    // (see the raw-mode caveat above) and signal delivery don't leak back
+    // into the parent shell. `CommandExt` brings `process_group` into scope.
+    #[cfg(unix)]
+    {
+        // `process_group` is provided by std's `CommandExt`, which tokio
+        // brings into the `process` module scope (so no explicit `use` is
+        // needed — and adding one is flagged redundant).
+        command.process_group(0);
+    }
+    let mut child = command.spawn()
         .map_err(|e| {
             let mut args = std::collections::HashMap::new();
             let path_str = bin_path.display().to_string();

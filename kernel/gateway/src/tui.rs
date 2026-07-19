@@ -9,7 +9,7 @@
 //! Activated via `aman --tui`.
 
 use std::collections::VecDeque;
-use std::io::{self, stdout};
+use std::io::{self, stdout, IsTerminal};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -502,7 +502,33 @@ fn level_color(level: Level) -> Color {
 
 // ── Event loop ────────────────────────────────────────────────────────────
 
-/// Run the TUI on the current thread. Blocks until the user presses `q`.
+/// RAII guard that restores the terminal on drop.
+///
+/// The termios state that crossterm snapshots lives in a process-global
+/// `static` keyed to *this process*. If the process is reaped by the default
+/// signal handler (SIGTERM/SIGKILL) that cache is lost and the controlling
+/// terminal is left in raw mode — which is exactly the "Ctrl+C does nothing"
+/// failure. This guard closes the in-process half: every normal return, early
+/// `?`, and panic-unwind now runs crossterm's restore so the shell is left
+/// usable. The signal-half is closed by the SIGTERM/SIGINT handler in
+/// `run_tui_mode`, which unwinds the TUI *before* the process exits.
+struct TtyGuard;
+
+impl Drop for TtyGuard {
+    fn drop(&mut self) {
+        // crossterm's `disable_raw_mode` restores the original termios it
+        // cached at enable time (including the ISIG flag that turns Ctrl+C
+        // back into SIGINT). It is idempotent. We ignore errors: a failing
+        // restore must not poison the exit path, and in a panic-unwind we
+        // cannot propagate anyway.
+        let _ = terminal::disable_raw_mode();
+        // Leave the alternate screen buffer so scrollback history returns.
+        let _ = io::stdout().execute(LeaveAlternateScreen);
+    }
+}
+
+/// Run the TUI on the current thread. Blocks until the user presses `q` or a
+/// shutdown is requested externally (in which case the tty is still restored).
 ///
 /// The TUI renders a two-column layout:
 ///  - Left (70%): scrolling real-time logs captured from the tracing layer.
@@ -513,10 +539,24 @@ pub fn run_tui(
     log_buffer: Arc<LogBuffer>,
     agenverse: Arc<Agenverse>,
 ) -> io::Result<()> {
-    // Set up the terminal.
+    // If stdout is not a real terminal (e.g. the desktop app spawned us with
+    // stdout → /dev/null, or we were piped), do *not* enable raw mode: doing
+    // so would either fail or — worse — configure a controlling terminal we
+    // don't actually hold, leaving the caller's shell broken. Fall through to
+    // a no-op so the caller can route us into the non-TUI logging path.
+    if !std::io::stdout().is_terminal() {
+        return Ok(());
+    }
+
+    // Set up the terminal. `enable_raw_mode` also snapshots the original
+    // termios into crossterm's process-global cache.
     let mut stdout = stdout();
     terminal::enable_raw_mode()?;
     stdout.execute(EnterAlternateScreen)?;
+
+    // Install the tty-restore guard AFTER raw mode is enabled so that any
+    // failure below (including during the event loop) still restores it.
+    let _guard = TtyGuard;
 
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
@@ -527,11 +567,8 @@ pub fn run_tui(
 
     let result = event_loop(&mut terminal, &mut state);
 
-    // Restore terminal.
-    terminal::disable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(LeaveAlternateScreen)?;
-
+    // `TtyGuard::drop` restores the terminal here. We do it via the guard so
+    // the restore also runs on panic / early return.
     result
 }
 

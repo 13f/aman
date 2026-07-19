@@ -191,6 +191,20 @@ impl Agenverse {
         Ok(())
     }
 
+    /// Signal the TUI event loop to exit.
+    ///
+    /// This only sets the `shutdown_requested` flag that the TUI polls; it
+    /// does **not** acquire the shutdown gate or transition runtime status
+    /// (unlike [`try_acquire_shutdown_gate`](Self::try_acquire_shutdown_gate)).
+    /// The TUI-mode signal handler uses it so that Ctrl+C / SIGTERM can
+    /// unwind the terminal (raw mode + alternate screen) gracefully *before*
+    /// the full runtime shutdown runs. Without this, an in-flight signal
+    /// would otherwise terminate the process via the default handler and
+    /// leave the terminal stuck in raw mode.
+    pub fn request_tui_exit(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+    }
+
     /// Mark the runtime as fully shut down.
     pub async fn mark_shutdown(&self) {
         *self.status.write().await = RuntimeStatus::Shutdown;

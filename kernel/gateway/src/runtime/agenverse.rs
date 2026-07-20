@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 use super::agent_runtime::AgentRuntime;
 use super::http::HttpServerHandle;
@@ -273,20 +274,26 @@ impl Agenverse {
             // headroom so the outer timeout only fires when something
             // is genuinely stuck, not during a normal slow drain.
             //
-            // Note: we do NOT register a second ctrl_c() handler here.
-            // Tokio only allows one process-wide ctrl_c listener, and
-            // the outer loop in main.rs already owns it. Spawning a
-            // second listener can panic ("no signal handler installed")
-            // and the previous std::process::exit(1) on the force_quit
-            // branch bypassed all Drop impls (tracing flush, crossterm
-            // TUI cleanup), which is what froze the terminal when the
-            // desktop SIGKILL'd the gateway mid-shutdown. Instead we
-            // rely on the outer timeout to fire once SHUTDOWN_TIMEOUT
-            // elapses; the process then exits naturally with full
-            // cleanup.
+            // We install a second ctrl_c() listener here to give the
+            // operator an "accelerate" signal: a second Ctrl+C cancels
+            // the CancellationToken passed into runtime.shutdown(),
+            // which makes every bounded drain loop bail out
+            // immediately instead of burning the rest of its grace
+            // period. Without this, a second Ctrl+C would either hit
+            // the default SIGINT handler (hard-kill, skipping WAL
+            // checkpoint and tracing flush) or do nothing at all,
+            // leaving the operator to wait out the full timeout with
+            // no feedback. The CancellationToken is cancelled-drop
+            // safe: letting it drop without cancelling releases all
+            // waiters (i.e. the normal one-shot case).
             const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
-            tokio::select! {
+            // The "I really mean it now" signal.
+            let force_quit = CancellationToken::new();
+            // In every arm below, `runtime.shutdown(&force_quit)` is the
+            // unit of work; the select only decides *with which token
+            // state* we run it (normal, timed-out, or force-cancelled).
+            let shutdown_result: Result<(), _> = tokio::select! {
                 _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
                     tracing::error!(
                         "shutdown timed out after {}s — returning (process will exit naturally)",
@@ -295,15 +302,30 @@ impl Agenverse {
                     // Do NOT call std::process::exit here — let the
                     // process unwind naturally so tracing subscribers
                     // flush to disk and destructors run.
+                    // Return Ok: the timeout is the ultimate backstop and
+                    // the outer main() will exit the process next.
+                    Ok(())
                 }
-                result = self.runtime().shutdown() => {
-                    if let Err(e) = result {
-                        tracing::error!(
-                            error = %e,
-                            "shutdown completed with errors"
-                        );
-                    }
+                result = self.runtime().shutdown(&force_quit) => result,
+                _ = tokio::signal::ctrl_c() => {
+                    // The operator pressed Ctrl+C again. Tell the
+                    // runtime to skip the rest of its grace periods
+                    // and head straight for the final WAL checkpoint.
+                    // We keep awaiting runtime.shutdown() so the
+                    // process still unwinds naturally with full
+                    // cleanup.
+                    tracing::warn!("received second Ctrl+C during shutdown — fast-exiting remaining drain");
+                    force_quit.cancel();
+                    // Continue waiting for the runtime shutdown to
+                    // drain what it can and complete WAL checkpoint.
+                    self.runtime().shutdown(&force_quit).await
                 }
+            };
+            if let Err(e) = shutdown_result {
+                tracing::error!(
+                    error = %e,
+                    "shutdown completed with errors"
+                );
             }
         }
 

@@ -23,7 +23,7 @@ use kernel::skill::Skill;
 use kernel::source::EventSource;
 use kernel::tool::Tool;
 use kernel::types::{BackpressureLevel, ExecutionModel, ToolMode};
-use kernel::{AmanResult, Error};
+use kernel::{safe_eprintln, AmanResult, Error};
 use persistence::{DeadLetterQueue, InMemoryDeadLetterQueue, PersistentBus, WalSync, WriteAheadLog};
 use kernel::plugin::Plugin;
 use pipeline::ToolEventSink;
@@ -49,6 +49,7 @@ use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 use super::{AuditLogger, EventStore};
 use super::agenverse::{Agenverse, RuntimePhase, RuntimeStatus};
 use super::SoulRuntime;
@@ -5018,18 +5019,37 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn stop_soul_watching(&self) {
+    async fn stop_soul_watching(&self, cancel: &CancellationToken) {
         if self.soul_runtime.is_none() {
             return;
         }
         self.soul_stop.store(true, Ordering::Release);
+        if cancel.is_cancelled() {
+            // Operator fast-exited. Don't block on the watcher thread
+            // join (OS-thread joins are not interruptible). Drop the
+            // JoinHandle — the thread sees its stop flag and exits on
+            // its own; if it doesn't, the OS reaps it when the process
+            // exits a moment later.
+            tracing::warn!("soul watcher join skipped (operator fast-exit)");
+            if self.soul_thread.lock().await.take().is_some() {
+                safe_eprintln!("gateway shutdown: skipping soul-watcher join (fast-exit)");
+            }
+            return;
+        }
         if let Some(join) = self.soul_thread.lock().await.take() {
             let _ = tokio::task::spawn_blocking(move || join.join()).await;
         }
     }
 
-    async fn stop_skill_watching(&self) {
+    async fn stop_skill_watching(&self, cancel: &CancellationToken) {
         self.skill_stop.store(true, Ordering::Release);
+        if cancel.is_cancelled() {
+            tracing::warn!("skill watcher join skipped (operator fast-exit)");
+            if self.skill_thread.lock().await.take().is_some() {
+                safe_eprintln!("gateway shutdown: skipping skill-watcher join (fast-exit)");
+            }
+            return;
+        }
         if let Some(join) = self.skill_thread.lock().await.take() {
             let _ = tokio::task::spawn_blocking(move || join.join()).await;
         }
@@ -5248,22 +5268,35 @@ impl AgentRuntime {
         }
     }
 
-    #[instrument(skip(self))]
-    pub async fn shutdown(&self) -> AmanResult<()> {
+    /// Full graceful shutdown: drain active sessions, stop sources, drain
+    /// the event bus, unload plugins, checkpoint the WAL, then mark shutdown.
+    ///
+    /// `cancel`: a [`CancellationToken`] the operator can fire by pressing
+    /// Ctrl+C a second time during shutdown. When fired, every bounded
+    /// drain loop bails out immediately instead of burning the rest of its
+    /// grace period. The WAL checkpoint (Phase1) always runs regardless of
+    /// cancellation — data integrity outranks speed.
+    #[instrument(skip(self, cancel))]
+    pub async fn shutdown(&self, cancel: &CancellationToken) -> AmanResult<()> {
         if self.agenverse.try_acquire_shutdown_gate().await.is_err() {
             return Ok(());
         }
 
-        self.bump_shutdown_phase(RuntimePhase::Phase5).await?;
-        self.bump_shutdown_phase(RuntimePhase::Phase4).await?;
-        self.bump_shutdown_phase(RuntimePhase::Phase3).await?;
-        self.bump_shutdown_phase(RuntimePhase::Phase2).await?;
-        self.bump_shutdown_phase(RuntimePhase::Phase1).await?;
-        self.bump_shutdown_phase(RuntimePhase::Phase05).await?;
-        self.bump_shutdown_phase(RuntimePhase::Phase0).await?;
+        // Tell the operator what to expect. Printed directly to stderr so
+        // it shows up on the user's terminal even when the TUI has already
+        // exited (TUI mode disables the stdout tracing layer).
+        safe_eprintln!("gateway: shutting down (max ~30 s). Press Ctrl+C again to fast-exit drain loops.");
 
-        self.stop_soul_watching().await;
-        self.stop_skill_watching().await;
+        self.bump_shutdown_phase(RuntimePhase::Phase5, cancel).await?;
+        self.bump_shutdown_phase(RuntimePhase::Phase4, cancel).await?;
+        self.bump_shutdown_phase(RuntimePhase::Phase3, cancel).await?;
+        self.bump_shutdown_phase(RuntimePhase::Phase2, cancel).await?;
+        self.bump_shutdown_phase(RuntimePhase::Phase1, cancel).await?;
+        self.bump_shutdown_phase(RuntimePhase::Phase05, cancel).await?;
+        self.bump_shutdown_phase(RuntimePhase::Phase0, cancel).await?;
+
+        self.stop_soul_watching(cancel).await;
+        self.stop_skill_watching(cancel).await;
         self.stop_backpressure_watching().await;
         self.stop_timeout_polling().await;
 
@@ -5272,8 +5305,15 @@ impl AgentRuntime {
     }
 
     async fn bump_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
+        // `bump_phase` is the startup (Phase0→5) counterpart of
+        // `bump_shutdown_phase`. It can be interrupted by shutdown via
+        // this early-return, in which case it delegates to the shutdown
+        // path. Pass an un-cancelled token: startup interruption is a
+        // hard stop — drain loops should skip to completion so the
+        // shutdown transition can proceed immediately.
         if self.agenverse.shutdown_requested() && phase != RuntimePhase::Phase0 {
-            self.bump_shutdown_phase(self.agenverse.phase()).await?;
+            let cancel = CancellationToken::new();
+            self.bump_shutdown_phase(self.agenverse.phase(), &cancel).await?;
             self.agenverse.mark_shutdown().await;
             return Err(Error::InvalidStateTransition {
                 message: "startup interrupted by shutdown".to_owned(),
@@ -5525,7 +5565,15 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn bump_shutdown_phase(&self, phase: RuntimePhase) -> AmanResult<()> {
+    async fn bump_shutdown_phase(
+        &self,
+        phase: RuntimePhase,
+        cancel: &CancellationToken,
+    ) -> AmanResult<()> {
+        // One-line progress marker per phase. Routed to stderr so the
+        // operator sees it on their terminal even after the TUI has
+        // exited (TUI mode has no stdout tracing layer).
+        safe_eprintln!("gateway shutdown: entering {phase:?}");
         tracing::info!(?phase, "bump_shutdown_phase enter");
         let startup_pause = self.agenverse.startup_pause();
         if !startup_pause.is_zero() {
@@ -5553,6 +5601,14 @@ impl AgentRuntime {
                 let mut last_log = tokio::time::Instant::now();
                 let log_interval = Duration::from_secs(1);
                 loop {
+                    // Operator pressed Ctrl+C again → skip the rest of the
+                    // grace period. Still proceeds to the forced abort / WAL
+                    // checkpoint below so we don't lose data.
+                    if cancel.is_cancelled() {
+                        tracing::warn!("Phase5 drain cancelled by operator — skipping remaining grace");
+                        safe_eprintln!("gateway shutdown: operator cancelled Phase5 drain, forcing abort");
+                        break;
+                    }
                     let agents = self.agent_registry.list().await;
                     let busy: Vec<&str> = agents
                         .iter()
@@ -5560,6 +5616,10 @@ impl AgentRuntime {
                         .map(|a| a.descriptor.agent_id.as_str())
                         .collect();
                     if busy.is_empty() {
+                        safe_eprintln!(
+                            "gateway shutdown: all {} agents idle (Phase5 done)",
+                            agents.len()
+                        );
                         tracing::info!(
                             total = agents.len(),
                             "all agents idle — proceeding with shutdown"
@@ -5579,6 +5639,11 @@ impl AgentRuntime {
                             agents = ?busy,
                             remaining_secs = remaining,
                             "draining active agent sessions"
+                        );
+                        safe_eprintln!(
+                            "gateway shutdown (Phase5): draining {} busy agent(s), {:.1}s remaining",
+                            busy.len(),
+                            remaining
                         );
                         last_log = tokio::time::Instant::now();
                     }
@@ -5635,15 +5700,38 @@ impl AgentRuntime {
                 );
                 let started = tokio::time::Instant::now();
                 let mut last_pending = 0usize;
+                let mut last_log = tokio::time::Instant::now();
+                let log_interval = Duration::from_secs(1);
                 let mut stall_ticks = 0u32;
                 loop {
+                    // Operator pressed Ctrl+C again → skip the rest of the
+                    // bus drain. WAL checkpoint still runs in Phase1.
+                    if cancel.is_cancelled() {
+                        tracing::warn!("Phase4 event-bus drain cancelled by operator");
+                        safe_eprintln!("gateway shutdown: operator cancelled event-bus drain (Phase4)");
+                        break;
+                    }
                     let metrics = self.bus.metrics();
                     let pending = metrics.queue_depth.high
                         + metrics.queue_depth.normal
                         + metrics.queue_depth.low
                         + metrics.retry_queue_depth;
                     if pending == 0 {
+                        safe_eprintln!("gateway shutdown: event bus drained (Phase4 done)");
                         break;
+                    }
+                    if last_log.elapsed() >= log_interval {
+                        tracing::info!(
+                            pending,
+                            elapsed_secs = started.elapsed().as_secs_f32(),
+                            "draining event bus"
+                        );
+                        safe_eprintln!(
+                            "gateway shutdown (Phase4): {} events pending, {:.1}s elapsed",
+                            pending,
+                            started.elapsed().as_secs_f32()
+                        );
+                        last_log = tokio::time::Instant::now();
                     }
                     if pending == last_pending {
                         stall_ticks += 1;
@@ -5677,6 +5765,7 @@ impl AgentRuntime {
                 self.agenverse.set_phase(RuntimePhase::Phase2);
             }
             RuntimePhase::Phase2 => {
+                safe_eprintln!("gateway shutdown: unloading plugins, clearing agent registry");
                 {
                     let mut loader = self.plugin_loader.lock().await;
                     if let Err(error) = loader.unload_all().await {
@@ -5691,10 +5780,16 @@ impl AgentRuntime {
                 }
                 // Clear agent registry during shutdown
                 self.agent_registry.clear().await;
+                safe_eprintln!("gateway shutdown: plugins unloaded, registry cleared (Phase2 done)");
                 tracing::info!("Phase2: plugin unload and agent registry clear complete");
                 self.agenverse.set_phase(RuntimePhase::Phase1);
             }
             RuntimePhase::Phase1 => {
+                // ALWAYS checkpoint the WAL, even if the operator
+                // fast-exited earlier phases. This is the durability
+                // boundary: without it, the persistent bus could lose
+                // events since the last checkpoint on restart.
+                safe_eprintln!("gateway shutdown: checkpointing WAL (data integrity)");
                 if let Some(persistent) = &self.persistent_bus {
                     let wal = persistent.wal();
                     let guard = wal
@@ -5720,6 +5815,7 @@ impl AgentRuntime {
                         }
                     }
                 }
+                safe_eprintln!("gateway shutdown: WAL checkpoint complete (Phase1 done)");
                 tracing::info!("Phase1: WAL checkpoint complete");
                 self.agenverse.set_phase(RuntimePhase::Phase05);
             }
@@ -5727,6 +5823,7 @@ impl AgentRuntime {
                 self.agenverse.set_phase(RuntimePhase::Phase0);
             }
             RuntimePhase::Phase0 => {
+                safe_eprintln!("gateway shutdown: runtime phases complete, stopping watchers");
                 self.agenverse.set_phase(RuntimePhase::Phase0);
             }
         }

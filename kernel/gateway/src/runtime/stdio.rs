@@ -21,6 +21,7 @@ use persistence::{DeadLetterQueue, DlqFilter};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 // ── JSON-RPC 2.0 types ──
 
@@ -187,7 +188,10 @@ async fn dispatch(
             Ok(Value::String("started".into()))
         }
         "agent.shutdown" => {
-            runtime.shutdown().await?;
+            // stdio `agent.shutdown`: JSON-RPC triggered, not Ctrl+C.
+            // Fresh un-cancelled token so drain loops run to completion.
+            let cancel = CancellationToken::new();
+            runtime.shutdown(&cancel).await?;
             Ok(Value::String("shutdown".into()))
         }
 

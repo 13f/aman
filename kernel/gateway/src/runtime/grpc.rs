@@ -14,6 +14,7 @@ use kernel::event::EventType;
 use kernel::Error;
 use persistence::{DeadLetterQueue, DlqFilter};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tonic::{Request, Response, Status};
 
 // Include the generated proto code.
@@ -92,7 +93,10 @@ impl Aman for AmanServiceImpl {
     }
 
     async fn agent_shutdown(&self, _req: Request<Empty>) -> Result<Response<Empty>, Status> {
-        self.runtime.shutdown().await.map_err(map_error)?;
+        // gRPC agent.shutdown: trigger-driven, not Ctrl+C. Fresh
+        // un-cancelled token so all drain loops run to completion.
+        let cancel = CancellationToken::new();
+        self.runtime.shutdown(&cancel).await.map_err(map_error)?;
         Ok(Response::new(Empty {}))
     }
 

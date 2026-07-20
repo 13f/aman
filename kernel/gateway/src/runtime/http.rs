@@ -28,6 +28,7 @@ use rand::Rng;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
+use tokio_util::sync::CancellationToken;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -280,7 +281,11 @@ async fn agent_start(State(runtime): State<Arc<AgentRuntime>>) -> Response {
 async fn agent_shutdown(State(runtime): State<Arc<AgentRuntime>>, headers: HeaderMap) -> Response {
     let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
     if let Some(response) = guard_confirmation(&runtime.audit(), operator, "agent.shutdown", "agent", &headers) { return response; }
-    with_audit(&runtime.audit(), operator, "agent.shutdown", "agent", runtime.shutdown().await)
+    // HTTP agent.shutdown: per-agent druntime-wide shutdown. This path
+    // is not driven by a Ctrl+C, so pass a fresh, un-cancelled token —
+    // all drain loops run to their natural completion.
+    let cancel = CancellationToken::new();
+    with_audit(&runtime.audit(), operator, "agent.shutdown", "agent", runtime.shutdown(&cancel).await)
 }
 
 async fn source_pause(

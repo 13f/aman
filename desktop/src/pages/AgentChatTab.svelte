@@ -266,22 +266,31 @@
         } else if (et.includes("reply_ready") || et.includes("reply_stream_done") || et === "llm_reply_ready") {
           const replyText = p.reply ?? p.full_text ?? "";
           if (replyText) msg = { id: evt.event_id, type: "assistant_text", content: replyText, timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "completed" };
-        } else if (et.includes("tool:dispatched") || et === "llm_tool_call" || et.includes("tool_call")) {
-          const callId: string = p.tool_call_id ?? p.call_id ?? evt.event_id;
-          const toolName: string = p.tool_name ?? p.name ?? "tool";
-          msg = { id: callId, type: "assistant_tool_call", content: `Tool: ${toolName}`, timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "streaming", toolCall: { callId, toolName, arguments: typeof p.args === "string" ? p.args : JSON.stringify(p.args ?? {}), status: "running" as const } };
+        } else if (et === "agent:got_tool_calls" || et.includes("tool:dispatched") || et === "llm_tool_call" || et.includes("tool_call")) {
+          // agent:got_tool_calls: {tools: ["web_search", "write"], turn: 2}
+          // tool:dispatched / llm_tool_call: {tool_call_id, tool_name, args}
+          if (Array.isArray(p.tools)) {
+            for (const toolName of p.tools) {
+              const callId = `${evt.event_id}:${toolName}`;
+              historyMsgs.push({ id: callId, type: "assistant_tool_call", content: `Tool: ${toolName}`, timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "streaming", toolCall: { callId, toolName, arguments: "{}", status: "running" as const } });
+            }
+          } else {
+            const callId: string = p.tool_call_id ?? p.call_id ?? evt.event_id;
+            const toolName: string = p.tool_name ?? p.name ?? "tool";
+            msg = { id: callId, type: "assistant_tool_call", content: `Tool: ${toolName}`, timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "streaming", toolCall: { callId, toolName, arguments: typeof p.args === "string" ? p.args : JSON.stringify(p.args ?? {}), status: "running" as const } };
+          }
         } else if (et.includes("tool:completed") || et.includes("tool:failed")) {
           const callId: string = p.tool_call_id ?? p.call_id ?? "";
           const success = et.includes("tool:completed") || p.success === true;
-          toolResults.push({ callId, success, output: p.output ?? p.result });
+          toolResults.push({ callId, success, output: p.output ?? p.result, toolName: p.tool_name });
         } else if (et === "history_trimmed" || et.includes("config_warning")) {
           msg = { id: evt.event_id, type: "system_event", content: p.message ?? "", timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "completed" };
         }
         if (msg) historyMsgs.push(msg);
       }
       for (const tr of toolResults) {
-        const callMsg = historyMsgs.find(m => m.type === "assistant_tool_call" && m.toolCall?.callId === tr.callId);
-        if (callMsg && callMsg.toolCall) {
+        const callMsg = historyMsgs.find(m => m.type === "assistant_tool_call" && (m.toolCall?.callId === tr.callId || (tr.callId === "" && m.toolCall?.toolName === tr.toolName) || m.id === tr.callId));
+        if (callMsg && callMsg.toolCall && callMsg.toolCall.status === "running") {
           callMsg.toolCall.status = tr.success ? "success" : "failed";
           callMsg.status = tr.success ? "completed" : "error";
           if (tr.success) callMsg.toolCall.result = tr.output; else callMsg.toolCall.error = tr.output;

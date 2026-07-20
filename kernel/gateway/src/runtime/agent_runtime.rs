@@ -6003,12 +6003,9 @@ impl event_bus::EventHandler for StoreAllEventsHandler {
                 || etype.contains("llm:call_ended")
                 || etype.contains("agent:busy")
                 || etype.contains("agent:idle")
-                || etype.contains("agent:got_tool_calls")
-                || etype.contains("agent:tool_results_fed_back")
                 || etype.contains("agent:history_compressed")
                 || etype.contains("agent:reply_interrupted")
                 || etype.contains("work:item:event")       // duplicate wrapper, not conversation
-                || etype.contains("tool:dispatched")        // internal forwarding event
             {
                 self.store.record(event);
                 return Ok(());

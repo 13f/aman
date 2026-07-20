@@ -58,6 +58,19 @@ use tracing::instrument;
 use workflow::WorkflowEngine;
 
 // ---------------------------------------------------------------------------
+// Watcher-thread shutdown grace period
+// ---------------------------------------------------------------------------
+
+/// How long to wait for a soul/skill watcher OS thread to exit cleanly
+/// before giving up and detaching it. The threads poll their stop flag
+/// every ~200 ms, so under normal conditions they exit well within this
+/// window; the bound only bites when a reload is stuck on slow/blocking
+/// I/O (NFS, locked file, Tantivy commit). In that case we detach and let
+/// the OS reap the thread on process exit rather than hanging shutdown
+/// (and the operator's Ctrl+C) forever.
+const WATCHER_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+// ---------------------------------------------------------------------------
 // Capability registry types
 // ---------------------------------------------------------------------------
 
@@ -5023,35 +5036,91 @@ impl AgentRuntime {
         if self.soul_runtime.is_none() {
             return;
         }
+        // Ask the watcher thread to stop. It checks this flag at the top
+        // of every poll loop (every ~200 ms) and exits on its own once its
+        // in-flight work (if any) completes. We do NOT need to join it for
+        // correctness — the process is exiting and the OS reaps detached
+        // threads, so a stuck OS-thread join must never be allowed to hang
+        // shutdown (and the operator's Ctrl+C) indefinitely.
         self.soul_stop.store(true, Ordering::Release);
+        let join = self.soul_thread.lock().await.take();
+        let Some(join) = join else {
+            return;
+        };
         if cancel.is_cancelled() {
-            // Operator fast-exited. Don't block on the watcher thread
-            // join (OS-thread joins are not interruptible). Drop the
-            // JoinHandle — the thread sees its stop flag and exits on
-            // its own; if it doesn't, the OS reaps it when the process
-            // exits a moment later.
+            // Operator fast-exited (second Ctrl+C). Don't wait at all.
             tracing::warn!("soul watcher join skipped (operator fast-exit)");
-            if self.soul_thread.lock().await.take().is_some() {
-                safe_eprintln!("gateway shutdown: skipping soul-watcher join (fast-exit)");
-            }
+            safe_eprintln!("gateway shutdown: skipping soul-watcher join (fast-exit)");
             return;
         }
-        if let Some(join) = self.soul_thread.lock().await.take() {
-            let _ = tokio::task::spawn_blocking(move || join.join()).await;
+        // Bounded wait for a clean exit. Under normal conditions the
+        // thread sees the stop flag within one poll (~200 ms) and joins
+        // quickly. If a reload is stuck on slow/blocking I/O, give it a
+        // short grace period and then let go rather than hanging.
+        // Three nested Results:
+        //   timeout   -> Result<_, Elapsed>
+        //   JoinHandle::await -> Result<_, JoinError>
+        //   std::thread::join -> Result<(), Box<dyn Any + Send>>
+        match tokio::time::timeout(
+            WATCHER_SHUTDOWN_GRACE,
+            tokio::task::spawn_blocking(move || join.join()),
+        )
+        .await
+        {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(panic))) => {
+                tracing::warn!("soul watcher thread panicked: {panic:?}");
+            }
+            Ok(Err(join_err)) => {
+                tracing::warn!("soul watcher join task failed: {join_err}");
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    ?WATCHER_SHUTDOWN_GRACE,
+                    "soul watcher thread did not exit within grace period — detaching (OS will reap)"
+                );
+                safe_eprintln!(
+                    "gateway shutdown: soul-watcher thread still running after \
+                     {WATCHER_SHUTDOWN_GRACE:?}, detaching"
+                );
+            }
         }
     }
 
     async fn stop_skill_watching(&self, cancel: &CancellationToken) {
         self.skill_stop.store(true, Ordering::Release);
+        let join = self.skill_thread.lock().await.take();
+        let Some(join) = join else {
+            return;
+        };
         if cancel.is_cancelled() {
             tracing::warn!("skill watcher join skipped (operator fast-exit)");
-            if self.skill_thread.lock().await.take().is_some() {
-                safe_eprintln!("gateway shutdown: skipping skill-watcher join (fast-exit)");
-            }
+            safe_eprintln!("gateway shutdown: skipping skill-watcher join (fast-exit)");
             return;
         }
-        if let Some(join) = self.skill_thread.lock().await.take() {
-            let _ = tokio::task::spawn_blocking(move || join.join()).await;
+        match tokio::time::timeout(
+            WATCHER_SHUTDOWN_GRACE,
+            tokio::task::spawn_blocking(move || join.join()),
+        )
+        .await
+        {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(panic))) => {
+                tracing::warn!("skill watcher thread panicked: {panic:?}");
+            }
+            Ok(Err(join_err)) => {
+                tracing::warn!("skill watcher join task failed: {join_err}");
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    ?WATCHER_SHUTDOWN_GRACE,
+                    "skill watcher thread did not exit within grace period — detaching (OS will reap)"
+                );
+                safe_eprintln!(
+                    "gateway shutdown: skill-watcher thread still running after \
+                     {WATCHER_SHUTDOWN_GRACE:?}, detaching"
+                );
+            }
         }
     }
 

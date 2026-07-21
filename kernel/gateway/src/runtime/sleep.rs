@@ -173,11 +173,11 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         cancel: &CancellationToken,
     ) -> AmanResult<serde_json::Value> {
         // Service degradation: skip LLM calls when backend is Down.
-        if let Some(health) = self.agent_registry.get_agent_backend_health(agent_id).await {
-            if health.status() == super::backend_health::BackendStatus::Down {
-                debug!(agent_id, "Sleep phase 1: LLM backend down, skipping session_backfill");
-                return Ok(serde_json::json!({"status": "skipped", "reason": "llm_backend_down"}));
-            }
+        if let Some(health) = self.agent_registry.get_agent_backend_health(agent_id).await
+            && health.status() == super::backend_health::BackendStatus::Down
+        {
+            debug!(agent_id, "Sleep phase 1: LLM backend down, skipping session_backfill");
+            return Ok(serde_json::json!({"status": "skipped", "reason": "llm_backend_down"}));
         }
 
         let Some(store) = self.agent_registry.get_session_store(agent_id).await else {

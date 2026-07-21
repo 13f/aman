@@ -474,7 +474,9 @@ impl SessionStore {
             }
 
             let marker_deletable = events.iter().any(|e| {
-                e["event_type"].as_str().map_or(false, |et| et.contains("session:marker"))
+                e["event_type"]
+                    .as_str()
+                    .is_some_and(|et| et.contains("session:marker"))
                     && e["payload"]["data"]["deletable"].as_bool() == Some(true)
             });
 

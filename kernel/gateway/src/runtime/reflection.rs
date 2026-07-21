@@ -180,11 +180,11 @@ impl ReflectionRunner {
         };
 
         // Service degradation: skip LLM calls when backend is Down.
-        if let Some(health) = registry.get_agent_backend_health(agent_id).await {
-            if health.status() == super::backend_health::BackendStatus::Down {
-                debug!(agent_id, "Reflection: LLM backend down, skipping session_extract");
-                return;
-            }
+        if let Some(health) = registry.get_agent_backend_health(agent_id).await
+            && health.status() == super::backend_health::BackendStatus::Down
+        {
+            debug!(agent_id, "Reflection: LLM backend down, skipping session_extract");
+            return;
         }
 
         let Some(store) = registry.get_session_store(agent_id).await else {
@@ -255,7 +255,7 @@ impl ReflectionRunner {
                         registry.backend_health_registry().config(),
                     );
                     if let Some(ev) = changed {
-                        publish_health_event(&registry, ev);
+                        publish_health_event(registry, ev);
                     }
                 }
                 let now = SystemTime::now()
@@ -301,15 +301,15 @@ impl ReflectionRunner {
             }
             Err(e) => {
                 // Report failure to BackendHealth for cognitive state tracking.
-                if let Some(registry) = self.agent_registry.get() {
-                    if let Some(health) = registry.get_agent_backend_health(agent_id).await {
-                        let changed = health.record_failure(
-                            &e.to_string(),
-                            registry.backend_health_registry().config(),
-                        );
-                        if let Some(ev) = changed {
-                            publish_health_event(registry, ev);
-                        }
+                if let Some(registry) = self.agent_registry.get()
+                    && let Some(health) = registry.get_agent_backend_health(agent_id).await
+                {
+                    let changed = health.record_failure(
+                        &e.to_string(),
+                        registry.backend_health_registry().config(),
+                    );
+                    if let Some(ev) = changed {
+                        publish_health_event(registry, ev);
                     }
                 }
                 // Transient provider blips (timeout / EOF / 5xx) don't mark
@@ -596,6 +596,7 @@ impl ReflectionRunner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // Thin delegate to session_extract_and_store.
     async fn extract_and_store(
         &self,
         llm: &Arc<dyn LlmProvider>,

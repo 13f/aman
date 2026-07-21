@@ -61,47 +61,47 @@ pub fn parse_content(content: &str) -> AmanResult<ExpMd> {
         }
 
         // Key-value fields: "- **fieldname**: value"
-        if let Some(ref mut entry) = current_entry {
-            if let Some((key, val)) = line.split_once(':') {
-                // Strip "- **" prefix and "**" suffix from key
-                let key = key
-                    .trim()
-                    .trim_start_matches("- **")
-                    .trim_end_matches("**");
-                let val = val.trim();
-                match key {
-                    "Strategy" | "Pattern" | "Anti-pattern" | "Gotcha" | "Workaround"
-                    | "Content" => {
-                        entry.content = val.to_string();
-                    }
-                    "confidence" => {
-                        entry.confidence = val.parse().unwrap_or(0.5);
-                    }
-                    "uses" => {
-                        entry.uses = val.parse().unwrap_or(0);
-                    }
-                    "successes" => {
-                        entry.successes = val.parse().unwrap_or(0);
-                    }
-                    "needs_verification" => {
-                        entry.needs_verification = val.eq_ignore_ascii_case("true");
-                    }
-                    "last_verified" | "last_hit" | "deprecated" => {
-                        // Date fields — could parse if needed
-                    }
-                    "learned_from" => {
-                        entry.learned_from = val
-                            .trim_matches(|c| c == '[' || c == ']')
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                    }
-                    "boundary_ref" => {
-                        // Reference to SOUL.md — metadata
-                    }
-                    _ => {}
+        if let Some(ref mut entry) = current_entry
+            && let Some((key, val)) = line.split_once(':')
+        {
+            // Strip "- **" prefix and "**" suffix from key
+            let key = key
+                .trim()
+                .trim_start_matches("- **")
+                .trim_end_matches("**");
+            let val = val.trim();
+            match key {
+                "Strategy" | "Pattern" | "Anti-pattern" | "Gotcha" | "Workaround"
+                | "Content" => {
+                    entry.content = val.to_string();
                 }
+                "confidence" => {
+                    entry.confidence = val.parse().unwrap_or(0.5);
+                }
+                "uses" => {
+                    entry.uses = val.parse().unwrap_or(0);
+                }
+                "successes" => {
+                    entry.successes = val.parse().unwrap_or(0);
+                }
+                "needs_verification" => {
+                    entry.needs_verification = val.eq_ignore_ascii_case("true");
+                }
+                "last_verified" | "last_hit" | "deprecated" => {
+                    // Date fields — could parse if needed
+                }
+                "learned_from" => {
+                    entry.learned_from = val
+                        .trim_matches(|c| c == '[' || c == ']')
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                "boundary_ref" => {
+                    // Reference to SOUL.md — metadata
+                }
+                _ => {}
             }
         }
     }
@@ -116,12 +116,12 @@ pub fn parse_content(content: &str) -> AmanResult<ExpMd> {
 
 fn parse_entry_header(s: &str) -> (ExperienceTag, String) {
     // Format: [tag] description
-    if s.starts_with('[') {
-        if let Some(end) = s.find(']') {
-            let tag = ExperienceTag::new(&s[1..end]);
-            let desc = s[end + 1..].trim().to_string();
-            return (tag, desc);
-        }
+    if s.starts_with('[')
+        && let Some(end) = s.find(']')
+    {
+        let tag = ExperienceTag::new(&s[1..end]);
+        let desc = s[end + 1..].trim().to_string();
+        return (tag, desc);
     }
     // Fallback: no tag
     (ExperienceTag::new("misc"), s.to_string())

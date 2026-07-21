@@ -3232,7 +3232,7 @@ async fn chat_session_kill(
     Path(id): Path<String>,
 ) -> Response {
     let operator = operator_from_headers(&headers).unwrap_or(DEFAULT_OPERATOR);
-    match runtime.kill_session(&id, &operator).await {
+    match runtime.kill_session(&id, operator).await {
         Ok(true) => (
             StatusCode::OK,
             Json(json!({ "ok": true, "status": "killed" })),

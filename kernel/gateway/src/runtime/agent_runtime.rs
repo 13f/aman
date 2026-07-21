@@ -1095,10 +1095,10 @@ impl AgentRuntimeBuilder {
             #[async_trait::async_trait]
             impl event_bus::EventHandler for ColdStartDoneSub {
                 async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
-                    if let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str()) {
-                        if let Err(e) = self.registry.mark_cold_start_complete(agent_id).await {
-                            tracing::warn!(agent = %agent_id, error = %e, "mark_cold_start_complete failed");
-                        }
+                    if let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str())
+                        && let Err(e) = self.registry.mark_cold_start_complete(agent_id).await
+                    {
+                        tracing::warn!(agent = %agent_id, error = %e, "mark_cold_start_complete failed");
                     }
                     Ok(())
                 }
@@ -1600,17 +1600,16 @@ impl AgentRuntimeBuilder {
                     // IDLE before it even processes anything).  The CLOSED
                     // session is re-opened by the *next* incoming message, not
                     // by a stale reply.
-                    if let Some(inst) = self.session_manager.workflow_engine()
+                    if self.session_manager.workflow_engine()
                         .get_instance(session_id)
+                        .is_some_and(|inst| inst.current_state == "CLOSED")
                     {
-                        if inst.current_state == "CLOSED" {
-                            tracing::warn!(
-                                session_id,
-                                agent_id,
-                                "SessionReplyHandler: dropping reply for CLOSED session"
-                            );
-                            return Ok(());
-                        }
+                        tracing::warn!(
+                            session_id,
+                            agent_id,
+                            "SessionReplyHandler: dropping reply for CLOSED session"
+                        );
+                        return Ok(());
                     }
                     self.session_manager.handle_reply(session_id, agent_id, reply).await;
                 }

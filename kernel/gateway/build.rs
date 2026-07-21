@@ -52,7 +52,7 @@ fn run_pre_build_steps(workspace_root: &Path) {
         // file or directory" on non-Windows platforms.
         let status = if cfg!(windows) {
             Command::new("cmd")
-                .args(&["/c", cmd])
+                .args(["/c", cmd])
                 .args(*args)
                 .current_dir(&dir)
                 .status()

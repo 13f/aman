@@ -93,10 +93,10 @@ pub fn evaluate_knowledge(
     }
 
     // Check staleness
-    if let Some(age) = input.avg_age_days {
-        if age > thresholds.max_age_days {
-            return KnowledgeSignal::Outdated;
-        }
+    if let Some(age) = input.avg_age_days
+        && age > thresholds.max_age_days
+    {
+        return KnowledgeSignal::Outdated;
     }
 
     KnowledgeSignal::Informed
@@ -237,6 +237,6 @@ mod tests {
     #[test]
     fn test_cjk_token_estimation() {
         let tokens = estimate_tokens("请帮我分析这个文件");
-        assert!(tokens >= 3 && tokens <= 8);
+        assert!((3..=8).contains(&tokens));
     }
 }

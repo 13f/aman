@@ -263,7 +263,7 @@ fn test_subprocess_plugin_discovered_and_loaded_when_approved() {
     write_test_echo_plugin(&local_aman.join("plugins").join("test-echo"));
     write_test_approval(&local_aman);
 
-    let mut harness = GatewayTestHarness::new();
+    let harness = GatewayTestHarness::new();
 
     // The plugin should be discoverable + loaded into the Running state.
     let state = harness.rt.block_on(async {
@@ -283,7 +283,7 @@ fn test_subprocess_plugin_not_loaded_without_approval() {
     write_test_echo_plugin(&local_aman.join("plugins").join("test-echo"));
     // No approval file → the plugin must be deferred, NOT loaded.
 
-    let mut harness = GatewayTestHarness::new();
+    let harness = GatewayTestHarness::new();
 
     let state = harness.rt.block_on(async {
         let loader = harness.runtime.plugin_loader().await;

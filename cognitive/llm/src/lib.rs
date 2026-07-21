@@ -517,13 +517,16 @@ async fn execute_one_with_retry(
             Err(e) => e.to_string(),
         };
 
-        // Publish tool:completed
+        // Publish tool:completed.  Includes `output` so that a later
+        // "继续" (continue) can reconstruct the Tool-role ChatMessage
+        // with the actual result text — not just a success/fail flag.
         let _ = bus.publish(kernel::event::Event::new(
             "cognitive-engine",
             kernel::event::EventType::Custom("tool:completed".into()),
             serde_json::json!({
                 "tool_call_id": call.id, "tool_name": call.tool_name,
-                "success": success, "duration_ms": duration_ms,
+                "success": success, "output": output,
+                "duration_ms": duration_ms,
                 "session_id": session_id,
                 "agent_id": agent_id,
             }),
@@ -891,10 +894,8 @@ fn build_continuation_context(
                     entry.1 += 1;
                 }
                 // Keep the best signal (prefer success signals)
-                if signal.is_some() {
-                    if entry.2.is_none() || success {
-                        entry.2 = signal;
-                    }
+                if signal.is_some() && (entry.2.is_none() || success) {
+                    entry.2 = signal;
                 }
 
                 // Extract key findings
@@ -1019,11 +1020,11 @@ fn extract_approach_description(assistant_replies: &[&str]) -> String {
             "i will start by", "let's begin by",
         ] {
             if let Some(pos) = lower.find(marker) {
-                let start = reply[..pos].rfind(|c: char| c == '.' || c == '\n')
+                let start = reply[..pos].rfind(['.', '\n'])
                     .map(|p| p + 1)
                     .unwrap_or(0);
                 let end = reply[start..]
-                    .find(|c: char| c == '\n')
+                    .find('\n')
                     .map(|p| start + p)
                     .unwrap_or(reply.len());
                 let snippet = reply[start..end].trim();
@@ -1062,7 +1063,7 @@ fn detect_unresolved_items(
         ] {
             if let Some(pos) = lower.find(marker) {
                 let end = reply[pos..]
-                    .find(|c: char| c == '.' || c == '\n')
+                    .find(['.', '\n'])
                     .map(|p| pos + p)
                     .unwrap_or(reply.len());
                 let item = reply[pos..end].trim();
@@ -1704,13 +1705,22 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 break;
             }
 
-            // Publish got_tool_calls before execution
+            // Publish got_tool_calls before execution.  The payload carries
+            // full detail (id, name, args) so that a later "继续" (continue)
+            // can faithfully reconstruct the assistant+tool_calls ChatMessage
+            // from the persisted JSONL — not just the tool names.
             if let Some(ref sink) = self.event_sink {
-                let tool_names: Vec<&str> = response.tool_calls.iter().map(|c| c.tool_name.as_str()).collect();
+                let tools: Vec<serde_json::Value> = response.tool_calls.iter().map(|c| {
+                    serde_json::json!({
+                        "id": c.id,
+                        "tool_name": c.tool_name,
+                        "args": serde_json::to_string(&c.args).unwrap_or_default()
+                    })
+                }).collect();
                 sink(kernel::event::Event::new(
                     "cognitive-engine",
                     kernel::event::EventType::Custom("agent:got_tool_calls".into()),
-                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "tools": tool_names }),
+                    serde_json::json!({ "agent_id": &agent_id, "session_id": &session_id, "turn": turn, "tools": tools }),
                 ));
             }
 

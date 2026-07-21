@@ -32,10 +32,10 @@ fn evaluate_knowledge_raw(memory_count: usize, avg_importance: f64, avg_age_days
     if memory_count < 3 || avg_importance < 0.3 {
         return KnowledgeLevel::Uninformed;
     }
-    if let Some(age) = avg_age_days {
-        if age > 30.0 {
-            return KnowledgeLevel::Outdated;
-        }
+    if let Some(age) = avg_age_days
+        && age > 30.0
+    {
+        return KnowledgeLevel::Outdated;
     }
     KnowledgeLevel::Informed
 }

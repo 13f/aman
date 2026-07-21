@@ -12,19 +12,14 @@ use serde_json::Value;
 /// Downstream systems (UI, audit log) can read this field to decide whether to
 /// append a verification prompt. This is a **structured signal**, not a prompt
 /// injection — the engine does not modify its own prompts based on this value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfidenceLevel {
     /// Normal confidence — proceed as usual.
+    #[default]
     Normal,
     /// Low confidence — knowledge may be outdated or context is weak.
     Low,
-}
-
-impl Default for ConfidenceLevel {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// A decision is the cognitive engine's response to observations.

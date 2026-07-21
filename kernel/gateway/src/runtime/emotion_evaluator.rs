@@ -354,7 +354,7 @@ impl EmotionEvaluator {
             candidates = ?id_list,
             "LLM returned unknown emotion_id, ignoring"
         );
-        return Ok(None);
+        Ok(None)
     }
 
     /// Collect recent activity context for the LLM.

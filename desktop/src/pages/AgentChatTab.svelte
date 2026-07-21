@@ -653,7 +653,7 @@
                 </div>
               {/if}
               {#if message.type === "assistant_tool_call" && message.toolCall}
-                <ToolCallCard data={message.toolCall} />
+                <ToolCallCard tool={message.toolCall} />
               {:else if message.content}
                 <div class="msg-body" use:safeMarkdownHtml={message.content}></div>
               {/if}

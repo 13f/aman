@@ -171,17 +171,14 @@ impl ExperienceExtractor {
 #[async_trait::async_trait]
 impl EventHandler for ExperienceExtractor {
     async fn handle(&self, event: Event) -> AmanResult<()> {
-        match &event.payload {
-            Value::Object(_) => {
-                if let Err(e) = self.handle_workflow_completed(&event.payload).await {
-                    tracing::warn!(
-                        agent_id = %self.agent_id,
-                        error = %e,
-                        "failed to process workflow::completed event"
-                    );
-                }
-            }
-            _ => {}
+        if let Value::Object(_) = &event.payload
+            && let Err(e) = self.handle_workflow_completed(&event.payload).await
+        {
+            tracing::warn!(
+                agent_id = %self.agent_id,
+                error = %e,
+                "failed to process workflow::completed event"
+            );
         }
         Ok(())
     }

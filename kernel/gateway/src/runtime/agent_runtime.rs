@@ -1136,7 +1136,6 @@ impl AgentRuntimeBuilder {
         let memory_llm_for_incubation = memory_llm_cfg.clone();
         let sleep_housekeeper = Arc::new(super::sleep::GatewaySleepHousekeeper::new(
             Arc::clone(&agent_registry),
-            memory_llm_cfg,
             sleep_actor_config.clone(),
         ));
         let sleep_actor = idle::SleepActor::new(

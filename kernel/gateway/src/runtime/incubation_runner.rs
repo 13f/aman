@@ -137,7 +137,6 @@ impl EventHandler for IncubationRunner {
         // immediately after spawning.
         let agent_id_owned = agent_id.to_owned();
         let config = self.incubation_config.get().cloned().unwrap_or_default();
-        let memory_llm_cfg = self.memory_llm.get().cloned();
         let registry_clone = Arc::clone(registry);
         let bus = self.global_bus.get().cloned();
 
@@ -155,7 +154,6 @@ impl EventHandler for IncubationRunner {
                     let _ = run_phases(
                         &agent_id_owned,
                         &config,
-                        memory_llm_cfg.as_ref(),
                         &registry_clone,
                         bus.as_deref(),
                         &extraction_prompt,
@@ -182,7 +180,6 @@ impl EventHandler for IncubationRunner {
 async fn run_phases(
     agent_id: &str,
     config: &IncubationConfig,
-    memory_llm: Option<&MemoryLlmConfig>,
     registry: &AgentRegistry,
     global_bus: Option<&dyn EventBus>,
     extraction_prompt: &str,
@@ -235,6 +232,14 @@ async fn run_phases(
     // Pre-collect all unique content strings and batch-extract entities
     // via LLM (or keyword fallback) in one call instead of calling per-pair.
     let llm = registry.get_llm_provider(agent_id).await;
+    // Use the agent's own configured model — not memory.llm.model.
+    // The agent's provider only understands its own model names; sending
+    // a model from a different provider triggers "Unsupported model" 400s.
+    let agent_model = registry
+        .get(agent_id)
+        .await
+        .map(|inst| inst.descriptor.model)
+        .unwrap_or_default();
     let mut entities_by_content: HashMap<&str, Vec<String>> = HashMap::new();
 
     {
@@ -261,7 +266,7 @@ async fn run_phases(
         let entities_batch: Vec<Vec<String>> = if let Some(ref llm) = llm {
             extract_entities_batch(
                 llm,
-                memory_llm,
+                &agent_model,
                 &unique_contents,
                 &*provider,
                 extraction_prompt,
@@ -552,7 +557,7 @@ async fn signal_wakeup(agent_id: &str, config: &IncubationConfig, registry: &Age
 /// fails or returns unparseable output.
 async fn extract_entities_batch(
     llm: &Arc<dyn LlmProvider>,
-    memory_llm: Option<&MemoryLlmConfig>,
+    model: &str,
     contents: &[&str],
     provider: &dyn MemoryProvider,
     system_prompt: &str,
@@ -566,10 +571,6 @@ async fn extract_entities_batch(
     for (i, c) in contents.iter().enumerate() {
         numbered.push_str(&format!("--- Content {} ---\n{}\n\n", i + 1, c));
     }
-
-    let model = memory_llm
-        .map(|c| c.model.as_str())
-        .unwrap_or("default");
 
     // JSON Schema for structured output: array of arrays of strings,
     // one inner array per content block, in order.

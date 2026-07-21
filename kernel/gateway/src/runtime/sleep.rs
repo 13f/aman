@@ -11,7 +11,6 @@
 //! Architecture ref: idle-patch.md §4
 
 use async_trait::async_trait;
-use config::MemoryLlmConfig;
 use idle::{IdleKind, SleepHousekeeper, SleepPhaseOutput};
 use kernel::memory::{MemoryProvider, MemoryStats, ThinkConfig, ThinkResult};
 use kernel::AmanResult;
@@ -34,8 +33,6 @@ use super::agent_registry::AgentRegistry;
 /// work, and returns a JSON info blob for the health report.
 pub struct GatewaySleepHousekeeper {
     agent_registry: Arc<AgentRegistry>,
-    /// LLM config for Phase 1 session backfill (same model as Reflection).
-    memory_llm: Option<MemoryLlmConfig>,
     /// Sleep actor config (cooldown, wake-up timing, etc.).
     sleep_config: idle::SleepActorConfig,
 }
@@ -43,12 +40,10 @@ pub struct GatewaySleepHousekeeper {
 impl GatewaySleepHousekeeper {
     pub fn new(
         agent_registry: Arc<AgentRegistry>,
-        memory_llm: Option<MemoryLlmConfig>,
         sleep_config: idle::SleepActorConfig,
     ) -> Self {
         Self {
             agent_registry,
-            memory_llm,
             sleep_config,
         }
     }
@@ -195,6 +190,17 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
             return Ok(serde_json::json!({"status": "skipped", "reason": "no llm provider"}));
         };
 
+        // Use the agent's own configured model — not memory.llm.model.
+        // The agent's provider only understands its own model names; sending
+        // a model from a different provider (e.g. DeepSeek name to LongCat's
+        // endpoint) triggers "Unsupported model" 400 errors.
+        let agent_model = self
+            .agent_registry
+            .get(agent_id)
+            .await
+            .map(|inst| inst.descriptor.model)
+            .unwrap_or_default();
+
         let Some(memory) = self.agent_registry.get_memory_provider(agent_id).await else {
             debug!(agent_id, "Sleep phase 1: no MemoryProvider, skipping");
             return Ok(serde_json::json!({"status": "skipped", "reason": "no memory provider"}));
@@ -234,8 +240,8 @@ impl SleepHousekeeper for GatewaySleepHousekeeper {
         );
 
         match super::reflection::session_extract_and_store(
-            self.memory_llm.as_ref(),
             &llm,
+            &agent_model,
             &memory,
             agent_id,
             &session.id,
@@ -796,7 +802,7 @@ mod tests {
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
         pollster::block_on(registry.set_memory_provider("agent-1", provider));
-        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
+        let hk = GatewaySleepHousekeeper::new(registry, idle::SleepActorConfig::default());
 
         let cancel = CancellationToken::new();
         let info = hk
@@ -813,7 +819,7 @@ mod tests {
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
         pollster::block_on(registry.set_memory_provider("agent-1", provider));
-        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
+        let hk = GatewaySleepHousekeeper::new(registry, idle::SleepActorConfig::default());
 
         let info = hk
             .index_monitoring("agent-1")
@@ -830,7 +836,7 @@ mod tests {
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
         pollster::block_on(registry.set_memory_provider("agent-1", provider));
-        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
+        let hk = GatewaySleepHousekeeper::new(registry, idle::SleepActorConfig::default());
 
         let info = hk
             .cognitive_consolidation("agent-1")
@@ -845,7 +851,7 @@ mod tests {
         let bus: Arc<dyn event_bus::EventBus> =
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
-        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
+        let hk = GatewaySleepHousekeeper::new(registry, idle::SleepActorConfig::default());
 
         let cancel = CancellationToken::new();
         let info = hk
@@ -860,7 +866,7 @@ mod tests {
         let bus: Arc<dyn event_bus::EventBus> =
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
-        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
+        let hk = GatewaySleepHousekeeper::new(registry, idle::SleepActorConfig::default());
 
         let cancel = CancellationToken::new();
         let info = hk
@@ -875,7 +881,7 @@ mod tests {
         let bus: Arc<dyn event_bus::EventBus> =
             Arc::new(event_bus::InMemoryBus::new(Default::default()));
         let registry = Arc::new(AgentRegistry::new(bus));
-        let hk = GatewaySleepHousekeeper::new(registry, None, idle::SleepActorConfig::default());
+        let hk = GatewaySleepHousekeeper::new(registry, idle::SleepActorConfig::default());
 
         // Use a unique agent id to avoid polluting the user's ~/.aman directory.
         let test_id = format!("test-health-report-{}", uuid::Uuid::new_v4());

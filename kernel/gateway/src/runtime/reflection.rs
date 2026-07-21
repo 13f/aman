@@ -49,6 +49,21 @@ fn is_transient_llm_error(err: &kernel::Error) -> bool {
 
 use super::agent_registry::AgentRegistry;
 
+/// Resolved LLM backend for reflection — pairs a provider with the model name
+/// that should be sent to it.
+///
+/// The model travels with the provider because the two must be consistent:
+/// a DeepSeek model name is meaningless at LongCat's endpoint and vice versa.
+/// When the dedicated `memory.llm` provider is unavailable and we fall back to
+/// the agent's own provider, the model must switch to the agent's configured
+/// model too — otherwise the wrong model name hits the wrong endpoint (the bug
+/// this struct exists to fix).
+#[derive(Clone)]
+struct ReflectionLlm {
+    provider: Arc<dyn kernel::llm::LlmProvider>,
+    model: String,
+}
+
 /// Handles QueueDrained → reflection for all agents.
 ///
 /// Subscribes to the global event bus and processes
@@ -108,16 +123,43 @@ impl ReflectionRunner {
         &self,
         registry: &super::agent_registry::AgentRegistry,
         agent_id: &str,
-    ) -> Option<Arc<dyn kernel::llm::LlmProvider>> {
+    ) -> Option<ReflectionLlm> {
         if let Some(dedicated) = self.memory_llm_provider.get() {
+            // Dedicated provider: pair it with the dedicated model from
+            // `memory.llm.model` (or "default" if the operator left it unset).
+            let model = self
+                .memory_llm
+                .get()
+                .map(|c| c.model.clone())
+                .unwrap_or_else(|| "default".to_owned());
             debug!(
                 agent_id,
+                model = %model,
                 "Reflection: using dedicated memory.llm provider"
             );
-            return Some(Arc::clone(dedicated));
+            return Some(ReflectionLlm {
+                provider: Arc::clone(dedicated),
+                model,
+            });
         }
-        // Fallback: legacy agent provider.
-        registry.get_llm_provider(agent_id).await
+        // Fallback: legacy agent provider. Crucially, pair it with the agent's
+        // own configured model — NOT memory.llm.model. Sending a DeepSeek model
+        // name to LongCat's endpoint (or vice versa) is what produced the
+        // "Unsupported model" 400 error.
+        if let Some(instance) = registry.get(agent_id).await {
+            let model = instance.descriptor.model.clone();
+            if let Some(provider) = registry.get_llm_provider(agent_id).await {
+                debug!(
+                    agent_id,
+                    model = %model,
+                    provider = %instance.descriptor.provider,
+                    "Reflection: fallback to agent provider with agent model"
+                );
+                return Some(ReflectionLlm { provider, model });
+            }
+        }
+        debug!(agent_id, "Reflection: no LLM resolvable for agent");
+        None
     }
 
     // -- session_extract ------------------------------------------------------
@@ -158,13 +200,14 @@ impl ReflectionRunner {
         //      (so reflection uses the exact backend the operator selected).
         //   2. Otherwise, fall back to the agent's default provider.
         //   3. If neither is available, skip this cycle.
-        let llm = match self.resolve_reflection_llm(registry, agent_id).await {
-            Some(provider) => provider,
-            None => {
-                debug!(agent_id, "Reflection: no LlmProvider resolvable for agent, skipping");
-                return;
-            }
-        };
+        let ReflectionLlm { provider: llm, model } =
+            match self.resolve_reflection_llm(registry, agent_id).await {
+                Some(resolved) => resolved,
+                None => {
+                    debug!(agent_id, "Reflection: no LLM resolvable for agent, skipping");
+                    return;
+                }
+            };
 
         let session = match store.list_unreflected() {
             Ok(Some(s)) => s,
@@ -204,7 +247,7 @@ impl ReflectionRunner {
             "Reflection: extracting session",
         );
 
-        match self.extract_and_store(&llm, &memory, agent_id, &session.id, &events, Self::MAX_CONVERSATION_CHARS).await {
+        match self.extract_and_store(&llm, &model, &memory, agent_id, &session.id, &events, Self::MAX_CONVERSATION_CHARS).await {
             Ok(()) => {
                 // Report success to BackendHealth.
                 if let Some(health) = registry.get_agent_backend_health(agent_id).await {
@@ -556,6 +599,7 @@ impl ReflectionRunner {
     async fn extract_and_store(
         &self,
         llm: &Arc<dyn LlmProvider>,
+        model: &str,
         memory: &Arc<dyn MemoryProvider>,
         agent_id: &str,
         session_id: &str,
@@ -563,8 +607,8 @@ impl ReflectionRunner {
         max_chars: usize,
     ) -> AmanResult<()> {
         session_extract_and_store(
-            self.memory_llm.get(),
             llm,
+            model,
             memory,
             agent_id,
             session_id,
@@ -583,9 +627,14 @@ impl ReflectionRunner {
 /// Run LLM extraction on one session's events and store the structured
 /// summary in the per-agent memory provider. Also creates KG relationships
 /// for extracted entities.
+///
+/// `model` is the API-level model name to send with the request. It must be
+/// consistent with `llm` (e.g. a LongCat model name for a LongCat provider).
+/// Callers are responsible for pairing the right model with the right provider
+/// — see [`resolve_reflection_llm`](ReflectionRunner::resolve_reflection_llm).
 pub async fn session_extract_and_store(
-    memory_llm: Option<&MemoryLlmConfig>,
     llm: &Arc<dyn LlmProvider>,
+    model: &str,
     memory: &Arc<dyn MemoryProvider>,
     agent_id: &str,
     session_id: &str,
@@ -593,16 +642,21 @@ pub async fn session_extract_and_store(
     max_chars: usize,
 ) -> AmanResult<()> {
     session_extract_and_store_with_prompt(
-        memory_llm, llm, memory, agent_id, session_id, events, max_chars, None,
+        llm, model, memory, agent_id, session_id, events, max_chars, None,
     )
     .await
 }
 
 /// Run LLM extraction with an optional prompt override from the Python self-module bridge.
+///
+/// `model` is the API-level model name sent with the request. It is the
+/// caller's responsibility to pass a model name consistent with `llm` — the
+/// helper no longer reads `memory.llm.model`, since that value may belong to a
+/// different provider than the one actually being used (fallback path).
 #[allow(clippy::too_many_arguments)] // Mirrors the internal extraction pipeline inputs.
 pub async fn session_extract_and_store_with_prompt(
-    memory_llm: Option<&MemoryLlmConfig>,
     llm: &Arc<dyn LlmProvider>,
+    model: &str,
     memory: &Arc<dyn MemoryProvider>,
     agent_id: &str,
     session_id: &str,
@@ -612,10 +666,6 @@ pub async fn session_extract_and_store_with_prompt(
 ) -> AmanResult<()> {
     let conversation = format_conversation(events, max_chars);
     let system_prompt = extraction_prompt(extraction_prompt_override);
-
-    let model = memory_llm
-        .map(|c| c.model.as_str())
-        .unwrap_or("default");
 
     let req = LlmChatRequest {
         model: model.to_owned(),

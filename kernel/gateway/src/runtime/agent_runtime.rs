@@ -5159,10 +5159,40 @@ impl AgentRuntime {
         Ok(())
     }
 
-    async fn stop_backpressure_watching(&self) {
+    async fn stop_backpressure_watching(&self, cancel: &CancellationToken) {
         self.backpressure_stop.store(true, Ordering::Release);
-        if let Some(join) = self.backpressure_task.lock().await.take() {
-            let _ = join.await;
+        let join = self.backpressure_task.lock().await.take();
+        let Some(join) = join else {
+            return;
+        };
+        if cancel.is_cancelled() {
+            // Operator fast-exited (second Ctrl+C). Don't wait at all.
+            tracing::warn!("backpressure watcher join skipped (operator fast-exit)");
+            safe_eprintln!("gateway shutdown: skipping backpressure-watcher join (fast-exit)");
+            return;
+        }
+        // Bounded wait for a clean exit. The task sees the stop flag within
+        // one poll (~200 ms) under normal conditions. If `apply_backpressure`
+        // is stuck on slow/blocking I/O, give it a short grace period and
+        // then let go rather than hanging shutdown (and Ctrl+C) forever.
+        // Two nested Results:
+        //   timeout -> Result<_, Elapsed>
+        //   JoinHandle::await -> Result<_, JoinError>
+        match tokio::time::timeout(WATCHER_SHUTDOWN_GRACE, join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(join_err)) => {
+                tracing::warn!("backpressure watcher task failed: {join_err}");
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    ?WATCHER_SHUTDOWN_GRACE,
+                    "backpressure watcher task did not exit within grace period — detaching"
+                );
+                safe_eprintln!(
+                    "gateway shutdown: backpressure-watcher task still running after \
+                     {WATCHER_SHUTDOWN_GRACE:?}, detaching"
+                );
+            }
         }
     }
 
@@ -5279,10 +5309,40 @@ impl AgentRuntime {
 
     /// Stop the background timeout-polling task. Wakes the task instantly
     /// (via `Notify`) so it does not wait for the next 10s tick to notice.
-    async fn stop_timeout_polling(&self) {
+    async fn stop_timeout_polling(&self, cancel: &CancellationToken) {
         self.timeout_poll_notify.notify_one();
-        if let Some(join) = self.timeout_poll_task.lock().await.take() {
-            let _ = join.await;
+        let join = self.timeout_poll_task.lock().await.take();
+        let Some(join) = join else {
+            return;
+        };
+        if cancel.is_cancelled() {
+            // Operator fast-exited (second Ctrl+C). Don't wait at all.
+            tracing::warn!("timeout-polling task join skipped (operator fast-exit)");
+            safe_eprintln!("gateway shutdown: skipping timeout-polling join (fast-exit)");
+            return;
+        }
+        // Bounded wait for a clean exit. The task wakes promptly on
+        // `notify_one` (it's in a `tokio::select!`). If `handle_timeouts` is
+        // stuck on slow/blocking I/O, give it a short grace period and then
+        // let go rather than hanging shutdown (and Ctrl+C) forever.
+        // Two nested Results:
+        //   timeout -> Result<_, Elapsed>
+        //   JoinHandle::await -> Result<_, JoinError>
+        match tokio::time::timeout(WATCHER_SHUTDOWN_GRACE, join).await {
+            Ok(Ok(())) => {}
+            Ok(Err(join_err)) => {
+                tracing::warn!("timeout-polling task failed: {join_err}");
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    ?WATCHER_SHUTDOWN_GRACE,
+                    "timeout-polling task did not exit within grace period — detaching"
+                );
+                safe_eprintln!(
+                    "gateway shutdown: timeout-polling task still running after \
+                     {WATCHER_SHUTDOWN_GRACE:?}, detaching"
+                );
+            }
         }
     }
 
@@ -5365,8 +5425,8 @@ impl AgentRuntime {
 
         self.stop_soul_watching(cancel).await;
         self.stop_skill_watching(cancel).await;
-        self.stop_backpressure_watching().await;
-        self.stop_timeout_polling().await;
+        self.stop_backpressure_watching(cancel).await;
+        self.stop_timeout_polling(cancel).await;
 
         self.agenverse.mark_shutdown().await;
         Ok(())

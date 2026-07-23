@@ -229,7 +229,10 @@ impl SessionManager {
                 },
                 StateTimeout {
                     state: "PROCESSING".to_owned(),
-                    timeout_ms: 120_000,
+                    // Covers the full multi-turn ReAct loop. A single LLM call
+                    // can take 60-90s; with tool execution and retries the loop
+                    // easily exceeds 120s. 300s (5 min) matches ACTIVE.
+                    timeout_ms: 300_000,
                     on_timeout: TransitionTo::Specific("TIMEOUT".to_owned()),
                     on_timeout_alert: None,
                 },

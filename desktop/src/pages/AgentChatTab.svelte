@@ -167,6 +167,40 @@
     return { update(newContent: string) { node.innerHTML = renderMarkdown(escapeMarkdown(newContent)); } };
   }
 
+  // ── Code block copy button handler (event delegation) ──────────
+  async function handleCodeCopy(e: MouseEvent) {
+    const btn = (e.target as HTMLElement).closest(".code-block-copy-btn") as HTMLElement | null;
+    if (!btn) return;
+
+    const wrapper = btn.closest(".code-block-wrapper");
+    if (!wrapper) return;
+    const codeEl = wrapper.querySelector("code");
+    if (!codeEl) return;
+
+    const text = codeEl.textContent ?? "";
+    try {
+      await navigator.clipboard.writeText(text);
+      const span = btn.querySelector("span");
+      const originalText = span?.textContent ?? t("chat.copy");
+      if (span) span.textContent = t("chat.copied");
+      btn.classList.add("copied");
+      setTimeout(() => {
+        if (span) span.textContent = originalText;
+        btn.classList.remove("copied");
+      }, 2000);
+    } catch {
+      // Fallback for older browsers / non-secure contexts
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+  }
+
   // ── Session loading ────────────────────────────────────────────────────
   async function loadSessions() {
     try {
@@ -453,6 +487,19 @@
     messages = [...messages, { id: callId, type: "assistant_tool_call", content: `Tool: ${data.tool_name}`, timestamp: new Date().toISOString(), sessionId: data.session_id, status: "streaming", toolCall: { callId, toolName: data.tool_name, arguments: JSON.stringify(data.args ?? {}), status: "running" } }];
   }
 
+  // Backend publishes `agent:got_tool_calls` (not `tool:dispatched`) when the
+  // LLM returns tool calls.  The payload carries an array of {id, tool_name, args}.
+  function handleAgentGotToolCalls(data: any) {
+    const tools: any[] = Array.isArray(data.tools) ? data.tools : [];
+    for (const tool of tools) {
+      const callId: string = tool.id ?? tool.tool_call_id ?? `tool-${crypto.randomUUID()}`;
+      const toolName: string = tool.tool_name ?? tool.name ?? "tool";
+      // args arrives as a JSON string from the backend (serde_json::to_string)
+      const argsStr: string = typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args ?? {});
+      messages = [...messages, { id: callId, type: "assistant_tool_call", content: `Tool: ${toolName}`, timestamp: new Date().toISOString(), sessionId: data.session_id, status: "streaming", toolCall: { callId, toolName: toolName, arguments: argsStr, status: "running" } }];
+    }
+  }
+
   function handleAgentToolResult(data: any) {
     const callId: string = data.tool_call_id;
     const msg = messages.find(m => m.id === callId);
@@ -514,6 +561,8 @@
       case "agent:reply_ready":
       case "agent:reply_interrupted":
         handleAgentReplyReady(data); break;
+      case "agent:got_tool_calls":
+        handleAgentGotToolCalls(data); break;
       case "tool:dispatched":
         handleAgentToolCall(data); break;
       case "tool:completed":
@@ -635,7 +684,7 @@
         {/if}
       </div>
 
-      <div class="messages" bind:this={messageAreaEl} onscroll={handleScroll}>
+      <div class="messages" bind:this={messageAreaEl} onscroll={handleScroll} onclick={handleCodeCopy}>
         {#each renderItems as item (item.kind === "divider" ? item.key : item.message.id)}
           {#if item.kind === "divider"}
             <div class="date-divider"><span>{item.label}</span></div>
@@ -1002,4 +1051,96 @@
     border-radius: 8px;
     cursor: pointer;
   }
+
+  /* ── Code block styling (matches Chat.svelte) ─────────────────── */
+  :global(.code-block-wrapper) {
+    position: relative;
+    margin: 0.75em 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md, 8px);
+    background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+    overflow: hidden;
+  }
+  :global(.code-block-wrapper .hljs) {
+    background: transparent !important;
+    color: var(--fg, #e5e7eb);
+    padding: 0;
+  }
+  :global(.code-block-header) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.35em 0.75em;
+    background: var(--bg-active, rgba(255, 255, 255, 0.06));
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    font-family: var(--font-ui, system-ui, sans-serif);
+    user-select: none;
+  }
+  :global(.code-block-lang) {
+    color: var(--fg-dim, #9ca3af);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 10px;
+  }
+  :global(.code-block-copy-btn) {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 4px);
+    padding: 4px 8px;
+    color: var(--fg-dim, #9ca3af);
+    font-size: 11px;
+    font-family: var(--font-ui, system-ui, sans-serif);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.12s, border-color 0.12s;
+  }
+  :global(.code-block-header:hover .code-block-copy-btn),
+  :global(.code-block-copy-btn.copied) { opacity: 1; }
+  :global(.code-block-copy-btn:hover) {
+    background: var(--bg-hover, rgba(255, 255, 255, 0.04));
+    color: var(--fg, #e5e7eb);
+    border-color: var(--border-strong, rgba(255, 255, 255, 0.12));
+  }
+  :global(.code-block-copy-btn.copied) {
+    color: var(--green, #22c55e);
+    border-color: var(--green, #22c55e);
+  }
+  :global(.code-block-copy-btn:active) { transform: scale(0.97); }
+  :global(.code-block-pre) {
+    margin: 0;
+    padding: 0.75em 1em;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 400px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    font-size: 0.83em;
+    line-height: 1.55;
+  }
+  :global(.code-block-pre code) {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: inherit;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  :global(.code-block-fade) {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 32px;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent, var(--bg-hover, rgba(255, 255, 255, 0.04)));
+    border-radius: 0 0 var(--radius-md, 8px) var(--radius-md, 8px);
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  :global(.code-block-wrapper.scrollable .code-block-fade) { opacity: 1; }
 </style>

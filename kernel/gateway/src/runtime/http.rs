@@ -2987,64 +2987,84 @@ async fn chat_session_send(
         let agent_registry = runtime.agent_registry();
         let tool_registry = runtime.tools();
         let agent_id = chat_agent_id.to_owned();
+        // Build tool descriptors once — reused by both the soul and fallback paths.
+        let tool_descriptors: Vec<kernel::react::ToolDescriptor> = tool_registry
+            .list_tools()
+            .into_iter()
+            .filter(|name| !name.starts_with("llm_") && !name.starts_with("llm_provider_"))
+            .filter(|name| pollster::block_on(agent_registry.tool_allowed(&agent_id, name)))
+            .filter_map(|name| tool_registry.get(&name))
+            .map(|tool| kernel::react::ToolDescriptor {
+                name: tool.name().to_owned(),
+                description: tool.description().to_owned(),
+                parameters: serde_json::to_value(tool.parameters()).unwrap_or_default(),
+            })
+            .collect();
+        // Per-agent soul: load from ~/.aman/agents/<agent_id>/SOUL.md
+        let per_agent_soul_path = super::agent_seed::aman_data_dir()
+            .join("agents")
+            .join(&agent_id)
+            .join("SOUL.md");
+        let per_agent_soul = if per_agent_soul_path.exists() {
+            std::fs::read_to_string(&per_agent_soul_path).ok()
+        } else {
+            None
+        };
         runtime.session_manager().get_system_prompt(&id, || {
-            if let Some(soul_runtime) = runtime.soul_runtime() {
-                let soul = soul_runtime.current_soul();
+            // Prefer per-agent soul file, fall back to global soul_runtime (--soul flag).
+            let soul_raw: String = if let Some(s) = per_agent_soul {
+                s
+            } else if let Some(sr) = runtime.soul_runtime() {
+                sr.current_soul().raw.clone()
+            } else {
+                // No soul available at all — fall back to a minimal prompt.
+                tracing::warn!(
+                    session_id = %id,
+                    agent_id = %agent_id,
+                    "no soul file found — using fallback system prompt"
+                );
                 let skills_json = serde_json::to_value(&*llm_skills).unwrap_or_default();
-
-                // Build tool descriptors for this agent
-                let tool_descriptors: Vec<kernel::react::ToolDescriptor> = tool_registry
-                    .list_tools()
-                    .into_iter()
-                    .filter(|name| {
-                        !name.starts_with("llm_") && !name.starts_with("llm_provider_")
-                    })
-                    .filter(|name| {
-                        pollster::block_on(agent_registry.tool_allowed(&agent_id, name))
-                    })
-                    .filter_map(|name| tool_registry.get(&name))
-                    .map(|tool| kernel::react::ToolDescriptor {
-                        name: tool.name().to_owned(),
-                        description: tool.description().to_owned(),
-                        parameters: serde_json::to_value(tool.parameters()).unwrap_or_default(),
-                    })
-                    .collect();
-                let tools_json = serde_json::to_value(&tool_descriptors).unwrap_or_default();
-
-                // Python-first: unified system_prompt.py
-                let current_dir = std::env::current_dir().ok();
-                let prompt_ctx = super::self_bridge::SystemPromptContext {
-                    claude_md_content: None,  // TODO: discover CLAUDE.md from cwd
-                    cwd: current_dir.as_ref().and_then(|p| p.to_str()),
-                    platform: "desktop",
-                    model: None,
-                    provider: None,
-                };
-                if let Some(prompt) = self_bridge.build_full_system_prompt(
-                    &soul.raw,
-                    &skills_json,
-                    &tools_json,
-                    None,  // memory is retrieved per-turn
-                    &prompt_ctx,
-                ) {
-                    return prompt;
-                }
-
-                // Rust fallback when Python is unavailable
-                let soul_prompt = self_bridge
-                    .build_soul_prompt(&soul.raw)
-                    .unwrap_or_else(|| soul.raw.clone());
-                let skills_prompt = self_bridge
-                    .build_skills_prompt(&skills_json)
-                    .unwrap_or_default();
-                super::self_bridge::build_system_prompt_fallback(
-                    &soul_prompt,
+                let skills_prompt = self_bridge.build_skills_prompt(&skills_json).unwrap_or_default();
+                return super::self_bridge::build_system_prompt_fallback(
+                    "You are a helpful assistant.",
                     &skills_prompt,
                     &tool_descriptors,
-                )
-            } else {
-                String::new()
+                );
+            };
+            let skills_json = serde_json::to_value(&*llm_skills).unwrap_or_default();
+            let tools_json = serde_json::to_value(&tool_descriptors).unwrap_or_default();
+
+            // Python-first: unified system_prompt.py
+            let current_dir = std::env::current_dir().ok();
+            let prompt_ctx = super::self_bridge::SystemPromptContext {
+                claude_md_content: None,  // TODO: discover CLAUDE.md from cwd
+                cwd: current_dir.as_ref().and_then(|p| p.to_str()),
+                platform: "desktop",
+                model: None,
+                provider: None,
+            };
+            if let Some(prompt) = self_bridge.build_full_system_prompt(
+                &soul_raw,
+                &skills_json,
+                &tools_json,
+                None,  // memory is retrieved per-turn
+                &prompt_ctx,
+            ) {
+                return prompt;
             }
+
+            // Rust fallback when Python is unavailable
+            let soul_prompt = self_bridge
+                .build_soul_prompt(&soul_raw)
+                .unwrap_or_else(|| soul_raw.clone());
+            let skills_prompt = self_bridge
+                .build_skills_prompt(&skills_json)
+                .unwrap_or_default();
+            super::self_bridge::build_system_prompt_fallback(
+                &soul_prompt,
+                &skills_prompt,
+                &tool_descriptors,
+            )
         })
     };
 

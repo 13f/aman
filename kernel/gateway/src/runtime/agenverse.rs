@@ -180,12 +180,20 @@ impl Agenverse {
     }
 
     /// Atomic `Ready → ShuttingDown` gate. Returns `Ok(())` on success,
-    /// `Err(())` if the runtime is already shut down.
+    /// `Err(())` if a shutdown is already in progress or complete.
     pub async fn try_acquire_shutdown_gate(&self) -> Result<(), ()> {
         self.shutdown_requested.store(true, Ordering::Release);
         let _guard = self.transition_lock.lock().await;
         let current = *self.status.read().await;
-        if current == RuntimeStatus::Shutdown {
+        // Bail out if a shutdown is already in progress (`ShuttingDown`) or
+        // complete (`Shutdown`). Without the `ShuttingDown` check, a second
+        // Ctrl+C during shutdown would re-enter `runtime.shutdown()` and run
+        // the entire phase sequence again — re-stopping watchers that are
+        // already being stopped and re-checkpointing the WAL.
+        if matches!(
+            current,
+            RuntimeStatus::Shutdown | RuntimeStatus::ShuttingDown
+        ) {
             return Err(());
         }
         *self.status.write().await = RuntimeStatus::ShuttingDown;
@@ -331,8 +339,11 @@ impl Agenverse {
 
         // Stop the HTTP server. Option::take ensures at-most-once
         // delivery even if shutdown() is called multiple times.
+        // Await the graceful shutdown so in-flight requests (e.g. the
+        // /agent/shutdown POST that triggered this teardown) are
+        // actually responded to before the process exits.
         if let Some(handle) = self.server.lock().await.take() {
-            handle.shutdown();
+            handle.shutdown().await;
         }
 
         tracing::info!("gateway shut down gracefully");

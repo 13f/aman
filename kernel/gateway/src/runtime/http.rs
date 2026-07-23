@@ -45,6 +45,12 @@ pub struct HttpServerConfig {
 pub struct HttpServerHandle {
     addr: SocketAddr,
     shutdown_tx: Option<oneshot::Sender<()>>,
+    /// Server task handle. Kept alive so `shutdown()` can wait for the
+    /// graceful shutdown to actually finish (in-flight requests served,
+    /// connections closed) before the process exits. Without this, the
+    /// `/agent/shutdown` HTTP handler could be aborted mid-flight by the
+    /// process exiting, and the desktop would never get a response.
+    server_join: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl HttpServerHandle {
@@ -53,9 +59,20 @@ impl HttpServerHandle {
         self.addr
     }
 
-    pub fn shutdown(mut self) {
+    /// Trigger graceful shutdown and wait for the server task to finish.
+    ///
+    /// This blocks until all in-flight requests (including the
+    /// `/agent/shutdown` request that triggers gateway teardown) have
+    /// been responded to and the listening socket is closed. Returning
+    /// early would let `main()` exit the process while the handler is
+    /// still running, so the desktop would never receive the HTTP
+    /// response and would have to fall back to a 60s timeout + SIGKILL.
+    pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
+        }
+        if let Some(join) = self.server_join.take() {
+            let _ = join.await;
         }
     }
 }
@@ -77,12 +94,13 @@ pub async fn serve(runtime: Arc<AgentRuntime>, config: HttpServerConfig) -> kern
     let server = axum::serve(listener, router).with_graceful_shutdown(async move {
         let _ = rx.await;
     });
-    tokio::spawn(async move {
+    let server_join = tokio::spawn(async move {
         let _ = server.await;
     });
     Ok(HttpServerHandle {
         addr,
         shutdown_tx: Some(tx),
+        server_join: Some(server_join),
     })
 }
 

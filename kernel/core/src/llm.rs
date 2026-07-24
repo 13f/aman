@@ -52,6 +52,17 @@ pub struct LlmChatRequest {
     pub response_format: Option<ResponseFormat>,
 }
 
+/// Token usage reported by the provider, when available.
+///
+/// Field names follow the OpenAI `usage` schema. Anthropic's
+/// `{input_tokens, output_tokens}` is mapped into these fields at parse time.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
+}
+
 /// Response from an LLM provider after a chat completion.
 #[derive(Debug, Default)]
 pub struct LlmResponse {
@@ -59,6 +70,10 @@ pub struct LlmResponse {
     pub finish_reason: String,
     pub tool_calls: Vec<ParsedToolCall>,
     pub reasoning_content: String,
+    /// Real token usage reported by the provider, when available.
+    /// `None` for providers/modes that do not surface usage (some streaming
+    /// paths, local models). The caller falls back to a byte heuristic.
+    pub usage: Option<TokenUsage>,
 }
 
 /// Provider-agnostic LLM chat completion interface.

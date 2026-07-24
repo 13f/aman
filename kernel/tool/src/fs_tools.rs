@@ -14,6 +14,36 @@ use std::sync::{LazyLock, Mutex};
 use std::{fs, io};
 
 // ---------------------------------------------------------------------------
+// Blocking-I/O helper
+// ---------------------------------------------------------------------------
+
+/// Run a blocking closure on tokio's `spawn_blocking` pool when a tokio
+/// runtime is available, otherwise run it synchronously on the current thread.
+///
+/// Why this matters: the cognitive engine runs tool execution as `async fn`
+/// calls on the tokio executor. A synchronous `std::fs::write` (or any
+/// blocking syscall) stalls the executor thread, which prevents the engine's
+/// 90s `tokio::time::timeout` from firing — the chat hangs until the 120s
+/// workflow timeout kills it (see session d9ga1o8rpighif9l8qe0). Offloading to
+/// `spawn_blocking` yields the async task so the timeout can fire.
+///
+/// The fallback path exists for unit tests that run under `pollster` (no
+/// tokio runtime) — there, blocking on the current thread is fine.
+async fn run_blocking<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle
+            .spawn_blocking(f)
+            .await
+            .expect("spawn_blocking task panicked"),
+        Err(_) => f(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared guards
 // ---------------------------------------------------------------------------
 
@@ -208,7 +238,9 @@ impl Tool for ReadTool {
             });
         }
 
-        let content = fs::read_to_string(path)?;
+        // Offload blocking I/O so the async task yields (see run_blocking).
+        let path = path.to_owned();
+        let content = run_blocking(move || fs::read_to_string(&path)).await?;
         let total_lines = content.lines().count();
         let lines: Vec<&str> = content.lines().collect();
 
@@ -309,13 +341,19 @@ impl Tool for WriteTool {
                 message: "content must be a string".to_owned(),
             })?;
         let path = PathBuf::from(path);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, content)?;
-        Ok(json!({
-            "written_bytes": content.len()
-        }))
+        let content = content.to_owned();
+        // Offload blocking I/O so the async task yields (see run_blocking).
+        let result = run_blocking(move || -> Result<Value, Error> {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, &content)?;
+            Ok(json!({
+                "written_bytes": content.len()
+            }))
+        })
+        .await?;
+        Ok(result)
     }
 }
 
@@ -396,7 +434,12 @@ impl Tool for EditTool {
                 message: "new_string must be a string".to_owned(),
             })?;
 
-        let content = fs::read_to_string(file_path)?;
+        // Offload blocking I/O so the async task yields (see run_blocking).
+        // Clone file_path up-front: the read closure moves it, and we still
+        // need it for error messages and the write below.
+        let file_path = file_path.to_owned();
+        let file_path_for_read = file_path.clone();
+        let content = run_blocking(move || fs::read_to_string(&file_path_for_read)).await?;
 
         // Try exact match first.
         let matches: Vec<_> = content.match_indices(old_string).collect();
@@ -473,9 +516,8 @@ impl Tool for EditTool {
             });
         };
 
-        fs::write(file_path, &new_content)?;
-
-        // Post-write syntax check for JSON files.
+        // Post-write syntax check for JSON files (done before the write so
+        // we can still borrow new_content — the write closure moves it).
         let mut result = json!({
             "ok": true,
             "replaced": old_string.len(),
@@ -493,6 +535,10 @@ impl Tool for EditTool {
                 }
             }
         }
+
+        // Offload blocking write (see run_blocking).
+        let file_path_for_write = file_path.clone();
+        run_blocking(move || fs::write(&file_path_for_write, new_content)).await?;
 
         Ok(result)
     }
@@ -560,7 +606,9 @@ impl Tool for ListTool {
                 message: "path must be a string".to_owned(),
             })?;
 
-        let entries = list_directory(path)?;
+        // Offload blocking I/O so the async task yields (see run_blocking).
+        let path = path.to_owned();
+        let entries = run_blocking(move || list_directory(&path)).await?;
         Ok(json!({ "entries": entries }))
     }
 }
@@ -687,7 +735,14 @@ impl Tool for FindTool {
             })?;
         let filter_type = params.get("type").and_then(Value::as_str);
 
-        let results = find_files(base, pattern, filter_type)?;
+        // Offload blocking I/O so the async task yields (see run_blocking).
+        let base = base.to_owned();
+        let pattern = pattern.to_owned();
+        let filter_type = filter_type.map(|s| s.to_owned());
+        let results = run_blocking(move || {
+            find_files(&base, &pattern, filter_type.as_deref())
+        })
+        .await?;
         Ok(json!({ "results": results }))
     }
 }

@@ -211,6 +211,7 @@ impl yantrikdb::types::Embedder for OpenAiEmbedder {
                         // model name). Don't retry — fail fast.
                         self.consecutive_failures
                             .fetch_add(1, Ordering::Relaxed);
+                        warn!(error = %e, url = %self.url, "Embedder non-transient error");
                         return Err(e);
                     }
                     if attempt == EMBED_MAX_RETRIES {
@@ -224,6 +225,9 @@ impl yantrikdb::types::Embedder for OpenAiEmbedder {
                         );
                         return Err(e);
                     }
+                    // Transient error with retries remaining — log at debug
+                    // level so operators aren't alarmed by recoverable blips.
+                    debug!(error = %e, attempt, url = %self.url, "Embedder transient error — will retry");
                     last_error = Some(e);
                 }
             }
@@ -265,22 +269,9 @@ impl OpenAiEmbedder {
 
         let resp: Value = req
             .send_json(body.clone())
-            .map_err(|e| {
-                warn!(error = %e, url = %self.url, "Embedder HTTP error");
-                Box::new(e) as Box<dyn std::error::Error + Send + Sync>
-            })?
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
             .into_json()
-            .map_err(|e| {
-                let err_str = e.to_string();
-                // Distinguish read timeouts (IO error while pulling the
-                // response body) from genuine JSON parse failures.
-                if err_str.contains("timed out") || err_str.contains("timeout") {
-                    warn!(error = %e, url = %self.url, "Embedder read timeout");
-                } else {
-                    warn!(error = %e, url = %self.url, "Embedder JSON parse error");
-                }
-                Box::new(e) as Box<dyn std::error::Error + Send + Sync>
-            })?;
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
 
         let vec: Vec<f32> = resp["data"][0]["embedding"]
             .as_array()

@@ -305,11 +305,15 @@ impl LlmOpenaiProvider {
 
         let tool_calls = Self::parse_tool_calls(tool_call_acc);
 
+        // OpenAI streaming does not return `usage` by default (unless
+        // `stream_options.include_usage` is set, which we don't enable).
+        // Leave it None — the caller falls back to the byte heuristic.
         Ok(LlmResponse {
             content: full_content,
             finish_reason,
             tool_calls,
             reasoning_content,
+            usage: None,
         })
     }
 
@@ -437,11 +441,20 @@ impl LlmOpenaiProvider {
                                 .collect()
                         })
                         .unwrap_or_default();
+                    // Extract real token usage from the response when present.
+                    let usage = v.get("usage").and_then(|u| {
+                        Some(kernel::llm::TokenUsage {
+                            prompt_tokens: u.get("prompt_tokens")?.as_u64()?,
+                            completion_tokens: u.get("completion_tokens")?.as_u64()?,
+                            total_tokens: u.get("total_tokens")?.as_u64()?,
+                        })
+                    });
                     return Ok(LlmResponse {
                         content,
                         finish_reason,
                         tool_calls,
                         reasoning_content,
+                        usage,
                     });
                 }
                 Err(e) => {

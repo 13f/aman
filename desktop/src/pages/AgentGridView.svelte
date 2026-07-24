@@ -3,6 +3,7 @@
   import IdleRing from "../components/IdleRing.svelte";
   import CognitiveRing from "../components/CognitiveRing.svelte";
   import CognitiveAura from "../components/CognitiveAura.svelte";
+  import ChaosRing from "../components/ChaosRing.svelte";
   import { resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
   import type { CognitiveState } from "../lib/cognitive-state";
@@ -29,6 +30,10 @@
     brainStates = {} as Record<string, string>,
     onSelect = (_agent: AgentEntry) => {},
     prefersReducedMotion = false,
+    // Agenverse era: 0=Void, 1=Chaos, 2=Genesis. During Chaos the idle system is
+    // suppressed, so agents show the ChaosRing (soul absorption) instead of the
+    // idle / ReAct rings.
+    era = 0,
   }: AgentGridViewEvents & {
     agents: AgentEntry[];
     idleStates?: Record<string, AgentIdleState>;
@@ -38,6 +43,7 @@
     cognitiveStates?: Record<string, CognitiveState>;
     brainStates?: Record<string, string>;
     prefersReducedMotion?: boolean;
+    era?: number;
   } = $props();
 
   // ── 3D Tilt state ──────────────────────────────────────────────────────
@@ -128,7 +134,20 @@
         style="--tilt-x: {ts.tiltX}deg; --tilt-y: {ts.tiltY}deg; --gloss-x: {ts.glossX}%; --gloss-y: {ts.glossY}%;"
       >
         <div class="agent-avatar-wrap">
-        {#if (brainStates[agent.key] ?? "Lucid") !== "Lucid" && agent.provider}
+        {#if era < 2}
+          <!-- Layer 0 (highest priority): Chaos era — souls coalesce into the agent.
+               The idle system is suppressed during Chaos, so the idle / ReAct
+               rings are replaced by the ChaosRing. -->
+          {@const imgSrc = getEmotionImage(agent.key, "idle")}
+          <div transition:fade={{ duration: 400 }}>
+            <ChaosRing
+              emoji={"\u{1F4A4}"}
+              imageSrc={imgSrc}
+              size={165}
+              active={true}
+            />
+          </div>
+        {:else if (brainStates[agent.key] ?? "Lucid") !== "Lucid" && agent.provider}
           <!-- Layer 1 (highest priority): LLM backend degraded → CognitiveAura -->
           {@const bs = brainStates[agent.key] ?? "Groggy"}
           {@const imgSrc = getEmotionImage(agent.key, "idle")}

@@ -96,6 +96,8 @@
   let cognitiveStates = $state<Record<string, CognitiveState>>({});
   let brainStates = $state<Record<string, string>>({});
   let observeTimers = $state<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+  // Agenverse era: 0=Void, 1=Chaos, 2=Genesis. Drives the ChaosRing on the grid.
+  let agenverseEra = $state<number>(0);
 
   // ── Local toast system (ephemeral info/warn/error/success banners) ──────
   let toasts = $state<Array<{ id: string; type: "info" | "warn" | "error" | "success"; message: string; timeout: ReturnType<typeof setTimeout> | null }>>([]);
@@ -420,6 +422,7 @@
 
     // Listen for system state updates from the gateway
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
+      if (typeof e.payload?.era === "number") agenverseEra = e.payload.era;
       const list: Array<{
         agent_id: string;
         system_state: string;
@@ -528,6 +531,7 @@
         {cognitiveStates}
         {brainStates}
         {prefersReducedMotion}
+        era={agenverseEra}
         onSelect={selectAgent}
       />
     {/if}

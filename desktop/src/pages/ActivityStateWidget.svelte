@@ -5,6 +5,7 @@
   import IdleRing from "../components/IdleRing.svelte";
   import CognitiveRing from "../components/CognitiveRing.svelte";
   import CognitiveAura from "../components/CognitiveAura.svelte";
+  import ChaosRing from "../components/ChaosRing.svelte";
   import { loadEmotions, resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
   import {
@@ -354,9 +355,14 @@
       <span class="aw-name" title={agentName}>{agentName}</span>
       <div class="aw-ring-wrap">
         {#if !showRing}
-          <!-- Chaos: idle system not yet active — show a forming indicator -->
-          <div class="chaos-forming" style="width: 155px; height: 155px;">
-            <span class="chaos-dot">✦</span>
+          <!-- Chaos: idle system not yet active — souls coalesce into the agent -->
+          <div transition:fade={{ duration: 400 }}>
+            <ChaosRing
+              {emoji}
+              imageSrc={emotionImage}
+              size={155}
+              active={runtimeRunning}
+            />
           </div>
         {:else if showCognitiveAura}
           <div transition:fade={{ duration: 400 }}>
@@ -400,9 +406,14 @@
       <span class="aw-state-label">{label}</span>
     {:else}
       {#if !showRing}
-        <!-- Chaos: idle system not yet active — show a forming indicator -->
-        <div class="chaos-forming chaos-compact">
-          <span class="chaos-dot">✦</span>
+        <!-- Chaos: idle system not yet active — souls coalesce into the agent -->
+        <div transition:fade={{ duration: 400 }}>
+          <ChaosRing
+            {emoji}
+            imageSrc={emotionImage}
+            size={36}
+            active={runtimeRunning}
+          />
         </div>
       {:else if showCognitiveAura}
         <div transition:fade={{ duration: 400 }}>
@@ -521,27 +532,4 @@
     color: var(--fg-dim);
   }
 
-  /* ── Chaos "forming" indicator ─────────────────────────────────── */
-  .chaos-forming {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .chaos-compact {
-    width: 36px;
-    height: 36px;
-  }
-  .chaos-dot {
-    font-size: 28px;
-    color: var(--fg-dim, #6b6e80);
-    opacity: 0.6;
-    animation: chaos-pulse 2s ease-in-out infinite;
-  }
-  .chaos-compact .chaos-dot {
-    font-size: 18px;
-  }
-  @keyframes chaos-pulse {
-    0%, 100% { opacity: 0.3; transform: scale(0.9); }
-    50%      { opacity: 0.8; transform: scale(1.1); }
-  }
 </style>

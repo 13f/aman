@@ -234,6 +234,31 @@ impl Agenverse {
         let secs = self.chaos_duration.as_secs();
         tracing::info!(chaos_secs = secs, "agenverse entering 混沌 (Chaos): agents forming, idle system suppressed");
 
+        // Complete cold-start for every agent at the start of Chaos.  The idle
+        // system is suppressed for the whole Chaos window (manager.rs gates on
+        // is_genesis()), so the idle loop never emits COLD_START_DONE_EVENT
+        // and the harness never flips AgentStatus Preparing → Idle on its own.
+        // Driving the transition directly here unblocks agent interaction: the
+        // frontend gates every click while status === Preparing ("Agent is
+        // loading", Home.svelte).  mark_cold_start_complete is idempotent —
+        // agents already past Preparing are skipped silently.
+        // Spawned as its own task because enter_chaos() is sync.
+        if let Some(runtime) = self.runtime.get() {
+            let registry = runtime.agent_registry();
+            tokio::spawn(async move {
+                let instances = registry.list().await;
+                for inst in &instances {
+                    let _ = registry
+                        .mark_cold_start_complete(&inst.descriptor.agent_id)
+                        .await;
+                }
+                tracing::info!(
+                    count = instances.len(),
+                    "Chaos: cold-start complete for all agents"
+                );
+            });
+        }
+
         // Schedule Chaos → Genesis.
         let era = Arc::clone(&self.era);
         let sleep_duration = self.chaos_duration;

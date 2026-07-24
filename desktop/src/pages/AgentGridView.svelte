@@ -1,8 +1,8 @@
 <script lang="ts">
   import { fade } from "svelte/transition";
-  import IdleRing from "./IdleRing.svelte";
-  import CognitiveRing from "./CognitiveRing.svelte";
-  import CognitiveAura from "./CognitiveAura.svelte";
+  import IdleRing from "../components/IdleRing.svelte";
+  import CognitiveRing from "../components/CognitiveRing.svelte";
+  import CognitiveAura from "../components/CognitiveAura.svelte";
   import { resolveEmotionImage } from "../lib/emotions";
   import type { EmotionsConfig } from "../lib/emotions";
   import type { CognitiveState } from "../lib/cognitive-state";

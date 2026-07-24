@@ -93,7 +93,7 @@
       ? null
       : activeEffect
         ? activeEffect
-        : mode === "idle" || mode === "wakeup"
+        : mode === "idle"
           ? "breathing"
           : mode === "reflection" || mode === "processing"
             ? "ripple"

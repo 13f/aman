@@ -2,8 +2,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, onDestroy } from "svelte";
-  import ToolCallCard from "./ToolCallCard.svelte";
-  import type { ToolCallData } from "./ToolCallCard.svelte";
+  import ToolCallCard from "../components/ToolCallCard.svelte";
+  import type { ToolCallData } from "../components/ToolCallCard.svelte";
   import { setCursorMode, resetCursor, setCursorFromEmotion } from "../lib/cursor-store";
   import { renderMarkdown } from "../lib/markdown";
   import { t, locale } from "../lib/i18n.svelte";

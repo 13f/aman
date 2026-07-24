@@ -84,12 +84,23 @@ pub struct IdleCoordination {
     pub wakeup_schedule: RwLock<Option<WakeUpSchedule>>,
     /// 认知状态非 Lucid 时，强制进入 Sleep（由外部 CognitiveStateMachine 驱动）。
     pub cognitive_force_sleep: Arc<AtomicBool>,
+    /// The agenverse era (Void=0, Chaos=1, Genesis=2), shared from [`Agenverse`].
+    /// During Chaos the idle system is suppressed — agents may only Daze.
+    pub era: Arc<AtomicU8>,
 }
 
 impl IdleCoordination {
     /// 创建新的协调状态。
+    ///
+    /// `era` is a shared handle to the agenverse era (Void/Chaos/Genesis).
+    /// During Chaos the idle loop suppresses depth progression so agents
+    /// can only Daze.
     #[must_use]
-    pub fn new(arousal_initial: f64, arousal_half_life_secs: f64) -> Self {
+    pub fn new(
+        arousal_initial: f64,
+        arousal_half_life_secs: f64,
+        era: Arc<AtomicU8>,
+    ) -> Self {
         Self {
             busy_reflecting: Arc::new(AtomicBool::new(false)),
             arousal: Arc::new(ArousalTracker::new(arousal_initial, arousal_half_life_secs)),
@@ -99,7 +110,16 @@ impl IdleCoordination {
             kind_cooldowns: Arc::new(RwLock::new(HashMap::new())),
             wakeup_schedule: RwLock::new(None),
             cognitive_force_sleep: Arc::new(AtomicBool::new(false)),
+            era,
         }
+    }
+
+    /// Whether the agenverse has reached Genesis (agents fully awakened).
+    /// During Void or Chaos this returns `false`, and the idle loop must
+    /// not progress past Daze.
+    #[must_use]
+    pub fn is_genesis(&self) -> bool {
+        self.era.load(Ordering::Acquire) >= 2 /* Era::Genesis */
     }
 
     /// 设置是否强制进入 Sleep 模式（由认知状态机驱动）。
@@ -307,17 +327,37 @@ mod tests {
 
     // ── IdleCoordination tests (T2.1) ───────────────────────────
 
+    /// Helper: create an era atomic in Genesis state for tests.
+    fn era_genesis() -> Arc<AtomicU8> {
+        Arc::new(AtomicU8::new(2 /* Era::Genesis */))
+    }
+
     #[test]
     fn coordination_new_initial_state() {
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         assert_eq!(coord.last_source_type.load(Ordering::Relaxed), 0); // Unknown = 0
         assert!(!coord.busy_reflecting.load(Ordering::Relaxed));
         assert!(!coord.pending_depth_reset.load(Ordering::Relaxed));
+        assert!(coord.is_genesis());
+    }
+
+    #[test]
+    fn coordination_chaos_not_genesis() {
+        let era = Arc::new(AtomicU8::new(1 /* Era::Chaos */));
+        let coord = IdleCoordination::new(1.0, 900.0, era);
+        assert!(!coord.is_genesis());
+    }
+
+    #[test]
+    fn coordination_void_not_genesis() {
+        let era = Arc::new(AtomicU8::new(0 /* Era::Void */));
+        let coord = IdleCoordination::new(1.0, 900.0, era);
+        assert!(!coord.is_genesis());
     }
 
     #[tokio::test]
     async fn reset_idle_signal_cancels_old_token() {
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         let old_token = coord.idle_cancel_token.read().await.clone();
         // Prove the old token works
         assert!(!old_token.is_cancelled());
@@ -334,7 +374,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_idle_signal_does_not_set_pending_depth_reset() {
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         coord.reset_idle_signal().await;
         // depth reset 不由 reset_idle_signal 触发，而是由 signal_queue_drained 触发
         assert!(!coord.pending_depth_reset.load(Ordering::SeqCst));
@@ -342,7 +382,7 @@ mod tests {
 
     #[test]
     fn signal_queue_drained_sets_pending_depth_reset() {
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         coord.signal_queue_drained();
         assert!(coord.pending_depth_reset.load(Ordering::SeqCst));
     }
@@ -366,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn reset_idle_signal_new_token_uncancelled() {
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         coord.reset_idle_signal().await;
         let new_token = coord.idle_cancel_token.read().await;
         assert!(!new_token.is_cancelled());
@@ -374,7 +414,7 @@ mod tests {
 
     #[test]
     fn cognitive_force_sleep_flag() {
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         assert!(!coord.is_cognitive_force_sleep());
 
         coord.set_cognitive_force_sleep(true);
@@ -388,7 +428,7 @@ mod tests {
     fn cognitive_force_sleep_affects_idle_kind_resolution() {
         use crate::types::IdleKind;
 
-        let coord = IdleCoordination::new(1.0, 900.0);
+        let coord = IdleCoordination::new(1.0, 900.0, era_genesis());
         // Simulate the idle loop's decision: when force_sleep is true,
         // the kind should be Sleep regardless of depth.
         let depth = 50; // would normally be Exploration

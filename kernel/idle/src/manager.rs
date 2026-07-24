@@ -65,6 +65,11 @@ pub struct AgentIdleManager {
 
 impl AgentIdleManager {
     /// Create a new per-agent idle manager.
+    ///
+    /// `era` is a shared handle to the agenverse era (Void=0, Chaos=1,
+    /// Genesis=2). During Chaos the idle loop suppresses depth progression
+    /// so agents can only Daze — the autonomous idle system (boredom →
+    /// work/study/daily-life) does not activate until Genesis.
     #[must_use]
     #[allow(clippy::too_many_arguments)] // Constructor aggregates distinct per-agent deps.
     pub fn new(
@@ -77,9 +82,10 @@ impl AgentIdleManager {
         system_state: Option<Arc<std::sync::Mutex<AgentSystemState>>>,
         boredom_actor: Option<Arc<BoredomActor>>,
         deferred_queue: Option<Arc<dyn DeferredTaskQueue>>,
+        era: Arc<std::sync::atomic::AtomicU8>,
     ) -> Self {
         let agent_id = agent_id.into();
-        let coord = Arc::new(IdleCoordination::new(arousal_initial, arousal_half_life_secs));
+        let coord = Arc::new(IdleCoordination::new(arousal_initial, arousal_half_life_secs, era));
 
         Self {
             agent_id,
@@ -354,6 +360,29 @@ impl AgentIdleManager {
                 }
 
                 // Bus is empty, no recent activity — progress idle state.
+                //
+                // ── Chaos gate ─────────────────────────────────────────
+                // During 混沌 (Chaos) the agenverse is still forming; agents
+                // may only Daze. Suppress all deeper idle states and the
+                // boredom actor so that no agent autonomously enters
+                // work/study/daily-life until 创世纪 (Genesis).
+                //
+                // We also suppress publishing idle events entirely during
+                // Chaos — otherwise each poll would emit a Daze event whose
+                // arousal_level decays exponentially, causing the inner ring
+                // in the UI to keep moving while the agent should appear
+                // static ("forming").
+                if !coord.is_genesis() {
+                    detector.idle_depth = 0;
+                    detector.boredom_poll_count = 0;
+                    debug!(
+                        agent_id = %agent_id,
+                        "Chaos: idle suppressed (no events published)"
+                    );
+                    sleep(Duration::from_secs_f64(delay_secs)).await;
+                    continue;
+                }
+
                 // Override: if cognitive state is not Lucid, force Sleep.
                 let kind = if coord.is_cognitive_force_sleep() {
                     IdleKind::Sleep
@@ -628,6 +657,8 @@ mod tests {
         let _ = (_id, _id2);
 
         // 启动 idle manager (bus 持续空 — 模拟冷启动)
+        // era = Genesis (2) so the idle loop runs normally in this test.
+        let era = Arc::new(std::sync::atomic::AtomicU8::new(2));
         let manager = AgentIdleManager::new(
             "test-agent",
             Arc::clone(&bus),
@@ -638,6 +669,7 @@ mod tests {
             None,
             None,
             None,
+            era,
         );
         manager.start().await;
 

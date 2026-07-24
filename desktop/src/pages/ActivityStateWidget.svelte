@@ -64,6 +64,9 @@
   let brainState = $state<"Groggy" | "Catatonic" | "Coma" | "Lucid">("Lucid");
   let llmEmotionId = $state<string>("");
   let emotionsConfig = $state<EmotionsConfig | null>(null);
+  // Agenverse era: 0=Void, 1=Chaos, 2=Genesis.  During Chaos the idle system
+  // is suppressed so we hide the ring entirely to avoid showing a static/confusing UI.
+  let agenverseEra = $state<number>(0);
   let unlisteners: (() => void)[] = [];
 
   // Cognitive state tracking (Level 1 CognitiveRing)
@@ -191,6 +194,8 @@
   });
 
   let label = $derived.by(() => {
+    // During Chaos the idle system is not yet active.
+    if (!showRing) return "Forming";
     if (displayState === "idle")
       return "Idle" + (idleSnap ? "/" + IDLE_LABEL[idleSnap.kind] : "");
     if (displayState === "wakeup") return "Idle/Awakening";
@@ -214,6 +219,10 @@
   });
 
   let ringColors = $derived(COLORS[displayState] ?? COLORS["idle"]);
+
+  // Whether the idle ring should be visible.  Hidden during Chaos (era < 2)
+  // because the idle system is suppressed and the ring would be static/confusing.
+  let showRing = $derived(agenverseEra >= 2);
 
   // Resolve the emotion image for the current display state.
   // Priority: LLM emotion (from gateway) > state-based mapping.
@@ -312,6 +321,10 @@
     unlisteners.push(await listen("agent_states:updated", (e: any) => {
       // Don't track state until an agent is selected.
       if (!agentId) return;
+      // Track the agenverse era (Void=0, Chaos=1, Genesis=2).
+      if (typeof e.payload?.era === "number") {
+        agenverseEra = e.payload.era;
+      }
       const list: Array<{
         agent_id: string;
         system_state: string;
@@ -340,7 +353,12 @@
     {#if !compact}
       <span class="aw-name" title={agentName}>{agentName}</span>
       <div class="aw-ring-wrap">
-        {#if showCognitiveAura}
+        {#if !showRing}
+          <!-- Chaos: idle system not yet active — show a forming indicator -->
+          <div class="chaos-forming" style="width: 155px; height: 155px;">
+            <span class="chaos-dot">✦</span>
+          </div>
+        {:else if showCognitiveAura}
           <div transition:fade={{ duration: 400 }}>
             <CognitiveAura
               state={brainState as "Groggy" | "Catatonic" | "Coma"}
@@ -381,7 +399,12 @@
       </div>
       <span class="aw-state-label">{label}</span>
     {:else}
-      {#if showCognitiveAura}
+      {#if !showRing}
+        <!-- Chaos: idle system not yet active — show a forming indicator -->
+        <div class="chaos-forming chaos-compact">
+          <span class="chaos-dot">✦</span>
+        </div>
+      {:else if showCognitiveAura}
         <div transition:fade={{ duration: 400 }}>
           <CognitiveAura
             state={brainState as "Groggy" | "Catatonic" | "Coma"}
@@ -496,5 +519,29 @@
     font-size: 10px;
     font-weight: 700;
     color: var(--fg-dim);
+  }
+
+  /* ── Chaos "forming" indicator ─────────────────────────────────── */
+  .chaos-forming {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .chaos-compact {
+    width: 36px;
+    height: 36px;
+  }
+  .chaos-dot {
+    font-size: 28px;
+    color: var(--fg-dim, #6b6e80);
+    opacity: 0.6;
+    animation: chaos-pulse 2s ease-in-out infinite;
+  }
+  .chaos-compact .chaos-dot {
+    font-size: 18px;
+  }
+  @keyframes chaos-pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.9); }
+    50%      { opacity: 0.8; transform: scale(1.1); }
   }
 </style>

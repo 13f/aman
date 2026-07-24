@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use i18n::{Locale, Translator};
 
@@ -197,7 +198,7 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(720)));
     let runtime = builder.build(Arc::clone(&agenverse)).map_err(|_| 1)?;
     agenverse.set_runtime(Arc::clone(&runtime));
 
@@ -228,7 +229,8 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
         _ = tokio::signal::ctrl_c() => {}
     }
 
-    let _ = runtime.shutdown().await;
+    let cancel = CancellationToken::new();
+    let _ = runtime.shutdown(&cancel).await;
     server.shutdown();
     Ok(())
 }
@@ -259,7 +261,7 @@ async fn serve_cmd(args: &[String]) -> Result<(), i32> {
     if let Some(path) = soul_path {
         builder = builder.with_soul(path);
     }
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(720)));
     let runtime = builder.build(Arc::clone(&agenverse)).map_err(|_| 1)?;
     agenverse.set_runtime(Arc::clone(&runtime));
 

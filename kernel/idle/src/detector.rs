@@ -217,6 +217,7 @@ impl EventSource for IdleDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU8;
     use crate::coordination::IdleCoordination;
     use crate::types::{
         ChatMode, ContextIsolation, PollInterval, ReflectionBreaker,
@@ -259,7 +260,7 @@ mod tests {
     }
 
     fn make_detector() -> IdleDetector {
-        let coord = Arc::new(IdleCoordination::new(1.0, 900.0));
+        let coord = Arc::new(IdleCoordination::new(1.0, 900.0, Arc::new(AtomicU8::new(2))));
         IdleDetector::new("idle:detector", coord, test_personality())
     }
 
@@ -278,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_skips_when_busy_reflecting() {
-        let coord = Arc::new(IdleCoordination::new(1.0, 900.0));
+        let coord = Arc::new(IdleCoordination::new(1.0, 900.0, Arc::new(AtomicU8::new(2))));
         coord.busy_reflecting.store(true, Ordering::Relaxed);
         let mut detector = IdleDetector::new("idle:detector", coord, test_personality());
         let events = detector.poll(&make_source_context()).await.expect("poll");
@@ -314,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn queue_drained_resets_depth() {
-        let coord = Arc::new(IdleCoordination::new(1.0, 900.0));
+        let coord = Arc::new(IdleCoordination::new(1.0, 900.0, Arc::new(AtomicU8::new(2))));
         let mut detector = IdleDetector::new("idle:detector", coord.clone(), test_personality());
         let ctx = make_source_context();
 
@@ -341,7 +342,7 @@ mod tests {
 
     #[tokio::test]
     async fn effective_personality_chat_mode_in_grace_period() {
-        let coord = Arc::new(IdleCoordination::new(1.0, 900.0));
+        let coord = Arc::new(IdleCoordination::new(1.0, 900.0, Arc::new(AtomicU8::new(2))));
         coord.last_source_type.store(SourceType::Chat.to_u8(), Ordering::Relaxed);
         let mut detector = IdleDetector::new("idle:detector", coord, test_personality());
 
@@ -355,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn leaving_chat_mode_resets_depth() {
-        let coord = Arc::new(IdleCoordination::new(1.0, 900.0));
+        let coord = Arc::new(IdleCoordination::new(1.0, 900.0, Arc::new(AtomicU8::new(2))));
         coord.last_source_type.store(SourceType::Chat.to_u8(), Ordering::Relaxed);
         let mut detector = IdleDetector::new("idle:detector", coord.clone(), test_personality());
 

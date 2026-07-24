@@ -3764,7 +3764,7 @@ async fn agent_reload(
     };
     match runtime
         .agent_registry()
-        .reload_agent(&config, &agent_id)
+        .reload_agent(&config, &agent_id, runtime.agenverse().era_arc())
         .await
     {
         Ok(()) => Json(json!({ "ok": true, "agent_id": agent_id })).into_response(),

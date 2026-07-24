@@ -379,8 +379,38 @@
           }
         } else if (et.includes("tool:dispatched") || et === "llm_tool_call" || et.includes("tool_call")) {
           // Tool invocation — stored as Custom("tool:dispatched") in JSONL.
+          // Also handles Custom("agent:got_tool_calls") which carries a `tools`
+          // array with multiple tool calls in a single event.
           const callId: string = p.tool_call_id ?? p.call_id ?? evt.event_id;
           const toolName: string = p.tool_name ?? p.name ?? "tool";
+          //
+          // ── agent:got_tool_calls: expand the tools array ─────────────
+          // When the event carries a `tools` array (one event = many calls),
+          // create a separate assistant_tool_call message per tool so that
+          // later tool:completed events can match by tool_call_id.
+          if (Array.isArray(p.tools) && p.tools.length > 0 && !p.tool_call_id) {
+            for (const tool of p.tools) {
+              const tid: string = tool.id ?? tool.tool_call_id ?? evt.event_id;
+              const tname: string = tool.tool_name ?? tool.name ?? "tool";
+              if (seenIds.has(tid)) continue;
+              seenIds.add(tid);
+              historyMsgs.push({
+                id: tid,
+                type: "assistant_tool_call",
+                content: `Tool: ${tname}`,
+                timestamp: new Date(evt.timestamp_ms).toISOString(),
+                sessionId,
+                status: "streaming",
+                toolCall: {
+                  callId: tid,
+                  toolName: tname,
+                  arguments: typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args ?? {}),
+                  status: "running" as const,
+                },
+              });
+            }
+            continue; // messages pushed inline; skip the single-msg push below
+          }
           msg = {
             id: callId,
             type: "assistant_tool_call",

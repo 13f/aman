@@ -280,7 +280,12 @@ async fn agent_states_snapshot(runtime: &AgentRuntime) -> serde_json::Value {
         agents.push(entry);
     }
 
-    serde_json::json!({ "agents": agents })
+    // Include the agenverse era (Void/Chaos/Genesis) so the frontend can
+    // adapt the UI — e.g. hide the idle ring during Chaos when the idle
+    // system is suppressed.
+    let era = runtime.agenverse().era() as u8;
+
+    serde_json::json!({ "agents": agents, "era": era })
 }
 
 // ── Axum route handler ────────────────────────────────────────────────────

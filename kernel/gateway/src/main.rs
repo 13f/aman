@@ -143,7 +143,8 @@ async fn run() -> Result<(), i32> {
         })?
         .config;
 
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let chaos_duration = Duration::from_secs(config.agentverse.chaos);
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), chaos_duration));
     let runtime = build_runtime(config, bind, api_token, soul_path, Arc::clone(&agenverse)).await?;
 
     tracing::info!(bind = %bind, "starting gateway");
@@ -245,6 +246,12 @@ async fn run() -> Result<(), i32> {
         serde_json::json!({"bind": bind.to_string(), "addr": addr.to_string()}),
     )).await;
 
+    // Transition the agenverse from Void → Chaos. Agents are now "forming":
+    // they can only Daze and cannot enter work/study/daily-life. After the
+    // configured chaos duration, the agenverse auto-transitions to Genesis
+    // and agents awaken fully.
+    agenverse.enter_chaos();
+
     // Wait for shutdown signal or HTTP-initiated shutdown completion.
     #[cfg(unix)]
     {
@@ -293,7 +300,8 @@ async fn run_tui_mode(
         })?
         .config;
 
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let chaos_duration = Duration::from_secs(config.agentverse.chaos);
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), chaos_duration));
     let runtime = build_runtime(config, bind, api_token, soul_path, Arc::clone(&agenverse)).await?;
 
     tracing::info!(bind = %bind, "starting gateway (TUI mode)");
@@ -345,6 +353,9 @@ async fn run_tui_mode(
     let _ = tokio::time::timeout(Duration::from_secs(35), startup_handle).await;
 
     tracing::info!(%addr, "gateway ready (TUI mode)");
+
+    // Transition the agenverse from Void → Chaos (agents forming, Daze only).
+    agenverse.enter_chaos();
 
     // Run the TUI on a dedicated OS thread. We keep the JoinHandle (rather
     // than `.await`-ing it directly, as before) so we can race it against

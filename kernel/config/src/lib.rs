@@ -595,6 +595,39 @@ impl Default for UiConfig {
     }
 }
 
+/// Agentverse (agents universe) lifecycle configuration.
+///
+/// Controls the post-startup "混沌" (Chaos) period during which agents are
+/// still "forming" and cannot enter the autonomous idle system
+/// (work / study / daily-life). After the configured duration elapses,
+/// the agenverse transitions to "创世纪" (Genesis) and agents awaken.
+///
+/// ```yaml
+/// agentverse:
+///   chaos: 720  # seconds in Chaos before Genesis (default: 720 = 12 min)
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, macros::ConfigPatch)]
+#[serde(default)]
+pub struct AgentverseConfig {
+    /// Seconds the agenverse remains in Chaos after startup completes.
+    /// During Chaos agents can only Daze — the idle system (boredom →
+    /// work/study/daily-life) is suppressed.  After this period the
+    /// agenverse transitions to Genesis and agents awaken fully.
+    /// Default: 720 (12 minutes).
+    #[serde(default = "default_chaos_secs")]
+    pub chaos: u64,
+}
+
+fn default_chaos_secs() -> u64 {
+    720
+}
+
+impl Default for AgentverseConfig {
+    fn default() -> Self {
+        Self { chaos: 720 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, macros::ConfigPatch)]
 pub struct AgentConfig {
     #[serde(default)]
@@ -632,6 +665,11 @@ pub struct AgentConfig {
     /// UI / display configuration (locale, theme, etc.).
     #[serde(default)]
     pub ui: UiConfig,
+    /// Agentverse lifecycle — controls the Chaos→Genesis transition.
+    /// During the Chaos period agents can only Daze; the autonomous idle
+    /// system (work/study/daily-life) is suppressed until Genesis.
+    #[serde(default)]
+    pub agentverse: AgentverseConfig,
 }
 
 /// Desktop app specific configuration.

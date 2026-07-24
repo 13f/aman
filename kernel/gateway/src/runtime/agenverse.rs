@@ -33,6 +33,31 @@ pub enum RuntimePhase {
     Phase5 = 6,
 }
 
+// ── Agenverse era ───────────────────────────────────────────────────────────
+//
+//  The "soul" lifecycle of the agents universe — from nothingness, through
+//  a formative Chaos, into the fullness of Genesis.
+//
+//  虚无 (Void)  →  混沌 (Chaos)  →  创世纪 (Genesis)
+//
+//  Void:    the agenverse exists but has not yet been initialised.
+//  Chaos:   startup has completed; agents are "forming" and can only Daze.
+//           The autonomous idle system (boredom → work/study/daily-life) is
+//           suppressed so that a user who steps away at boot does not come
+//           back to find every agent busy in work/study.
+//  Genesis: the Chaos period has elapsed; agents awaken fully and the idle
+//           system runs normally.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Era {
+    /// 虚无 — the agenverse has not yet been initialised. Default state.
+    Void = 0,
+    /// 混沌 — agents are forming; idle system suppressed, only Daze allowed.
+    Chaos = 1,
+    /// 创世纪 — agents fully awakened; idle system runs normally.
+    Genesis = 2,
+}
+
 // ── Runtime status ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,11 +95,21 @@ pub struct Agenverse {
     /// `Option` + `Mutex` because [`HttpServerHandle::shutdown`] takes `self`
     /// by value; [`shutdown`](Self::shutdown) calls `take()`.
     server: Mutex<Option<HttpServerHandle>>,
+    /// The agenverse era (Void → Chaos → Genesis). Shared with the idle
+    /// system via [`era_arc`](Self::era_arc) so that idle managers can gate
+    /// their behaviour during Chaos.
+    era: Arc<AtomicU8>,
+    /// Seconds the agenverse stays in Chaos before auto-transitioning to Genesis.
+    chaos_duration: Duration,
 }
 
 impl Agenverse {
-    /// Construct a fresh agenverse in `New` state.
-    pub fn new(startup_pause: Duration) -> Self {
+    /// Construct a fresh agenverse in `New` state and [`Era::Void`].
+    ///
+    /// `chaos_duration` is the seconds the agenverse will remain in
+    /// [`Era::Chaos`] after [`enter_chaos`](Self::enter_chaos) is called,
+    /// before auto-transitioning to [`Era::Genesis`].
+    pub fn new(startup_pause: Duration, chaos_duration: Duration) -> Self {
         Self {
             phase: AtomicU8::new(RuntimePhase::Phase0 as u8),
             status: RwLock::new(RuntimeStatus::New),
@@ -84,6 +119,8 @@ impl Agenverse {
             startup_pause,
             runtime: OnceLock::new(),
             server: Mutex::new(None),
+            era: Arc::new(AtomicU8::new(Era::Void as u8)),
+            chaos_duration,
         }
     }
 
@@ -133,6 +170,90 @@ impl Agenverse {
     #[must_use]
     pub fn startup_pause(&self) -> Duration {
         self.startup_pause
+    }
+
+    /// Current agenverse era (Void / Chaos / Genesis).
+    #[must_use]
+    pub fn era(&self) -> Era {
+        match self.era.load(Ordering::Acquire) {
+            x if x == Era::Chaos as u8 => Era::Chaos,
+            x if x == Era::Genesis as u8 => Era::Genesis,
+            _ => Era::Void,
+        }
+    }
+
+    /// Whether the agenverse has reached Genesis (agents fully awakened).
+    #[must_use]
+    pub fn is_genesis(&self) -> bool {
+        self.era() == Era::Genesis
+    }
+
+    /// Whether the agenverse is still in Chaos (agents forming, idle suppressed).
+    #[must_use]
+    pub fn is_chaos(&self) -> bool {
+        self.era() == Era::Chaos
+    }
+
+    /// Return a shareable handle to the era atomic, for passing into idle
+    /// managers and other subsystems that need to gate on the era.
+    #[must_use]
+    pub fn era_arc(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.era)
+    }
+
+    /// Seconds the agenverse stays in Chaos before auto-transitioning to Genesis.
+    #[must_use]
+    pub fn chaos_duration(&self) -> Duration {
+        self.chaos_duration
+    }
+
+    /// Transition Void → Chaos and schedule the auto-transition to Genesis.
+    ///
+    /// Called once after startup completes. During Chaos agents can only
+    /// Daze — the autonomous idle system is suppressed. After
+    /// [`chaos_duration`](Self::chaos_duration) seconds the agenverse
+    /// automatically transitions to Genesis and agents awaken fully.
+    ///
+    /// Idempotent: if the agenverse is already past Void (Chaos or Genesis),
+    /// this is a no-op (the existing Genesis timer, if any, is left intact).
+    pub fn enter_chaos(&self) {
+        // CAS Void → Chaos; bail if already past Void.
+        if self
+            .era
+            .compare_exchange(
+                Era::Void as u8,
+                Era::Chaos as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        let secs = self.chaos_duration.as_secs();
+        tracing::info!(chaos_secs = secs, "agenverse entering 混沌 (Chaos): agents forming, idle system suppressed");
+
+        // Schedule Chaos → Genesis.
+        let era = Arc::clone(&self.era);
+        let sleep_duration = self.chaos_duration;
+        // Start idle loops when Genesis begins.  The runtime is set by the
+        // time enter_chaos() is called (main.rs sets it after build), so
+        // runtime() will succeed.  If for some reason it isn't set yet, we
+        // log and skip — the idle loops simply won't start.
+        let runtime = Arc::clone(
+            self.runtime
+                .get()
+                .expect("Agenverse::enter_chaos() called before AgentRuntime was set"),
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(sleep_duration).await;
+            era.store(Era::Genesis as u8, Ordering::Release);
+            tracing::info!("agenverse entered 创世纪 (Genesis): agents fully awakened, starting idle system");
+            // Now that we're in Genesis, start the per-agent idle loops.
+            runtime.agent_registry().start_all_idle_loops().await;
+            tracing::info!("idle system started");
+        });
     }
 
     /// Whether a shutdown has been requested (e.g. via HTTP from the desktop

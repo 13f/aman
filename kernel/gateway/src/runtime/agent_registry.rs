@@ -116,7 +116,11 @@ impl AgentRegistry {
     }
 
     /// 从 config.yaml 的 agents 段加载所有 Agent。
-    pub async fn load_from_config(&self, config: &AmanConfig) -> usize {
+    pub async fn load_from_config(
+        &self,
+        config: &AmanConfig,
+        era: Arc<std::sync::atomic::AtomicU8>,
+    ) -> usize {
         let descriptors: Vec<AgentDescriptor> = config
             .agents
             .iter()
@@ -258,6 +262,7 @@ impl AgentRegistry {
                     Some(Arc::clone(&system_state)),
                     boredom_actor,
                     deferred_queue,
+                    Arc::clone(&era),
                 ));
                 self.set_idle_manager(agent_id, idle_manager).await;
             }
@@ -299,7 +304,12 @@ impl AgentRegistry {
     /// Reload a single agent from config, updating the in-memory instance
     /// and creating/destroying the idle manager as needed (e.g. after the
     /// user configures a provider for a previously-unconfigured agent).
-    pub async fn reload_agent(&self, config: &AmanConfig, agent_id: &str) -> AmanResult<()> {
+    pub async fn reload_agent(
+        &self,
+        config: &AmanConfig,
+        agent_id: &str,
+        era: Arc<std::sync::atomic::AtomicU8>,
+    ) -> AmanResult<()> {
         let entry = config
             .agents
             .get(agent_id)
@@ -426,6 +436,7 @@ impl AgentRegistry {
                 Some(ss),
                 boredom_actor,
                 deferred_queue,
+                Arc::clone(&era),
             ));
             self.set_idle_manager(agent_id, idle_manager.clone()).await;
             // Start the idle loop immediately.

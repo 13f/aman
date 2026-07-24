@@ -1030,7 +1030,7 @@ mod tests {
     fn external_event_updates_source_type() {
         pollster::block_on(async {
             let bus = test_bus();
-            let coord = IdleCoordination::new(1.0, 900.0);
+            let coord = IdleCoordination::new(1.0, 900.0, std::sync::Arc::new(std::sync::atomic::AtomicU8::new(2)));
             let mut dispatcher = Dispatcher::new();
             dispatcher.configure_idle(
                 bus.clone(),

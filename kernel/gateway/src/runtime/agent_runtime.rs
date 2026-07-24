@@ -3727,6 +3727,12 @@ impl AgentRuntime {
         self.api_token.as_deref()
     }
 
+    /// The agenverse — the top-level lifecycle container that owns this runtime.
+    #[must_use]
+    pub fn agenverse(&self) -> &Arc<Agenverse> {
+        &self.agenverse
+    }
+
     /// Returns the configured UI locale (default: English).
     #[must_use]
     pub fn locale(&self) -> i18n::Locale {
@@ -4128,6 +4134,32 @@ async fn reset_agent_status(registry: &super::AgentRegistry, agent_id: &str) {
     registry.set_system_state(agent_id, kernel::agent::AgentSystemState::Idle).await;
     registry.set_activity(agent_id, "").await;
     let _ = registry.set_active_session(agent_id, None).await;
+}
+
+/// EventBus handler that bridges an agent's local bus to the global bus.
+///
+/// Every event on the local bus is forwarded to the global bus so the SSE
+/// bridge — which only subscribes to the global bus — can deliver it to the
+/// desktop frontend. An optional `transform` lets the caller intercept or
+/// drop events (used by the script-hook path to run hooks and possibly
+/// prevent bubbling).
+struct LocalToGlobalBridge {
+    global_bus: Arc<dyn event_bus::EventBus>,
+    transform:
+        Option<Arc<dyn Fn(kernel::event::Event) -> Option<kernel::event::Event> + Send + Sync>>,
+}
+#[async_trait::async_trait]
+impl event_bus::EventHandler for LocalToGlobalBridge {
+    async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+        if let Some(ref transform) = self.transform {
+            if let Some(event) = transform(event) {
+                try_publish(&*self.global_bus, event).await;
+            }
+        } else {
+            try_publish(&*self.global_bus, event).await;
+        }
+        Ok(())
+    }
 }
 
 impl AgentRuntime {
@@ -4606,11 +4638,43 @@ impl AgentRuntime {
         }
     }
 
+    /// Bridge an agent's local bus to the global bus.
+    ///
+    /// Every event published to the agent's local bus (tool lifecycle,
+    /// streaming signals, etc.) is forwarded to the global bus so the SSE
+    /// bridge can deliver it to the desktop frontend. Without this bridge,
+    /// local-bus events would never reach the UI (tool calls, streaming
+    /// start/done, etc.).
+    ///
+    /// `transform` lets the caller optionally intercept/drop events (used by
+    /// the script-hook path to run hooks and possibly prevent bubbling).
+    async fn bridge_agent_local_to_global(
+        agent_id: &str,
+        local_bus: Arc<dyn event_bus::EventBus>,
+        global_bus: Arc<dyn event_bus::EventBus>,
+        transform: Option<
+            Arc<dyn Fn(kernel::event::Event) -> Option<kernel::event::Event> + Send + Sync>,
+        >,
+    ) {
+        let _ = local_bus
+            .subscribe(
+                event_bus::SubscriptionFilter::default(),
+                Box::new(LocalToGlobalBridge { global_bus, transform }),
+            )
+            .await;
+        tracing::debug!(agent = %agent_id, "bridged agent local bus → global bus");
+    }
+
     /// Subscribe per-agent script hooks to the given agent's local event bus.
     ///
     /// Discovers hooks from `~/.aman/agents/<agent_id>/hooks/` and subscribes
     /// them to the agent's local bus. Hooks placed here only receive that
     /// specific agent's events (e.g. `agent:busy`, `tool:completed`).
+    /// Events that are not prevented by a hook are bubbled up to the global
+    /// bus so the SSE bridge can deliver them to the frontend.
+    ///
+    /// Regardless of whether any hooks are found, a local→global bridge is
+    /// always established so the UI sees tool calls and streaming events.
     pub async fn subscribe_per_agent_hooks(&self, agent_id: &str) {
         let hooks_dir = super::skill_sync::aman_data_dir()
             .join("agents")
@@ -4621,6 +4685,17 @@ impl AgentRuntime {
         }
         let discovered = config::discover_hooks(&hooks_dir);
         if discovered.is_empty() {
+            // No hooks — but the local→global bridge is still needed so the
+            // UI sees tool calls and streaming events.
+            if let Some(local_bus) = self.agent_registry.get_local_bus(agent_id).await {
+                Self::bridge_agent_local_to_global(
+                    agent_id,
+                    local_bus,
+                    Arc::clone(&self.bus) as Arc<dyn event_bus::EventBus>,
+                    None,
+                )
+                .await;
+            }
             return;
         }
 
@@ -4647,34 +4722,50 @@ impl AgentRuntime {
             ));
         }
         if hooks.is_empty() {
+            // Hooks were discovered but none survived runtime checks — still
+            // bridge so the UI sees events.
+            if let Some(local_bus) = self.agent_registry.get_local_bus(agent_id).await {
+                Self::bridge_agent_local_to_global(
+                    agent_id,
+                    local_bus,
+                    Arc::clone(&self.bus) as Arc<dyn event_bus::EventBus>,
+                    None,
+                )
+                .await;
+            }
             return;
         }
 
         let runner = Arc::new(hook::ScriptHookRunner::new(hooks));
-        let global_bus = Arc::clone(&self.bus) as Arc<dyn event_bus::EventBus>;
-        struct AgentHookHandler {
-            runner: Arc<hook::ScriptHookRunner>,
-            global_bus: Arc<dyn event_bus::EventBus>,
-        }
-        #[async_trait::async_trait]
-        impl event_bus::EventHandler for AgentHookHandler {
-            async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
+        let transform: Arc<dyn Fn(kernel::event::Event) -> Option<kernel::event::Event> + Send + Sync> =
+            Arc::new(move |event: kernel::event::Event| {
                 let event_type = event.event_type.as_str().to_owned();
-                let prevented = self.runner.run(&event_type, &event.payload).await?;
-                if !prevented {
-                    // Bubble event up to the global bus so global hooks see it.
-                    try_publish(&*self.global_bus, event).await;
+                // Spawn the async hook run onto the runtime and block on it
+                // synchronously — the handler signature is sync (EventHandler
+                // trait), so we bridge with block_on.
+                let result = pollster::block_on(runner.run(&event_type, &event.payload));
+                match result {
+                    Ok(prevented) => {
+                        if prevented {
+                            None // hook consumed the event — don't bubble
+                        } else {
+                            Some(event) // bubble to global bus
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "agent hook run failed — bubbling event");
+                        Some(event)
+                    }
                 }
-                Ok(())
-            }
-        }
+            });
         if let Some(local_bus) = self.agent_registry.get_local_bus(agent_id).await {
-            let _ = local_bus
-                .subscribe(
-                    event_bus::SubscriptionFilter::default(),
-                    Box::new(AgentHookHandler { runner, global_bus }),
-                )
-                .await;
+            Self::bridge_agent_local_to_global(
+                agent_id,
+                local_bus,
+                Arc::clone(&self.bus) as Arc<dyn event_bus::EventBus>,
+                Some(transform),
+            )
+            .await;
             tracing::info!(agent = %agent_id, count = discovered.len(), "agent script hooks subscribed to local bus");
         }
     }
@@ -5213,6 +5304,7 @@ impl AgentRuntime {
         let notify = Arc::clone(&self.timeout_poll_notify);
         let workflow_engine = Arc::clone(&self.workflow_engine);
         let registry = Arc::clone(&self.agent_registry);
+        let agent_harness = Arc::clone(&self.agent_harness);
         let join = tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(10));
@@ -5251,6 +5343,27 @@ impl AgentRuntime {
                                     )
                                     .await;
                                     if let Some(aid) = agent_id {
+                                        // Abort the in-flight tokio task so a hung
+                                        // LLM HTTP call doesn't linger in the
+                                        // background long after the session has
+                                        // been reset to IDLE. Without this, the
+                                        // task keeps running until gateway shutdown
+                                        // and the user sees no reply (the reply
+                                        // channel was tied to the now-reset
+                                        // session).
+                                        if agent_harness.abort_task(&r.instance_id) {
+                                            tracing::warn!(
+                                                agent_id = %aid,
+                                                session_id = %r.instance_id,
+                                                "aborted hung agent task on PROCESSING timeout"
+                                            );
+                                            // The task was aborted externally — its
+                                            // own error path never runs, so no
+                                            // reply event was published. Emit one
+                                            // here so the frontend sees an error
+                                            // instead of silently returning to IDLE.
+                                            agent_harness.publish_timeout_error(&aid, &r.instance_id).await;
+                                        }
                                         reset_agent_status(&registry, &aid).await;
                                         // Recover the session from TIMEOUT back to
                                         // IDLE so it can accept new messages.  The
@@ -5480,7 +5593,10 @@ impl AgentRuntime {
                 tracing::info!("Phase2: load agents from config");
                 match config::AmanConfig::from_default_path() {
                     Ok(aman_cfg) => {
-                        let count = self.agent_registry.load_from_config(&aman_cfg).await;
+                        let count = self
+                            .agent_registry
+                            .load_from_config(&aman_cfg, self.agenverse.era_arc())
+                            .await;
                         tracing::info!(count, "agents loaded from config");
                         // Subscribe per-agent script hooks to each agent's local bus.
                         for agent in self.agent_registry.list().await {
@@ -5501,8 +5617,12 @@ impl AgentRuntime {
                 self.agenverse.set_phase(RuntimePhase::Phase3);
             }
             RuntimePhase::Phase4 => {
-                // Start per-agent idle loops
-                self.agent_registry.start_all_idle_loops().await;
+                // NOTE: per-agent idle loops are NOT started here.  They start
+                // when the agenverse transitions to Genesis (see
+                // Agenverse::enter_chaos).  During Chaos the idle system is
+                // suppressed, so starting it early would only burn CPU on a
+                // no-op loop.
+                //
                 // Start emotion evaluators (require Tokio runtime)
                 self.agent_registry.start_all_emotion_evaluators().await;
                 // Start cognitive state monitors (propagate to idle/arousal)
@@ -6326,7 +6446,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_initial_state() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         assert_eq!(lc.phase(), RuntimePhase::Phase0);
         assert_eq!(lc.status().await, RuntimeStatus::New);
         assert!(!lc.is_ready());
@@ -6337,7 +6457,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_set_phase_roundtrip() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         for phase in [
             RuntimePhase::Phase0,
             RuntimePhase::Phase05,
@@ -6354,7 +6474,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_mark_ready() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         lc.set_phase(RuntimePhase::Phase5);
         lc.mark_ready().await;
         assert_eq!(lc.status().await, RuntimeStatus::Ready);
@@ -6364,7 +6484,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_start_gate_from_new() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         assert!(lc.try_acquire_start_gate().await.is_ok());
         assert_eq!(lc.status().await, RuntimeStatus::Starting);
         assert_eq!(lc.phase(), RuntimePhase::Phase0);
@@ -6373,7 +6493,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_start_gate_idempotent() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         assert!(lc.try_acquire_start_gate().await.is_ok());
         assert!(lc.try_acquire_start_gate().await.is_ok());
         assert_eq!(lc.status().await, RuntimeStatus::Starting);
@@ -6385,21 +6505,23 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_start_gate_rejected_after_shutdown_request() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         lc.try_acquire_shutdown_gate().await.expect("shutdown gate");
         assert!(lc.try_acquire_start_gate().await.is_err());
     }
 
     #[tokio::test]
     async fn lifecycle_shutdown_gate_and_mark_shutdown() {
-        let lc = Agenverse::new(Duration::from_millis(0));
+        let lc = Agenverse::new(Duration::from_millis(0), Duration::from_secs(720));
         assert!(lc.try_acquire_shutdown_gate().await.is_ok());
         assert!(lc.shutdown_requested());
         assert_eq!(lc.status().await, RuntimeStatus::ShuttingDown);
         assert!(lc.is_live());
 
-        // Idempotent while shutting down.
-        assert!(lc.try_acquire_shutdown_gate().await.is_ok());
+        // Idempotent while shutting down — a second caller must NOT
+        // re-acquire the gate (otherwise the shutdown phase sequence would
+        // run twice). It returns Err to signal "already in progress".
+        assert!(lc.try_acquire_shutdown_gate().await.is_err());
 
         lc.mark_shutdown().await;
         assert_eq!(lc.status().await, RuntimeStatus::Shutdown);
@@ -6409,7 +6531,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_shutdown_notifies_waiters() {
-        let lc = Arc::new(Agenverse::new(Duration::from_millis(0)));
+        let lc = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(720)));
         let lc2 = Arc::clone(&lc);
         let waiter = tokio::spawn(async move { lc2.wait_shutdown_complete().await });
 
@@ -6439,7 +6561,10 @@ mod build_tests {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _enter = rt.enter();
         let tmp = TempDir::new().expect("temp dir");
-        let agenverse = Arc::new(Agenverse::new(std::time::Duration::from_millis(0)));
+        let agenverse = Arc::new(Agenverse::new(
+            std::time::Duration::from_millis(0),
+            std::time::Duration::from_secs(720),
+        ));
         let result = AgentRuntimeBuilder::new(AgentConfig::default())
             .with_runtime_dir(tmp.path().to_path_buf())
             .with_predefined_dir("predefined")
@@ -7154,7 +7279,7 @@ fn wrap_cognitive_provider(
                 response_format: req.response_format.as_ref().map(|f| match f { kernel::llm::ResponseFormat::JsonObject => cognitive_llm::provider::ResponseFormat::JsonObject, kernel::llm::ResponseFormat::JsonSchema { name, schema, strict } => cognitive_llm::provider::ResponseFormat::JsonSchema { name: name.clone(), schema: schema.clone(), strict: *strict } }),
             };
             let ccb = cb.map(|c| { let c = c; Arc::new(move |e| c(match e { cognitive_llm::provider::StreamEvent::Start => kernel::llm::StreamEvent::Start, cognitive_llm::provider::StreamEvent::Chunk(s) => kernel::llm::StreamEvent::Chunk(s), cognitive_llm::provider::StreamEvent::Done { finish_reason } => kernel::llm::StreamEvent::Done { finish_reason }, cognitive_llm::provider::StreamEvent::Error(s) => kernel::llm::StreamEvent::Error(s), })) as Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync> });
-            self.0.chat_completion(cr, ccb).await.map(|r| LlmResponse { content: r.content, finish_reason: r.finish_reason, tool_calls: r.tool_calls.into_iter().map(|c| ParsedToolCall { id: c.id, tool_name: c.tool_name, args: c.args }).collect(), reasoning_content: r.reasoning_content }).map_err(|e| kernel::Error::Unrecoverable { message: e })
+            self.0.chat_completion(cr, ccb).await.map(|r| LlmResponse { content: r.content, finish_reason: r.finish_reason, tool_calls: r.tool_calls.into_iter().map(|c| ParsedToolCall { id: c.id, tool_name: c.tool_name, args: c.args }).collect(), reasoning_content: r.reasoning_content, usage: r.usage.map(|u| kernel::llm::TokenUsage { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens }) }).map_err(|e| kernel::Error::Unrecoverable { message: e })
         }
     }
     Arc::new(Adapter(inner))
@@ -7499,6 +7624,11 @@ impl kernel::llm::LlmProvider for CognitiveLlmProviderAdapter {
                 })
                 .collect(),
             reasoning_content: resp.reasoning_content,
+            usage: resp.usage.map(|u| kernel::llm::TokenUsage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+            }),
         })
     }
 }

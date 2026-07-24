@@ -12,7 +12,7 @@ use std::time::Duration;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn aman_health_ready_hits_runtime_endpoint() {
     let config = AgentConfig::default();
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(720)));
     let runtime = AgentRuntimeBuilder::new(config)
         .with_bind_addr("127.0.0.1:0".parse().expect("addr"))
         .with_runtime_handle(tokio::runtime::Handle::current())

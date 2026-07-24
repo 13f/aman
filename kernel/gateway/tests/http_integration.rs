@@ -35,7 +35,7 @@ impl GatewayTestHarness {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _enter = rt.enter();
         let _tmp = tempfile::TempDir::new().expect("temp dir");
-        let agenverse = Arc::new(gateway::runtime::Agenverse::new(Duration::from_millis(0)));
+        let agenverse = Arc::new(gateway::runtime::Agenverse::new(Duration::from_millis(0), Duration::from_secs(720)));
         let runtime = gateway::runtime::AgentRuntimeBuilder::new(
             config::AgentConfig::default(),
         )

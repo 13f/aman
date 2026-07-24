@@ -200,9 +200,14 @@
      (designed for the bottom-of-sidebar placement in the main window). */
   .avatar-inner :global(.activity-widget) {
     border-top: none !important;
+    margin-top: 0 !important; /* override sidebar's margin-top: auto */
+    align-items: center;      /* center children (name/ring/label) in the column */
   }
   .avatar-inner :global(.activity-widget .aw-name) {
     display: none;
+  }
+  .avatar-inner :global(.activity-widget .aw-state-label) {
+    text-align: center;
   }
 
   /* ── Right: tabs column ────────────────────────────────────────── */

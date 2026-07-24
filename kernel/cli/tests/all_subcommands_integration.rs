@@ -34,7 +34,7 @@ fn run_stdout(args: &[&str]) -> String {
 async fn cli_smoke_all_current_subcommands() {
     let mut config = AgentConfig::default();
     config.security.risky_capabilities_enabled = true;
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0)));
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(720)));
     let runtime = AgentRuntimeBuilder::new(config)
         .with_bind_addr("127.0.0.1:0".parse().expect("addr"))
         .with_api_token(Some("token".to_owned()))

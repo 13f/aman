@@ -44,9 +44,12 @@ export const IDLE_EMOJI: Record<string, string> = {
 
 export const MODE_ICON: Record<string, string> = {
   idle: "\u{1F4A4}", reflection: "\u{1F9E0}", processing: "\u{26A1}",
+  loaded: "\u{23F3}", ready: "\u{2705}",
 };
 
 export const STATE_EMOJI: Record<string, string> = {
+  loaded: "\u{23F3}",
+  ready: "\u{2705}",
   working: "\u{1F6E0}\u{FE0F}",
   studying: "\u{1F4DA}",
   daily_life: "\u{1F3E0}",
@@ -55,6 +58,8 @@ export const STATE_EMOJI: Record<string, string> = {
 };
 
 export const SYSTEM_STATE_LABEL: Record<string, string> = {
+  loaded: "Loaded",
+  ready: "Ready",
   idle: "Idle",
   preparing: "Loading",
   working: "Working",
@@ -66,6 +71,8 @@ export const SYSTEM_STATE_LABEL: Record<string, string> = {
 };
 
 export const SYSTEM_STATE_CLASS: Record<string, string> = {
+  loaded: "ss-loaded",
+  ready: "ss-ready",
   idle: "ss-idle",
   preparing: "ss-loading",
   working: "ss-working",

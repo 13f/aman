@@ -6,11 +6,13 @@
 //! Architecture ref: idle-design.md §3.5
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, info};
 
 use crate::types::IdleKind;
 
@@ -66,6 +68,17 @@ impl WakeUpSchedule {
     }
 }
 
+/// 恢复计时器的句柄。
+///
+/// stop() 后启动，在 1min 内将 depth / arousal 逐步恢复到初始值。
+/// 重新 start() 时通过 [`IdleCoordination::cancel_recovery`] 终止并释放。
+pub struct RecoveryHandle {
+    /// 取消令牌——start() 重新触发时取消此令牌以终止恢复。
+    pub cancel_token: CancellationToken,
+    /// 恢复任务句柄。
+    pub task: JoinHandle<()>,
+}
+
 /// 跨组件共享的空闲协调状态。
 pub struct IdleCoordination {
     /// Dispatcher 正在执行 Reflection，IdleDetector 应暂停
@@ -87,6 +100,20 @@ pub struct IdleCoordination {
     /// The agenverse era (Void=0, Chaos=1, Genesis=2), shared from [`Agenverse`].
     /// During Chaos the idle system is suppressed — agents may only Daze.
     pub era: Arc<AtomicU8>,
+    // ---------------------------------------------------------------------------
+    // 启动 / 停止 生命周期（start-stop lifecycle）
+    // ---------------------------------------------------------------------------
+    /// 当前 idle depth（AtomicU32，跨 stop/start 存活）。
+    ///
+    /// 原来存放在 `IdleDetector.idle_depth`，但 detector 在 start() 时新建，
+    /// stop 后即丢失。为了让恢复计时器能跨 stop 修改 depth，移至此处。
+    pub idle_depth: Arc<AtomicU32>,
+    /// depth 初始值（默认 0）。恢复计时器的 depth 目标值。
+    pub depth_initial: Arc<AtomicU32>,
+    /// arousal 初始值（构造时传入）。恢复计时器的 arousal 目标值。
+    arousal_initial: f64,
+    /// 活跃恢复计时器的句柄。`None` 表示无恢复在进行。
+    recovery_handle: Arc<RwLock<Option<RecoveryHandle>>>,
 }
 
 impl IdleCoordination {
@@ -111,6 +138,10 @@ impl IdleCoordination {
             wakeup_schedule: RwLock::new(None),
             cognitive_force_sleep: Arc::new(AtomicBool::new(false)),
             era,
+            idle_depth: Arc::new(AtomicU32::new(0)),
+            depth_initial: Arc::new(AtomicU32::new(0)),
+            arousal_initial,
+            recovery_handle: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -191,6 +222,155 @@ impl IdleCoordination {
     pub async fn has_pending_wakeup(&self) -> bool {
         self.wakeup_schedule.read().await.is_some()
     }
+
+    // ---------------------------------------------------------------------------
+    // 启动 / 停止 生命周期（start-stop lifecycle）
+    // ---------------------------------------------------------------------------
+
+    /// 启动恢复计时器，在 `duration` 内将 depth / arousal 逐步恢复到初始值。
+    ///
+    /// 若已有恢复在进行，先取消旧的再启动新的（保证不叠加）。
+    /// 恢复速度在启动时根据当前值与目标值的差值计算：
+    /// - depth_speed = current_depth / duration_secs  (units/sec)
+    /// - arousal_speed = |current_arousal - arousal_initial| / duration_secs
+    pub async fn start_recovery(&self, duration: Duration) {
+        // 取消已有恢复，防止叠加。
+        self.cancel_recovery().await;
+
+        let cancel_token = CancellationToken::new();
+        let task = spawn_recovery_task(
+            Arc::clone(&self.idle_depth),
+            Arc::clone(&self.depth_initial),
+            Arc::clone(&self.arousal),
+            self.arousal_initial,
+            duration,
+            cancel_token.clone(),
+            Arc::clone(&self.recovery_handle),
+        );
+
+        let handle = RecoveryHandle { cancel_token, task };
+        *self.recovery_handle.write().await = Some(handle);
+
+        let depth = self.idle_depth.load(Ordering::SeqCst);
+        let arousal = self.arousal.current();
+        let secs = duration.as_secs_f64();
+        let depth_speed = depth as f64 / secs;
+        let arousal_speed = (arousal - self.arousal_initial).abs() / secs;
+        info!(
+            duration_secs = duration.as_secs(),
+            depth_initial = depth,
+            arousal_initial = arousal,
+            depth_speed = format!("{depth_speed:.2}"),
+            arousal_speed = format!("{arousal_speed:.4}"),
+            "IdleSystem: recovery timer started"
+        );
+    }
+
+    /// 终止并释放恢复计时器。
+    ///
+    /// 由 `AgentIdleManager::start()` 调用：重新 start 时终止恢复中的计时器。
+    pub async fn cancel_recovery(&self) {
+        let mut guard = self.recovery_handle.write().await;
+        if let Some(handle) = guard.take() {
+            handle.cancel_token.cancel();
+            handle.task.abort();
+            debug!("IdleSystem: recovery timer cancelled");
+        }
+    }
+
+    /// 是否有活跃的恢复计时器。
+    ///
+    /// 恢复任务完成后会自动清理自身 handle，因此只需检查 handle 是否存在。
+    pub async fn is_recovering(&self) -> bool {
+        self.recovery_handle.read().await.is_some()
+    }
+
+    /// 返回 arousal 初始值（恢复计时器的目标值）。
+    pub fn initial_arousal(&self) -> f64 {
+        self.arousal_initial
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 恢复计时器任务
+// ---------------------------------------------------------------------------
+
+/// 启动一个恢复任务，在 `duration` 内将 depth / arousal 逐步恢复到初始值。
+///
+/// 每 500ms 一个 tick：
+/// - depth 线性递减：`decrement = ceil(current_depth / remaining_ticks)`
+/// - arousal 指数逼近：`restore_to(target, remaining)`
+///
+/// 当 `cancel_token` 被 cancel 时立即停止（不强制归零，保留当前值）。
+/// 当 depth 提前归零时，只继续恢复 arousal。
+/// 完成后强制精确归零 / 复位，并自动清理自身 handle。
+fn spawn_recovery_task(
+    idle_depth: Arc<AtomicU32>,
+    depth_initial: Arc<AtomicU32>,
+    arousal: Arc<ArousalTracker>,
+    arousal_initial: f64,
+    duration: Duration,
+    cancel_token: CancellationToken,
+    recovery_handle: Arc<RwLock<Option<RecoveryHandle>>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        // 500ms 一 tick → 120 ticks/min，足够平滑，开销可忽略。
+        let tick = Duration::from_millis(500);
+        let total_ticks = (duration.as_millis() / tick.as_millis()) as u32;
+        let mut remaining = total_ticks;
+
+        loop {
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    // start() 重新触发，终止恢复。
+                    debug!("IdleRecovery: cancelled by restart");
+                    break;
+                }
+                _ = tokio::time::sleep(tick) => {
+                    if remaining == 0 {
+                        break;
+                    }
+
+                    // depth 恢复：线性递减，ceil 保证不卡在非零值。
+                    let current_depth = idle_depth.load(Ordering::SeqCst);
+                    if current_depth > 0 {
+                        let decrement =
+                            (current_depth as f64 / remaining as f64).ceil() as u32;
+                        let new_depth = current_depth.saturating_sub(decrement);
+                        idle_depth.store(new_depth, Ordering::SeqCst);
+                    }
+
+                    // arousal 恢复：指数逼近目标值。
+                    arousal.restore_to(arousal_initial, remaining);
+
+                    remaining -= 1;
+
+                    let d = idle_depth.load(Ordering::SeqCst);
+                    let a = arousal.current();
+                    debug!(
+                        remaining_ticks = remaining,
+                        depth = d,
+                        arousal = format!("{a:.4}"),
+                        "IdleRecovery: tick"
+                    );
+
+                    // depth 已归零且 arousal 已到位，提前退出。
+                    if d == 0 && (a - arousal_initial).abs() < 0.001 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 完成后强制精确归零 / 复位，消除浮点误差。
+        idle_depth.store(depth_initial.load(Ordering::SeqCst), Ordering::SeqCst);
+        arousal.reset(arousal_initial);
+
+        // 自动清理自身 handle，使 is_recovering() 返回 false。
+        let _ = recovery_handle.write().await.take();
+
+        debug!("IdleRecovery: complete, depth and arousal restored to defaults");
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +440,23 @@ impl ArousalTracker {
         inner.value = initial_value;
         inner.last_update = Instant::now();
     }
+
+    /// 朝 `target` 逐步恢复一步。
+    ///
+    /// 用于 stop 后的恢复计时器：每 tick 调用一次，每次移动剩余距离的
+    /// `1 / remaining_ticks`，呈指数衰减式逼近，保证最后一 tick 恰好到位。
+    /// 公式：`current += (target - current) / remaining_ticks`
+    pub fn restore_to(&self, target: f64, remaining_ticks: u32) {
+        let mut inner = self.current_value.lock().unwrap();
+        let step = if remaining_ticks == 0 {
+            // 最后一跳：直接到位
+            target - inner.value
+        } else {
+            (target - inner.value) / remaining_ticks as f64
+        };
+        inner.value = (inner.value + step).clamp(0.0, 1.0);
+        inner.last_update = Instant::now();
+    }
 }
 
 #[cfg(test)]
@@ -323,6 +520,57 @@ mod tests {
         tracker.reset(1.0);
         let reset_val = tracker.current();
         assert!((reset_val - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn restore_to_approaches_target_exponentially() {
+        // 从 0.8 朝 0.2 恢复，10 ticks。
+        let tracker = ArousalTracker::new(0.8, 900.0);
+        let target = 0.2;
+        let ticks = 10;
+        for i in 0..ticks {
+            let remaining = ticks - i;
+            tracker.restore_to(target, remaining);
+        }
+        // 最后一跳后应该精确到位（允许浮点误差）。
+        let val = tracker.current();
+        assert!(
+            (val - target).abs() < 0.0001,
+            "restore_to should converge to target, got {val}"
+        );
+    }
+
+    #[test]
+    fn restore_to_never_overshoots() {
+        // 从 0.1 朝 0.9 恢复（向上），验证不会超调。
+        let tracker = ArousalTracker::new(0.1, 900.0);
+        let target = 0.9;
+        for i in 0..100 {
+            let remaining = 100 - i;
+            tracker.restore_to(target, remaining);
+            let val = tracker.current();
+            assert!(
+                val >= 0.0 && val <= 1.0,
+                "restore_to should stay within [0, 1], got {val}"
+            );
+        }
+        let val = tracker.current();
+        assert!(
+            (val - target).abs() < 0.0001,
+            "should reach target, got {val}"
+        );
+    }
+
+    #[test]
+    fn restore_to_zero_remaining_jumps_to_target() {
+        // remaining_ticks == 0 时应直接跳到 target。
+        let tracker = ArousalTracker::new(0.5, 900.0);
+        tracker.restore_to(0.9, 0);
+        let val = tracker.current();
+        assert!(
+            (val - 0.9).abs() < 0.0001,
+            "remaining=0 should jump to target, got {val}"
+        );
     }
 
     // ── IdleCoordination tests (T2.1) ───────────────────────────
@@ -451,5 +699,104 @@ mod tests {
             IdleKind::Daze
         };
         assert_eq!(kind, IdleKind::Sleep);
+    }
+
+    // ── Recovery lifecycle tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn recovery_timer_restores_depth_and_arousal() {
+        let coord = IdleCoordination::new(0.5, 900.0, era_genesis());
+        // 模拟 stop 后的状态：depth=100, arousal=0.9。
+        coord.idle_depth.store(100, Ordering::SeqCst);
+        coord.arousal.reset(0.9);
+
+        // 启动一个短恢复计时器（2 秒，便于测试）。
+        coord.start_recovery(Duration::from_secs(2)).await;
+        assert!(coord.is_recovering().await);
+
+        // 等待恢复完成。
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        // depth 和 arousal 应该恢复到初始值。
+        assert_eq!(coord.idle_depth.load(Ordering::SeqCst), 0);
+        assert!(
+            (coord.arousal.current() - 0.5).abs() < 0.001,
+            "arousal should restore to initial 0.5, got {}",
+            coord.arousal.current()
+        );
+        // 恢复完成后 handle 自动清理。
+        assert!(!coord.is_recovering().await);
+    }
+
+    #[tokio::test]
+    async fn recovery_timer_can_be_cancelled() {
+        let coord = IdleCoordination::new(0.5, 900.0, era_genesis());
+        coord.idle_depth.store(1000, Ordering::SeqCst);
+        coord.arousal.reset(1.0);
+
+        coord.start_recovery(Duration::from_secs(60)).await;
+        assert!(coord.is_recovering().await);
+
+        // 等 1 秒，让恢复进行一部分。
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        let depth_before_cancel = coord.idle_depth.load(Ordering::SeqCst);
+        assert!(
+            depth_before_cancel < 1000,
+            "depth should have decreased, got {depth_before_cancel}"
+        );
+
+        // 取消恢复。
+        coord.cancel_recovery().await;
+        assert!(!coord.is_recovering().await);
+
+        // 取消后 depth 不再变化。
+        let depth_after_cancel = coord.idle_depth.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let depth_later = coord.idle_depth.load(Ordering::SeqCst);
+        assert_eq!(
+            depth_after_cancel, depth_later,
+            "depth should not change after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_recovery_cancels_previous_recovery() {
+        let coord = IdleCoordination::new(0.5, 900.0, era_genesis());
+        coord.idle_depth.store(500, Ordering::SeqCst);
+
+        // 启动第一个恢复。
+        coord.start_recovery(Duration::from_secs(60)).await;
+        assert!(coord.is_recovering().await);
+
+        // 立即启动第二个恢复（应取消第一个）。
+        coord.start_recovery(Duration::from_secs(60)).await;
+        assert!(coord.is_recovering().await);
+
+        // 清理。
+        coord.cancel_recovery().await;
+        assert!(!coord.is_recovering().await);
+    }
+
+    #[tokio::test]
+    async fn recovery_does_not_instantly_reset() {
+        // 验证恢复是渐进的，不是瞬间重置。
+        let coord = IdleCoordination::new(0.5, 900.0, era_genesis());
+        coord.idle_depth.store(100, Ordering::SeqCst);
+        coord.arousal.reset(1.0);
+
+        coord.start_recovery(Duration::from_secs(2)).await;
+        assert!(coord.is_recovering().await);
+
+        // 等足够时间让至少 1 tick 完成（tick=500ms，给 700ms 余量）。
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let depth_after_one_tick = coord.idle_depth.load(Ordering::SeqCst);
+        assert!(
+            depth_after_one_tick > 0 && depth_after_one_tick < 100,
+            "depth should decrease gradually, got {depth_after_one_tick}"
+        );
+
+        // 清理。
+        coord.cancel_recovery().await;
+        assert!(!coord.is_recovering().await);
     }
 }

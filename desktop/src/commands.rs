@@ -3178,3 +3178,55 @@ pub async fn close_agent_window(
     }
     Ok(())
 }
+
+// ── Idle system start/stop (UI focus-driven) ──────────────────────────
+
+/// Start the idle system for a specific agent (called when agent window loses focus).
+#[tauri::command]
+pub async fn start_agent_idle(
+    state: tauri::State<'_, crate::state::AppState>,
+    agent_key: String,
+) -> Result<(), String> {
+    let gc = state.gateway_client.lock().await;
+    match gc.as_ref() {
+        Some(client) => client
+            .start_agent_idle(&agent_key)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("start_agent_idle failed: {e}")),
+        None => Err("gateway client not connected".to_string()),
+    }
+}
+
+/// Stop the idle system for a specific agent (called when agent window gains focus).
+#[tauri::command]
+pub async fn stop_agent_idle(
+    state: tauri::State<'_, crate::state::AppState>,
+    agent_key: String,
+) -> Result<(), String> {
+    let gc = state.gateway_client.lock().await;
+    match gc.as_ref() {
+        Some(client) => client
+            .stop_agent_idle(&agent_key)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("stop_agent_idle failed: {e}")),
+        None => Err("gateway client not connected".to_string()),
+    }
+}
+
+/// Start idle system for all agents (called when main window loses focus).
+#[tauri::command]
+pub async fn start_all_agent_idle(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<(), String> {
+    let gc = state.gateway_client.lock().await;
+    match gc.as_ref() {
+        Some(client) => client
+            .start_all_agent_idle()
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("start_all_agent_idle failed: {e}")),
+        None => Err("gateway client not connected".to_string()),
+    }
+}

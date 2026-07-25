@@ -15,6 +15,51 @@
   let hasProvider = $state(false);
   let unlisteners: (() => void) = [];
 
+  // ── Idle system focus-driven control ──────────────────────────────
+  // 窗体失焦后 12s 计时器，到期且 agent 非 Busy 时启动 idle system。
+  // 窗体重新获焦时取消计时器并停止 idle system。
+  const IDLE_START_DELAY_MS = 12_000;
+  let idleStartTimer: ReturnType<typeof setTimeout> | null = null;
+  let isFocused = $state(true);
+
+  function clearIdleStartTimer() {
+    if (idleStartTimer !== null) {
+      clearTimeout(idleStartTimer);
+      idleStartTimer = null;
+    }
+  }
+
+  async function handleFocus() {
+    if (isFocused) return; // 防止重复触发
+    isFocused = true;
+    clearIdleStartTimer();
+    console.log(`[${agentKey}] window focused → stop idle`);
+    // 窗体获焦 → 停止 idle system，进入 Ready 状态。
+    try {
+      await invoke("stop_agent_idle", { agentKey });
+    } catch (e) {
+      console.warn("stop_agent_idle failed:", e);
+    }
+  }
+
+  async function handleBlur() {
+    if (!isFocused) return; // 防止重复触发
+    isFocused = false;
+    console.log(`[${agentKey}] window blurred → starting ${IDLE_START_DELAY_MS}ms timer`);
+    // 窗体失焦 → 启动 12s 计时器，到期后启动 idle system。
+    clearIdleStartTimer();
+    idleStartTimer = setTimeout(async () => {
+      idleStartTimer = null;
+      console.log(`[${agentKey}] timer expired → start idle`);
+      try {
+        await invoke("start_agent_idle", { agentKey });
+      } catch (e) {
+        // agent 可能处于 Busy 状态（有活跃 session），此时后端会拒绝启动。
+        console.warn("start_agent_idle failed:", e);
+      }
+    }, IDLE_START_DELAY_MS);
+  }
+
   async function loadIdentity() {
     try {
       const cfg: any = await invoke("get_aman_config");
@@ -34,9 +79,27 @@
     };
     window.addEventListener("agent-window:switch-tab", onSwitchTab);
     unlisteners.push(() => window.removeEventListener("agent-window:switch-tab", onSwitchTab));
+
+    // 通过 Tauri 自定义事件监听窗体焦点变化（窗体级别，比 DOM focus/blur 可靠）。
+    // 事件由后端 open_or_focus_agent_window 命令中的 on_focus_change 注册。
+    const { listen } = await import("@tauri-apps/api/event");
+    const unlistenFocused = await listen<{ agent_key: string }>(
+      "agent-window:focused",
+      (e) => {
+        if (e.payload?.agent_key === agentKey) handleFocus();
+      },
+    );
+    const unlistenBlurred = await listen<{ agent_key: string }>(
+      "agent-window:blurred",
+      (e) => {
+        if (e.payload?.agent_key === agentKey) handleBlur();
+      },
+    );
+    unlisteners.push(unlistenFocused, unlistenBlurred);
   });
 
   onDestroy(() => {
+    clearIdleStartTimer();
     for (const u of unlisteners) u();
     unlisteners = [];
   });

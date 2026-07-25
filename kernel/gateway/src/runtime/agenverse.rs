@@ -104,11 +104,13 @@ pub struct Agenverse {
 }
 
 impl Agenverse {
-    /// Construct a fresh agenverse in `New` state and [`Era::Void`].
+    /// Construct a fresh agenverse in `New` state and [`Era::Genesis`].
     ///
-    /// `chaos_duration` is the seconds the agenverse will remain in
-    /// [`Era::Chaos`] after [`enter_chaos`](Self::enter_chaos) is called,
-    /// before auto-transitioning to [`Era::Genesis`].
+    /// Era 系统（Void → Chaos → Genesis）已被禁用：idle system 现在由 UI
+    /// 焦点驱动，不再受 era 控制。agenverse 直接初始化为 Genesis，agents
+    /// 从一开始就处于"已觉醒"状态。
+    ///
+    /// `chaos_duration` 保留但不再使用（设为 0 即可）。
     pub fn new(startup_pause: Duration, chaos_duration: Duration) -> Self {
         Self {
             phase: AtomicU8::new(RuntimePhase::Phase0 as u8),
@@ -119,7 +121,8 @@ impl Agenverse {
             startup_pause,
             runtime: OnceLock::new(),
             server: Mutex::new(None),
-            era: Arc::new(AtomicU8::new(Era::Void as u8)),
+            // 直接初始化为 Genesis，跳过 Void → Chaos 迁移。
+            era: Arc::new(AtomicU8::new(Era::Genesis as u8)),
             chaos_duration,
         }
     }
@@ -207,78 +210,16 @@ impl Agenverse {
         self.chaos_duration
     }
 
-    /// Transition Void → Chaos and schedule the auto-transition to Genesis.
+    /// 以前：Transition Void → Chaos 并调度 Chaos → Genesis 自动迁移。
     ///
-    /// Called once after startup completes. During Chaos agents can only
-    /// Daze — the autonomous idle system is suppressed. After
-    /// [`chaos_duration`](Self::chaos_duration) seconds the agenverse
-    /// automatically transitions to Genesis and agents awaken fully.
+    /// **现已禁用**：era 系统（Void → Chaos → Genesis）已被废弃，idle system
+    /// 由 UI 焦点驱动。agenverse 在 [`new`](Self::new) 中直接初始化为 Genesis。
     ///
-    /// Idempotent: if the agenverse is already past Void (Chaos or Genesis),
-    /// this is a no-op (the existing Genesis timer, if any, is left intact).
+    /// 此方法保留为空操作以兼容 `main.rs` 调用点，避免破坏编译。
+    #[deprecated(note = "Era migration is disabled. Idle system is now UI-focus-driven.")]
     pub fn enter_chaos(&self) {
-        // CAS Void → Chaos; bail if already past Void.
-        if self
-            .era
-            .compare_exchange(
-                Era::Void as u8,
-                Era::Chaos as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return;
-        }
-
-        let secs = self.chaos_duration.as_secs();
-        tracing::info!(chaos_secs = secs, "agenverse entering 混沌 (Chaos): agents forming, idle system suppressed");
-
-        // Complete cold-start for every agent at the start of Chaos.  The idle
-        // system is suppressed for the whole Chaos window (manager.rs gates on
-        // is_genesis()), so the idle loop never emits COLD_START_DONE_EVENT
-        // and the harness never flips AgentStatus Preparing → Idle on its own.
-        // Driving the transition directly here unblocks agent interaction: the
-        // frontend gates every click while status === Preparing ("Agent is
-        // loading", Home.svelte).  mark_cold_start_complete is idempotent —
-        // agents already past Preparing are skipped silently.
-        // Spawned as its own task because enter_chaos() is sync.
-        if let Some(runtime) = self.runtime.get() {
-            let registry = runtime.agent_registry();
-            tokio::spawn(async move {
-                let instances = registry.list().await;
-                for inst in &instances {
-                    let _ = registry
-                        .mark_cold_start_complete(&inst.descriptor.agent_id)
-                        .await;
-                }
-                tracing::info!(
-                    count = instances.len(),
-                    "Chaos: cold-start complete for all agents"
-                );
-            });
-        }
-
-        // Schedule Chaos → Genesis.
-        let era = Arc::clone(&self.era);
-        let sleep_duration = self.chaos_duration;
-        // Start idle loops when Genesis begins.  The runtime is set by the
-        // time enter_chaos() is called (main.rs sets it after build), so
-        // runtime() will succeed.  If for some reason it isn't set yet, we
-        // log and skip — the idle loops simply won't start.
-        let runtime = Arc::clone(
-            self.runtime
-                .get()
-                .expect("Agenverse::enter_chaos() called before AgentRuntime was set"),
-        );
-        tokio::spawn(async move {
-            tokio::time::sleep(sleep_duration).await;
-            era.store(Era::Genesis as u8, Ordering::Release);
-            tracing::info!("agenverse entered 创世纪 (Genesis): agents fully awakened, starting idle system");
-            // Now that we're in Genesis, start the per-agent idle loops.
-            runtime.agent_registry().start_all_idle_loops().await;
-            tracing::info!("idle system started");
-        });
+        // Era 系统已禁用：agenverse 初始即为 Genesis，无需迁移。
+        // Cold-start 完成由 registry 注册时发布的 cold_start_done 事件驱动。
     }
 
     /// Whether a shutdown has been requested (e.g. via HTTP from the desktop

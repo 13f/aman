@@ -267,6 +267,19 @@ impl AgentRegistry {
                 self.set_idle_manager(agent_id, idle_manager).await;
             }
 
+            // 发布 cold_start_done 事件，驱动 Loaded → Ready 转换。
+            // 注意：idle system 不再自动运行（由 UI 焦点驱动），但 cold_start_done
+            // 仍需发布以触发状态转换。对于从未打开窗体的 agent，此事件确保
+            // 它们能从 Loaded 进入 Ready 状态。
+            {
+                let cold_start_event = Event::new(
+                    "runtime:agent_registry",
+                    EventType::Custom(idle::COLD_START_DONE_EVENT.to_owned()),
+                    json!({ "agent_id": agent_id }),
+                );
+                let _ = self.bus.publish(cold_start_event).await;
+            }
+
             // Create per-agent work system if the agent is enabled.
             if entry.enabled {
                 let work_system = Arc::new(WorkSystem::new(
@@ -439,9 +452,8 @@ impl AgentRegistry {
                 Arc::clone(&era),
             ));
             self.set_idle_manager(agent_id, idle_manager.clone()).await;
-            // Start the idle loop immediately.
-            idle_manager.start().await;
-            tracing::info!(agent = %agent_id, "idle manager created and started after reload");
+            // idle system 不再自动启动，由 UI 焦点事件驱动。
+            tracing::info!(agent = %agent_id, "idle manager created after reload (not started)");
         } else if !idle_enabled && has_idle {
             // Agent was disabled — shut down the idle manager.
             if let Some(manager) = self.get_idle_manager(agent_id).await {
@@ -1144,6 +1156,20 @@ impl AgentRegistry {
         let mut states = self.system_states.write().await;
         states.entry(agent_id.to_owned()).or_insert_with(|| Arc::clone(&ss));
         ss
+    }
+
+    /// 一次性转换：Loaded → Ready。
+    ///
+    /// 由 cold_start_done 事件触发。幂等：仅在当前状态为 Loaded 时才转换，
+    /// 其它状态（Ready / Idle / Working / ...）不受影响。
+    pub async fn transition_loaded_to_ready(&self, agent_id: &str) {
+        if let Some(ss) = self.get_system_state(agent_id).await {
+            let mut guard = ss.lock().expect("system_state lock");
+            if *guard == AgentSystemState::Loaded {
+                *guard = AgentSystemState::Ready;
+                tracing::info!(agent = %agent_id, "AgentSystemState: Loaded → Ready");
+            }
+        }
     }
 
     /// Atomically update the system state for an agent.

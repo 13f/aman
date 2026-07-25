@@ -188,6 +188,9 @@ fn build_router(runtime: Arc<AgentRuntime>, plugin_routes: Vec<axum::Router<()>>
         .route("/agent/{agent_id}", get(agent_get))
         .route("/agent/{agent_id}/status", post(agent_set_status))
         .route("/agent/{agent_id}/reload", post(agent_reload))
+        .route("/agent/{agent_id}/idle/start", post(agent_idle_start))
+        .route("/agent/{agent_id}/idle/stop", post(agent_idle_stop))
+        .route("/agents/idle/start", post(agents_idle_start_all))
         .route("/agents/idle-availability", get(agents_idle_availability))
         .route("/analytics/analyze", post(super::analytics_handler::analytics_analyze))
         // MCP endpoints (per-agent)
@@ -3770,6 +3773,89 @@ async fn agent_reload(
         Ok(()) => Json(json!({ "ok": true, "agent_id": agent_id })).into_response(),
         Err(e) => ApiError::bad_request(e.to_string()).into_response(),
     }
+}
+
+// ── Idle system start/stop (UI focus-driven) ──────────────────────────
+
+/// Start the idle system for a single agent.
+///
+/// Sets AgentSystemState → Idle and starts the idle loop.
+/// Returns error if agent is Busy (has active session).
+async fn agent_idle_start(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_id): Path<String>,
+) -> Response {
+    // 门控：只有非 Busy 状态才允许启动 idle。
+    if let Some(instance) = runtime.agent_registry().get(&agent_id).await {
+        if instance.status == AgentStatus::Busy {
+            return ApiError::bad_request(format!(
+                "agent {agent_id} is busy (has active session)"
+            ))
+            .into_response();
+        }
+    }
+
+    // 设置状态为 Idle。
+    runtime
+        .agent_registry()
+        .set_system_state(&agent_id, AgentSystemState::Idle)
+        .await;
+
+    // 启动 idle loop。
+    if let Some(manager) = runtime.agent_registry().get_idle_manager(&agent_id).await {
+        manager.start().await;
+        tracing::info!(agent = %agent_id, "idle system started via UI");
+    }
+
+    Json(json!({ "ok": true, "agent_id": agent_id, "state": "idle" })).into_response()
+}
+
+/// Stop the idle system for a single agent.
+///
+/// Stops the idle loop and sets AgentSystemState → Ready.
+async fn agent_idle_stop(
+    State(runtime): State<Arc<AgentRuntime>>,
+    Path(agent_id): Path<String>,
+) -> Response {
+    if let Some(manager) = runtime.agent_registry().get_idle_manager(&agent_id).await {
+        manager.stop().await;
+        tracing::info!(agent = %agent_id, "idle system stopped via UI");
+    }
+
+    // 停止后设为 Ready。
+    runtime
+        .agent_registry()
+        .set_system_state(&agent_id, AgentSystemState::Ready)
+        .await;
+
+    Json(json!({ "ok": true, "agent_id": agent_id, "state": "ready" })).into_response()
+}
+
+/// Start idle system for all agents (used when main window loses focus).
+///
+/// Only starts agents that are not Busy and not already in Idle state.
+async fn agents_idle_start_all(State(runtime): State<Arc<AgentRuntime>>) -> Response {
+    let instances = runtime.agent_registry().list().await;
+    let mut started = 0;
+    for instance in instances {
+        let agent_id = instance.descriptor.agent_id;
+        if instance.status == AgentStatus::Busy {
+            continue;
+        }
+        if instance.system_state == AgentSystemState::Idle {
+            continue;
+        }
+        runtime
+            .agent_registry()
+            .set_system_state(&agent_id, AgentSystemState::Idle)
+            .await;
+        if let Some(manager) = runtime.agent_registry().get_idle_manager(&agent_id).await {
+            manager.start().await;
+            started += 1;
+        }
+    }
+    tracing::info!(started, "idle systems started for all agents via UI");
+    Json(json!({ "ok": true, "started": started })).into_response()
 }
 
 // ── Idle-run availability endpoint ───────────────────────────────────────────

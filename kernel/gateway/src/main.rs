@@ -143,8 +143,9 @@ async fn run() -> Result<(), i32> {
         })?
         .config;
 
-    let chaos_duration = Duration::from_secs(config.agentverse.chaos);
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), chaos_duration));
+    // Era 系统已禁用：chaos_duration 不再使用，传 0 即可。
+    // Agenverse 直接初始化为 Genesis（参见 Agenverse::new 注释）。
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(0)));
     let runtime = build_runtime(config, bind, api_token, soul_path, Arc::clone(&agenverse)).await?;
 
     tracing::info!(bind = %bind, "starting gateway");
@@ -246,10 +247,10 @@ async fn run() -> Result<(), i32> {
         serde_json::json!({"bind": bind.to_string(), "addr": addr.to_string()}),
     )).await;
 
-    // Transition the agenverse from Void → Chaos. Agents are now "forming":
-    // they can only Daze and cannot enter work/study/daily-life. After the
-    // configured chaos duration, the agenverse auto-transitions to Genesis
-    // and agents awaken fully.
+    // Era 系统已禁用：agenverse 初始即为 Genesis，agents 从一开始就"已觉醒"。
+    // Idle system 由 UI 焦点驱动（AgentWindow focus/blur），不再受 era 控制。
+    // enter_chaos() 现为空操作，保留调用以保持兼容。
+    #[allow(deprecated)]
     agenverse.enter_chaos();
 
     // Wait for shutdown signal or HTTP-initiated shutdown completion.
@@ -300,8 +301,8 @@ async fn run_tui_mode(
         })?
         .config;
 
-    let chaos_duration = Duration::from_secs(config.agentverse.chaos);
-    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), chaos_duration));
+    // Era 系统已禁用：chaos_duration 不再使用，传 0 即可。
+    let agenverse = Arc::new(Agenverse::new(Duration::from_millis(0), Duration::from_secs(0)));
     let runtime = build_runtime(config, bind, api_token, soul_path, Arc::clone(&agenverse)).await?;
 
     tracing::info!(bind = %bind, "starting gateway (TUI mode)");
@@ -354,7 +355,8 @@ async fn run_tui_mode(
 
     tracing::info!(%addr, "gateway ready (TUI mode)");
 
-    // Transition the agenverse from Void → Chaos (agents forming, Daze only).
+    // Era 已禁用：agenverse 初始即为 Genesis（参见 enter_chaos() 注释）。
+    #[allow(deprecated)]
     agenverse.enter_chaos();
 
     // Run the TUI on a dedicated OS thread. We keep the JoinHandle (rather

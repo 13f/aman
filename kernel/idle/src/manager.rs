@@ -17,6 +17,9 @@ use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// 恢复计时器的默认持续时间：60 秒。
+pub const RECOVERY_DURATION_SECS: u64 = 60;
+
 use event_bus::{try_publish, EventBus};
 use kernel::agent::AgentSystemState;
 use kernel::event::{Event, EventType};
@@ -57,8 +60,9 @@ pub struct AgentIdleManager {
     boredom_actor: Option<Arc<BoredomActor>>,
     /// Optional deferred task queue (checked before random skill selection)
     deferred_queue: Option<Arc<dyn DeferredTaskQueue>>,
-    /// Stop signal for the background idle loop
-    stop_token: CancellationToken,
+    /// Stop signal for the background idle loop。
+    /// 用 `RwLock` 包裹以便 start() 时重置（CancellationToken 一旦 cancel 即永久失效）。
+    stop_token: tokio::sync::Mutex<CancellationToken>,
     /// Handle for the background idle loop task
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -97,7 +101,7 @@ impl AgentIdleManager {
             incubation: Arc::new(IncubationManager::new()),
             boredom_actor,
             deferred_queue,
-            stop_token: CancellationToken::new(),
+            stop_token: tokio::sync::Mutex::new(CancellationToken::new()),
             task: tokio::sync::Mutex::new(None),
         }
     }
@@ -124,11 +128,26 @@ impl AgentIdleManager {
     ///
     /// The loop runs until `stop()` is called. Safe to call multiple times —
     /// subsequent calls are no-ops if already running.
+    ///
+    /// 重新 start 时会终止正在进行的恢复计时器（如有），并重置 stop_token
+    /// 以恢复循环运行能力。
     pub async fn start(&self) {
+        // 终止恢复计时器（如有）——重新 start 时释放。
+        self.coord.cancel_recovery().await;
+
         let mut task_slot = self.task.lock().await;
         if task_slot.is_some() {
             return;
         }
+
+        // 重置 stop_token：CancellationToken 一旦 cancel 即永久失效，
+        // 必须替换为新的才能再次使用。
+        {
+            let mut token = self.stop_token.lock().await;
+            token.cancel();
+            *token = CancellationToken::new();
+        }
+        let stop_token = self.stop_token.lock().await.clone();
 
         let agent_id = self.agent_id.clone();
         let coord = Arc::clone(&self.coord);
@@ -136,7 +155,6 @@ impl AgentIdleManager {
         let local_bus = Arc::clone(&self.local_bus);
         let global_bus = self.global_bus.clone();
         let system_state = self.system_state.clone();
-        let stop_token = self.stop_token.clone();
         let boredom_actor = self.boredom_actor.clone();
         let deferred_queue = self.deferred_queue.clone();
 
@@ -181,15 +199,14 @@ impl AgentIdleManager {
                     continue;
                 }
 
-                // Skip if the agent system state indicates it is doing real work
-                // (chatting, working, studying, daily-life, or waiting for detach).
-                // Otherwise the idle detector would fire boredom / sleep while a
-                // detached process is still running.
+                // 只在 AgentSystemState::Idle 状态下运行 idle loop。
+                // idle system 由 UI 焦点事件驱动 start/stop，不再自动运行。
+                // 当 agent 处于 Ready / Working / Chatting 等状态时，idle loop 暂停。
                 if let Some(ref ss) = system_state {
                     let state = *ss.lock().expect("system_state lock");
                     if state != AgentSystemState::Idle {
-                        // Reset idle depth — the agent is busy doing something real.
-                        detector.idle_depth = 0;
+                        // agent 不在 Idle 状态 — 暂停 idle loop，重置 depth。
+                        coord.idle_depth.store(0, Ordering::SeqCst);
                         detector.last_poll = Some(Instant::now());
                         sleep(Duration::from_millis(100)).await;
                         continue;
@@ -198,7 +215,7 @@ impl AgentIdleManager {
 
                 // Check if depth reset is pending (queue was drained)
                 if coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
-                    detector.idle_depth = 0;
+                    coord.idle_depth.store(0, Ordering::SeqCst);
                     // Depth reset invalidates any pending wake-up schedule.
                     *coord.wakeup_schedule.write().await = None;
                     sleep(Duration::from_millis(100)).await;
@@ -209,7 +226,8 @@ impl AgentIdleManager {
                 let effective = detector.effective_personality();
 
                 // Throttle: respect poll_interval
-                let delay_secs = effective.poll_interval.next_delay(detector.idle_depth);
+                let idle_depth = coord.idle_depth.load(Ordering::SeqCst);
+                let delay_secs = effective.poll_interval.next_delay(idle_depth);
                 if let Some(last) = detector.last_poll
                     && last.elapsed().as_secs_f64() < delay_secs
                 {
@@ -224,7 +242,8 @@ impl AgentIdleManager {
                 if let Some(mut schedule) = coord.take_active_wakeup().await {
                     // Lazily capture depth / arousal on the first wake-up step.
                     if !schedule.is_initialized() {
-                        schedule.initial_depth = Some(detector.idle_depth);
+                        schedule.initial_depth =
+                            Some(coord.idle_depth.load(Ordering::SeqCst));
                         schedule.initial_arousal = Some(coord.arousal.current());
                     }
 
@@ -245,12 +264,12 @@ impl AgentIdleManager {
 
                     // Apply interpolated arousal.
                     coord.arousal.reset(new_arousal);
-                    detector.idle_depth = new_depth;
+                    coord.idle_depth.store(new_depth, Ordering::SeqCst);
                     detector.last_poll = Some(Instant::now());
 
                     if schedule.is_done() {
                         // Transition complete — agent is awake.
-                        detector.idle_depth = 0;
+                        coord.idle_depth.store(0, Ordering::SeqCst);
                         coord.arousal.reset(schedule.target_arousal);
                         info!(
                             agent_id = %agent_id,
@@ -304,7 +323,7 @@ impl AgentIdleManager {
                     // Bus is busy — reset idle depth, note that we were busy
                     was_busy = true;
                     reflection_count = 0; // reset circuit breaker on real activity
-                    detector.idle_depth = 0;
+                    coord.idle_depth.store(0, Ordering::SeqCst);
                     sleep(Duration::from_millis(100)).await;
                     continue;
                 }
@@ -312,7 +331,7 @@ impl AgentIdleManager {
                 // Bus is empty. If we were previously busy, produce QueueDrained.
                 if was_busy {
                     was_busy = false;
-                    detector.idle_depth = 0;
+                    coord.idle_depth.store(0, Ordering::SeqCst);
                     detector.last_poll = Some(Instant::now());
 
                     // Circuit breaker: skip if too many consecutive reflections
@@ -361,36 +380,28 @@ impl AgentIdleManager {
 
                 // Bus is empty, no recent activity — progress idle state.
                 //
-                // ── Chaos gate ─────────────────────────────────────────
-                // During 混沌 (Chaos) the agenverse is still forming; agents
-                // may only Daze. Suppress all deeper idle states and the
-                // boredom actor so that no agent autonomously enters
-                // work/study/daily-life until 创世纪 (Genesis).
+                // ── Era gate（可选）──────────────────────────────────────
+                // 原来的 Chaos gate 已被禁用：idle system 现在由 UI 焦点驱动，
+                // 不再受 agenverse era 控制。AgentSystemState::Idle 即表示
+                // idle system 应该运行，无论 era 处于什么阶段。
                 //
-                // We also suppress publishing idle events entirely during
-                // Chaos — otherwise each poll would emit a Daze event whose
-                // arousal_level decays exponentially, causing the inner ring
-                // in the UI to keep moving while the agent should appear
-                // static ("forming").
-                if !coord.is_genesis() {
-                    detector.idle_depth = 0;
-                    detector.boredom_poll_count = 0;
-                    debug!(
-                        agent_id = %agent_id,
-                        "Chaos: idle suppressed (no events published)"
-                    );
-                    sleep(Duration::from_secs_f64(delay_secs)).await;
-                    continue;
-                }
+                // 如需恢复 era 门控，取消下面的注释：
+                // if !coord.is_genesis() {
+                //     coord.idle_depth.store(0, Ordering::SeqCst);
+                //     detector.boredom_poll_count = 0;
+                //     sleep(Duration::from_secs_f64(delay_secs)).await;
+                //     continue;
+                // }
 
                 // Override: if cognitive state is not Lucid, force Sleep.
+                let idle_depth = coord.idle_depth.load(Ordering::SeqCst);
                 let kind = if coord.is_cognitive_force_sleep() {
                     IdleKind::Sleep
-                } else if detector.idle_depth == 0 {
+                } else if idle_depth == 0 {
                     IdleKind::Daze
                 } else {
                     let arousal = coord.arousal.current();
-                    effective.resolve_with_arousal(detector.idle_depth, arousal)
+                    effective.resolve_with_arousal(idle_depth, arousal)
                 };
 
                 // Cooldown check: skip publish entirely while kind is cooling down
@@ -398,7 +409,7 @@ impl AgentIdleManager {
                     debug!(
                         agent_id = %agent_id,
                         ?kind,
-                        depth = detector.idle_depth,
+                        depth = idle_depth,
                         delay_secs,
                         "kind on cooldown, sleeping before next poll",
                     );
@@ -415,8 +426,8 @@ impl AgentIdleManager {
 
                 let idle_event = IdleEvent {
                     kind,
-                    depth: detector.idle_depth,
-                    duration_secs: effective.poll_interval.next_delay(detector.idle_depth),
+                    depth: idle_depth,
+                    duration_secs: effective.poll_interval.next_delay(idle_depth),
                     context: Some(context),
                     from_chat_mode: detector.was_in_chat_mode,
                     agent_id: Some(agent_id.clone()),
@@ -433,12 +444,12 @@ impl AgentIdleManager {
                 }
 
                 let event: kernel::event::Event = idle_event.into();
-                detector.idle_depth = detector.idle_depth.saturating_add(1);
+                coord.idle_depth.fetch_add(1, Ordering::SeqCst);
                 detector.last_poll = Some(Instant::now());
 
                 debug!(
                     agent_id = %agent_id,
-                    depth = detector.idle_depth - 1,
+                    depth = idle_depth,
                     kind = ?kind,
                     boredom_poll = detector.boredom_poll_count,
                     "AgentIdleManager produced idle event"
@@ -545,16 +556,48 @@ impl AgentIdleManager {
         }));
     }
 
-    /// Stop the background idle detection loop.
+    /// Stop the background idle detection loop and start the 1-minute recovery timer.
+    ///
+    /// 停止主循环后，启动一个 60 秒恢复计时器，将 depth 和 arousal 逐步
+    /// 恢复到初始值。恢复速度在启动时根据当前值与目标值的差值计算。
+    /// 重新 start() 时会终止恢复计时器。
     pub async fn stop(&self) {
-        self.stop_token.cancel();
-        let mut task_slot = self.task.lock().await;
-        if let Some(handle) = task_slot.take() {
-            handle.abort();
+        // 1. 停止主循环。
+        {
+            let token = self.stop_token.lock().await;
+            token.cancel();
         }
+        {
+            let mut task_slot = self.task.lock().await;
+            if let Some(handle) = task_slot.take() {
+                handle.abort();
+            }
+        }
+
+        // 2. 启动恢复计时器。
+        let depth = self.coord.idle_depth.load(Ordering::SeqCst);
+        let arousal = self.coord.arousal.current();
+        let duration = Duration::from_secs(RECOVERY_DURATION_SECS);
+        let secs = duration.as_secs_f64();
+        let depth_speed = depth as f64 / secs;
+        let arousal_speed = (arousal - self.coord.initial_arousal()).abs() / secs;
+
+        info!(
+            agent_id = %self.agent_id,
+            depth = depth,
+            arousal = arousal,
+            depth_speed = format!("{depth_speed:.2}/s"),
+            arousal_speed = format!("{arousal_speed:.4}/s"),
+            recovery_secs = RECOVERY_DURATION_SECS,
+            "IdleSystem: stopped, recovery timer started"
+        );
+
+        self.coord.start_recovery(duration).await;
     }
 
     /// Full shutdown: cancel idle workflows, stop incubation, stop the idle loop.
+    ///
+    /// 与 `stop()` 不同，shutdown 不启动恢复计时器——直接终止一切。
     pub async fn shutdown(&self) -> AmanResult<()> {
         let cancelled = self.incubation.shutdown_all().await;
         if cancelled > 0 {
@@ -564,8 +607,22 @@ impl AgentIdleManager {
                 "agent idle incubation threads cancelled"
             );
         }
+        // 终止恢复计时器（如有）。
+        self.coord.cancel_recovery().await;
         self.coord.reset_idle_signal().await;
-        self.stop().await;
+
+        // 硬停止主循环（不设恢复）。
+        {
+            let token = self.stop_token.lock().await;
+            token.cancel();
+        }
+        {
+            let mut task_slot = self.task.lock().await;
+            if let Some(handle) = task_slot.take() {
+                handle.abort();
+            }
+        }
+
         Ok(())
     }
 }
@@ -691,6 +748,9 @@ mod tests {
         );
 
         manager.stop().await;
+
+        // stop() 启动了恢复计时器，测试结束前终止它以避免泄漏。
+        manager.shutdown().await.expect("shutdown");
     }
 }
 

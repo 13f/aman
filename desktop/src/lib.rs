@@ -97,6 +97,27 @@ pub fn run() {
             }
         })
         .on_window_event(move |window, event| {
+            // 窗体焦点变化 → 发射自定义事件给对应窗体的前端。
+            // 使用 Tauri 的 WindowEvent::Focused（窗体级别），比 DOM focus/blur 可靠。
+            if let tauri::WindowEvent::Focused(focused) = event {
+                let label = window.label();
+                if label.starts_with("agent-") {
+                    // 从窗体标签提取 agent_key: "agent-{key}" → "{key}"
+                    let agent_key = &label["agent-".len()..];
+                    let event_name = if *focused {
+                        "agent-window:focused"
+                    } else {
+                        "agent-window:blurred"
+                    };
+                    tracing::info!(window = %label, focused, agent = %agent_key, "agent window focus changed");
+                    let app_handle = window.app_handle().clone();
+                    let _ = app_handle.emit(
+                        event_name,
+                        serde_json::json!({ "agent_key": agent_key }),
+                    );
+                }
+            }
+
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let is_main = window.label() == "main";
 
@@ -440,6 +461,10 @@ pub fn run() {
             // Agent windows — multi-window management
             commands::open_or_focus_agent_window,
             commands::close_agent_window,
+            // Idle system start/stop (UI focus-driven)
+            commands::start_agent_idle,
+            commands::stop_agent_idle,
+            commands::start_all_agent_idle,
         ])
         .setup(move |app: &mut tauri::App<tauri::Wry>| {
             // Set the window/dock icon explicitly for dev mode.

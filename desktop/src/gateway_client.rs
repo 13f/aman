@@ -937,6 +937,59 @@ impl GatewayClient {
         }
     }
 
+    // ── Idle system start/stop (UI focus-driven) ─────────────────────
+
+    /// Start the idle system for a specific agent.
+    pub async fn start_agent_idle(&self, agent_id: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/agent/{agent_id}/idle/start")))
+            .send()
+            .await
+            .map_err(|e| format!("start_agent_idle: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("start_agent_idle decode: {e}"))
+        } else {
+            Err(status_error("start_agent_idle", resp.status()).await)
+        }
+    }
+
+    /// Stop the idle system for a specific agent.
+    pub async fn stop_agent_idle(&self, agent_id: &str) -> Result<Value, String> {
+        let resp = self
+            .client
+            .post(self.url(&format!("/agent/{agent_id}/idle/stop")))
+            .send()
+            .await
+            .map_err(|e| format!("stop_agent_idle: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("stop_agent_idle decode: {e}"))
+        } else {
+            Err(status_error("stop_agent_idle", resp.status()).await)
+        }
+    }
+
+    /// Start idle system for all agents (used when main window loses focus).
+    pub async fn start_all_agent_idle(&self) -> Result<Value, String> {
+        let resp = self
+            .client
+            .post(self.url("/agents/idle/start"))
+            .send()
+            .await
+            .map_err(|e| format!("start_all_agent_idle: {e}"))?;
+        if resp.status().is_success() {
+            resp.json::<Value>()
+                .await
+                .map_err(|e| format!("start_all_agent_idle decode: {e}"))
+        } else {
+            Err(status_error("start_all_agent_idle", resp.status()).await)
+        }
+    }
+
     // ── MCP ───────────────────────────────────────────────────────────
 
     /// List MCP server status for a specific agent.

@@ -30,8 +30,6 @@ pub struct IdleDetector {
     id: String,
     coord: Arc<IdleCoordination>,
     personality: IdlePersonality,
-    /// Current idle depth (0 = just entered idle, incremented each poll)
-    pub(crate) idle_depth: u32,
     /// True if the last effective_personality call was in chat mode
     pub(crate) was_in_chat_mode: bool,
     /// Timestamp of the last chat event (for grace period tracking)
@@ -56,7 +54,6 @@ impl IdleDetector {
             id: id.into(),
             coord,
             personality,
-            idle_depth: 0,
             was_in_chat_mode: false,
             last_chat_seen: None,
             last_poll: None,
@@ -101,7 +98,7 @@ impl IdleDetector {
         // Not in chat mode
         if self.was_in_chat_mode {
             // Just left chat mode — reset depth (R3-1)
-            self.idle_depth = 0;
+            self.coord.idle_depth.store(0, Ordering::SeqCst);
             self.was_in_chat_mode = false;
         }
 
@@ -144,15 +141,17 @@ impl EventSource for IdleDetector {
 
         // T5.4: Check if the queue was recently drained (depth reset pending)
         if self.coord.pending_depth_reset.swap(false, Ordering::SeqCst) {
-            self.idle_depth = 0;
+            self.coord.idle_depth.store(0, Ordering::SeqCst);
             return Ok(Vec::new());
         }
+
+        let idle_depth = self.coord.idle_depth.load(Ordering::SeqCst);
 
         // Determine effective personality (T5.2)
         let effective = self.effective_personality();
 
         // Throttle: respect the poll_interval between consecutive events.
-        let delay_secs = effective.poll_interval.next_delay(self.idle_depth);
+        let delay_secs = effective.poll_interval.next_delay(idle_depth);
         if let Some(last) = self.last_poll
             && last.elapsed().as_secs_f64() < delay_secs
         {
@@ -160,11 +159,11 @@ impl EventSource for IdleDetector {
         }
 
         // T5.3: Resolve IdleKind from depth + arousal (two-axis model)
-        let kind = if self.idle_depth == 0 {
+        let kind = if idle_depth == 0 {
             IdleKind::Daze
         } else {
             let arousal = self.coord.arousal.current();
-            effective.resolve_with_arousal(self.idle_depth, arousal)
+            effective.resolve_with_arousal(idle_depth, arousal)
         };
 
         // Build IdleContext
@@ -174,11 +173,11 @@ impl EventSource for IdleDetector {
             arousal_level: self.coord.arousal.current(),
         };
 
-        let duration_secs = effective.poll_interval.next_delay(self.idle_depth);
+        let duration_secs = effective.poll_interval.next_delay(idle_depth);
 
         let idle_event = IdleEvent {
             kind,
-            depth: self.idle_depth,
+            depth: idle_depth,
             duration_secs,
             context: Some(context),
             from_chat_mode: self.was_in_chat_mode,
@@ -189,12 +188,13 @@ impl EventSource for IdleDetector {
         self.coord.arousal.apply_behavior(kind.arousal_behavior());
 
         let event: Event = idle_event.into();
-        self.idle_depth = self.idle_depth.saturating_add(1);
+        self.coord.idle_depth.fetch_add(1, Ordering::SeqCst);
         self.last_poll = Some(Instant::now());
 
+        let new_depth = self.coord.idle_depth.load(Ordering::SeqCst);
         debug!(
             id = %self.id,
-            depth = self.idle_depth - 1,
+            depth = new_depth - 1,
             kind = ?kind,
             from_chat = self.was_in_chat_mode,
             "IdleDetector produced event"
@@ -204,9 +204,10 @@ impl EventSource for IdleDetector {
     }
 
     fn health(&self) -> HealthStatus {
-        if self.idle_depth < 5 {
+        let idle_depth = self.coord.idle_depth.load(Ordering::SeqCst);
+        if idle_depth < 5 {
             HealthStatus::Ok
-        } else if self.idle_depth < 20 {
+        } else if idle_depth < 20 {
             HealthStatus::Degraded
         } else {
             HealthStatus::Failed
@@ -309,6 +310,7 @@ mod tests {
         // After 4 polls at depth 0,1,2,3 → next poll is depth 4 (still Daze with widened schedule)
         let events = detector.poll(&ctx).await.expect("poll");
         assert_eq!(events.len(), 1);
+        assert_eq!(detector.coord.idle_depth.load(Ordering::SeqCst), 5);
     }
 
     // ── T5.4: pending_depth_reset (queue drained → reset depth) ──────
@@ -323,7 +325,7 @@ mod tests {
         for _ in 0..3 {
             detector.poll(&ctx).await.expect("poll");
         }
-        assert_eq!(detector.idle_depth, 3);
+        assert_eq!(coord.idle_depth.load(Ordering::SeqCst), 3);
 
         // Signal queue drained (replaces old real_event_seen mechanism)
         coord.pending_depth_reset.store(true, Ordering::SeqCst);
@@ -331,7 +333,7 @@ mod tests {
         // Poll should reset depth and not produce an event
         let events = detector.poll(&ctx).await.expect("poll");
         assert!(events.is_empty());
-        assert_eq!(detector.idle_depth, 0);
+        assert_eq!(coord.idle_depth.load(Ordering::SeqCst), 0);
 
         // Next poll should produce Daze (depth 0)
         let events = detector.poll(&ctx).await.expect("poll");
@@ -363,13 +365,17 @@ mod tests {
         // Enter chat mode
         let _ = detector.effective_personality();
         assert!(detector.was_in_chat_mode);
-        detector.idle_depth = 5;
+        coord.idle_depth.store(5, Ordering::SeqCst);
 
         // Leave chat mode (non-chat source)
         coord.last_source_type.store(SourceType::Custom.to_u8(), Ordering::Relaxed);
 
         let _ = detector.effective_personality();
-        assert_eq!(detector.idle_depth, 0, "R3-1: depth reset on chat exit");
+        assert_eq!(
+            coord.idle_depth.load(Ordering::SeqCst),
+            0,
+            "R3-1: depth reset on chat exit"
+        );
         assert!(!detector.was_in_chat_mode);
     }
 
@@ -377,13 +383,13 @@ mod tests {
 
     #[tokio::test]
     async fn health_reflects_idle_depth() {
-        let mut detector = make_detector();
+        let detector = make_detector();
         assert_eq!(detector.health(), HealthStatus::Ok);
 
-        detector.idle_depth = 10;
+        detector.coord.idle_depth.store(10, Ordering::SeqCst);
         assert_eq!(detector.health(), HealthStatus::Degraded);
 
-        detector.idle_depth = 25;
+        detector.coord.idle_depth.store(25, Ordering::SeqCst);
         assert_eq!(detector.health(), HealthStatus::Failed);
     }
 }

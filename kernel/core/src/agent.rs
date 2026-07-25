@@ -67,11 +67,31 @@ fn default_queue_max_size() -> usize {
 /// 拟人系统状态 — 表示当前哪个拟人系统在掌控 agent。
 ///
 /// 每个系统在进入/退出时原子更新此状态，UI 可直接读取显示。
+///
+/// # 状态转换
+///
+/// ```text
+/// Loaded (default, 一次性)  ──cold_start_done──▶  Ready
+///                                                   │ 窗体失焦 + 12s 计时器
+///                                                   ▼
+/// Ready ◄──────────────────────────────────────  Idle
+///   │                                               │
+///   │  session 结束                                  │ boredom actor / 用户消息
+///   ▼                                               ▼
+/// Working / Chatting / Studying / DailyLife / Prize / Waiting
+/// ```
+///
+/// idle system **不会自动运行**，由 UI 焦点事件驱动 start/stop。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSystemState {
-    /// idle 系统掌控中（默认状态）
+    /// 已加载完毕（Gateway 初始化完成，一次性默认状态）。
+    /// 后续将进入 Ready 或其它状态，不会再回到 Loaded。
     #[default]
+    Loaded,
+    /// 空闲但 idle system 尚未启动；UI 活跃中，用户可随时交互。
+    Ready,
+    /// idle system 掌控中（boredom / sleep / exploration 等子状态运行中）。
     Idle,
     /// work 系统掌控中
     Working,

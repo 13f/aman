@@ -479,16 +479,15 @@ impl AgentHarness {
             let _ = self.registry.set_active_session(agent_id, None).await;
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
             if background && skill_name.is_some() {
-                // Background idle_run (boudom) failed — the exec returned in
+                // Background idle_run (boredom) failed — the exec returned in
                 // ~1ms so the agent is logically idle even though a detached
-                // script may still be running. Reset system_state to Idle so
-                // the idle detector keeps polling (otherwise it would skip
-                // forever and the ring would freeze). Keep the activity text so
-                // the UI still shows what skill was being attempted.
-                let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+                // script may still be running. Set system_state to Ready so
+                // the UI shows the agent as available. The idle system will
+                // start only when the agent window loses focus (UI-driven).
+                let _ = self.registry.set_system_state(agent_id, AgentSystemState::Ready).await;
                 let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
             } else {
-                let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+                let _ = self.registry.set_system_state(agent_id, AgentSystemState::Ready).await;
                 let _ = self.registry.set_activity(agent_id, "").await;
             }
             self.session_history.clear(session_id);
@@ -533,18 +532,19 @@ impl AgentHarness {
         if background && skill_name.is_some() {
             // Background idle_run (boredom): the exec(detached) returned in
             // ~1ms so the agent is logically idle even though a detached
-            // script may still be running in the background. Reset
-            // system_state to Idle so the idle detector keeps polling —
-            // otherwise it would skip forever (state != Idle) and the ring
-            // would freeze. Keep the activity text so the UI still shows
-            // what skill was triggered.
+            // script may still be running in the background. Set
+            // system_state to Ready so the UI shows the agent as available.
+            // The idle system will start only when the agent window loses
+            // focus (UI-driven). Keep the activity text so the UI still
+            // shows what skill was triggered.
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
-            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Ready).await;
             let _ = self.registry.set_activity(agent_id, skill_name.unwrap_or("")).await;
         } else {
-            // Reset state to Idle on success
+            // Session complete → Ready. The idle system will start only when
+            // the agent window loses focus (UI-driven).
             let _ = self.registry.set_status(agent_id, AgentStatus::Idle).await;
-            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Idle).await;
+            let _ = self.registry.set_system_state(agent_id, AgentSystemState::Ready).await;
             let _ = self.registry.set_activity(agent_id, "").await;
         }
         if !is_a2a {
@@ -978,10 +978,11 @@ impl AgentHarness {
                 // is already done by the process_message_v2 error path (Fix 1).
                 // Publishing again would double-flip the session workflow.
                 // Reset agent state on error so it doesn't stay stuck.
+                // Session ended → Ready (idle system is UI-driven now).
                 harness.unregister_interrupt(&session_id);
                 let _ = harness.registry.set_active_session(&agent_id, None).await;
                 let _ = harness.registry.set_status(&agent_id, AgentStatus::Idle).await;
-                let _ = harness.registry.set_system_state(&agent_id, AgentSystemState::Idle).await;
+                let _ = harness.registry.set_system_state(&agent_id, AgentSystemState::Ready).await;
                 let _ = harness.registry.set_activity(&agent_id, "").await;
                 harness.session_history.clear(&session_id);
             }

@@ -21,8 +21,8 @@ pub use types::{
     BoredomActivity, BoredomConfig, ChatMode, IdleContext, IdleEvent, IdleKind,
     IdlePersonality, PressureMapping, QueueDrained, WorkPressureConfig, ArousalBehavior,
 };
-pub use coordination::{IdleCoordination, WakeUpSchedule};
-pub use manager::{AgentIdleManager, COLD_START_DONE_EVENT};
+pub use coordination::{IdleCoordination, RecoveryHandle, WakeUpSchedule};
+pub use manager::{AgentIdleManager, COLD_START_DONE_EVENT, RECOVERY_DURATION_SECS};
 pub use boredom::BoredomActor;
 pub use deferred_memory::MemoryDeferredTaskQueue;
 pub use sleep::{SleepActor, SleepActorConfig, SleepHousekeeper, SleepPhaseOutput};

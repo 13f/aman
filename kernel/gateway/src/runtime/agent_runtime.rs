@@ -1085,9 +1085,9 @@ impl AgentRuntimeBuilder {
         }
 
         // Subscribe to cold-start-done events on the global bus.
-        // AgentIdleManager publishes this after its first QueueDrained (cold-start
-        // or busy→empty) — the signal that an agent's AgentStatus should flip
-        // from Preparing to Idle.
+        // AgentIdleManager publishes this when its start() is called — the signal
+        // that an agent's AgentStatus should flip from Preparing to Idle, and
+        // AgentSystemState should transition from Loaded → Ready.
         {
             struct ColdStartDoneSub {
                 registry: Arc<super::agent_registry::AgentRegistry>,
@@ -1095,10 +1095,14 @@ impl AgentRuntimeBuilder {
             #[async_trait::async_trait]
             impl event_bus::EventHandler for ColdStartDoneSub {
                 async fn handle(&self, event: kernel::event::Event) -> kernel::AmanResult<()> {
-                    if let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str())
-                        && let Err(e) = self.registry.mark_cold_start_complete(agent_id).await
-                    {
-                        tracing::warn!(agent = %agent_id, error = %e, "mark_cold_start_complete failed");
+                    if let Some(agent_id) = event.payload.get("agent_id").and_then(|v| v.as_str()) {
+                        // 1. AgentStatus: Preparing → Idle.
+                        if let Err(e) = self.registry.mark_cold_start_complete(agent_id).await {
+                            tracing::warn!(agent = %agent_id, error = %e, "mark_cold_start_complete failed");
+                        }
+                        // 2. AgentSystemState: Loaded → Ready（一次性）。
+                        // idle system 由 UI 焦点驱动，cold_start_done 只表示"已加载完成"。
+                        self.registry.transition_loaded_to_ready(agent_id).await;
                     }
                     Ok(())
                 }
@@ -4127,11 +4131,14 @@ async fn resolve_agent_for_session(
 /// Reset a single agent's registry status back to idle — the canonical reset
 /// used by kill_session, the PROCESSING-timeout poller, and the shutdown flush
 /// so all three paths stay in sync.
+///
+/// 注意：system_state 设为 Ready 而非 Idle，因为 idle system 现在由 UI 焦点驱动，
+/// 不再自动运行。
 async fn reset_agent_status(registry: &super::AgentRegistry, agent_id: &str) {
     let _ = registry
         .set_status(agent_id, kernel::agent::AgentStatus::Idle)
         .await;
-    registry.set_system_state(agent_id, kernel::agent::AgentSystemState::Idle).await;
+    registry.set_system_state(agent_id, kernel::agent::AgentSystemState::Ready).await;
     registry.set_activity(agent_id, "").await;
     let _ = registry.set_active_session(agent_id, None).await;
 }
@@ -5617,11 +5624,9 @@ impl AgentRuntime {
                 self.agenverse.set_phase(RuntimePhase::Phase3);
             }
             RuntimePhase::Phase4 => {
-                // NOTE: per-agent idle loops are NOT started here.  They start
-                // when the agenverse transitions to Genesis (see
-                // Agenverse::enter_chaos).  During Chaos the idle system is
-                // suppressed, so starting it early would only burn CPU on a
-                // no-op loop.
+                // NOTE: per-agent idle loops 不再由 era 系统启动。
+                // Idle system 现在由 UI 焦点驱动（AgentWindow focus/blur），
+                // 每个 agent 的 idle loop 在其窗体失焦 12s 后由前端命令启动。
                 //
                 // Start emotion evaluators (require Tokio runtime)
                 self.agent_registry.start_all_emotion_evaluators().await;

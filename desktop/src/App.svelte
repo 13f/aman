@@ -1,6 +1,6 @@
 <script lang="ts">
   import "./app.css";
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { fly } from "svelte/transition";
   import { cubicOut, cubicIn } from "svelte/easing";
   import { invoke } from "@tauri-apps/api/core";
@@ -219,6 +219,8 @@
   /** Human-readable label for system_state values. */
   function stateLabel(state: string): string {
     switch (state) {
+      case "loaded": return "Loaded";
+      case "ready": return "Ready";
       case "Chatting": return "Chatting";
       case "Working": return "Working";
       case "Studying": return "Studying";
@@ -364,6 +366,44 @@
     listen("agent:selected", () => {
       refreshActiveAgent();
     });
+
+    // ── Main window focus/blur → idle system control ─────────────────
+    // 主窗体失焦 → 24s 计时器 → 启动所有 agent 的 idle system。
+    // 主窗体获焦 → 取消计时器（不停止已运行的 idle，由各自的 AgentWindow 管理）。
+    const MAIN_WINDOW_IDLE_DELAY_MS = 24_000;
+    let mainWindowIdleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function clearMainWindowIdleTimer() {
+      if (mainWindowIdleTimer !== null) {
+        clearTimeout(mainWindowIdleTimer);
+        mainWindowIdleTimer = null;
+      }
+    }
+
+    async function onMainWindowBlur() {
+      clearMainWindowIdleTimer();
+      mainWindowIdleTimer = setTimeout(async () => {
+        mainWindowIdleTimer = null;
+        try {
+          await invoke("start_all_agent_idle");
+        } catch (e) {
+          console.warn("start_all_agent_idle failed:", e);
+        }
+      }, MAIN_WINDOW_IDLE_DELAY_MS);
+    }
+
+    function onMainWindowFocus() {
+      clearMainWindowIdleTimer();
+    }
+
+    window.addEventListener("focus", onMainWindowFocus);
+    window.addEventListener("blur", onMainWindowBlur);
+  });
+
+  onDestroy(() => {
+    window.removeEventListener("focus", onMainWindowFocus);
+    window.removeEventListener("blur", onMainWindowBlur);
+    clearMainWindowIdleTimer();
   });
 </script>
 

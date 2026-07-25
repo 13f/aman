@@ -304,9 +304,14 @@
           // agent:got_tool_calls: {tools: ["web_search", "write"], turn: 2}
           // tool:dispatched / llm_tool_call: {tool_call_id, tool_name, args}
           if (Array.isArray(p.tools)) {
-            for (const toolName of p.tools) {
-              const callId = `${evt.event_id}:${toolName}`;
-              historyMsgs.push({ id: callId, type: "assistant_tool_call", content: `Tool: ${toolName}`, timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "streaming", toolCall: { callId, toolName, arguments: "{}", status: "running" as const } });
+            for (const tool of p.tools) {
+              // tools entries are objects: {id, tool_name, args}
+              const callId = tool.id ?? tool.tool_call_id ?? `${evt.event_id}:${JSON.stringify(tool)}`;
+              const toolName = tool.tool_name ?? tool.name ?? "tool";
+              const argsStr = typeof tool.args === "string" ? tool.args : JSON.stringify(tool.args ?? {});
+              if (seenIds.has(callId)) continue;
+              seenIds.add(callId);
+              historyMsgs.push({ id: callId, type: "assistant_tool_call", content: `Tool: ${toolName}`, timestamp: new Date(evt.timestamp_ms).toISOString(), sessionId, status: "streaming", toolCall: { callId, toolName, arguments: argsStr, status: "running" as const } });
             }
           } else {
             const callId: string = p.tool_call_id ?? p.call_id ?? evt.event_id;

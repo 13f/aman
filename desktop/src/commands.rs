@@ -3114,6 +3114,7 @@ fn sanitize_label(key: &str) -> String {
 #[tauri::command]
 pub async fn open_or_focus_agent_window(
     app: tauri::AppHandle,
+    state: tauri::State<'_, crate::state::AppState>,
     agent_key: String,
     display_name: String,
 ) -> Result<(), String> {
@@ -3158,6 +3159,10 @@ pub async fn open_or_focus_agent_window(
     .map_err(|e| format!("failed to create window: {e}"))?;
 
     tracing::info!(window = %label, "agent window created");
+
+    // Register the window label so the shutdown sequence can close it.
+    state.open_agent_windows.lock().await.insert(label);
+
     Ok(())
 }
 

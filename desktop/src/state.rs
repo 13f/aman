@@ -1,6 +1,7 @@
 // Copyright (c) 2026 13F
 // SPDX-License-Identifier: AGPL-3.0
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::process::Child;
@@ -24,6 +25,9 @@ pub struct AppState {
     pub ui_style: UiStyle,
     /// Current agents page viewer loaded from config.
     pub agents_viewer: AgentsViewer,
+    /// Labels of currently open agent windows (`agent-{key}`). Used by the
+    /// shutdown sequence to close them before exiting the main program.
+    pub open_agent_windows: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -40,6 +44,7 @@ impl AppState {
             locale: config.runtime.ui.locale,
             ui_style: config.runtime.ui.style,
             agents_viewer: config.runtime.ui.agents_viewer,
+            open_agent_windows: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 }

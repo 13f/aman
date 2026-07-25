@@ -38,6 +38,30 @@ static SHUTDOWN_CONFIRM_TX: Mutex<Option<oneshot::Sender<bool>>> = Mutex::new(No
 /// stop reconnecting and exit gracefully.
 static SSE_SHOULD_STOP: AtomicBool = AtomicBool::new(false);
 
+/// Close all open per-agent windows (`agent-{key}`) before the main window
+/// exits. Agent windows don't own the gateway lifecycle, so they can close
+/// immediately without a shutdown sequence. Drains the registry and closes
+/// each window by label. Returns the number of windows closed.
+async fn close_all_agent_windows(
+    app: &tauri::AppHandle,
+    registry: &Arc<tokio::sync::Mutex<std::collections::HashSet<String>>>,
+) -> usize {
+    let labels: Vec<String> = {
+        let mut guard = registry.lock().await;
+        if guard.is_empty() {
+            return 0;
+        }
+        guard.drain().collect()
+    };
+    for label in &labels {
+        if let Some(window) = app.get_webview_window(label) {
+            tracing::info!(window = %label, "closing agent window before shutdown");
+            let _ = window.close();
+        }
+    }
+    labels.len()
+}
+
 /// Build and run the Tauri application.
 ///
 /// Called from the binary entry point (`src-tauri/main.rs`).
@@ -48,6 +72,7 @@ pub fn run() {
     let shutdown_gc = app_state.gateway_client.clone();
     let shutdown_gp = app_state.gateway_process.clone();
     let sse_gc = app_state.gateway_client.clone();
+    let agent_window_registry = app_state.open_agent_windows.clone();
 
     // Create a Tokio runtime for background tasks. Must be created before
     // Tauri's event loop since `setup()` runs on the main thread which has
@@ -77,8 +102,11 @@ pub fn run() {
 
                 // Agent windows (`agent-{key}`) close immediately — they don't
                 // own the gateway lifecycle.  Only the main window triggers the
-                // full graceful shutdown sequence.
+                // full graceful shutdown sequence.  Unregister the label so the
+                // shutdown sequence doesn't try to close an already-closed
+                // window.
                 if !is_main {
+                    agent_window_registry.blocking_lock().remove(window.label());
                     return;
                 }
 
@@ -94,6 +122,7 @@ pub fn run() {
 
                 let gc = shutdown_gc.clone();
                 let gp = shutdown_gp.clone();
+                let agent_windows = agent_window_registry.clone();
                 let handle = window.app_handle().clone();
 
                 // All async shutdown work runs in a background tokio task so
@@ -196,7 +225,16 @@ pub fn run() {
                         }
                     }
 
-                    // 4. Proceed with graceful shutdown.
+                    // 4. Close any open agent windows before shutting down the
+                    //    gateway. Agent windows don't own the lifecycle, so they
+                    //    close immediately. This runs after user confirmation
+                    //    (above) so we don't yank windows away if they cancel.
+                    let closed = close_all_agent_windows(&handle, &agent_windows).await;
+                    if closed > 0 {
+                        tracing::info!(count = closed, "closed agent windows before shutdown");
+                    }
+
+                    // 5. Proceed with graceful shutdown.
                     let _ = handle.emit("shutdown:started", ());
 
                     // Signal the SSE listener to stop reconnecting.

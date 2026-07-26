@@ -15,12 +15,21 @@
 > IdleDetector（通过 AgentIdleManager）、IncubationManager。Idle 事件发布到 Agent 的
 > Local EventBus，与全局 Bus 隔离。
 >
+> **UI 焦点事件驱动（R11）**：idle system 不再自动运行，而是由 Tauri 窗体的 blur/focus
+> 事件驱动 start/stop。窗体失焦 + 12s 延时 → `start_agent_idle`；窗体获焦 → `stop_agent_idle`。
+> 主窗体失焦 + 24s 延时 → `start_all_agent_idle`。idle loop 仅在 `AgentSystemState == Idle`
+> 时运行，其他状态（Ready/Working/Chatting）时暂停。stop() 后启动 60s 恢复计时器，
+> 渐进恢复 depth→0、arousal→initial。
+>
 > **审计状态**：
 > - R1–R6：类型系统、select!/ChatMode/熔断/配额/arousal/线程/隔离 —— 全部修复，设计成熟度 ★★★★★
 > - R8（per-agent-idle）：全局 IdleDetector+SourceRegistry 模式替换为 per-agent AgentIdleManager。
 >   每个 Agent 的 idle 系统只监控该 Agent 的 Local EventBus，实现 Agent 间 idle 隔离。
 > - R10（WakeUp Ouroboros）：添加 WakeUp 渐进苏醒机制，深层状态完成后通过静默期+插值过渡
 >   将 agent 拉回 Active，防止无限 Sleep 循环。同时为 Sleep 添加 cooldown。
+> - R11（UI 焦点事件驱动）：idle system 从自动运行改为 UI 焦点事件驱动 start/stop。
+>   idle loop 仅在 `AgentSystemState == Idle` 时运行。stop() 后 60s 恢复计时器渐进恢复。
+>   Chaos era 门控已禁用——`AgentSystemState::Idle` 即表示 idle system 应该运行。
 
 ---
 
@@ -41,6 +50,7 @@ aman 是事件响应式框架——一切行为由事件驱动。但事件队列
 | **不可变（框架哲学）** | 一切行为仍是事件驱动。空闲不引入新的执行模型，只是产生新类型的事件 |
 | **可变（业务策略）** | 哪些空闲类型启用、阈值、每个 Agent 的"空闲人格"；聊天场景 vs 系统场景 |
 | **技术限制** | 空闲检测必须在事件循环内部，不能依赖外部 cron |
+| **启动约束（R11）** | idle system 由 UI 焦点事件驱动 start/stop，不再自动运行。仅在 `AgentSystemState == Idle` 时执行 idle loop |
 | **性能约束** | 空闲检测本身不能成为 CPU 热点。在空闲状态下，检测逻辑本身消耗应 <1% CPU |
 | **时序约束** | Reflection 必须在事件处理完成后、真正空闲开始前执行；Reflection 可被真实事件打断 |
 | **安全约束** | 空闲 Workflow（Sleep/Exploration/Meditation）运行时，真实事件到达后必须能中断它们——避免后台状态污染 |
@@ -1171,7 +1181,7 @@ idle:
 
 ## 9. Lifecycle Integration
 
-### 9.1 启动（R8：Per-Agent）
+### 9.1 启动（R8：Per-Agent；R11：UI 焦点驱动）
 
 ```
 Phase 0: 全局 EventBus 初始化
@@ -1179,8 +1189,10 @@ Phase 2: AgentRegistry::load_from_config()
          ├─ 为每个 Agent 创建 Local EventBus
          ├─ 为每个 Agent 创建 IdleCoordination
          └─ 为每个 Agent 创建 AgentIdleManager（存入 registry）
-Phase 4: agent_registry.start_all_idle_loops().await
-         └─ 每个 AgentIdleManager 启动后台 tokio task
+Phase 4: 不再自动启动 idle loop。
+         idle loop 由 UI 焦点事件驱动：
+         ├─ Agent 窗体 blur + 12s → POST /agent/{id}/idle/start
+         └─ 主窗体 blur + 24s → POST /agents/idle/start
 ```
 
 ### 9.2 关闭（R8：Per-Agent）
@@ -1240,6 +1252,8 @@ Phase 4→0 shutdown:
 | **Sleep 无限循环（无 cooldown）** | **R10 P1** | **已修复** | 新增 `sleep.cooldown_secs`（默认 3600s），防止 agent 反复进入 Sleep |
 | **深层状态完成后永驻深层** | **R10 P1** | **已修复** | WakeUp Ouroboros：静默期 + 渐进插值 depth→0、arousal→1.0 |
 | **WakeUp 与 QueueDrained 竞态** | **R10 P2** | **已修复** | `pending_depth_reset` 时清除 `wakeup_schedule`，避免过渡中重复重置 |
+| **用户在场时 idle 干扰** | **R11 P1** | **已修复** | idle loop 仅在 `AgentSystemState == Idle` 时运行，UI focus 时自动 stop |
+| **短暂切换误触发 idle** | **R11 P2** | **已修复** | 12s / 24s 延时计时器防止 Alt+Tab 等短暂切换触发 idle |
 
 ---
 
@@ -1514,6 +1528,158 @@ struct IdleMetrics {
 如果没有过渡机制，agent 在下一个 poll 周期就会被重新归类为深层状态，形成无限 Sleep 循环。
 WakeUp Ouroboros 将"完成深层状态 → 静默 → 渐进苏醒 → Active"封装为一个闭环，
 确保 agent 不会在深层状态中永久驻留。
+
+---
+
+## 15. UI 焦点事件驱动 — Start/Stop 生命周期（R11）
+
+> **R11 核心变更**：idle system 从"启动后自动运行"改为"UI 焦点事件驱动 start/stop"。
+> idle loop 不再在 gateway 启动后自动开始，而是由 Tauri 窗体的 blur/focus 事件触发。
+> 这一变更使 idle 行为仅在用户**明确离开**时激活，避免了在用户在场时的后台干扰。
+
+### 15.1 触发机制
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        UI 焦点事件驱动                                │
+│                                                                      │
+│  Agent 窗体 blur ──12s──▶ start_agent_idle(agent_id)                 │
+│  Agent 窗体 focus ──0s───▶ stop_agent_idle(agent_id)                 │
+│                                                                      │
+│  主窗体 blur ──24s──▶ start_all_agent_idle()                         │
+│  主窗体 focus ──0s───▶ 取消计时器（不停止已运行的 idle）               │
+│                                                                      │
+│  Agent busy（有活跃 session）──▶ 后端拒绝 start_agent_idle            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**设计 rationale**：
+
+| 决策 | 原因 |
+|------|------|
+| 窗体级 blur/focus（非 DOM） | 更可靠——DOM focus/blur 在 iframe、弹窗等场景下不稳定 |
+| 12s / 24s 延时 | 防止短暂切换（如 Alt+Tab 看一眼别的窗口）触发 idle。用户真正离开通常 > 12s |
+| 主窗体 focus 不停止 idle | 主窗体获焦 ≠ 某个 Agent 窗体获焦。各 Agent 的 idle 由各自的 AgentWindow 管理 |
+| Busy agent 拒绝 start | 有活跃 session 时不应进入 idle——避免中断正在进行的对话或任务 |
+
+### 15.2 状态门控
+
+idle loop 内部每次 tick 都检查 `AgentSystemState`：
+
+```rust
+// kernel/idle/src/manager.rs
+if let Some(ref ss) = system_state {
+    let state = *ss.lock().expect("system_state lock");
+    if state != AgentSystemState::Idle {
+        // agent 不在 Idle 状态 — 暂停 idle loop，重置 depth。
+        coord.idle_depth.store(0, Ordering::SeqCst);
+        detector.last_poll = Some(Instant::now());
+        sleep(Duration::from_millis(100)).await;
+        continue;
+    }
+}
+```
+
+**状态映射**：
+
+| AgentSystemState | idle loop 行为 |
+|-----------------|---------------|
+| `Idle` | 正常运行 — 检测队列深度、推进 idle depth、发布 IdleEvent |
+| `Ready` | 暂停 — 重置 depth，每 100ms 检查状态是否变回 Idle |
+| `Working` | 暂停 — Agent 在执行任务 |
+| `Studying` | 暂停 — Agent 在学习 |
+| `Chatting` | 暂停 — Agent 在与用户对话 |
+| `DailyLife` | 暂停 — Agent 在日常活动 |
+| `Prize` | 暂停 — Agent 在 prize 模式 |
+
+### 15.3 恢复计时器
+
+`stop()` 被调用后（用户回到窗体），idle system 不立即重置所有状态——
+而是启动一个 **60 秒恢复计时器**（`RECOVERY_DURATION_SECS`），渐进恢复：
+
+```
+stop() 调用
+  │
+  ├─ 取消 stop_token → idle loop 退出
+  ├─ 记录当前 depth 和 arousal
+  ├─ 计算恢复速度：
+  │     depth_speed = current_depth / 60.0 (线性)
+  │     arousal_speed = |current_arousal - initial| / 60.0 (指数逼近)
+  │
+  └─ 每 500ms  tick：
+        depth -= depth_speed × 0.5
+        arousal += arousal_speed × 0.5 (指数逼近 initial)
+        │
+        └─ 60s 后：depth ≈ 0, arousal ≈ initial → 恢复完成
+```
+
+**恢复期间重新 start()**：`start()` 会先调用 `coord.cancel_recovery()` 终止恢复计时器，
+然后正常启动 idle loop。
+
+### 15.4 HTTP API
+
+| 端点 | 方法 | 作用 | 调用者 |
+|------|------|------|--------|
+| `/agent/{id}/idle/start` | POST | `AgentSystemState → Idle` + `manager.start()` | AgentWindow (窗体 blur) |
+| `/agent/{id}/idle/stop` | POST | `manager.stop()` + `AgentSystemState → Ready` | AgentWindow (窗体 focus) |
+| `/agents/idle/start` | POST | 启动所有非 Busy、非 Idle 的 agent | App (主窗体 blur) |
+| `/agents/idle-availability` | GET | 每个 Agent 的 work/study/fun 按钮可用性 | 前端 (下拉菜单) |
+| `/idle-run` | POST | 手动触发指定 tag 的 idle_run 技能 | 前端 (调试/手动) |
+
+### 15.5 Tauri 事件桥接
+
+```
+Tauri 窗体事件
+  │
+  ├─ WindowEvent::Focused(true)  → 自定义事件 "agent-window:focused" { agent_key }
+  ├─ WindowEvent::Focused(false) → 自定义事件 "agent-window:blurred"  { agent_key }
+  │
+  ▼
+Svelte 前端监听
+  │
+  ├─ "agent-window:focused" → handleFocus() → invoke("stop_agent_idle")
+  └─ "agent-window:blurred" → handleBlur()  → setTimeout(12s) → invoke("start_agent_idle")
+```
+
+**前端常量**（`AgentWindow.svelte`）：
+
+```js
+const IDLE_START_DELAY_MS = 12_000;  // 窗体失焦后 12s 启动 idle
+```
+
+**主窗体常量**（`App.svelte`）：
+
+```js
+const MAIN_WINDOW_IDLE_DELAY_MS = 24_000;  // 主窗体失焦后 24s 启动全部
+```
+
+### 15.6 与旧架构的对比
+
+| 维度 | 旧架构（R8–R10） | 新架构（R11） |
+|------|-----------------|--------------|
+| 启动方式 | Phase 4 自动 `start_all_idle_loops()` | UI blur 事件 + 延时 → `start_agent_idle` |
+| 停止方式 | 仅 shutdown 时停止 | UI focus 事件 → `stop_agent_idle` |
+| 运行条件 | 启动后持续运行 | 仅当 `AgentSystemState == Idle` |
+| Era 门控 | Chaos era 限制为仅 Daze | 已禁用——`AgentSystemState::Idle` 即运行 |
+| 用户在场 | 可能干扰（后台执行） | 不会干扰（用户在场时 idle loop 暂停） |
+| 恢复机制 | 无（立即重置） | 60s 渐进恢复计时器 |
+| 冷启动 | 合成 QueueDrained 触发 reflection | 已移除——仅 busy→empty 后触发 |
+
+### 15.7 关键代码位置
+
+| 组件 | 文件 | 行号 |
+|------|------|------|
+| idle loop 主循环 | `kernel/idle/src/manager.rs` | §5.3 伪代码 |
+| `start()` / `stop()` / `shutdown()` | `kernel/idle/src/manager.rs` | 公共 API |
+| 恢复计时器 | `kernel/idle/src/coordination.rs` | `start_recovery()` / `cancel_recovery()` |
+| HTTP handler: `agent_idle_start` | `kernel/gateway/src/runtime/http.rs` | §Idle system start/stop |
+| HTTP handler: `agent_idle_stop` | `kernel/gateway/src/runtime/http.rs` | §Idle system start/stop |
+| HTTP handler: `agents_idle_start_all` | `kernel/gateway/src/runtime/http.rs` | §Idle system start/stop |
+| Tauri 命令注册 | `desktop/src/lib.rs` | 权限 + invoke handler |
+| AgentWindow 焦点控制 | `desktop/src/pages/AgentWindow.svelte` | `handleFocus()` / `handleBlur()` |
+| App 主窗体焦点控制 | `desktop/src/App.svelte` | `onMainWindowFocus()` / `onMainWindowBlur()` |
+| Tauri 事件桥接 | `desktop/src/lib.rs` | `on_window_event` → 自定义事件 |
+| IdleRing 可视化 | `desktop/src/components/IdleRing.svelte` | 空闲环形指示器 |
 
 ---
 

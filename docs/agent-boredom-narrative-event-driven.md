@@ -222,9 +222,14 @@ def generate_story():
 
 ## 六、关键问题：这不是轮询，而是事件驱动
 
-### 现有架构的局限
+> **架构更新 (2026-07-25)**：idle system 已完成从 cron 轮询 → UI 焦点事件驱动的迁移。
+> 参见 [idle-design.md §15](./idle-design.md#15-ui-焦点事件驱动--startstop)。
 
-当前实现（包括本项目的 human-like 系统）依赖 **cron 定时触发**：
+### 旧架构的局限（已解决）
+
+~~当前实现（包括本项目的 human-like 系统）依赖 **cron 定时触发**：~~
+
+旧实现曾依赖 cron 定时触发：
 
 ```
 时间轴: |----cron----|----cron----|----cron----|----cron----|
@@ -234,15 +239,32 @@ def generate_story():
 
 即使间隔自适应（在线7-13m，离线31-64m），仍然是**轮询**，不是**事件驱动**。
 
-### 真正的事件驱动架构
+### 当前架构：UI 焦点事件驱动
 
 ```
-事件轴: |--文件变更--|----用户输入----|--系统告警--|--Git push--|
-          ↑中断         ↑中断            ↑中断        ↑中断
-          Agent: "有件事发生了，我处理一下。"
+主窗体 blur ──24s──▶ start_all_agent_idle()
+Agent 窗体 blur ──12s──▶ start_agent_idle(agent_id)
+窗体 focus ──0s──▶ stop_agent_idle(agent_id)
+
+Agent 内部: idle loop 仅在 AgentSystemState == Idle 时运行
+           其他状态（Ready/Working/Chatting）时暂停
 ```
 
-**核心区别：Agent不需要主动"去问"发生了什么。事件会来找它。**
+**核心区别：idle system 不再主动"轮询"用户是否空闲，而是由 UI 焦点事件告知用户已离开。**
+
+### 完整的事件驱动架构
+
+```
+外部事件: |--文件变更--|----用户输入----|--系统告警--|--Git push--|
+            ↑中断         ↑中断            ↑中断        ↑中断
+            Agent: "有件事发生了，我处理一下。"
+
+UI 事件:   |--AgentWindow blur--|--MainWindow blur--|
+            ↑启动 idle           ↑启动全部 idle
+            Agent: "用户离开了，我可以做背景工作了。"
+```
+
+Agent不需要主动"去问"发生了什么。事件会来找它。idle system 的启动也由事件（UI blur）驱动，而非定时器。
 
 ### 需要监听的事件
 
@@ -321,20 +343,23 @@ Agent内部事件总线:
 
 ### 事件驱动的无聊系统（不再是定时查）
 
-```
-1. 空闲检测器（轻量级，每1-2分钟检查）
-   - 检查：当前有无活跃任务？用户输入？最近N秒有无事件？
-   - 无 → 触发 idle_start 事件
+> **当前实现 (R11)**：idle system 的启动由 UI blur 事件驱动，而非定时器轮询。
+> idle loop 内部仅在 `AgentSystemState == Idle` 时运行。
 
-2. idle_start → 开启"感知模式"
-   - 扩大文件系统watcher的监听范围
-   - 降低CPU/API消耗
-   - 保持对关键事件的灵敏度
+```
+1. UI 焦点事件触发 idle 启动
+   - Agent 窗体 blur + 12s → start_agent_idle
+   - 主窗体 blur + 24s → start_all_agent_idle
+   - Agent busy（有活跃 session）→ 后端拒绝启动
+
+2. idle loop 运行（仅 AgentSystemState == Idle）
+   - 监控 Agent Local EventBus 队列深度
+   - 队列空 → 推进 idle depth → 发布 IdleEvent
+   - 队列非空 → 重置 depth
 
 3. 事件流中的"无聊"
-   - 空闲模式中连续M分钟无任何事件
-   → 触发 bored 事件
-   → bored → 扫描探索方向 → 有发现就处理，无发现进入深度休眠
+   - idle depth ≥ 5 → IdleKind::Boredom
+   - BoredomActor 加权随机选技能 → MessageReceived → ReAct loop
 
 3.5. 深度休眠后的苏醒（WakeUp Ouroboros）
    - Sleep/Exploration/Meditation/Incubation 完成后
@@ -342,8 +367,12 @@ Agent内部事件总线:
    → 渐进苏醒过渡（N 个 poll 周期，depth→0 + arousal→1.0）
    → 回到 Active，可正常响应事件
 
-4. 任何外部事件自动打断空闲/无聊/休眠
-   → 事件 → 退出无聊 → 评估紧急度 → 处理或延后
+4. UI focus → stop_agent_idle
+   - 取消 idle loop + 启动 60s 恢复计时器
+   - 渐进恢复 depth→0、arousal→initial
+
+5. 任何外部事件自动打断空闲/无聊/休眠
+   → 事件 → AgentSystemState 变为非 Idle → idle loop 暂停
 ```
 
 ### Cron的新定位：保底机制，而非调度器
@@ -358,6 +387,9 @@ Agent检查：我现在在做什么？有更紧急的事件在排队吗？
 ```
 
 Cron成了**事件之一**，而不是**调度器本身**。
+
+> **R11 更新**：idle system 的启动已完全脱离 cron，改为 UI 焦点事件驱动。
+> cron 仅作为兜底机制保留（如每日综合自省），不再参与 idle 启动调度。
 
 ### 四个层面的依赖关系
 

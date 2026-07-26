@@ -1,9 +1,15 @@
 # Aman Agent Idle → Boredom Flow
 
+> **架构更新 (2026-07-25)**：idle system 现在由 UI 焦点事件驱动。
+> "Agent is IDLE" 状态由 Tauri 窗体 blur + 12s 延时触发 `start_agent_idle` 进入，
+> 窗体 focus 触发 `stop_agent_idle` 退出。idle loop 仅在 `AgentSystemState == Idle` 时运行。
+> 参见 [idle-design.md §15](./idle-design.md#15-ui-焦点事件驱动--startstop)。
+
 ```
                          ┌─────────────────────────┐
                          │    Agent is IDLE         │
-                         │  (no user messages,       │
+                         │  (UI blur + 12s 后进入,   │
+                         │   no user messages,       │
                          │   local bus empty)        │
                          └────────────┬────────────┘
                                       │

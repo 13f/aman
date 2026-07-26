@@ -2,6 +2,12 @@
 
 > 目标：将每个 idle 子状态从「只有 description 的空壳」落实为「可逐步执行的步骤」。
 > 基准文档：`idle-design.md`，特别是 §14 Idle State Activity Catalog。
+> **架构更新 (2026-07-25)**：idle system 从自动运行改为 **UI 焦点事件驱动 start/stop**。
+> idle loop 不再在 gateway 启动后自动开始，而是由 Tauri 窗体的 blur/focus 事件触发。
+> idle loop 仅在 `AgentSystemState == Idle` 时运行，其他状态时暂停。
+> stop() 后启动 60s 恢复计时器（`RECOVERY_DURATION_SECS`），渐进恢复 depth→0、arousal→initial。
+> Chaos era 门控已禁用——`AgentSystemState::Idle` 即表示 idle system 应该运行。
+> 参见 [idle-design.md §15](./idle-design.md#15-ui-焦点事件驱动--startstop)。
 > **架构更新 (2026-05-24)**：idle skill 系统已移除（idle-system plugin + 7 个 YAML skill 文件 + workflow.rs stubs）。真正有执行逻辑的 idle 状态全部使用 **EventHandler** 模式（SleepRunner / ReflectionRunner / ExplorationRunner），通过 OnceLock 注入依赖，直接在 global event bus 上订阅 Idle 事件。不经过 Skill trait 路径，避免 Plugin/Skill trait 的依赖注入改造。
 > **更新 (2026-05-23)**：MemoryProvider trait + YantrikdbProvider 已落地；Reflection session_extract 已实现（QueueDrained → LLM → YantrikDB）；MemoryStore 作为 in-memory 备选；QueueDrained 由 AgentIdleManager 在 busy→empty 转换时产生；**Sleep 已实现**（SleepRunner EventHandler，phase 2/3/4/6 完整实现，phase 1/5 stub）。
 > **更新 (2026-05-26)**：**Meditation 和 Incubation 已实现。** MeditationRunner (`kernel/gateway/src/runtime/meditation.rs`) — EventHandler，7 phases；IncubationRunner (`kernel/gateway/src/runtime/incubation_runner.rs`) — EventHandler + 后台线程，5 phases。TraceStore（JsonlTraceStore）和 think() YantrikDB 桥接也已落地。think() 桥接完成后 Sleep phase 5 consolidation 已可获得真实 ThinkResult。

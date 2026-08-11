@@ -18,9 +18,9 @@
   let unlisteners: (() => void) = [];
 
   // ── Idle system focus-driven control ──────────────────────────────
-  // 窗体失焦后 12s 计时器，到期且 agent 非 Busy 时启动 idle system。
+  // 窗体失焦后 36s 计时器，到期且 agent 非 Busy 时启动 idle system。
   // 窗体重新获焦时取消计时器并停止 idle system。
-  const IDLE_START_DELAY_MS = 12_000;
+  const IDLE_START_DELAY_MS = 36_000;
   let idleStartTimer: ReturnType<typeof setTimeout> | null = null;
   let isFocused = $state(true);
 
@@ -48,7 +48,7 @@
     if (!isFocused) return; // 防止重复触发
     isFocused = false;
     console.log(`[${agentKey}] window blurred → starting ${IDLE_START_DELAY_MS}ms timer`);
-    // 窗体失焦 → 启动 12s 计时器，到期后启动 idle system。
+    // 窗体失焦 → 启动 36s 计时器，到期后启动 idle system。
     clearIdleStartTimer();
     idleStartTimer = setTimeout(async () => {
       idleStartTimer = null;

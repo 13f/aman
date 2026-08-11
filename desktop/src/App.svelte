@@ -368,9 +368,9 @@
     });
 
     // ── Main window focus/blur → idle system control ─────────────────
-    // 主窗体失焦 → 24s 计时器 → 启动所有 agent 的 idle system。
+    // 主窗体失焦 → 60s 计时器 → 启动所有 agent 的 idle system。
     // 主窗体获焦 → 取消计时器（不停止已运行的 idle，由各自的 AgentWindow 管理）。
-    const MAIN_WINDOW_IDLE_DELAY_MS = 24_000;
+    const MAIN_WINDOW_IDLE_DELAY_MS = 60_000;
     let mainWindowIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
     function clearMainWindowIdleTimer() {

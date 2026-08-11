@@ -5,11 +5,13 @@
   import ParticleField from "../components/ParticleField.svelte";
   import AgentHomeTab from "./AgentHomeTab.svelte";
   import AgentChatTab from "./AgentChatTab.svelte";
+  import AgentContextTab from "./AgentContextTab.svelte";
+  import { setAgentContext } from "../lib/agent-context.svelte";
 
   const { agentKey }: { agentKey: string } = $props();
 
-  type TabId = "home" | "chat";
-  let activeTab: TabId = $state("home");
+  type TabId = "chat" | "context" | "home";
+  let activeTab: TabId = $state("chat");
 
   let displayName = $state("");
   let hasProvider = $state(false);
@@ -75,7 +77,7 @@
 
     const onSwitchTab = (e: Event) => {
       const tab = (e as CustomEvent).detail;
-      if (tab === "chat" || tab === "home") activeTab = tab;
+      if (tab === "chat" || tab === "context" || tab === "home") activeTab = tab;
     };
     window.addEventListener("agent-window:switch-tab", onSwitchTab);
     unlisteners.push(() => window.removeEventListener("agent-window:switch-tab", onSwitchTab));
@@ -96,6 +98,19 @@
       },
     );
     unlisteners.push(unlistenFocused, unlistenBlurred);
+
+    // Capture agent:context_ready snapshots into the shared store (the
+    // Context tab reads it). Registered at window level so it stays live
+    // no matter which tab is active — no polling.
+    const unlistenCtx = await listen("event:processed", (e: any) => {
+      const payload = e.payload;
+      if (!payload || payload.event_type !== "agent:context_ready") return;
+      const data = payload.payload ?? {};
+      const eventAgentId = data.agent_id ?? data.payload?.agent_id;
+      if (eventAgentId && eventAgentId !== agentKey) return;
+      setAgentContext(agentKey, data);
+    });
+    unlisteners.push(unlistenCtx);
   });
 
   onDestroy(() => {
@@ -131,19 +146,24 @@
   <!-- Right: tabs + content with mid glass -->
   <section class="tabs-col glass-mid">
     <nav class="tab-bar">
-      <button class="tab" class:active={activeTab === "home"} onclick={() => activeTab = "home"}>
-        Home
-      </button>
       <button class="tab" class:active={activeTab === "chat"} onclick={() => activeTab = "chat"}>
         Chat
+      </button>
+      <button class="tab" class:active={activeTab === "context"} onclick={() => activeTab = "context"}>
+        Context
+      </button>
+      <button class="tab" class:active={activeTab === "home"} onclick={() => activeTab = "home"}>
+        Home
       </button>
     </nav>
 
     <div class="tab-content">
-      {#if activeTab === "home"}
-        <AgentHomeTab {agentKey} />
-      {:else if activeTab === "chat"}
+      {#if activeTab === "chat"}
         <AgentChatTab {agentKey} />
+      {:else if activeTab === "context"}
+        <AgentContextTab {agentKey} />
+      {:else if activeTab === "home"}
+        <AgentHomeTab {agentKey} />
       {/if}
     </div>
   </section>

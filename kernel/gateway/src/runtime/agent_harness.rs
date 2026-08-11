@@ -28,7 +28,7 @@ use tool::ToolRegistry;
 use tool::ToolSecurityConfig;
 
 use super::event_consts::{
-    SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY,
+    SOURCE_AGENT_HARNESS, EVT_AGENT_BUSY, EVT_AGENT_CONTEXT_READY,
     EVT_AGENT_DIRECT_ACT_STARTED, EVT_AGENT_IDLE,
     EVT_AGENT_REPLY_INTERRUPTED, EVT_AGENT_REPLY_READY,
     EVT_AGENT_REPLY_STREAM_ERROR, EVT_AGENT_CONFIG_WARNING,
@@ -395,6 +395,81 @@ impl AgentHarness {
             conversation_history,
             grounding,
         };
+
+        // ── Publish a context snapshot so the desktop Context tab can show
+        // what this turn is working with. Fires inline with the message flow
+        // (no separate update mechanism) — the frontend just stores it. ──
+        let system_tokens = tb.current_system_tokens;
+        let tools_tokens = tb.current_tool_schema_tokens;
+        // User↔assistant dialogue only — system prompts and tool messages are
+        // machinery, not conversation. Mirrors the frontend reconstruction for
+        // pre-feature sessions so live and rebuilt snapshots look alike.
+        let conversation_messages: Vec<(String, String)> = ctx
+            .conversation_history
+            .iter()
+            .filter_map(|m| {
+                let role = match m.role {
+                    ChatMessageRole::User => "user",
+                    ChatMessageRole::Assistant => "assistant",
+                    _ => return None,
+                };
+                Some((role.to_owned(), m.content.clone()))
+            })
+            .collect();
+        let conversation_tokens: usize = conversation_messages
+            .iter()
+            .map(|(_, content)| TokenBudget::estimate_tokens(content))
+            .sum();
+        let memory_tokens: usize = ctx
+            .memory_context
+            .iter()
+            .map(|m| TokenBudget::estimate_tokens(&m.content))
+            .sum();
+        let total_tokens = system_tokens + tools_tokens + conversation_tokens + memory_tokens;
+        let usage_percent = if tb.context_window > 0 {
+            (total_tokens as f64 / tb.context_window as f64) * 100.0
+        } else {
+            0.0
+        };
+        let _ = self.bus.publish(Event::new(
+            SOURCE_AGENT_HARNESS,
+            EventType::Custom(EVT_AGENT_CONTEXT_READY.to_owned()),
+            json!({
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "system": {
+                    "name": ctx.identity.name,
+                    "snippet": ctx.identity.raw.chars().take(500).collect::<String>(),
+                    "tokens": system_tokens,
+                },
+                "tools": ctx.capabilities.iter().map(|c| {
+                    json!({ "name": c.name, "description": c.description })
+                }).collect::<Vec<_>>(),
+                "tools_tokens": tools_tokens,
+                "memory": ctx.memory_context.iter().map(|m| {
+                    json!({
+                        "content": m.content,
+                        "importance": m.importance,
+                        "timestamp": m.timestamp,
+                    })
+                }).collect::<Vec<_>>(),
+                "memory_tokens": memory_tokens,
+                "conversation": {
+                    "count": conversation_messages.len(),
+                    "tokens": conversation_tokens,
+                    "messages": conversation_messages.iter().map(|(role, content)| {
+                        json!({ "role": role, "content": content })
+                    }).collect::<Vec<_>>(),
+                },
+                "grounding": {
+                    "knowledge": ctx.grounding.knowledge,
+                    "situation": ctx.grounding.situation,
+                },
+                "token_total": total_tokens,
+                "token_max": tb.context_window,
+                "usage_percent": usage_percent,
+            }),
+        )).await;
         // ── Consciousness check: skip processing if LLM is unavailable ──
         let consciousness = self.registry.get_cognitive_state(agent_id).await
             .unwrap_or(crate::runtime::CognitiveState::Lucid);

@@ -55,6 +55,9 @@ pub const EVT_AGENT_HISTORY_COMPRESSED: &str = "agent:history_compressed";
 pub const EVT_AGENT_REPLY_INTERRUPTED: &str = "agent:reply_interrupted";
 /// A streaming reply was completed.
 pub const EVT_AGENT_REPLY_READY: &str = "agent:reply_ready";
+/// The assembled context window snapshot for a message-processing turn
+/// (system prompt, tools, retrieved memory, conversation, token usage).
+pub const EVT_AGENT_CONTEXT_READY: &str = "agent:context_ready";
 /// An error occurred during reply streaming.
 pub const EVT_AGENT_REPLY_STREAM_ERROR: &str = "agent:reply_stream_error";
 /// A detached process has been spawned and we're awaiting its completion.

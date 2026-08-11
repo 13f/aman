@@ -6,6 +6,7 @@
   import ToolCallCard from "../components/ToolCallCard.svelte";
   import type { ToolCallData } from "../components/ToolCallCard.svelte";
   import { t, locale } from "../lib/i18n.svelte";
+  import { setAgentContext, clearAgentContext, rebuildContextFromSession } from "../lib/agent-context.svelte";
   import {
     dayKey,
     formatMessageTime,
@@ -285,10 +286,28 @@
         session_id: string;
         messages: Array<{ event_id: string; event_type: string; payload: any; timestamp_ms: number }>;
       }>("chat_session_state_local", { agentKey, sessionId });
-      if (!state.messages?.length) return;
+      if (!state.messages?.length) {
+        // No persisted events → this session has no recorded context snapshot.
+        clearAgentContext(agentKey);
+        return;
+      }
       const historyMsgs: Message[] = [];
       const seenIds = new Set(messages.map(m => m.id));
       const toolResults: Array<{ callId: string; success: boolean; output: any }> = [];
+      // Restore the context snapshot for this session, independent of the
+      // message dedup below. Each turn publishes one `agent:context_ready`
+      // event, so the LAST one in the persisted stream is the most recent
+      // context window. Must not be gated by `seenIds`: re-clicking a session
+      // would skip the event and clear the store below. If the session has no
+      // snapshot (predates the feature), clear the store so the Context tab
+      // reflects the active session instead of a stale one from another.
+      let foundContext = false;
+      for (const evt of state.messages) {
+        if (evt.event_type.includes("agent:context_ready")) {
+          foundContext = true;
+          setAgentContext(agentKey, evt.payload ?? {});
+        }
+      }
       for (const evt of state.messages) {
         const et = evt.event_type;
         const p = evt.payload ?? {};
@@ -341,6 +360,14 @@
           msg.status = "completed";
         }
       }
+      if (!foundContext) {
+        // No persisted snapshot — this session predates the feature. Rebuild a
+        // best-effort context from the session's own event stream so the
+        // Context tab has something real to show instead of an empty state.
+        const rebuilt = rebuildContextFromSession(agentKey, sessionId, state.messages);
+        if (rebuilt) setAgentContext(agentKey, rebuilt);
+        else clearAgentContext(agentKey);
+      }
       if (historyMsgs.length > 0) messages = [...messages, ...historyMsgs];
     } catch { /* gateway unavailable */ }
   }
@@ -363,6 +390,8 @@
     sessions = [{ id, title: `Chat ${count}`, messageCount: 0, status: "idle", createdAt: Date.now() }, ...sessions];
     activeSessionId = id;
     currentPage = 1;
+    // A brand-new session has no context yet — reset the Context tab.
+    clearAgentContext(agentKey);
   }
 
   async function deleteSession(id: string) {

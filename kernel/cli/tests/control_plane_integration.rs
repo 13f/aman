@@ -101,6 +101,6 @@ async fn cli_can_call_metrics_and_audit_log_and_event_dump_trace() {
     .expect("run audit");
     assert!(status.success());
 
-    server.shutdown();
+    server.shutdown().await;
 }
 

@@ -116,7 +116,9 @@ impl Drop for GatewayTestHarness {
     fn drop(&mut self) {
         // Shutdown server first, then drop runtime, then temp dir, then runtime.
         if let Some(handle) = self.server_handle.take() {
-            handle.shutdown();
+            // Drop is sync, so block on the shutdown future. The `rt` field is
+            // declared last and dropped after this body, so it's still alive.
+            self.rt.block_on(handle.shutdown());
         }
     }
 }

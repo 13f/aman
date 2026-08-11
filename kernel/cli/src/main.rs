@@ -231,7 +231,7 @@ async fn run_cmd(args: &[String]) -> Result<(), i32> {
 
     let cancel = CancellationToken::new();
     let _ = runtime.shutdown(&cancel).await;
-    server.shutdown();
+    server.shutdown().await;
     Ok(())
 }
 

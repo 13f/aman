@@ -43,5 +43,5 @@ async fn aman_health_ready_hits_runtime_endpoint() {
     .expect("run cli");
     assert!(status.success());
 
-    server.shutdown();
+    server.shutdown().await;
 }

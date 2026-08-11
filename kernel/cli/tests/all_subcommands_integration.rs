@@ -340,5 +340,5 @@ async fn cli_smoke_all_current_subcommands() {
         "tester",
     ]);
 
-    server.shutdown();
+    server.shutdown().await;
 }

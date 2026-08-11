@@ -38,6 +38,7 @@ const STATE_TO_EMOTION: Record<string, string> = {
   // Bare idle (no sub-mode yet) — calm/neutral
   idle: "calm",
   // Active system states
+  ready: "calm",
   working: "working",
   chatting: "happy",
   studying: "studying",

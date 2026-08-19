@@ -2937,13 +2937,23 @@ async fn chat_session_send(
     // without a separate skill_view tool call.
     // Phase 3: Python self-module bridge for command parsing.
     let self_bridge = runtime.self_bridge().clone();
+    // Resolve the calling agent once — used for the skill output-location
+    // fallback below and to mark the agent as actively chatting.
+    let chat_agent_id = instance
+        .data
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("aman");
     let maybe_skill = self_bridge.parse_skill_command(&text);
     let (effective_text, skill_context) = match maybe_skill {
         Some((skill_name, user_input)) => {
+            let agent_dir =
+                super::skill_sync::aman_data_dir().join("agents").join(chat_agent_id);
             match skill::execution::prepare_skill_execution(
                 &skill_name,
                 &user_input,
                 &runtime.llm_skills(),
+                Some(&agent_dir),
             ) {
                 Some(exec) => {
                     let ctx = Some(json!({
@@ -2960,11 +2970,6 @@ async fn chat_session_send(
     };
 
     // Mark agent as actively chatting — will be reset by idle system when bus empties.
-    let chat_agent_id = instance
-        .data
-        .get("agent_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("aman");
     runtime.agent_registry().set_system_state(chat_agent_id, AgentSystemState::Chatting).await;
 
     // Build the complete system prompt once per session: soul + skills + tools + date.

@@ -7,9 +7,10 @@
 //! (chat pipeline, CLI, workflows, API handlers) can call to resolve a skill
 //! by name, load its full body, and build an LLM-ready augmented prompt.
 //!
-//! Also provides [`discover_supporting_files`] and
-//! [`build_skill_directory_context`] for tool implementations that need to
-//! expose the skill's directory layout to the LLM.
+//! Also provides [`discover_supporting_files`], [`resolve_skill_output_locations`]
+//! and [`build_skill_directory_context`] for tool implementations that need to
+//! expose the skill's directory layout — including the prioritized locations
+//! for generated output — to the LLM.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -119,14 +120,88 @@ fn walk_supporting_files(base: &Path, dir: &Path, files: &mut Vec<SupportingFile
     }
 }
 
+/// The priority-ordered output locations a skill's generated artifacts should
+/// be saved to, highest priority first:
+///
+/// 1. The skill's declared `output_dir` frontmatter field (relative paths are
+///    resolved against the skill directory).
+/// 2. `<skill_dir>/output` — the conventional per-skill output folder.
+/// 3. `<agent_dir>/output` — a per-agent fallback for skills that declare no
+///    output convention (only present when the caller passes an agent dir).
+///
+/// Consecutive duplicates (e.g. a frontmatter `output_dir: output/` that
+/// resolves to the same folder as the default) are removed while preserving
+/// priority order. Directories are not required to exist yet — the `write`
+/// tool auto-creates parent directories.
+#[must_use]
+pub fn resolve_skill_output_locations(skill_dir: &Path, agent_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut locations = Vec::new();
+    if let Some(declared) = skill_frontmatter_output_dir(skill_dir) {
+        locations.push(declared);
+    }
+    locations.push(skill_dir.join("output"));
+    if let Some(agent_dir) = agent_dir {
+        locations.push(agent_dir.join("output"));
+    }
+    locations.dedup();
+    locations
+}
+
+/// Parse the optional `output_dir` field from a skill's YAML frontmatter.
+///
+/// Absolute paths are used as-is; relative paths are resolved against
+/// `skill_dir`. Returns `None` when the frontmatter is missing or unparseable,
+/// or when neither the top-level `output_dir` nor `metadata.output_dir` is
+/// declared.
+fn skill_frontmatter_output_dir(skill_dir: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(skill_dir.join("SKILL.md")).ok()?;
+    let trimmed = raw.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+    let end = trimmed[3..].find("\n---")?;
+    let yaml_str = &trimmed[3..3 + end];
+    let value: serde_yaml::Value = serde_yaml::from_str(yaml_str).ok()?;
+    let mapping = value.as_mapping()?;
+
+    let raw_dir = mapping
+        .get(serde_yaml::Value::String("output_dir".to_owned()))
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            mapping
+                .get(serde_yaml::Value::String("metadata".to_owned()))
+                .and_then(serde_yaml::Value::as_mapping)
+                .and_then(|m| m.get(serde_yaml::Value::String("output_dir".to_owned())))
+                .and_then(serde_yaml::Value::as_str)
+                .map(str::to_owned)
+        })?;
+
+    let p = PathBuf::from(raw_dir);
+    Some(if p.is_absolute() { p } else { skill_dir.join(p) })
+}
+
 /// Build the `[Skill directory: ...]` header and `[This skill has supporting files:]`
 /// footer block (if any supporting files exist).
 ///
+/// The header also lists the skill's prioritized output locations (see
+/// [`resolve_skill_output_locations`]). `agent_dir` is optional and only used
+/// for the per-agent fallback entry.
+///
 /// The returned string is ready to prepend/append to the skill content.
 #[must_use]
-pub fn build_skill_directory_context(skill_dir: &Path) -> (String, String) {
+pub fn build_skill_directory_context(skill_dir: &Path, agent_dir: Option<&Path>) -> (String, String) {
     let dir_display = skill_dir.display();
-    let header = format!("[Skill directory: {dir_display}]\n");
+    let mut header = format!("[Skill directory: {dir_display}]\n");
+
+    let output_locations = resolve_skill_output_locations(skill_dir, agent_dir);
+    if !output_locations.is_empty() {
+        header.push_str("\n[Output locations (highest priority first):]\n");
+        for (i, loc) in output_locations.iter().enumerate() {
+            header.push_str(&format!("{}. {}\n", i + 1, loc.display()));
+        }
+        header.push_str("Save generated reports to the first applicable location.\n");
+    }
 
     let supporting_files = discover_supporting_files(skill_dir);
     let footer = if supporting_files.is_empty() {
@@ -216,11 +291,16 @@ pub fn parse_skill_command(input: &str) -> Option<(String, String)> {
 ///
 /// Returns `None` when the skill is not found in `skills` or the file cannot
 /// be read.
+///
+/// `agent_dir` is optional; when provided it is used as the fallback output
+/// location for the skill's generated artifacts (see
+/// [`build_skill_directory_context`]).
 #[must_use]
 pub fn prepare_skill_execution(
     skill_name: &str,
     user_input: &str,
     skills: &[SkillInfo],
+    agent_dir: Option<&Path>,
 ) -> Option<SkillExecution> {
     let info = skills.iter().find(|s| s.name == skill_name)?;
 
@@ -228,7 +308,7 @@ pub fn prepare_skill_execution(
     let body = formatting::strip_frontmatter(&raw).trim().to_owned();
 
     let skill_dir = info.path.parent().unwrap_or_else(|| Path::new("."));
-    let (dir_header, supporting_files_footer) = build_skill_directory_context(skill_dir);
+    let (dir_header, supporting_files_footer) = build_skill_directory_context(skill_dir, agent_dir);
 
     let augmented_message = if user_input.is_empty() {
         format!(
@@ -297,7 +377,98 @@ pub fn prepare_skill_execution_from_dir(
     skill_name: &str,
     user_input: &str,
     skills_root: &Path,
+    agent_dir: Option<&Path>,
 ) -> Option<SkillExecution> {
     let skills = crate::discover_llm_skills(skills_root);
-    prepare_skill_execution(skill_name, user_input, &skills)
+    prepare_skill_execution(skill_name, user_input, &skills, agent_dir)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Create a throwaway skill directory whose SKILL.md carries the given
+    /// frontmatter lines (everything after `name:`), so the parser and resolver
+    /// are exercised against real on-disk files.
+    fn temp_skill_dir(frontmatter_extra: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "aman-skill-output-test-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp skill dir");
+        let content = format!("---\nname: test-skill\n{frontmatter_extra}---\n\n# Body\n");
+        std::fs::write(dir.join("SKILL.md"), content).expect("write SKILL.md");
+        dir
+    }
+
+    #[test]
+    fn no_declared_output_dir_uses_skill_and_agent_defaults() {
+        let skill_dir = temp_skill_dir("category: test\n");
+        let agent_dir = PathBuf::from("/agents/money");
+        let locs = resolve_skill_output_locations(&skill_dir, Some(&agent_dir));
+        assert_eq!(
+            locs,
+            vec![skill_dir.join("output"), agent_dir.join("output")]
+        );
+    }
+
+    #[test]
+    fn relative_output_dir_resolves_against_skill_dir() {
+        let skill_dir = temp_skill_dir("output_dir: reports/final\n");
+        let agent_dir = PathBuf::from("/agents/money");
+        let locs = resolve_skill_output_locations(&skill_dir, Some(&agent_dir));
+        assert_eq!(
+            locs,
+            vec![
+                skill_dir.join("reports/final"),
+                skill_dir.join("output"),
+                agent_dir.join("output"),
+            ]
+        );
+    }
+
+    #[test]
+    fn absolute_output_dir_used_as_is() {
+        let skill_dir = temp_skill_dir("output_dir: /var/aman-reports\n");
+        let locs = resolve_skill_output_locations(&skill_dir, None);
+        assert_eq!(
+            locs,
+            vec![PathBuf::from("/var/aman-reports"), skill_dir.join("output")]
+        );
+    }
+
+    #[test]
+    fn output_dir_equal_to_default_is_deduplicated() {
+        let skill_dir = temp_skill_dir("output_dir: output\n");
+        let locs = resolve_skill_output_locations(&skill_dir, None);
+        assert_eq!(locs, vec![skill_dir.join("output")]);
+    }
+
+    #[test]
+    fn metadata_output_dir_is_supported() {
+        let skill_dir = temp_skill_dir("metadata:\n  output_dir: artifacts\n");
+        let locs = resolve_skill_output_locations(&skill_dir, None);
+        assert_eq!(
+            locs,
+            vec![skill_dir.join("artifacts"), skill_dir.join("output")]
+        );
+    }
+
+    #[test]
+    fn directory_context_includes_prioritized_locations() {
+        let skill_dir = temp_skill_dir("category: test\n");
+        let agent_dir = PathBuf::from("/agents/money");
+        let (header, _footer) = build_skill_directory_context(&skill_dir, Some(&agent_dir));
+        assert!(header.contains("[Skill directory:"));
+        assert!(header.contains("[Output locations (highest priority first):]"));
+        assert!(header.contains(&skill_dir.join("output").display().to_string()));
+        assert!(header.contains(&agent_dir.join("output").display().to_string()));
+    }
 }

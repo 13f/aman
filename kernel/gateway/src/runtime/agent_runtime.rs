@@ -2584,8 +2584,13 @@ impl Tool for SkillViewTool {
                 })),
             };
             let body = skill::formatting::strip_frontmatter(&raw).trim().to_owned();
+            let agent_dir = if agent_id.is_empty() {
+                None
+            } else {
+                Some(super::skill_sync::aman_data_dir().join("agents").join(agent_id))
+            };
             let (dir_header, supporting_files_footer) =
-                skill::execution::build_skill_directory_context(skill_dir);
+                skill::execution::build_skill_directory_context(skill_dir, agent_dir.as_deref());
             let content = format!("{dir_header}\n{body}{supporting_files_footer}");
 
             Ok(serde_json::json!({

@@ -118,7 +118,14 @@ pub fn apply_sandbox(config: &SandboxConfig) -> Result<(), SandboxError> {
 
     #[cfg(target_os = "macos")]
     {
-        macos::apply_seatbelt(config)
+        // macOS Seatbelt is applied by generating a profile and passing it to
+        // the child via the AMAN_SANDBOX_PROFILE env var from the PARENT
+        // (see apply_to_command). Setting env vars inside a pre_exec closure
+        // is not fork-safe and can deadlock the child before exec(). Since this
+        // function is only meant to run from pre_exec, it is a no-op here; the
+        // caller must use apply_to_command (parent-side) instead.
+        let _ = config;
+        Ok(())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -140,26 +147,44 @@ pub fn apply_sandbox(config: &SandboxConfig) -> Result<(), SandboxError> {
     }
 }
 
-/// Safely apply sandbox restrictions to a [`std::process::Command`] via
-/// its `pre_exec` hook. This is a convenience wrapper around
-/// [`apply_sandbox`] that handles the unsafe `pre_exec` call.
+/// Apply sandbox restrictions to a [`std::process::Command`] before it is
+/// spawned.
 ///
-/// Only effective on Linux and macOS. On Windows and unsupported platforms
-/// this is a no-op (use [`windows::WindowsSandbox`] directly for Windows).
+/// | Platform | Mechanism | Where it runs |
+/// |----------|-----------|---------------|
+/// | Linux    | Landlock + Seccomp | `pre_exec` (child) |
+/// | macOS    | Seatbelt profile via `AMAN_SANDBOX_PROFILE` env var | parent |
+/// | Windows / other | no-op (`windows::WindowsSandbox` for Windows) | — |
+///
+/// macOS deliberately does **not** use `pre_exec`. The Seatbelt profile is
+/// generated and attached to the command in the parent process. Running the
+/// profile generation (allocation, `std::fs::canonicalize`) or `set_var`
+/// inside a `pre_exec` closure is not fork-safe: `fork()` copies whatever
+/// lock another thread is holding at that instant (allocator, env, tracing
+/// file-writer), the child deadlocks before `exec()`, and the parent's
+/// [`std::process::Command::spawn`] blocks forever reading the exec-status
+/// pipe. This is a real production failure mode — see `macos.rs`.
 pub fn apply_to_command(command: &mut std::process::Command, config: &SandboxConfig) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
         let sb_config = config.clone();
-        // Safety: pre_exec runs after fork(), before exec(). Landlock
-        // and Seatbelt operations are async-signal-safe on their
-        // respective platforms.
+        // Safety: pre_exec runs after fork(), before exec(). Landlock and
+        // Seccomp syscalls are async-signal-safe on Linux.
         unsafe {
             command.pre_exec(move || {
                 apply_sandbox(&sb_config)
                     .map_err(|e| std::io::Error::other(format!("sandbox: {e}")))
             });
         }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Generate the profile in the parent and hand it to the child via
+        // Command::env — consumed by the sandbox-exec launcher wrapper.
+        // Never touch the process environment from a pre_exec closure.
+        let profile = macos::generate_sandbox_profile(config);
+        command.env("AMAN_SANDBOX_PROFILE", profile);
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

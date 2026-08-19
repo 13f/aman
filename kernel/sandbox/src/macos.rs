@@ -117,30 +117,34 @@ fn normalize_path(path: &PathBuf) -> String {
     clean.display().to_string()
 }
 
-/// Apply Seatbelt sandbox on macOS.
+/// Apply Seatbelt sandbox on macOS by setting the `AMAN_SANDBOX_PROFILE`
+/// environment variable in the **current process**, which any child spawned
+/// afterwards inherits. A wrapper script (`sandbox-exec -f <profile>`) reads
+/// that variable and applies the actual seatbelt.
 ///
-/// NOTE: This function cannot programmatically apply a sandbox profile
-/// without the `com.apple.security.temporary-exception.sandbox` entitlement.
-/// Instead, it sets the `AMAN_SANDBOX_PROFILE` environment variable with
-/// the generated profile, which a wrapper script can use with `sandbox-exec`.
+/// # Safety
 ///
-/// For the direct pre_exec path, we attempt to use `sandbox-exec` to
-/// re-exec the process with the profile if available.
+/// This is a **parent-process** operation. It must NOT be called from a
+/// [`std::process::Command`] `pre_exec` closure (i.e. in the forked child):
+/// `fork()` copies whatever lock another thread holds at that instant
+/// (allocator, env, tracing file-writer mutex), so `set_var`/allocation in
+/// the child can deadlock before `exec()` runs, and the parent's
+/// `Command::spawn()` then hangs indefinitely. Prefer
+/// [`super::apply_to_command`], which generates the profile and attaches it
+/// to the command in the parent via `Command::env` — no child-context
+/// mutation at all.
+///
+/// Note: without the `com.apple.security.temporary-exception.sandbox`
+/// entitlement this cannot programmatically sandbox the current process;
+/// it only stages the profile for the wrapper.
 pub fn apply_seatbelt(config: &SandboxConfig) -> Result<(), SandboxError> {
     let profile = generate_sandbox_profile(config);
-    // SAFETY: set_var in Rust 2024 is unsafe due to potential data races.
-    // In the pre_exec context, no other threads are accessing environment
-    // variables, so this is safe.
+    // SAFETY: we are in the parent process, not in a forked pre_exec child,
+    // so no other thread is mid-environment-mutation in a way that would
+    // leave the process in a fork-inconsistent state.
     unsafe {
         std::env::set_var("AMAN_SANDBOX_PROFILE", &profile);
     }
-
-    // NOTE: Do NOT use tracing::info! here. This function runs inside a
-    // Command::pre_exec() closure in the forked child process. If the
-    // tracing subscriber's file-writer Mutex was locked by another thread
-    // at the moment of fork(), the child inherits the poisoned lock and
-    // deadlocks — which prevents exec() from ever running. The parent's
-    // Command::spawn() then appears to hang indefinitely.
 
     Ok(())
 }

@@ -50,6 +50,48 @@ const DEFAULT_MAX_REACT_TURNS: u32 = 64;
 /// the session transitions cleanly back to `IDLE` (see Bug 2).
 const ENGINE_PROCESS_TIMEOUT_SECS: u64 = 90;
 
+/// Monotonic millisecond clock for the activity watchdog. Instant-backed so a
+/// wall-clock jump (NTP step, sleep wake) never distorts the stall check.
+fn now_ms() -> u64 {
+    static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let base = BASE.get_or_init(std::time::Instant::now);
+    base.elapsed().as_millis() as u64
+}
+
+/// Watchdog for a single `engine.process()` call.
+///
+/// The engine's `progress_tick` refreshes `last_activity` after every completed
+/// LLM turn and tool batch. This loop wakes every 2s; if no progress has landed
+/// for `limit_secs` it returns (the caller treats that as a stall and
+/// interrupts). On each newly observed tick it also resets the agent's idle
+/// countdown (`reset_idle_signal` + arousal boost + depth→0) so the UI never
+/// drifts the agent toward idle while it is actively working.
+async fn activity_watchdog(
+    agent_id: String,
+    registry: Arc<AgentRegistry>,
+    last_activity: Arc<std::sync::atomic::AtomicU64>,
+    limit_secs: u64,
+) {
+    let mut last_seen = last_activity.load(std::sync::atomic::Ordering::Relaxed);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let now = now_ms();
+        let cur = last_activity.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(cur) > limit_secs * 1000 {
+            // Stalled — no unit of work completed for the whole budget.
+            return;
+        }
+        if cur != last_seen {
+            last_seen = cur;
+            if let Some(coord) = registry.get_idle_coordination(&agent_id).await {
+                coord.reset_idle_signal().await;
+                coord.arousal.boost(0.3);
+                coord.idle_depth.store(0, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+}
+
 /// Default agent router — selects the first enabled agent.
 pub struct FirstEnabledAgentRouter;
 
@@ -77,36 +119,6 @@ pub enum ReactOutcome {
         pid: u32,
         tool_call_id: String,
     },
-}
-
-/// Distinguishes "继续" (continue) from "恢复" (replay) — two fundamentally
-/// different session-resumption paths.
-///
-/// ## Continue ("继续")
-/// User clicks "继续" after `MaxTurnsReached`, or sends `/continue`.
-/// The agent compresses the raw session history into a structured summary
-/// (goals, progress, key findings, tool usage stats) and sends that
-/// compressed context to the LLM.  It does **not** replay events to the
-/// EventBus, and it does **not** dump raw tool outputs into the prompt.
-///
-/// ## Replay ("恢复")
-/// Used only after gateway restart or explicit session-restore.  The full
-/// conversation history is faithfully reconstructed from the JSONL event
-/// log via [`restore_session_history`] so the agent can pick up exactly
-/// where it left off.  This is the expensive path — it preserves every
-/// tool call/result pair.
-///
-/// ## Fresh
-/// Normal first message or mid-conversation message.  Append to existing
-/// history as-is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContinuationMode {
-    /// Normal fresh message — append to history.
-    Fresh,
-    /// User clicked "继续" — compress history into structured summary.
-    Continue,
-    /// Gateway-restart recovery — faithful full-history reconstruction.
-    Replay,
 }
 
 /// Handle to a running anonymous agent spawned via [`AgentHarness::spawn_anonymous`].
@@ -239,7 +251,7 @@ impl AgentHarness {
             fn base_url(&self) -> &str { self.0.base_url() }
             async fn chat_completion(&self, req: cognitive_llm::provider::LlmChatRequest, cb: Option<Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync>>) -> Result<cognitive_llm::provider::LlmResponse, String> {
                 let kr = kernel::llm::LlmChatRequest { model: req.model, system_prompt: req.system_prompt, messages: req.messages.into_iter().map(|m| kernel::react::ChatMessage { role: match m.role { cognitive_react::ChatMessageRole::System => kernel::react::ChatMessageRole::System, cognitive_react::ChatMessageRole::User => kernel::react::ChatMessageRole::User, cognitive_react::ChatMessageRole::Assistant => kernel::react::ChatMessageRole::Assistant, cognitive_react::ChatMessageRole::Tool => kernel::react::ChatMessageRole::Tool }, content: m.content, tool_call_id: m.tool_call_id, tool_name: m.tool_name, tool_calls: m.tool_calls, reasoning_content: m.reasoning_content }).collect(), tools: req.tools.into_iter().map(|t| kernel::react::ToolDescriptor { name: t.name, description: t.description, parameters: t.parameters }).collect(), max_output_tokens: req.max_output_tokens, response_format: req.response_format.map(|f| match f { cognitive_llm::provider::ResponseFormat::JsonObject => kernel::llm::ResponseFormat::JsonObject, cognitive_llm::provider::ResponseFormat::JsonSchema { name, schema, strict } => kernel::llm::ResponseFormat::JsonSchema { name, schema, strict } }) };
-                let kcb = cb.map(|c| { let c2 = c; Arc::new(move |e: kernel::llm::StreamEvent| c2(match e { kernel::llm::StreamEvent::Start => cognitive_llm::provider::StreamEvent::Start, kernel::llm::StreamEvent::Chunk(s) => cognitive_llm::provider::StreamEvent::Chunk(s), kernel::llm::StreamEvent::Done { finish_reason } => cognitive_llm::provider::StreamEvent::Done { finish_reason }, kernel::llm::StreamEvent::Error(s) => cognitive_llm::provider::StreamEvent::Error(s), })) as Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync> });
+                let kcb = cb.map(|c| { let c2 = c; Arc::new(move |e: kernel::llm::StreamEvent| c2(match e { kernel::llm::StreamEvent::Start => cognitive_llm::provider::StreamEvent::Start, kernel::llm::StreamEvent::Chunk(s) => cognitive_llm::provider::StreamEvent::Chunk(s), kernel::llm::StreamEvent::Reasoning(s) => cognitive_llm::provider::StreamEvent::Reasoning(s), kernel::llm::StreamEvent::Done { finish_reason } => cognitive_llm::provider::StreamEvent::Done { finish_reason }, kernel::llm::StreamEvent::Error(s) => cognitive_llm::provider::StreamEvent::Error(s), })) as Arc<dyn Fn(cognitive_llm::provider::StreamEvent) + Send + Sync> });
                 self.0.chat_completion(kr, kcb).await.map(|r| cognitive_llm::provider::LlmResponse { content: r.content, finish_reason: r.finish_reason, tool_calls: r.tool_calls.into_iter().map(|c| cognitive_react::ParsedToolCall { id: c.id, tool_name: c.tool_name, args: c.args }).collect(), reasoning_content: r.reasoning_content, usage: r.usage.map(|u| cognitive_llm::provider::TokenUsage { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens }) }).map_err(|e| e.to_string())
             }
         }
@@ -310,7 +322,7 @@ impl AgentHarness {
     pub async fn process_message_v2(
         self: &Arc<Self>, agent_id: &str, session_id: &str, user_text: &str,
         model: &str, soul_snapshot: SoulSnapshot, skill_name: Option<&str>,
-        background: bool, continuation_mode: ContinuationMode,
+        background: bool,
     ) -> AmanResult<String> {
         let inst = self.prepare_agent_session(agent_id, session_id, background).await?;
         if let Some(c) = self.registry.get_idle_coordination(agent_id).await { c.reset_idle_signal().await; c.arousal.boost(0.3); }
@@ -318,40 +330,28 @@ impl AgentHarness {
         // Get past conversation history (without current message — it will be
         // passed as an Observation below, avoiding duplication).
         let mut past_history = self.session_history.get(session_id);
+        let mut restored_from_jsonl = false;
 
-        // Continue ("继续") mode: the user is picking up a prior task.  The
-        // in-memory session_history only ever holds user + final-assistant
-        // messages — it drops the mid-turn tool calls and tool results that
-        // the ReAct loop produced.  To give the LLM genuine continuity (not
-        // just a vague summary), we *always* rebuild the full transcript
-        // from the persisted JSONL, which now preserves the enriched
-        // `agent:got_tool_calls` and `tool:completed` events as first-class
-        // assistant+tool_calls and Tool-role messages.
-        //
-        // The rebuilt history is then passed to the LLM verbatim (filtered
-        // only to strip system noise), so the agent sees exactly what it
-        // was doing — every tool it called and every result it got back.
-        //
-        // `build_continuation_context` is retained as a *fallback* for the
-        // rare case where JSONL restoration yields nothing (e.g. brand-new
-        // session with no persisted events yet).
-        //
-        // We deliberately do this BEFORE the content-filter / consciousness
-        // checks so the "继续" intent is recognised even when past_history
-        // would otherwise be empty.
-        let continuation_history = if continuation_mode == ContinuationMode::Continue {
-            self.restore_session_history_from_jsonl(session_id, agent_id, true).await;
+        // The persisted JSONL is the source of truth for session history.
+        // When the in-memory history is empty — fresh process, after a
+        // `process()` timeout cleared it (see the error path below), after a
+        // max-turns abort, or after a gateway restart — rebuild it from the
+        // JSONL so the LLM receives the real session context plus this user
+        // message.  No text-pattern matching on the message content: resuming
+        // an interrupted task works for any follow-up message, not just "继续".
+        // The JSONL preserves the full ReAct transcript (assistant+tool_calls
+        // and Tool-role results), which the LLM needs to pick up exactly where
+        // the aborted turn left off.
+        if past_history.is_empty() {
+            self.restore_session_history_from_jsonl(session_id, agent_id, false).await;
             past_history = self.session_history.get(session_id);
-            if !past_history.is_empty() {
-                // Full-fidelity path: hand the LLM the complete ReAct transcript.
-                Some(filter_conversation_history_with_tools(&past_history))
-            } else {
-                // Fallback: no persisted events — nothing to restore.
-                None
-            }
-        } else {
-            None
-        };
+            restored_from_jsonl = true;
+            // The current message was already persisted to the JSONL before we
+            // ran (MessageReceivedHandler appends it eagerly), so the rebuild
+            // above includes it. It also arrives as an Observation below —
+            // drop the trailing duplicate so the user input is sent exactly once.
+            strip_redundant_current_message(&mut past_history, user_text);
+        }
 
         let tb = self.init_token_budget(agent_id, session_id, model, &inst, &soul_snapshot, &past_history, &tools).await;
         let mem = self.retrieve_relevant_memories(agent_id, user_text).await;
@@ -372,19 +372,33 @@ impl AgentHarness {
         }
 
         let flag = Arc::new(InterruptFlag::new()); self.register_interrupt(session_id, Arc::clone(&flag));
-        let engine = self.build_cognitive_engine(agent_id, model, session_id, background, Some(Arc::clone(&flag)), &tb).await?;
+        let mut engine = self.build_cognitive_engine(agent_id, model, session_id, background, Some(Arc::clone(&flag)), &tb).await?;
+
+        // Wire a liveness callback into the engine so the stall watchdog below
+        // can tell "working hard" from "hung". Every completed LLM turn or tool
+        // batch refreshes `last_activity`; the watchdog treats ENGINE_PROCESS
+        // as a no-progress budget, not a total-task budget.
+        let last_activity = Arc::new(std::sync::atomic::AtomicU64::new(now_ms()));
+        {
+            let la = Arc::clone(&last_activity);
+            let tick: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                la.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+            });
+            engine = engine.with_progress_tick(tick);
+        }
 
         // Compute grounding — how well-informed the agent is for this task
         let grounding = self.compute_grounding(agent_id, user_text, &mem, &tb).await;
 
-        // Build the conversation history that the LLM sees:
-        // - Continue ("继续") mode — the full reconstructed ReAct transcript
-        //   (user messages, assistant+tool_calls, tool results, final replies)
-        //   so the agent can pick up exactly where it left off.
-        // - Fresh / Replay — the standard user↔assistant dialogue strip.
-        let conversation_history = match continuation_history {
-            Some(ref history) => history.clone(),
-            None => filter_conversation_history(&past_history),
+        // Build the conversation history that the LLM sees. When this turn
+        // restored from the JSONL, hand the LLM the full reconstructed ReAct
+        // transcript (user messages, assistant+tool_calls, tool results, final
+        // replies) so it can pick up an aborted task exactly where it left off.
+        // Otherwise the in-memory user↔assistant dialogue strip is the history.
+        let conversation_history = if restored_from_jsonl && !past_history.is_empty() {
+            filter_conversation_history_with_tools(&past_history)
+        } else {
+            filter_conversation_history(&past_history)
         };
         let ctx = CognitiveContext {
             agent_id: agent_id.into(), session_id: session_id.into(),
@@ -482,28 +496,34 @@ impl AgentHarness {
         tracing::info!(%agent_id, %session_id, "process_message_v2: calling engine.process()");
         // Bound the engine call so a hung LLM provider (no stream timeout of
         // its own for the first byte) cannot block this task indefinitely.
-        // On timeout we trigger the interrupt flag — the engine checks it
-        // between ReAct turns — and surface an error so the harness error
+        //
+        // ENGINE_PROCESS is a *no-progress* budget, not a total-task budget:
+        // the engine's progress_tick refreshes `last_activity` after every
+        // completed LLM turn / tool batch, so a long but actively-working
+        // research task (many web_search rounds) is never killed. Only a true
+        // stall — no unit of work finishing for the whole budget — races the
+        // watchdog. On stall we trigger the interrupt flag — the engine checks
+        // it between ReAct turns — and surface an error so the harness error
         // path below drives the session back to IDLE.
-        let result = match tokio::time::timeout(
-            std::time::Duration::from_secs(ENGINE_PROCESS_TIMEOUT_SECS),
-            engine.process(&ctx, obs),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => {
+        let result = tokio::select! {
+            r = engine.process(&ctx, obs) => r,
+            _ = activity_watchdog(
+                agent_id.to_owned(),
+                Arc::clone(&self.registry),
+                last_activity,
+                ENGINE_PROCESS_TIMEOUT_SECS,
+            ) => {
                 tracing::warn!(
                     %agent_id,
                     %session_id,
                     limit = ENGINE_PROCESS_TIMEOUT_SECS,
-                    "process_message_v2: engine.process() timed out — triggering interrupt"
+                    "process_message_v2: engine.process() stalled — no tool/LLM activity, triggering interrupt"
                 );
                 self.interrupt_session(session_id);
                 Err(cognitive_engine::CognitiveError::EngineError {
                     engine_name: "LlmCognitiveEngine".into(),
                     message: format!(
-                        "engine.process() timed out after {ENGINE_PROCESS_TIMEOUT_SECS}s"
+                        "engine.process() stalled {ENGINE_PROCESS_TIMEOUT_SECS}s without tool activity"
                     ),
                 })
             }
@@ -805,7 +825,7 @@ impl AgentHarness {
     pub fn restore_session_history(&self, session_id: &str, events: &[serde_json::Value]) {
         for event in events {
             let event_type = match event["event_type"].as_str() {
-                Some(et) => et,
+                Some(et) => normalize_event_type(et),
                 None => continue,
             };
             let payload = &event["payload"];
@@ -1020,9 +1040,9 @@ impl AgentHarness {
 
     /// Spawn a background task running `process_message`, with error logging.
     ///
-    /// `continuation_mode` distinguishes "继续" ([`ContinuationMode::Continue`])
-    /// from normal messages ([`ContinuationMode::Fresh`]) and gateway-restart
-    /// recovery ([`ContinuationMode::Replay`]).
+    /// Session resumption is handled inside `process_message_v2`: it rebuilds
+    /// the history from the persisted JSONL whenever the in-memory history is
+    /// empty, so no continuation-mode argument is needed here.
     #[allow(clippy::too_many_arguments)] // Dispatcher signature mirrors `process_message` args.
     pub fn spawn_process_message(
         self: &Arc<Self>,
@@ -1034,7 +1054,6 @@ impl AgentHarness {
         skill_name: Option<String>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
-        continuation_mode: ContinuationMode,
     ) -> tokio::task::JoinHandle<()> {
         let harness = Arc::clone(self);
         // Clone session_id before moving into the async closure —
@@ -1042,7 +1061,7 @@ impl AgentHarness {
         let sid = session_id.clone();
         let handle = self.runtime.spawn(async move {
             if let Err(e) = harness
-                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot.clone(), skill_name.as_deref(), react_mode, background, continuation_mode)
+                .process_message(&agent_id, &session_id, &user_text, &model, soul_snapshot.clone(), skill_name.as_deref(), react_mode, background)
                 .await
             {
                 tracing::error!(
@@ -1166,16 +1185,11 @@ impl AgentHarness {
     ///
     /// This is the main entry point called when a `MESSAGE_RECEIVED` event arrives.
     ///
-    /// ## `continuation_mode`
-    ///
-    /// Distinguishes three paths:
-    /// - [`ContinuationMode::Fresh`] — normal message, append to history.
-    /// - [`ContinuationMode::Continue`] — user clicked "继续" after max turns.
-    ///   Compresses session history into a structured summary via
-    ///   [`build_continuation_context`] instead of dumping raw tool outputs.
-    /// - [`ContinuationMode::Replay`] — gateway-restart recovery.  Full
-    ///   history is faithfully reconstructed by [`restore_session_history`]
-    ///   before this function is called.
+    /// Session resumption is handled inside [`process_message_v2`]: when the
+    /// in-memory history is empty (fresh process, after a timeout / max-turns
+    /// abort cleared it, or after a gateway restart), the full session history
+    /// is reconstructed from the persisted JSONL and handed to the LLM together
+    /// with the current message — no continuation-mode argument required.
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::too_many_arguments)]
     pub async fn process_message(
@@ -1188,7 +1202,6 @@ impl AgentHarness {
         skill_name: Option<&str>,
         react_mode: Option<skill::ReactMode>,
         background: bool,
-        continuation_mode: ContinuationMode,
     ) -> AmanResult<String> {
         // 8. Delegate to cognitive engine
         if skill_name.is_some() {
@@ -1201,7 +1214,7 @@ impl AgentHarness {
         // `react_mode` (skill execution mode) drives skill-level behaviour
         // via the soul/skill prompt — nothing to do here at the harness layer.
         let _ = react_mode;
-        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, skill_name, background, continuation_mode).await
+        self.process_message_v2(agent_id, session_id, user_text, model, soul_snapshot, skill_name, background).await
     }
 
     /// Process a message through the ReAct loop for an anonymous agent.
@@ -1220,7 +1233,7 @@ impl AgentHarness {
         soul_snapshot: SoulSnapshot,
         background: bool,
     ) -> AmanResult<String> {
-        self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, None, background, ContinuationMode::Fresh).await
+        self.process_message_v2(agent_id, session_id, user_text, &descriptor.model, soul_snapshot, None, background).await
     }
 
     // ── process_message helpers ──────────────────────────────────────
@@ -1830,6 +1843,21 @@ fn filter_conversation_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
         .collect()
 }
 
+/// Normalize an `event_type` read from a session JSONL line back to its
+/// bare name.
+///
+/// The persistence layer writes `format!("{:?}", event.event_type)`
+/// (agent_runtime.rs, `MessageReceivedHandler` / `StoreAllEvents`), which
+/// wraps custom events as `Custom("tool:completed")`; a non-custom variant
+/// (e.g. `MessageReceived`) is stored as just its name. Stripping the
+/// `Custom("...")` shell lets restore matching see the bare name regardless
+/// of which form the JSONL line carries.
+fn normalize_event_type(raw: &str) -> &str {
+    raw.strip_prefix("Custom(\"")
+        .and_then(|s| s.strip_suffix("\")"))
+        .unwrap_or(raw)
+}
+
 /// Filter conversation history for the "继续" (continue) path.
 ///
 /// Unlike [`filter_conversation_history`] (used for Fresh messages), this
@@ -1864,6 +1892,23 @@ fn filter_conversation_history_with_tools(history: &[ChatMessage]) -> Vec<ChatMe
         })
         .cloned()
         .collect()
+}
+
+/// Drop a trailing `User` message that is exactly the current user input.
+///
+/// The current message is persisted to the session JSONL *before*
+/// `process_message_v2` runs (`MessageReceivedHandler` appends it eagerly), so
+/// a JSONL rebuild includes it. It is also passed to the engine as an
+/// Observation — without this the LLM would receive the user input twice. Only
+/// the last message is removed: an earlier, genuinely-identical message from a
+/// prior turn stays part of the history.
+fn strip_redundant_current_message(history: &mut Vec<ChatMessage>, user_text: &str) {
+    if history
+        .last()
+        .is_some_and(|m| m.role == ChatMessageRole::User && m.content == user_text)
+    {
+        history.pop();
+    }
 }
 
 /// Extract [remember: ...] commands from agent reply text.
@@ -2264,6 +2309,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_session_history_accepts_custom_debug_wrapped_event_type() {
+        // The JSONL persists `event_type` via `format!("{:?}", ...)`, which
+        // wraps custom events as `Custom("tool:completed")` — NOT the bare
+        // name. This is the real on-disk format (agent_runtime.rs
+        // MessageReceivedHandler/StoreAllEvents); the other tests use bare
+        // names only for readability. Restoration must handle both.
+        let harness = AgentHarness::new_test();
+        let session_id = "test-session";
+        let events = vec![
+            serde_json::json!({
+                "event_type": "MessageReceived",
+                "payload": { "text": "Research 君正股份" }
+            }),
+            serde_json::json!({
+                "event_type": "Custom(\"agent:got_tool_calls\")",
+                "payload": {
+                    "tools": [
+                        { "id": "call_1", "tool_name": "web_search", "args": "{\"query\":\"孖展\"}" }
+                    ]
+                }
+            }),
+            serde_json::json!({
+                "event_type": "Custom(\"tool:completed\")",
+                "payload": {
+                    "tool_call_id": "call_1", "tool_name": "web_search",
+                    "success": true, "output": "超额认购 10x"
+                }
+            }),
+        ];
+        harness.restore_session_history(session_id, &events);
+        let history = harness.get_session_history(session_id);
+        assert_eq!(history.len(), 3, "user + assistant+tool_calls + tool_result");
+        assert_eq!(history[1].role, ChatMessageRole::Assistant);
+        assert!(history[1].tool_calls.is_some());
+        assert_eq!(history[2].role, ChatMessageRole::Tool);
+        assert_eq!(history[2].content, "超额认购 10x");
+    }
+
+    #[tokio::test]
     async fn restore_session_history_force_rebuild_clears_existing() {
         // When `force` is true, existing in-memory history is cleared
         // before rebuilding from JSONL — so the Continue path always gets
@@ -2290,5 +2374,95 @@ mod tests {
         let history = harness.get_session_history(session_id);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, "fresh from JSONL");
+    }
+
+    #[tokio::test]
+    async fn restore_session_history_from_jsonl_rebuilds_when_memory_empty() {
+        // The resume fix relies on this: after a `process()` timeout clears the
+        // in-memory history, the next message rebuilds the full ReAct transcript
+        // from the persisted JSONL — with no pattern-matching on the message text.
+        use std::fs;
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let db_path = tmp.path().join("sessions.db");
+        let sessions_dir = tmp.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).expect("create sessions dir");
+        let store = crate::runtime::SessionStore::open(&db_path, &sessions_dir).expect("open store");
+
+        let session_id = "sess1";
+        let events = [
+            serde_json::json!({
+                "event_type": "MessageReceived",
+                "payload": { "text": "港股 打新：君正股份 03223" }
+            }),
+            serde_json::json!({
+                "event_type": "agent:got_tool_calls",
+                "payload": { "tools": [ { "id": "call_1", "tool_name": "web_search", "args": "{\"query\":\"招股价\"}" } ] }
+            }),
+            serde_json::json!({
+                "event_type": "tool:completed",
+                "payload": { "tool_call_id": "call_1", "tool_name": "web_search", "success": true, "output": "招股价≤102.80港元" }
+            }),
+            serde_json::json!({
+                "event_type": "agent:reply_ready",
+                "payload": { "reply": "综合评估…" }
+            }),
+        ];
+        let jsonl = events
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(sessions_dir.join(format!("{session_id}.jsonl")), jsonl).expect("write jsonl");
+
+        let harness = AgentHarness::new_test();
+        harness.registry.set_session_store("money", Some(std::sync::Arc::new(store))).await;
+        assert!(harness.get_session_history(session_id).is_empty(), "memory starts empty");
+
+        harness.restore_session_history_from_jsonl(session_id, "money", false).await;
+
+        let history = harness.get_session_history(session_id);
+        assert_eq!(history.len(), 4, "full transcript restored");
+        assert_eq!(history[0].role, ChatMessageRole::User);
+        assert_eq!(history[0].content, "港股 打新：君正股份 03223");
+        assert_eq!(history[1].role, ChatMessageRole::Assistant);
+        assert!(history[1].tool_calls.is_some(), "tool_calls restored");
+        assert_eq!(history[2].role, ChatMessageRole::Tool);
+        assert_eq!(history[2].content, "招股价≤102.80港元");
+        assert_eq!(history[3].role, ChatMessageRole::Assistant);
+        assert_eq!(history[3].content, "综合评估…");
+    }
+
+    #[test]
+    fn strip_redundant_current_message_removes_matching_trailing_user() {
+        let mut history = vec![
+            ChatMessage::user("task"),
+            ChatMessage::assistant("reply"),
+            ChatMessage::user("继续"),
+        ];
+        strip_redundant_current_message(&mut history, "继续");
+        assert_eq!(history.len(), 2, "only the trailing current message is dropped");
+        assert_eq!(history.last().unwrap().role, ChatMessageRole::Assistant);
+    }
+
+    #[test]
+    fn strip_redundant_current_message_keeps_earlier_identical_message() {
+        // An earlier genuinely-identical message must survive — only the
+        // trailing (current) one is dropped.
+        let mut history = vec![
+            ChatMessage::user("继续"),
+            ChatMessage::assistant("done"),
+            ChatMessage::user("继续"),
+        ];
+        strip_redundant_current_message(&mut history, "继续");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content, "继续");
+        assert_eq!(history[1].role, ChatMessageRole::Assistant);
+    }
+
+    #[test]
+    fn strip_redundant_current_message_leaves_unrelated_trailing() {
+        let mut history = vec![ChatMessage::user("task"), ChatMessage::assistant("reply")];
+        strip_redundant_current_message(&mut history, "completely different");
+        assert_eq!(history.len(), 2);
     }
 }

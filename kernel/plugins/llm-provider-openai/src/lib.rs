@@ -244,11 +244,16 @@ impl LlmOpenaiProvider {
                         cb(StreamEvent::Chunk(content.to_owned()));
                     }
 
-                    // Capture reasoning_content (DeepSeek thinking mode)
+                    // Capture reasoning_content (DeepSeek thinking mode) AND
+                    // forward it as a stream event. Thinking models stream
+                    // chain-of-thought before the answer; without this event
+                    // the engine sees zero activity during a long silent
+                    // thinking phase and its stall watchdog would trigger.
                     if let Some(rc) = delta.get("reasoning_content").and_then(|c| c.as_str())
                         && !rc.is_empty()
                     {
                         reasoning_content.push_str(rc);
+                        cb(StreamEvent::Reasoning(rc.to_owned()));
                     }
 
                     // Accumulate tool call deltas

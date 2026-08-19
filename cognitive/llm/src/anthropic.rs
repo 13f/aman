@@ -513,6 +513,7 @@ impl LlmAnthropicProvider {
                                     .and_then(|v| v.as_str())
                                 {
                                     reasoning.push_str(thinking);
+                                    cb(StreamEvent::Reasoning(thinking.to_owned()));
                                 }
                             }
                             _ => {}

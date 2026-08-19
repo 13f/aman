@@ -232,6 +232,11 @@ pub enum StreamEvent {
     Start,
     /// A text chunk was received.
     Chunk(String),
+    /// A chain-of-thought (reasoning) chunk was received. Thinking models
+    /// stream this *before* the final answer; it carries liveness signal
+    /// (the provider is still working) but is not chat text — engines
+    /// should never surface it to the user as a reply.
+    Reasoning(String),
     /// Stream completed with a finish reason ("stop", "length", "tool_calls").
     Done { finish_reason: String },
     /// An error occurred during streaming.

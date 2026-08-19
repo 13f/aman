@@ -1338,15 +1338,6 @@ impl AgentRuntimeBuilder {
                 let agent_id = agent.descriptor.agent_id.clone();
                 let model = agent.descriptor.model.clone();
 
-                // Resolve the continuation mode the HTTP handler detected.
-                // "continue" => user is resuming a prior task — the cognitive
-                // engine should inject a structured session summary instead of
-                // appending a fresh turn.
-                let continuation_mode = match event.payload.get("continuation_mode").and_then(|v| v.as_str()) {
-                    Some("continue") => super::agent_harness::ContinuationMode::Continue,
-                    _ => super::agent_harness::ContinuationMode::Fresh,
-                };
-
                 // Ensure a session record exists for this message.
                 // Background/boredom sessions may not have been created yet
                 // through the normal create_session path.
@@ -1540,12 +1531,12 @@ impl AgentRuntimeBuilder {
                 }
 
                 // Spawn async ReAct processing — do not block the bus drain loop.
-                // `continuation_mode` already reflects the HTTP-layer intent
-                // (Continue for "继续" / "continue" / /continue; Fresh otherwise).
+                // Session history is restored from the persisted JSONL inside
+                // process_message_v2 whenever the in-memory history is empty, so
+                // the LLM always receives the session context + this message.
                 self.agent_harness.spawn_process_message(
                     agent_id, session_id, text, model, soul_snapshot,
                     skill_name, react_mode, background,
-                    continuation_mode,
                 );
 
                 Ok(())
@@ -2161,7 +2152,7 @@ impl AgentRuntimeBuilder {
 
                 tokio::spawn(async move {
                     let sid = format!("a2a:{}", session_id);
-                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, None, false, super::agent_harness::ContinuationMode::Fresh).await {
+                    match harness.process_message_v2(&to_agent, &sid, &text, &model, soul_snapshot, None, false).await {
                         Ok(reply) => {
                             if !is_original {
                                 // Message was a reply — process but don't auto-respond.
@@ -7283,7 +7274,7 @@ fn wrap_cognitive_provider(
                 max_output_tokens: req.max_output_tokens,
                 response_format: req.response_format.as_ref().map(|f| match f { kernel::llm::ResponseFormat::JsonObject => cognitive_llm::provider::ResponseFormat::JsonObject, kernel::llm::ResponseFormat::JsonSchema { name, schema, strict } => cognitive_llm::provider::ResponseFormat::JsonSchema { name: name.clone(), schema: schema.clone(), strict: *strict } }),
             };
-            let ccb = cb.map(|c| { let c = c; Arc::new(move |e| c(match e { cognitive_llm::provider::StreamEvent::Start => kernel::llm::StreamEvent::Start, cognitive_llm::provider::StreamEvent::Chunk(s) => kernel::llm::StreamEvent::Chunk(s), cognitive_llm::provider::StreamEvent::Done { finish_reason } => kernel::llm::StreamEvent::Done { finish_reason }, cognitive_llm::provider::StreamEvent::Error(s) => kernel::llm::StreamEvent::Error(s), })) as Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync> });
+            let ccb = cb.map(|c| { let c = c; Arc::new(move |e| c(match e { cognitive_llm::provider::StreamEvent::Start => kernel::llm::StreamEvent::Start, cognitive_llm::provider::StreamEvent::Chunk(s) => kernel::llm::StreamEvent::Chunk(s), cognitive_llm::provider::StreamEvent::Reasoning(s) => kernel::llm::StreamEvent::Reasoning(s), cognitive_llm::provider::StreamEvent::Done { finish_reason } => kernel::llm::StreamEvent::Done { finish_reason }, cognitive_llm::provider::StreamEvent::Error(s) => kernel::llm::StreamEvent::Error(s), })) as Arc<dyn Fn(kernel::llm::StreamEvent) + Send + Sync> });
             self.0.chat_completion(cr, ccb).await.map(|r| LlmResponse { content: r.content, finish_reason: r.finish_reason, tool_calls: r.tool_calls.into_iter().map(|c| ParsedToolCall { id: c.id, tool_name: c.tool_name, args: c.args }).collect(), reasoning_content: r.reasoning_content, usage: r.usage.map(|u| kernel::llm::TokenUsage { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens }) }).map_err(|e| kernel::Error::Unrecoverable { message: e })
         }
     }
@@ -7558,6 +7549,7 @@ fn convert_stream_event_from_cognitive(evt: cognitive_llm::provider::StreamEvent
     match evt {
         cognitive_llm::provider::StreamEvent::Start => kernel::llm::StreamEvent::Start,
         cognitive_llm::provider::StreamEvent::Chunk(s) => kernel::llm::StreamEvent::Chunk(s),
+        cognitive_llm::provider::StreamEvent::Reasoning(s) => kernel::llm::StreamEvent::Reasoning(s),
         cognitive_llm::provider::StreamEvent::Done { finish_reason } => {
             kernel::llm::StreamEvent::Done { finish_reason }
         }

@@ -2925,25 +2925,11 @@ async fn chat_session_send(
         );
     }
 
-    // Detect "继续" / "continue" — user wants to resume a prior task rather
-    // than start a fresh turn.  We record the intent here so the downstream
-    // MessageReceivedHandler (agent_runtime.rs) can tell the cognitive
-    // engine to inject a structured session summary instead of a blank
-    // conversation history.
-    //
-    // The textual content ("继续") is preserved verbatim — the harness reads
-    // `continuation_mode` from the payload, not by re-parsing `text`.
-    let continuation_mode = {
-        let t = text.trim();
-        if t == "继续" || t == "continue" || t == "/continue" {
-            "continue"
-        } else {
-            "fresh"
-        }
-    };
-    // Stash it before `text` moves into effective_text, so the payload
-    // can carry it regardless of skill rewrites.
-    let continuation_mode_for_payload = continuation_mode;
+    // NOTE: session resumption does NOT depend on pattern-matching the user's
+    // text (e.g. "继续"). `process_message_v2` restores the full session
+    // history from the persisted JSONL whenever the in-memory history is empty
+    // (after a timeout, max-turns abort, or gateway restart), and hands that
+    // history plus this message straight to the LLM.
 
     // Detect slash-command skill invocation (e.g. "/btc-bottom-model should I buy?").
     // When a skill is invoked directly by the user, load the full SKILL.md body and
@@ -3079,7 +3065,6 @@ async fn chat_session_send(
         "sender": operator,
         "source": "tauri-desktop",
         "soul_system_prompt": combined_prompt,
-        "continuation_mode": continuation_mode_for_payload,
     });
     if let Some(sc) = skill_context {
         payload["skill_context"] = sc;
@@ -3786,13 +3771,13 @@ async fn agent_idle_start(
     Path(agent_id): Path<String>,
 ) -> Response {
     // 门控：只有非 Busy 状态才允许启动 idle。
-    if let Some(instance) = runtime.agent_registry().get(&agent_id).await {
-        if instance.status == AgentStatus::Busy {
-            return ApiError::bad_request(format!(
-                "agent {agent_id} is busy (has active session)"
-            ))
-            .into_response();
-        }
+    if let Some(instance) = runtime.agent_registry().get(&agent_id).await
+        && instance.status == AgentStatus::Busy
+    {
+        return ApiError::bad_request(format!(
+            "agent {agent_id} is busy (has active session)"
+        ))
+        .into_response();
     }
 
     // 设置状态为 Idle。

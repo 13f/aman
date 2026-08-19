@@ -219,6 +219,7 @@ impl LlmOpenaiProvider {
                         && !rc.is_empty()
                     {
                         reasoning_content.push_str(rc);
+                        cb(StreamEvent::Reasoning(rc.to_owned()));
                     }
 
                     if let Some(tc_arr) = delta.get("tool_calls").and_then(|t| t.as_array()) {

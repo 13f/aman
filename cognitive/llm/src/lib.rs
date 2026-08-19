@@ -143,6 +143,10 @@ pub struct LlmCognitiveEngine {
     /// Optional consciousness provider — gates the ReAct loop when the
     /// LLM backend is unavailable (Catatonic / Coma).
     consciousness: Option<Arc<dyn cognitive_engine::ConsciousnessProvider>>,
+    /// Optional liveness callback fired after each completed unit of work
+    /// (an LLM turn, or a tool batch). Lets the caller treat progress as a
+    /// "reset the stall timer" signal — see the gateway's activity watchdog.
+    progress_tick: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl LlmCognitiveEngine {
@@ -163,6 +167,7 @@ impl LlmCognitiveEngine {
             tool_security: None,
             interrupt_flag: None,
             consciousness: None,
+            progress_tick: None,
         }
     }
 
@@ -184,6 +189,7 @@ impl LlmCognitiveEngine {
             tool_security: None,
             interrupt_flag: None,
             consciousness: None,
+            progress_tick: None,
         }
     }
 
@@ -226,6 +232,19 @@ impl LlmCognitiveEngine {
     #[must_use]
     pub fn with_interrupt_flag(mut self, flag: Arc<cognitive_react::InterruptFlag>) -> Self {
         self.interrupt_flag = Some(flag);
+        self
+    }
+
+    /// Set a liveness callback fired after each completed unit of work.
+    ///
+    /// The callback is invoked synchronously after every successful LLM turn
+    /// and after every tool batch execution. Callers (e.g. the gateway's
+    /// activity watchdog) use it to extend a stall timeout: as long as the
+    /// engine is making progress the timer keeps resetting; only a genuinely
+    /// hung provider (no work completing) trips it.
+    #[must_use]
+    pub fn with_progress_tick(mut self, tick: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.progress_tick = Some(tick);
         self
     }
 
@@ -1559,28 +1578,38 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 response_format: None,
             };
 
-            // ── Streaming callback (if listeners registered) ──────────
+            // ── Streaming callback ─────────────────────────────────────
+            // Always Some, even with no listeners registered: every stream
+            // event refreshes `progress_tick`, which keeps the harness's
+            // stall watchdog alive through long silent phases — most
+            // importantly a reasoning model's chain-of-thought, which streams
+            // only `reasoning_content` and no text. When listeners DO exist,
+            // non-reasoning events are forwarded to them as cognitive events.
             let stream_cb: Option<Arc<dyn Fn(crate::provider::StreamEvent) + Send + Sync>> = {
-                let guard = self.listeners.lock().ok();
-                if guard.as_ref().is_some_and(|l| !l.is_empty()) {
-                    let listeners = Arc::clone(&self.listeners);
-                    let sid = session_id.clone();
-                    Some(Arc::new(move |evt: crate::provider::StreamEvent| {
-                        if let Ok(guard) = listeners.lock() {
-                            let ce = match evt {
-                                crate::provider::StreamEvent::Start =>
-                                    CognitiveEvent::StreamStart { session_id: sid.clone() },
-                                crate::provider::StreamEvent::Chunk(text) =>
-                                    CognitiveEvent::TextChunk { session_id: sid.clone(), text },
-                                crate::provider::StreamEvent::Done { finish_reason } =>
-                                    CognitiveEvent::StreamDone { session_id: sid.clone(), finish_reason },
-                                crate::provider::StreamEvent::Error(err) =>
-                                    CognitiveEvent::StreamError { session_id: sid.clone(), error: err },
-                            };
-                            for l in guard.iter() { l.on_cognitive_event(ce.clone()); }
-                        }
-                    }))
-                } else { None }
+                let listeners = Arc::clone(&self.listeners);
+                let tick = self.progress_tick.clone();
+                let sid = session_id.clone();
+                Some(Arc::new(move |evt: crate::provider::StreamEvent| {
+                    if let Some(ref tick) = tick { tick(); }
+                    // Reasoning deltas are liveness signal, not chat text —
+                    // never surface the chain-of-thought to listeners.
+                    if matches!(evt, crate::provider::StreamEvent::Reasoning(_)) { return; }
+                    if let Ok(guard) = listeners.lock() {
+                        let ce = match evt {
+                            crate::provider::StreamEvent::Start =>
+                                CognitiveEvent::StreamStart { session_id: sid.clone() },
+                            crate::provider::StreamEvent::Chunk(text) =>
+                                CognitiveEvent::TextChunk { session_id: sid.clone(), text },
+                            crate::provider::StreamEvent::Reasoning(_) =>
+                                return, // liveness only — not forwarded
+                            crate::provider::StreamEvent::Done { finish_reason } =>
+                                CognitiveEvent::StreamDone { session_id: sid.clone(), finish_reason },
+                            crate::provider::StreamEvent::Error(err) =>
+                                CognitiveEvent::StreamError { session_id: sid.clone(), error: err },
+                        };
+                        for l in guard.iter() { l.on_cognitive_event(ce.clone()); }
+                    }
+                }))
             };
 
             // LLM call with retry + streaming
@@ -1699,6 +1728,11 @@ impl CognitiveEngine for LlmCognitiveEngine {
                 ));
             }
 
+            // Liveness: an LLM turn completed — push the stall deadline out.
+            if let Some(ref tick) = self.progress_tick {
+                tick();
+            }
+
             if response.tool_calls.is_empty() {
                 // Finished
                 final_content = content;
@@ -1754,6 +1788,13 @@ impl CognitiveEngine for LlmCognitiveEngine {
             let results = self.execute_tool_calls(&parsed_calls, &session_id, &agent_id).await;
             for r in &results {
                 messages.push(ChatMessage::tool_result(&r.id, &r.tool_name, &r.output));
+            }
+
+            // Liveness: a tool batch ran — push the stall deadline out. The
+            // gateway's activity watchdog relies on this to keep a long,
+            // multi-tool research task alive while it is actively working.
+            if let Some(ref tick) = self.progress_tick {
+                tick();
             }
 
             // Publish tool_results_fed_back
